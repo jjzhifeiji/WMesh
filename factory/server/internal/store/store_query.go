@@ -221,6 +221,13 @@ func (s *Store) ListOrgUnits(ctx context.Context) ([]OrgUnit, error) {
 	return rows, err
 }
 
+// ActiveAssignments 列出某人当前有效的组织分配。
+func (s *Store) ActiveAssignments(ctx context.Context, personID uuid.UUID) ([]Assignment, error) {
+	var rows []Assignment
+	err := s.db.WithContext(ctx).Where("person_id = ? AND status = ?", personID, StatusActive).Order("created_at").Find(&rows).Error
+	return rows, err
+}
+
 // ListAssignments 列出当前有效人员分配。
 func (s *Store) ListAssignments(ctx context.Context) ([]Assignment, error) {
 	var rows []Assignment

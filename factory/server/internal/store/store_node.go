@@ -261,7 +261,7 @@ func (s *Store) InsertPersonOfflineGrant(ctx context.Context, g PersonOfflineGra
 			Signature:     g.Signature,
 			CreatedAt:     g.CreatedAt,
 		}
-		if err := tx.Create(&row).Error; err != nil {
+		if err := tx.Select("ID", "PersonID", "ClientID", "Revision", "LoginName", "PasswordHash", "AllowDirect", "OrgSnapshot", "RolesSnapshot", "NotBefore", "NotAfter", "Payload", "Signature", "CreatedAt").Create(&row).Error; err != nil {
 			if domain.IsUniqueViolation(err) {
 				return domain.ErrStaleRevision
 			}

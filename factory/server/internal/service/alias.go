@@ -33,17 +33,20 @@ func validScope(role, scopeKind string, orgUnitID *uuid.UUID) bool {
 
 // 与 store 同源的表模型和归属类型，给厂内应用服务和验收当入口类型用。
 type (
-	Store         = store.Store
-	Person        = store.Person
-	OrgUnit       = store.OrgUnit
-	Assignment    = store.Assignment
-	RoleGrant     = store.RoleGrant
-	Session       = store.Session
-	PathNode      = store.PathNode
-	WorkContext   = store.WorkContext
-	FactStub      = store.FactStub
-	PersonalAsset = store.PersonalAsset
-	Client        = store.Client
-	SigningKey    = store.SigningKey
-	RuntimeGrant  = store.RuntimeGrant
+	Store              = store.Store
+	Person             = store.Person
+	OrgUnit            = store.OrgUnit
+	Assignment         = store.Assignment
+	RoleGrant          = store.RoleGrant
+	Session            = store.Session
+	PathNode           = store.PathNode
+	WorkContext        = store.WorkContext
+	FactStub           = store.FactStub
+	PersonalAsset      = store.PersonalAsset
+	Client             = store.Client
+	SigningKey         = store.SigningKey
+	RuntimeGrant       = store.RuntimeGrant
+	OrgOption          = store.OrgOption
+	RoleSnapshot       = store.RoleSnapshot
+	PersonOfflineGrant = store.PersonOfflineGrant
 )
