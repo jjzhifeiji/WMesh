@@ -12,7 +12,7 @@ import (
 	"wmesh/factory/internal/platform/nodekey"
 )
 
-// IssuePersonOfflineGrant 由本厂有效超管给本厂有效账号签发绑定某 Client 的人员离线授权。
+// IssuePersonOfflineGrant 由本厂有效超管签发绑定某 Client 的人员离线授权；停用账号可签更高修订，快照记为无效。
 func (s *Service) IssuePersonOfflineGrant(ctx context.Context, token string, personID, clientID uuid.UUID, notBefore, notAfter time.Time) (PersonCred, error) {
 	acc, err := s.RequireActive(ctx, token)
 	if err != nil {
@@ -32,7 +32,7 @@ func (s *Service) IssuePersonOfflineGrant(ctx context.Context, token string, per
 		_ = s.audit(ctx, &acc.ID, nil, "issue_person_offline", target, audit.Deny)
 		return PersonCred{}, domain.ErrAccountPending
 	}
-	if p.Status != StatusActive || p.PasswordHash == nil {
+	if p.PasswordHash == nil {
 		_ = s.audit(ctx, &acc.ID, nil, "issue_person_offline", target, audit.Deny)
 		return PersonCred{}, domain.ErrAccountDisabled
 	}
@@ -89,6 +89,7 @@ func (s *Service) IssuePersonOfflineGrant(ctx context.Context, token string, per
 		AllowDirect:   allowDirect,
 		OrgSnapshot:   orgs,
 		RolesSnapshot: snap,
+		Active:        p.Status == StatusActive, // 停用后新开按停用快照
 		NotBefore:     notBefore.UTC(),
 		NotAfter:      notAfter.UTC(),
 		Revision:      rev,
@@ -156,4 +157,50 @@ func (s *Service) EvaluateOfflineOp(ctx context.Context, bag Bag, clocks Clocks,
 		return ev, err
 	}
 	return ev, nil
+}
+
+// CreateOfflineFact 按本机袋人员授权快照选定上下文并写入发生时路径，不查当前分配或当前树。
+func (s *Service) CreateOfflineFact(ctx context.Context, bag Bag, clocks Clocks, loginName, password string, wc WorkContext) (FactStub, error) {
+	ev := EvaluateOffline(bag, clocks, loginName, password)
+	var actor *uuid.UUID
+	cred, ok := currentPerson(bag)
+	if ok {
+		id := cred.PersonID
+		actor = &id
+	}
+	if bag.FactoryID != s.store.FactoryID() || ev.Decision != NodeAllow || !ok {
+		_ = s.auditAtSrc(ctx, actor, "create_fact", "fact", audit.Deny, ev.TimeSource, nil, nil)
+		return FactStub{}, domain.ErrForbidden
+	}
+	unitID, path, err := resolveOfflineContext(cred, wc)
+	if err != nil {
+		_ = s.auditAtSrc(ctx, actor, "create_fact", "fact", audit.Deny, ev.TimeSource, unitID, path)
+		return FactStub{}, err
+	}
+	row, err := s.store.InsertFact(ctx, cred.PersonID, unitID, path)
+	if err != nil {
+		_ = s.auditAtSrc(ctx, actor, "create_fact", "fact", audit.Deny, ev.TimeSource, unitID, path)
+		return FactStub{}, err
+	}
+	return row, s.auditAtSrc(ctx, actor, "create_fact", row.ID.String(), audit.Allow, ev.TimeSource, unitID, path)
+}
+
+// resolveOfflineContext 只认人员授权快照里的节点或直属，不查当前厂库树。
+func resolveOfflineContext(cred PersonCred, wc WorkContext) (*uuid.UUID, []PathNode, error) {
+	if wc.Direct == (wc.OrgUnitID != nil) {
+		return nil, nil, domain.ErrWorkContext // 没选或同时选了两个
+	}
+	if wc.Direct {
+		if !cred.AllowDirect {
+			return nil, []PathNode{}, domain.ErrWorkContext
+		}
+		return nil, []PathNode{}, nil
+	}
+	for _, o := range cred.OrgSnapshot {
+		if o.OrgUnitID == *wc.OrgUnitID {
+			id := o.OrgUnitID
+			return &id, append([]PathNode(nil), o.Path...), nil
+		}
+	}
+	return wc.OrgUnitID, nil, domain.ErrWorkContext
 }

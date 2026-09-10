@@ -82,6 +82,7 @@ type PersonCred struct {
 	AllowDirect   bool           // 是否允许 Factory 直属
 	OrgSnapshot   []OrgOption    // 当时可选节点及路径
 	RolesSnapshot []RoleSnapshot // 当时角色与作用域
+	Active        bool           // 签发时账号是否有效；停用快照为假
 	NotBefore     time.Time      // 生效时间
 	NotAfter      time.Time      // 失效时间
 	Revision      int64          // 人员授权修订
@@ -222,6 +223,7 @@ type personBody struct {
 	AllowDirect   bool           `json:"allowDirect"`
 	OrgSnapshot   []OrgOption    `json:"orgSnapshot"`
 	RolesSnapshot []RoleSnapshot `json:"rolesSnapshot"`
+	Active        *bool          `json:"active,omitempty"`
 	NotBefore     string         `json:"notBefore"`
 	NotAfter      string         `json:"notAfter"`
 	Revision      int64          `json:"revision"`
@@ -234,6 +236,7 @@ func encodePerson(c PersonCred) ([]byte, error) {
 	if c.RolesSnapshot == nil {
 		c.RolesSnapshot = []RoleSnapshot{}
 	}
+	active := c.Active
 	return json.Marshal(personBody{
 		FactoryID:     c.FactoryID.String(),
 		ClientID:      c.ClientID.String(),
@@ -244,6 +247,7 @@ func encodePerson(c PersonCred) ([]byte, error) {
 		AllowDirect:   c.AllowDirect,
 		OrgSnapshot:   c.OrgSnapshot,
 		RolesSnapshot: c.RolesSnapshot,
+		Active:        &active,
 		NotBefore:     c.NotBefore.UTC().Format(time.RFC3339Nano),
 		NotAfter:      c.NotAfter.UTC().Format(time.RFC3339Nano),
 		Revision:      c.Revision,
@@ -287,6 +291,10 @@ func decodePerson(payload []byte) (PersonCred, error) {
 	if roles == nil {
 		roles = []RoleSnapshot{}
 	}
+	active := true // 旧声明无此字段时按有效账号
+	if body.Active != nil {
+		active = *body.Active
+	}
 	return PersonCred{
 		FactoryID:     fid,
 		ClientID:      cid,
@@ -297,6 +305,7 @@ func decodePerson(payload []byte) (PersonCred, error) {
 		AllowDirect:   body.AllowDirect,
 		OrgSnapshot:   orgs,
 		RolesSnapshot: roles,
+		Active:        active,
 		NotBefore:     nb.UTC(),
 		NotAfter:      na.UTC(),
 		Revision:      body.Revision,
@@ -364,6 +373,9 @@ func LoginOfflineEval(bag Bag, clocks Clocks, loginName, password string) NodeEv
 	}
 	if now.Before(cred.NotBefore) || now.After(cred.NotAfter) {
 		return ev
+	}
+	if !cred.Active {
+		return ev // 停用快照不得再登录
 	}
 	if cred.LoginName != loginName || !secret.VerifyPassword(cred.PasswordHash, password) {
 		return ev

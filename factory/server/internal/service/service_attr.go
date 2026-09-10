@@ -211,6 +211,11 @@ func (s *Service) canReadMeta(ctx context.Context, acc Account, creatorID uuid.U
 }
 
 func (s *Service) auditAt(ctx context.Context, actor *uuid.UUID, action, target, result string, unit *uuid.UUID, path []PathNode) error {
+	return s.auditAtSrc(ctx, actor, action, target, result, audit.Server, unit, path)
+}
+
+// auditAtSrc 记下带组织路径和时间来源的允许或拒绝。
+func (s *Service) auditAtSrc(ctx context.Context, actor *uuid.UUID, action, target, result, timeSource string, unit *uuid.UUID, path []PathNode) error {
 	fid := s.store.FactoryID()
 	var raw []byte
 	if path != nil {
@@ -224,6 +229,6 @@ func (s *Service) auditAt(ctx context.Context, actor *uuid.UUID, action, target,
 		Action:     action,
 		Target:     target,
 		Result:     result,
-		TimeSource: audit.Server,
+		TimeSource: timeSource,
 	})
 }
