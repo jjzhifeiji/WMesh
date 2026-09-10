@@ -30,10 +30,10 @@ func (s *Service) Store() *Store { return s.store }
 
 // Account 是对外可见的账号视图，不含口令或激活口令。
 type Account struct {
-	ID          uuid.UUID
-	LoginName   string
-	DisplayName string
-	Status      string
+	ID          uuid.UUID `json:"id"`          // 稳定身份，改名也不变
+	LoginName   string    `json:"loginName"`   // 厂内登录名，一厂唯一
+	DisplayName string    `json:"displayName"` // 显示名，可改
+	Status      string    `json:"status"`      // 人员状态：pending / active / disabled
 }
 
 func accountOf(p Person) Account {

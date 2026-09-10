@@ -1,0 +1,17 @@
+# 自建 OSS：MinIO 二进制 + 启动时建桶。
+FROM minio/minio:latest AS minio
+FROM minio/mc:latest AS mc
+
+FROM alpine:3.21
+RUN apk add --no-cache ca-certificates
+COPY --from=minio /usr/bin/minio /usr/local/bin/minio
+COPY --from=mc /usr/bin/mc /usr/local/bin/mc
+COPY deploy/oss-entrypoint.sh /usr/local/bin/oss-entrypoint.sh
+COPY deploy/oss-health.sh /usr/local/bin/oss-health.sh
+RUN chmod +x /usr/local/bin/oss-entrypoint.sh /usr/local/bin/oss-health.sh
+ENV MINIO_ROOT_USER=wmeshoss
+ENV MINIO_ROOT_PASSWORD=wmeshoss
+ENV WMESH_OSS_BUCKET=wmesh
+EXPOSE 9000 9001
+VOLUME /data
+ENTRYPOINT ["/usr/local/bin/oss-entrypoint.sh"]

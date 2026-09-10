@@ -26,73 +26,73 @@ const (
 
 // Person 是本厂一个自然人账号，固定只属于本厂库，不属于任何组织节点。
 type Person struct {
-	ID                  uuid.UUID `gorm:"type:uuid;primaryKey"` // 稳定身份，改名也不变
-	LoginName           string    `gorm:"not null"`             // 本厂内唯一，不是身份
-	DisplayName         string    `gorm:"not null"`             // 显示名，可改
-	Status              string    `gorm:"not null"`             // 待启用 / 有效 / 已停用
-	PasswordHash        *string   // 日常口令哈希，只存在本厂；激活前为空
-	ActivationTokenHash *string   // 一次性激活口令哈希，激活后清空
-	IsInitialSuperAdmin bool      `gorm:"not null"` // 本厂唯一的 WAN 下发初始超管
-	CreatedAt           time.Time `gorm:"not null"`
+	ID                  uuid.UUID `gorm:"type:uuid;primaryKey" json:"id"`      // 稳定身份，改名也不变
+	LoginName           string    `gorm:"not null" json:"loginName"`           // 本厂内唯一，不是身份
+	DisplayName         string    `gorm:"not null" json:"displayName"`         // 显示名，可改
+	Status              string    `gorm:"not null" json:"status"`              // 待启用 / 有效 / 已停用
+	PasswordHash        *string   `json:"-"`                                   // 日常口令哈希，只存在本厂；激活前为空
+	ActivationTokenHash *string   `json:"-"`                                   // 一次性激活口令哈希，激活后清空
+	IsInitialSuperAdmin bool      `gorm:"not null" json:"isInitialSuperAdmin"` // 本厂唯一的 WAN 下发初始超管
+	CreatedAt           time.Time `gorm:"not null" json:"createdAt"`
 }
 
 func (Person) TableName() string { return "people" }
 
 // OrgType 是本厂自定义的组织类型（场地、车间等），不预置层数。
 type OrgType struct {
-	ID        uuid.UUID `gorm:"type:uuid;primaryKey"`
-	Name      string    `gorm:"not null"` // 显示名，不当身份
-	Status    string    `gorm:"not null"` // 有效或停用；有有效节点时不能停
-	CreatedAt time.Time `gorm:"not null"`
+	ID        uuid.UUID `gorm:"type:uuid;primaryKey" json:"id"`
+	Name      string    `gorm:"not null" json:"name"`   // 显示名，不当身份
+	Status    string    `gorm:"not null" json:"status"` // 有效或停用；有有效节点时不能停
+	CreatedAt time.Time `gorm:"not null" json:"createdAt"`
 }
 
 func (OrgType) TableName() string { return "org_types" }
 
 // OrgUnit 是本厂一棵树上的节点，至多一个父节点，不能跨厂、不能成环。
 type OrgUnit struct {
-	ID        uuid.UUID  `gorm:"type:uuid;primaryKey"`
-	OrgTypeID uuid.UUID  `gorm:"type:uuid;not null"` // 必须挂本厂已有组织类型
-	ParentID  *uuid.UUID `gorm:"type:uuid"`          // 空表示直接挂在工厂下
-	Name      string     `gorm:"not null"`           // 显示名，改名不改历史快照
-	Status    string     `gorm:"not null"`           // 停用后不能再当新工作上下文
-	CreatedAt time.Time  `gorm:"not null"`
+	ID        uuid.UUID  `gorm:"type:uuid;primaryKey" json:"id"`
+	OrgTypeID uuid.UUID  `gorm:"type:uuid;not null" json:"orgTypeId"` // 必须挂本厂已有组织类型
+	ParentID  *uuid.UUID `gorm:"type:uuid" json:"parentId"`           // 空表示直接挂在工厂下
+	Name      string     `gorm:"not null" json:"name"`                // 显示名，改名不改历史快照
+	Status    string     `gorm:"not null" json:"status"`              // 停用后不能再当新工作上下文
+	CreatedAt time.Time  `gorm:"not null" json:"createdAt"`
 }
 
 func (OrgUnit) TableName() string { return "org_units" }
 
 // Assignment 是人员到组织节点的关系；取消只把状态标成已结束，不删行。
 type Assignment struct {
-	ID        uuid.UUID  `gorm:"type:uuid;primaryKey"`
-	PersonID  uuid.UUID  `gorm:"type:uuid;not null"`
-	OrgUnitID uuid.UUID  `gorm:"type:uuid;not null"`
-	Status    string     `gorm:"not null"` // active 或 ended
-	CreatedAt time.Time  `gorm:"not null"`
-	EndedAt   *time.Time // 取消分配的时间；有效分配必须为空
+	ID        uuid.UUID  `gorm:"type:uuid;primaryKey" json:"id"`
+	PersonID  uuid.UUID  `gorm:"type:uuid;not null" json:"personId"`
+	OrgUnitID uuid.UUID  `gorm:"type:uuid;not null" json:"orgUnitId"`
+	Status    string     `gorm:"not null" json:"status"` // active 或 ended
+	CreatedAt time.Time  `gorm:"not null" json:"createdAt"`
+	EndedAt   *time.Time `json:"endedAt"` // 取消分配的时间；有效分配必须为空
 }
 
 func (Assignment) TableName() string { return "assignments" }
 
 // RoleGrant 是带明确作用域的一条角色；分配组织不会自动产生本行。
 type RoleGrant struct {
-	ID        uuid.UUID  `gorm:"type:uuid;primaryKey"`
-	PersonID  uuid.UUID  `gorm:"type:uuid;not null"`
-	Role      string     `gorm:"not null"`  // 六种固定角色之一
-	ScopeKind string     `gorm:"not null"`  // factory 或 org_unit
-	OrgUnitID *uuid.UUID `gorm:"type:uuid"` // Factory 作用域必须为空
-	Status    string     `gorm:"not null"`
-	CreatedAt time.Time  `gorm:"not null"`
-	RevokedAt *time.Time // 收回时间；有效授予必须为空
+	ID        uuid.UUID  `gorm:"type:uuid;primaryKey" json:"id"`
+	PersonID  uuid.UUID  `gorm:"type:uuid;not null" json:"personId"`
+	Role      string     `gorm:"not null" json:"role"`       // 六种固定角色之一
+	ScopeKind string     `gorm:"not null" json:"scopeKind"`  // factory 或 org_unit
+	OrgUnitID *uuid.UUID `gorm:"type:uuid" json:"orgUnitId"` // Factory 作用域必须为空
+	Status    string     `gorm:"not null" json:"status"`
+	CreatedAt time.Time  `gorm:"not null" json:"createdAt"`
+	RevokedAt *time.Time `json:"revokedAt"` // 收回时间；有效授予必须为空
 }
 
 func (RoleGrant) TableName() string { return "role_grants" }
 
 // Session 是厂内在线会话；库里只存令牌哈希，每次操作要重查账号状态和角色。
 type Session struct {
-	ID        uuid.UUID `gorm:"type:uuid;primaryKey"`
-	PersonID  uuid.UUID `gorm:"type:uuid;not null"`
-	TokenHash string    `gorm:"not null;uniqueIndex"` // 不存令牌原文
-	CreatedAt time.Time `gorm:"not null"`
-	ExpiresAt time.Time `gorm:"not null"`
+	ID        uuid.UUID `gorm:"type:uuid;primaryKey" json:"id"`
+	PersonID  uuid.UUID `gorm:"type:uuid;not null" json:"personId"`
+	TokenHash string    `gorm:"not null;uniqueIndex" json:"-"` // 不存令牌原文
+	CreatedAt time.Time `gorm:"not null" json:"createdAt"`
+	ExpiresAt time.Time `gorm:"not null" json:"expiresAt"`
 }
 
 func (Session) TableName() string { return "sessions" }

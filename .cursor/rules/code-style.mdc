@@ -8,7 +8,7 @@ alwaysApply: true
 
 编辑本仓 Go 时遵循下列规范。分库与账号边界见 `docs/平台架构核心需求.md`、`docs/specs/01-账号体系.md`。
 
-工程目录：`global/`、`factory/` 各自只有 `frontend/`（React）和 `server/`（Go）。`go.mod`、`docker-compose.yml`、`migrations/` 只放在 `server/` 里。底座在 `internal/platform/`，业务在 `internal/service` 与 `internal/store`，验收测试与应用服务同目录。禁止把业务 Go 放在工程根下。禁止 WAN 查询厂内人员、组织、角色、日常口令。表结构只走本工程 `migrations/` 向前 SQL；禁止 GORM AutoMigrate；禁止改写已落库路径快照或审计原文。标识符与错误字符串用英文；业务对错用本侧 `internal/platform/domain`，不把 SQL 原文抛给调用方。本阶段验收走应用服务和 `go test`，不走 HTTP。
+工程目录：`global/`、`factory/` 各自只有 `frontend/`（React）和 `server/`（Go）。`go.mod`、`docker-compose.yml`、`migrations/` 只放在 `server/` 里。底座在 `internal/platform/`，业务在 `internal/service` 与 `internal/store`，验收测试与应用服务同目录。禁止把业务 Go 放在工程根下。禁止 WAN 查询厂内人员、组织、角色、日常口令。表结构只走本工程 `migrations/` 向前 SQL；禁止 GORM AutoMigrate；禁止改写已落库路径快照或审计原文。标识符与错误字符串用英文；业务对错用本侧 `internal/platform/domain`，不把 SQL 原文抛给调用方。矩阵验收走应用服务和 `go test`；HTTP 只做会话与 JSON 适配，不得绕过 Service，也不得把 SQL 原文抛给前端。
 
 ## 1. 注释
 
@@ -56,11 +56,11 @@ snap, err := s.resolveWorkContext(ctx, actorID, orgID)
 ## 2. 分层禁令
 
 ```
-cmd/server → internal/service → Store → 本侧库
+cmd/server → internal/httpapi → internal/service → Store → 本侧库
                     ↓
               internal/platform（id / secret / audit / domain / migrate）
 ```
-验收测试与应用服务同目录（`package service_test`）。`internal/platform` 是底座，不是测试包。本阶段不建 HTTP handler。
+验收测试与应用服务同目录（`package service_test`）。`internal/platform` 是底座，不是测试包。HTTP 放在 `internal/httpapi/`，只转调应用服务。
 
 | 禁止 | 位置 |
 |------|------|

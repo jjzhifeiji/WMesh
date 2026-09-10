@@ -212,3 +212,38 @@ func (s *Store) AssignmentCount(ctx context.Context, personID uuid.UUID) (int64,
 		Count(&n).Error
 	return n, err
 }
+
+// ListPeople 列出本厂全部人员行；调用方不得把口令哈希交给前端。
+func (s *Store) ListPeople(ctx context.Context) ([]Person, error) {
+	var rows []Person
+	err := s.db.WithContext(ctx).Order("created_at").Find(&rows).Error
+	return rows, err
+}
+
+// ListOrgTypes 列出本厂组织类型。
+func (s *Store) ListOrgTypes(ctx context.Context) ([]OrgType, error) {
+	var rows []OrgType
+	err := s.db.WithContext(ctx).Order("created_at").Find(&rows).Error
+	return rows, err
+}
+
+// ListOrgUnits 列出本厂组织节点。
+func (s *Store) ListOrgUnits(ctx context.Context) ([]OrgUnit, error) {
+	var rows []OrgUnit
+	err := s.db.WithContext(ctx).Order("created_at").Find(&rows).Error
+	return rows, err
+}
+
+// ListAssignments 列出当前有效人员分配。
+func (s *Store) ListAssignments(ctx context.Context) ([]Assignment, error) {
+	var rows []Assignment
+	err := s.db.WithContext(ctx).Where("status = ?", StatusActive).Order("created_at").Find(&rows).Error
+	return rows, err
+}
+
+// ListRoleGrants 列出当前有效角色授予。
+func (s *Store) ListRoleGrants(ctx context.Context) ([]RoleGrant, error) {
+	var rows []RoleGrant
+	err := s.db.WithContext(ctx).Where("status = ?", StatusActive).Order("created_at").Find(&rows).Error
+	return rows, err
+}

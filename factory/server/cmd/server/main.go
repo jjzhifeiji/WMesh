@@ -1,22 +1,19 @@
-// 进程入口：连本厂库、跑迁移、组装应用服务。本阶段不对外提供 HTTP。
+// 进程入口：连维护库、按工厂身份打开厂库，对外提供账号 HTTP。
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
-	"github.com/google/uuid"
-	"gorm.io/driver/postgres"
-	"gorm.io/gorm"
-	"gorm.io/gorm/logger"
-
-	"wmesh/factory/internal/platform/migrate"
-	"wmesh/factory/internal/service"
-	"wmesh/factory/internal/store"
-	"wmesh/factory/migrations"
+	"wmesh/factory/internal/httpapi"
+	"wmesh/factory/internal/hub"
 )
 
 func main() {
@@ -26,29 +23,34 @@ func main() {
 }
 
 func run() error {
-	idStr := os.Getenv("WMESH_FACTORY_ID")
-	if idStr == "" {
-		return fmt.Errorf("WMESH_FACTORY_ID required")
-	}
-	facID, err := uuid.Parse(idStr)
-	if err != nil {
-		return fmt.Errorf("WMESH_FACTORY_ID: %w", err)
-	}
 	dsn := os.Getenv("WMESH_DSN")
 	if dsn == "" {
-		dsn = "postgres://wmesh:wmesh@127.0.0.1:55433/wmesh?sslmode=disable"
+		dsn = "postgres://wmesh:wmesh@127.0.0.1:55433/postgres?sslmode=disable"
 	}
-	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{Logger: logger.Default.LogMode(logger.Warn)})
+	bootToken := os.Getenv("WMESH_BOOTSTRAP_TOKEN")
+	if bootToken == "" {
+		return fmt.Errorf("WMESH_BOOTSTRAP_TOKEN required")
+	}
+	h, err := hub.New(dsn)
 	if err != nil {
 		return err
 	}
-	if err := migrate.Up(db, migrations.FS, "."); err != nil {
-		return err
+	defer h.Close()
+	addr := os.Getenv("WMESH_HTTP_ADDR")
+	if addr == "" {
+		addr = ":8081"
 	}
-	_ = service.NewService(store.Open(db, facID))
-	log.Println("factory server ready; HTTP is not served in this phase")
+	srv := &http.Server{Addr: addr, Handler: httpapi.New(h, bootToken).Router()}
+	go func() {
+		log.Printf("factory http %s", addr)
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatal(err)
+		}
+	}()
 	wait()
-	return nil
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return srv.Shutdown(ctx)
 }
 
 func wait() {

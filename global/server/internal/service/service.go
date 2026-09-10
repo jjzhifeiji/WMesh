@@ -33,14 +33,14 @@ func NewService(store *Store, boot FactoryBootstrap) *Service {
 
 // CreatedFactory 是创建工厂的交付结果；激活口令只给夹具，不写 WAN 库。
 type CreatedFactory struct {
-	Factory         Factory
-	SuperAdminID    uuid.UUID
-	ActivationToken string // 一次性激活口令原文，禁止写入审计
+	Factory         Factory   `json:"factory"`
+	SuperAdminID    uuid.UUID `json:"superAdminId"`
+	ActivationToken string    `json:"activationToken"` // 一次性激活口令原文，禁止写入审计
 }
 
 type Directory struct {
-	Factories []Factory
-	Initials  []InitialSuperAdmin
+	Factories []Factory           `json:"factories"` // WAN 工厂名录
+	Initials  []InitialSuperAdmin `json:"initials"`  // 各厂初始超管身份，不含口令
 }
 
 // BootstrapAdmin 写入唯一 WAN 管理员；已有管理员则拒绝。
