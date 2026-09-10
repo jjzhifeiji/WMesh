@@ -72,7 +72,7 @@ make down      # 停容器，保留数据卷
 ## 开发
 
 ```bash
-make test        # 起测试库 → go vet + go test（矩阵 1.1～18.3 中的 WAN 部分）→ 前端 oxlint + tsc
+make test        # 起测试库 → go vet + go test（账号矩阵 WAN 部分 + 节点 0.1～0.4）→ 前端 oxlint + tsc
 make dev-server  # 本地跑 Go（连测试库 :55432）
 make dev-web     # Vite 开发服务器 :5173，/v1 与 /healthz 代理到 :8080
 ```

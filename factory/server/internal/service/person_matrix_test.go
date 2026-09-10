@@ -14,24 +14,9 @@ import (
 	factory "wmesh/factory/internal/service"
 )
 
-func TestPersonMatrix(t *testing.T) {
+func testPersonMatrix(t *testing.T, run func(string, func(*testing.T))) {
+	t.Helper()
 	ctx := context.Background()
-	ids := []string{"11.1", "12.1", "12.2", "12.3", "12.4", "13.1", "13.2", "13.3", "13.4"}
-	ran := map[string]bool{}
-	run := func(id string, fn func(*testing.T)) {
-		t.Helper()
-		t.Run(id, func(t *testing.T) {
-			ran[id] = true
-			fn(t)
-		})
-	}
-	t.Cleanup(func() {
-		for _, id := range ids {
-			if !ran[id] {
-				t.Errorf("矩阵编号未跑：%s", id)
-			}
-		}
-	})
 
 	h := New(t)
 	seedA, facA, err := h.Provision(ctx, "sa-a", "超管A")

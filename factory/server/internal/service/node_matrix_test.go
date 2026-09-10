@@ -18,35 +18,9 @@ import (
 	factory "wmesh/factory/internal/service"
 )
 
-func TestNodeMatrix(t *testing.T) {
+func testNodeMatrix(t *testing.T, run func(string, func(*testing.T))) {
+	t.Helper()
 	ctx := context.Background()
-	ids := []string{
-		"1.1", "1.2",
-		"2.1", "2.2", "2.3",
-		"3.1", "3.2",
-		"4.1", "4.2",
-		"5.1", "5.2",
-		"6.1",
-		"7.1", "7.2",
-		"8.1",
-		"9.1", "9.2",
-		"10.1",
-	}
-	ran := map[string]bool{}
-	run := func(id string, fn func(*testing.T)) {
-		t.Helper()
-		t.Run(id, func(t *testing.T) {
-			ran[id] = true
-			fn(t)
-		})
-	}
-	t.Cleanup(func() {
-		for _, id := range ids {
-			if !ran[id] {
-				t.Errorf("矩阵编号未跑：%s", id)
-			}
-		}
-	})
 
 	h := New(t)
 	seedA, facA, err := h.Provision(ctx, "sa-a", "超管A")

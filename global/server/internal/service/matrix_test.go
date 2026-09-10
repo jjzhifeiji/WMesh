@@ -1,4 +1,4 @@
-// 第 7 圈：WAN 侧矩阵编号。
+// 第 7 圈：WAN 侧矩阵编号（账号 1.1～18.3 与节点 0.1～0.4）。
 package service_test
 
 import (
