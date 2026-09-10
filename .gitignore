@@ -1,3 +1,10 @@
 .DS_Store
 **/.DS_Store
+/bin/
+*.exe
+.env
+tmp/
+node_modules/
+dist/
 docs/device-date/projects/license.key
+

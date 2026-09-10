@@ -1,0 +1,76 @@
+---
+description: Go 注释与分层禁令（对齐注释精神，适配本仓分库）
+globs: "**/*.go"
+alwaysApply: true
+---
+
+# 代码注释与分层
+
+编辑本仓 Go 时遵循下列规范。分库与账号边界见 `docs/平台架构核心需求.md`、`docs/specs/01-账号体系.md`。
+
+工程目录：`global/`、`factory/` 各自只有 `frontend/`（React）和 `server/`（Go）。`go.mod`、`docker-compose.yml`、`migrations/` 只放在 `server/` 里。底座在 `internal/platform/`，业务在 `internal/service` 与 `internal/store`，验收测试与应用服务同目录。禁止把业务 Go 放在工程根下。禁止 WAN 查询厂内人员、组织、角色、日常口令。表结构只走本工程 `migrations/` 向前 SQL；禁止 GORM AutoMigrate；禁止改写已落库路径快照或审计原文。标识符与错误字符串用英文；业务对错用本侧 `internal/platform/domain`，不把 SQL 原文抛给调用方。本阶段验收走应用服务和 `go test`，不走 HTTP。
+
+## 1. 注释
+
+文风：**5～60 字**（鼓励约 10～40），精简白话，写「做什么 / 为什么」，不复述标识符名。各阶段落地要写清「谁允许/拒绝、归属怎么记」，不拿规格编号当主语。
+
+**必须**
+
+- **包**：管什么、明确不管什么。
+- **导出类型**：一行 godoc，说清职责。
+- **导出函数 / 方法 / 错误**：签名正上方一行 godoc。
+- **模型 / 请求 / 响应 / DTO 字段**：每业务字段一行 `//`；状态注明枚举出处。
+- **业务常量 / 包级业务 var**：须有注释。
+- **方法内关键逻辑**：默认拒绝、最后管理员、工作上下文、分库边界、停用保护、路径快照、无环、幂等——inline `//` 写约束与原因，不复述代码。
+- **跨包 / 跨层调用**（service、store、audit、secret）：调用前一行 `//` 说明做什么。同函数内连续同类写错误可共用一句。
+- **迁移 SQL**：文件头写本版改了什么；独有约束在旁边注明。
+- **测试**：文件头写对应阶段或矩阵范围；`TestMatrix` 子测试名保持编号即可。
+
+**应当**
+
+- 领域包内非琐碎的未导出函数 / 方法：同样一行 godoc。
+
+**可省略**
+
+- 纯转发、一行 getter、循环下标、机械 `return err`、一眼即懂的局部赋值。
+- 无业务语义的依赖字段（如 `store *Store`）。
+
+```go
+// 停用后新操作立刻按新状态判定，会话不当权限缓存。
+func (s *Service) DisablePerson(ctx context.Context, actorID, personID uuid.UUID) error
+
+type Person struct {
+    LoginName string // 厂内登录名，一厂唯一
+    Status    string // 人员状态：pending / active / disabled
+}
+
+// 最后一名有效超管入口不可停用。
+if last && target.Status == StatusActive {
+    return domain.ErrLastAdmin
+}
+
+// 按当前分配解析工作上下文，写入事实路径快照
+snap, err := s.resolveWorkContext(ctx, actorID, orgID)
+```
+
+## 2. 分层禁令
+
+```
+cmd/server → internal/service → Store → 本侧库
+                    ↓
+              internal/platform（id / secret / audit / domain / migrate）
+```
+验收测试与应用服务同目录（`package service_test`）。`internal/platform` 是底座，不是测试包。本阶段不建 HTTP handler。
+
+| 禁止 | 位置 |
+|------|------|
+| Service 绕过 Store 直接拼业务 SQL | `global/server/internal/service/`、`factory/server/internal/service/` |
+| Store 回调 Service | 包内反向 |
+| WAN 读厂内人员 / 组织 / 角色 / 日常口令 | `global/server/` |
+| 厂库当 WAN 名录 | `factory/server/` |
+| GORM AutoMigrate；迁移改历史快照 / 审计原文 | 全仓 |
+| 口令 / 令牌原文进审计或进 WAN | 全仓 |
+| 导入 `wmesh/factory` | `global/server/`（只认工厂稳定身份） |
+| 导入 `wmesh/global` | `factory/server/`（厂内不查 WAN 库） |
+
+改库表 / store / 认证授权路径前：在对应 `server/` 目录跑 `go test ./...`。
