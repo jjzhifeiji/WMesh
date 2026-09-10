@@ -1,4 +1,4 @@
-// Package store 只读写本厂库：人员、组织、角色、会话和归属桩。
+// Package store 只读写本厂库：人员、组织、角色、会话、归属桩和本厂 Client 凭证。
 // 不判定允许/拒绝，也不回调应用服务。
 package store
 

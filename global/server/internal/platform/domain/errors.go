@@ -29,4 +29,9 @@ var (
 	ErrMultiParent         = errors.New("org unit cannot have two parents")
 	ErrWorkContext         = errors.New("invalid work context")     // 没选、选了未分配节点、或直属与节点同时选
 	ErrFactoryBootstrap    = errors.New("factory bootstrap failed") // 厂端引导不可达或拒绝；WAN 不落名录，可重试
+	ErrInvalidKey          = errors.New("invalid key material")     // 公钥/私钥长度不对
+	ErrClientKeyTaken      = errors.New("client public key already registered")
+	ErrFactoryKeyExists    = errors.New("factory public key already registered")
+	ErrClientBound         = errors.New("client already bound to a factory") // 已属一厂，不能再绑到另一厂
+	ErrUnbound             = errors.New("client is not bound")               // 未绑定不能改绑
 )

@@ -17,7 +17,7 @@ type Row struct {
 	Action       string     `gorm:"not null"`   // 做了什么操作
 	Target       string     `gorm:"not null"`   // 作用对象
 	Result       string     `gorm:"not null"`   // allow 或 deny
-	TimeSource   string     `gorm:"not null"`   // 时间来源，本阶段固定 server
+	TimeSource   string     `gorm:"not null"`   // 时间来源：server 或 local
 	OccurredAt   time.Time  `gorm:"not null"`   // 服务端记录时间
 }
 

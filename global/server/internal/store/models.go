@@ -45,3 +45,24 @@ type Session struct {
 }
 
 func (Session) TableName() string { return "sessions" }
+
+// FactoryPublicKey 是某厂签发用的公钥，WAN 不存对应私钥。
+type FactoryPublicKey struct {
+	FactoryID uuid.UUID `gorm:"type:uuid;primaryKey" json:"factoryId"` // 该厂签发公钥，一对一
+	PublicKey []byte    `gorm:"type:bytea;not null" json:"publicKey"`  // Ed25519 公钥 32 字节，无私钥
+	CreatedAt time.Time `gorm:"not null" json:"createdAt"`             // 登记时间
+}
+
+func (FactoryPublicKey) TableName() string { return "factory_public_keys" }
+
+// Client 是一台现场节点：公钥在此登记，同一时刻只属一个工厂。
+type Client struct {
+	ID              uuid.UUID  `gorm:"type:uuid;primaryKey" json:"id"`       // Client 稳定身份，不由名称生成
+	PublicKey       []byte     `gorm:"type:bytea;not null" json:"publicKey"` // 本机公钥，绑定时登记；无私钥
+	FactoryID       *uuid.UUID `gorm:"type:uuid" json:"factoryId"`           // 当前所属工厂；空表示未绑定
+	BindingRevision int64      `gorm:"not null" json:"bindingRevision"`      // 绑定修订；未绑定为 0，改绑必须升高
+	BoundAt         *time.Time `json:"boundAt"`                              // 当前这次绑定生效时间；未绑定为空
+	CreatedAt       time.Time  `gorm:"not null" json:"createdAt"`            // 身份登记时间
+}
+
+func (Client) TableName() string { return "clients" }

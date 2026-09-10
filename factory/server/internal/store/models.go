@@ -13,6 +13,9 @@ const (
 	StatusEnded    = "ended"    // 分配已取消，行留下做历史
 	StatusRevoked  = "revoked"  // 角色已收回，行留下做历史
 
+	ClientStatusBound = "bound" // 本厂有效绑定，可以签发
+	ClientStatusVoid  = "void"  // 已作废，不得再签发
+
 	RoleFactorySuperAdmin = "factory_super_admin" // 工厂超级管理员，只能挂 Factory 作用域
 	RoleOrgAdmin          = "org_admin"           // 组织管理员，只管本节点及当前子树
 	RoleOrgLead           = "org_lead"            // 组织负责人，子树只读
@@ -129,6 +132,93 @@ type factRow struct {
 }
 
 func (factRow) TableName() string { return "fact_stubs" }
+
+// SigningKey 是本厂签发密钥；全表一行，私钥不进审计。
+type SigningKey struct {
+	ID         uuid.UUID `gorm:"type:uuid;primaryKey" json:"id"`       // 本厂签发密钥行身份
+	PublicKey  []byte    `gorm:"type:bytea;not null" json:"publicKey"` // Ed25519 公钥 32 字节
+	PrivateKey []byte    `gorm:"type:bytea;not null" json:"-"`         // 本厂签发私钥，不是 Client 私钥
+	CreatedAt  time.Time `gorm:"not null" json:"createdAt"`            // 写入时间
+}
+
+func (SigningKey) TableName() string { return "signing_keys" }
+
+// Client 是本厂已接受的一台现场节点绑定。
+type Client struct {
+	ID              uuid.UUID  `gorm:"type:uuid;primaryKey" json:"id"`       // 与 WAN 相同的 Client 稳定身份
+	PublicKey       []byte     `gorm:"type:bytea;not null" json:"publicKey"` // 本机公钥；无私钥
+	BindingRevision int64      `gorm:"not null" json:"bindingRevision"`      // 已接受的绑定修订，只向前
+	Status          string     `gorm:"not null" json:"status"`               // bound / void
+	BoundAt         time.Time  `gorm:"not null" json:"boundAt"`              // 最近一次接受为 bound 的时间
+	VoidedAt        *time.Time `json:"voidedAt"`                             // 作废时间；bound 必须为空
+}
+
+func (Client) TableName() string { return "clients" }
+
+// RuntimeGrant 是签给某 Client 的一版节点运行凭证。
+type RuntimeGrant struct {
+	ID        uuid.UUID `gorm:"type:uuid;primaryKey" json:"id"`       // 节点运行凭证稳定身份
+	ClientID  uuid.UUID `gorm:"type:uuid;not null" json:"clientId"`   // 签给本厂这台 Client
+	Revision  int64     `gorm:"not null" json:"revision"`             // 该 Client 的节点授权修订，只向前
+	CanRun    bool      `gorm:"not null" json:"canRun"`               // 本修订是否允许运行
+	NotBefore time.Time `gorm:"not null" json:"notBefore"`            // 生效时间
+	NotAfter  time.Time `gorm:"not null" json:"notAfter"`             // 失效时间
+	Payload   []byte    `gorm:"type:bytea;not null" json:"payload"`   // 被签名的声明原文
+	Signature []byte    `gorm:"type:bytea;not null" json:"signature"` // Ed25519 签名 64 字节
+	CreatedAt time.Time `gorm:"not null" json:"createdAt"`            // 写入时间
+}
+
+func (RuntimeGrant) TableName() string { return "client_runtime_grants" }
+
+// OrgOption 是人员离线授权里当时可选的一个组织节点及其祖先路径。
+type OrgOption struct {
+	OrgUnitID uuid.UUID  `json:"orgUnitId"` // 当时可选节点
+	Path      []PathNode `json:"path"`      // 当时从工厂到该节点的祖先快照
+}
+
+// RoleSnapshot 是签发时一条角色与作用域，离线不再查厂库。
+type RoleSnapshot struct {
+	Role      string     `json:"role"`                // 六种固定角色之一
+	ScopeKind string     `json:"scopeKind"`           // factory 或 org_unit
+	OrgUnitID *uuid.UUID `json:"orgUnitId,omitempty"` // Factory 作用域为空
+}
+
+// PersonOfflineGrant 是签给本厂账号、绑定特定 Client 的人员离线授权快照。
+type PersonOfflineGrant struct {
+	ID            uuid.UUID      // 人员离线授权稳定身份
+	PersonID      uuid.UUID      // 本厂账号稳定身份
+	ClientID      uuid.UUID      // 绑定到的本厂 Client
+	Revision      int64          // 该账号在该 Client 上的授权修订，只向前
+	LoginName     string         // 签发时登录名，离线对照用，不是身份
+	PasswordHash  string         // 该人口令验证材料副本；不进 JSON
+	AllowDirect   bool           // 是否允许 Factory 直属
+	OrgSnapshot   []OrgOption    // 当时可选 OrgUnit 及祖先路径
+	RolesSnapshot []RoleSnapshot // 当时固定角色与作用域
+	NotBefore     time.Time      // 生效时间
+	NotAfter      time.Time      // 失效时间
+	Payload       []byte         // 被签名的声明原文
+	Signature     []byte         // Ed25519 签名 64 字节
+	CreatedAt     time.Time      // 写入时间
+}
+
+type personOfflineGrantRow struct {
+	ID            uuid.UUID `gorm:"type:uuid;primaryKey"` // 人员离线授权稳定身份
+	PersonID      uuid.UUID `gorm:"type:uuid;not null"`   // 本厂账号稳定身份
+	ClientID      uuid.UUID `gorm:"type:uuid;not null"`   // 绑定到的本厂 Client
+	Revision      int64     `gorm:"not null"`             // 该账号在该 Client 上的授权修订，只向前
+	LoginName     string    `gorm:"not null"`             // 签发时登录名，离线对照用，不是身份
+	PasswordHash  string    `gorm:"not null"`             // 该人口令验证材料副本，不是全厂账号库
+	AllowDirect   bool      `gorm:"not null"`             // 是否允许 Factory 直属
+	OrgSnapshot   []byte    `gorm:"type:jsonb;not null"`  // 当时可选 OrgUnit 及祖先路径
+	RolesSnapshot []byte    `gorm:"type:jsonb;not null"`  // 当时固定角色与作用域
+	NotBefore     time.Time `gorm:"not null"`             // 生效时间
+	NotAfter      time.Time `gorm:"not null"`             // 失效时间
+	Payload       []byte    `gorm:"type:bytea;not null"`  // 被签名的声明原文
+	Signature     []byte    `gorm:"type:bytea;not null"`  // Ed25519 签名 64 字节
+	CreatedAt     time.Time `gorm:"not null"`             // 写入时间
+}
+
+func (personOfflineGrantRow) TableName() string { return "person_offline_grants" }
 
 type assetRow struct {
 	ID        uuid.UUID  `gorm:"type:uuid;primaryKey"` // 个人资产桩稳定身份

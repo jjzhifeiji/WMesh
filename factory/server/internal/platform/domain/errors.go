@@ -9,7 +9,7 @@ var (
 	ErrLoginNameTaken      = errors.New("login name already taken")          // 登录名只在本厂唯一
 	ErrNotFound            = errors.New("not found")
 	ErrCycle               = errors.New("org unit parent would create a cycle") // 挂到自己或后代
-	ErrDisabledOrgUnit     = errors.New("org unit is disabled") // 不能再分配或当新工作上下文
+	ErrDisabledOrgUnit     = errors.New("org unit is disabled")                 // 不能再分配或当新工作上下文
 	ErrHasActiveChildren   = errors.New("org unit still has active children")
 	ErrReferenced          = errors.New("still referenced") // 还有下级、当前人员、有效角色或历史事实，不能物理删除
 	ErrDuplicateAssignment = errors.New("active assignment already exists")
@@ -27,4 +27,9 @@ var (
 	ErrLastAdmin           = errors.New("last factory super admin") // 会把有效厂级超管入口变成零
 	ErrMultiParent         = errors.New("org unit cannot have two parents")
 	ErrWorkContext         = errors.New("invalid work context") // 没选、选了未分配节点、或直属与节点同时选
+	ErrInvalidKey          = errors.New("invalid key material") // 公钥/私钥或签名长度不对
+	ErrSigningKeyExists    = errors.New("factory signing key already set")
+	ErrClientKeyMismatch   = errors.New("client public key does not match")
+	ErrStaleRevision       = errors.New("revision is not strictly newer") // 只接受更高修订
+	ErrBindingVoid         = errors.New("client binding is void")         // 作废后不得再签发
 )

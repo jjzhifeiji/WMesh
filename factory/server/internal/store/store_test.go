@@ -3,6 +3,8 @@ package store_test
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"testing"
 	"time"
 
@@ -10,6 +12,7 @@ import (
 
 	"wmesh/factory/internal/platform/audit"
 	"wmesh/factory/internal/platform/domain"
+	"wmesh/factory/internal/platform/id"
 	"wmesh/factory/internal/platform/testpg"
 	"wmesh/factory/internal/store"
 )
@@ -254,4 +257,120 @@ func TestEnableOrgAfterDisable(t *testing.T) {
 	if _, err := s.CreateOrgUnit(ctx, "child", &u.ID); err != nil {
 		t.Fatalf("create after enable: %v", err)
 	}
+}
+
+func TestClientBindingAndGrants(t *testing.T) {
+	ctx := context.Background()
+	facDB, facID := testpg.Fresh(t)
+	s := store.Open(facDB, facID)
+
+	pub, priv := mustEd25519(t)
+	if _, err := s.PutSigningKey(ctx, pub, priv); err != nil {
+		t.Fatalf("signing key: %v", err)
+	}
+	if _, err := s.PutSigningKey(ctx, pub, priv); err != domain.ErrSigningKeyExists {
+		t.Fatalf("dup signing key: %v", err)
+	}
+
+	cPub, _ := mustEd25519(t)
+	cid := id.New()
+	c, err := s.AcceptBinding(ctx, cid, cPub, 1)
+	if err != nil {
+		t.Fatalf("accept: %v", err)
+	}
+	if c.Status != store.ClientStatusBound || c.BindingRevision != 1 {
+		t.Fatalf("client: %+v", c)
+	}
+	if _, err := s.AcceptBinding(ctx, cid, cPub, 1); err != domain.ErrStaleRevision {
+		t.Fatalf("stale bind: %v", err)
+	}
+	other, _ := mustEd25519(t)
+	if _, err := s.AcceptBinding(ctx, cid, other, 2); err != domain.ErrClientKeyMismatch {
+		t.Fatalf("key mismatch: %v", err)
+	}
+
+	now := time.Now().UTC()
+	later := now.Add(24 * time.Hour)
+	sig := make([]byte, 64)
+	g, err := s.InsertRuntimeGrant(ctx, store.RuntimeGrant{
+		ClientID: cid, Revision: 1, CanRun: true,
+		NotBefore: now, NotAfter: later, Payload: []byte("run-1"), Signature: sig,
+	})
+	if err != nil {
+		t.Fatalf("runtime grant: %v", err)
+	}
+	if _, err := s.InsertRuntimeGrant(ctx, store.RuntimeGrant{
+		ClientID: cid, Revision: 1, CanRun: false,
+		NotBefore: now, NotAfter: later, Payload: []byte("run-1b"), Signature: sig,
+	}); err != domain.ErrStaleRevision {
+		t.Fatalf("stale runtime: %v", err)
+	}
+	got, err := s.LatestRuntimeGrant(ctx, cid)
+	if err != nil || got.ID != g.ID || !got.CanRun {
+		t.Fatalf("latest runtime: %+v %v", got, err)
+	}
+
+	p, err := s.CreatePerson(ctx, "op", "操作员", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unit, err := s.CreateOrgUnit(ctx, "车间", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, err := s.PathSnapshot(ctx, unit.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pg, err := s.InsertPersonOfflineGrant(ctx, store.PersonOfflineGrant{
+		PersonID: p.ID, ClientID: cid, Revision: 1, LoginName: "op", PasswordHash: "hash",
+		AllowDirect:   true,
+		OrgSnapshot:   []store.OrgOption{{OrgUnitID: unit.ID, Path: path}},
+		RolesSnapshot: []store.RoleSnapshot{{Role: store.RoleOperator, ScopeKind: store.ScopeFactory}},
+		NotBefore:     now, NotAfter: later, Payload: []byte("person-1"), Signature: sig,
+	})
+	if err != nil {
+		t.Fatalf("person grant: %v", err)
+	}
+	if _, err := s.InsertPersonOfflineGrant(ctx, store.PersonOfflineGrant{
+		PersonID: p.ID, ClientID: cid, Revision: 1, LoginName: "op", PasswordHash: "hash",
+		NotBefore: now, NotAfter: later, Payload: []byte("person-1b"), Signature: sig,
+	}); err != domain.ErrStaleRevision {
+		t.Fatalf("stale person: %v", err)
+	}
+	latestP, err := s.LatestPersonOfflineGrant(ctx, p.ID, cid)
+	if err != nil || latestP.ID != pg.ID || latestP.LoginName != "op" || len(latestP.OrgSnapshot) != 1 {
+		t.Fatalf("latest person: %+v %v", latestP, err)
+	}
+
+	if err := s.VoidBinding(ctx, cid); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.InsertRuntimeGrant(ctx, store.RuntimeGrant{
+		ClientID: cid, Revision: 2, CanRun: false,
+		NotBefore: now, NotAfter: later, Payload: []byte("run-2"), Signature: sig,
+	}); err != domain.ErrBindingVoid {
+		t.Fatalf("void runtime: %v", err)
+	}
+	reb, err := s.AcceptBinding(ctx, cid, cPub, 3)
+	if err != nil || reb.Status != store.ClientStatusBound || reb.BindingRevision != 3 {
+		t.Fatalf("re-accept: %+v %v", reb, err)
+	}
+
+	var hasPriv bool
+	if err := facDB.Raw("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='clients' AND column_name='private_key')").Scan(&hasPriv).Error; err != nil || hasPriv {
+		t.Fatalf("clients must not have private_key: %v %v", hasPriv, err)
+	}
+	if err := s.AppendAudit(ctx, audit.Event{Action: "issue", Target: cid.String(), Result: audit.Allow, TimeSource: audit.Local}); err != nil {
+		t.Fatalf("local audit: %v", err)
+	}
+}
+
+func mustEd25519(t *testing.T) ([]byte, []byte) {
+	t.Helper()
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pub, priv
 }

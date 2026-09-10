@@ -12,7 +12,8 @@ import (
 const (
 	Allow  = "allow"  // 允许并落审计
 	Deny   = "deny"   // 拒绝并落审计
-	Server = "server" // 时间来源固定为服务端时钟
+	Server = "server" // 已连网：跟服务器钟
+	Local  = "local"  // 断网：跟本机钟
 )
 
 // Event 是一条审计。认不出稳定账号时 ActorID 为空，改记 ClaimedLogin。
@@ -26,6 +27,6 @@ type Event struct {
 	Action       string          // 做了什么操作
 	Target       string          // 作用对象
 	Result       string          // allow 或 deny
-	TimeSource   string          // 时间来源，本阶段固定 server
+	TimeSource   string          // 时间来源：server 或 local
 	OccurredAt   time.Time       // 服务端记录时间
 }
