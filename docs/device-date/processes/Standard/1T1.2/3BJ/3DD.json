@@ -1,0 +1,20 @@
+{
+    "name": "3DD",
+    "current": 210.0,
+    "voltage": 28.0,
+    "speed": 1.2,
+    "startArcTime": 500.0,
+    "endArcTime": 1800.0,
+    "startArcCurrent": 240.0,
+    "startArcVoltage": 28.0,
+    "endArcVoltage": 19.5,
+    "oscillation": {
+        "type": "正弦波摆动",
+        "positionWait": "等待时间内位置静止",
+        "frequency": 0.3,
+        "amplitude": 9.0,
+        "leftStopTime": 350.0,
+        "rightStopTime": 350.0,
+        "rightSideLength": 12.0
+    }
+}

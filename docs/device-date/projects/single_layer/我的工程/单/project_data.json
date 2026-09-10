@@ -1,0 +1,290 @@
+[
+    {
+        "id": "358d4acb-b123-41b4-b780-ed6370d098b8",
+        "name": "焊道 1",
+        "points": [
+            {
+                "id": "88b814a7-3b51-4ac7-8560-36e3e14b01e2",
+                "type": "START_SAFE"
+            },
+            {
+                "id": "dd3b4113-ad15-4565-83fb-9dd3026fc7af",
+                "type": "START"
+            },
+            {
+                "id": "bc5320e1-92bf-4adb-9f22-d8a25c49f4c2",
+                "type": "END"
+            },
+            {
+                "id": "668c01bd-43d7-4c0e-913d-fc2bde689fdf",
+                "type": "END_SAFE"
+            }
+        ],
+        "processPath": "",
+        "selectedPointIndex": 0
+    },
+    {
+        "id": "c063b630-538e-45db-85b7-8c6cbc4e11f6",
+        "name": "焊道 2",
+        "points": [
+            {
+                "id": "9e07b6c0-e888-4783-a7c0-c4b80d0e9253",
+                "type": "START_SAFE"
+            },
+            {
+                "id": "15bf4d92-c961-4066-b049-be19c904af27",
+                "type": "START"
+            },
+            {
+                "id": "66f007c3-6501-4b38-bced-4fc127a1e509",
+                "type": "END"
+            },
+            {
+                "id": "4d1f1f0c-384e-435d-b1d3-c9bed668c29d",
+                "type": "END_SAFE"
+            }
+        ],
+        "processPath": "",
+        "selectedPointIndex": 0
+    },
+    {
+        "id": "b26d1962-6edc-4cd0-88ff-547bea353f01",
+        "name": "焊道 3",
+        "points": [
+            {
+                "id": "77389d72-5125-4c29-8d8d-90b29999c215",
+                "type": "START_SAFE"
+            },
+            {
+                "id": "16ab8b3c-4ce7-4e38-9eaa-1a62b0f74685",
+                "type": "START"
+            },
+            {
+                "id": "020dbdb0-961d-496c-91d1-10100b23484f",
+                "type": "END"
+            },
+            {
+                "id": "c7a4dd60-d7bf-421a-b8b9-96286deb8249",
+                "type": "END_SAFE"
+            }
+        ],
+        "processPath": "",
+        "selectedPointIndex": 0
+    },
+    {
+        "id": "842f0b79-421d-4617-a53e-49575ac52790",
+        "name": "焊道 4",
+        "points": [
+            {
+                "id": "590bddac-4b6c-4ea1-8562-076417930664",
+                "type": "START_SAFE"
+            },
+            {
+                "id": "09aa770a-d4a0-4d18-96ba-f548dc607942",
+                "type": "START"
+            },
+            {
+                "id": "0b081159-a33c-46f6-9540-5fdf8d6d9553",
+                "type": "END"
+            },
+            {
+                "id": "adb7a3ea-533c-478c-8a6f-bc6e51678be3",
+                "type": "END_SAFE"
+            }
+        ],
+        "processPath": "",
+        "selectedPointIndex": 0
+    },
+    {
+        "id": "443dae0e-fd2f-411d-be70-5476ce17becf",
+        "name": "焊道 5",
+        "points": [
+            {
+                "id": "5dda8cb3-bf27-48fb-8ce2-945fd31301d3",
+                "type": "START_SAFE"
+            },
+            {
+                "id": "f71860a8-a75f-4d1b-9cd7-767db9f04e31",
+                "type": "START"
+            },
+            {
+                "id": "bd660a61-e76f-4385-8625-45f1ad2e98be",
+                "type": "END"
+            },
+            {
+                "id": "d322d23f-dbcf-43fa-82ee-2cfa8d59d0cf",
+                "type": "END_SAFE"
+            }
+        ],
+        "processPath": "",
+        "selectedPointIndex": 0
+    },
+    {
+        "id": "29195153-d0fe-49c4-adaa-9d4b3b4db86a",
+        "name": "焊道 6",
+        "points": [
+            {
+                "id": "01b1aca1-6ffa-47fd-b51c-e2a463ec1783",
+                "type": "START_SAFE"
+            },
+            {
+                "id": "e560d096-45e8-470d-a788-d9f790d43e00",
+                "type": "START"
+            },
+            {
+                "id": "3051dfba-0ec5-4a07-9d1b-c40311f7edce",
+                "type": "END"
+            },
+            {
+                "id": "9cf13939-7c7f-4886-9844-c6101d7d0a89",
+                "type": "END_SAFE"
+            }
+        ],
+        "processPath": "",
+        "selectedPointIndex": 0
+    },
+    {
+        "id": "aecce359-de12-4f5a-86d5-b1321cacea5a",
+        "name": "焊道 7",
+        "points": [
+            {
+                "id": "0a9fac95-209a-4493-acbe-5ab0001cddec",
+                "type": "START_SAFE"
+            },
+            {
+                "id": "2f721fe2-f4fd-4351-8e45-969ddb6ad779",
+                "type": "START"
+            },
+            {
+                "id": "aad9e1db-d35a-4672-8ff5-52c94134d42b",
+                "type": "END"
+            },
+            {
+                "id": "4589933b-a397-4a0e-a4b6-4b26a500bcbd",
+                "type": "END_SAFE"
+            }
+        ],
+        "processPath": "",
+        "selectedPointIndex": 0
+    },
+    {
+        "id": "35a8d1a2-3ebf-4759-a4a2-2ed2b52b75c1",
+        "name": "焊道 8",
+        "points": [
+            {
+                "id": "5e61f211-d757-47ea-8d26-e7052e035284",
+                "type": "START_SAFE"
+            },
+            {
+                "id": "4d118df5-f82e-4e95-8f70-63a672b90157",
+                "type": "START"
+            },
+            {
+                "id": "5cd5c351-d603-45df-a476-9517401da72e",
+                "type": "END"
+            },
+            {
+                "id": "1b9bd372-7edb-4ad6-965f-49876e969d5b",
+                "type": "END_SAFE"
+            }
+        ],
+        "processPath": "",
+        "selectedPointIndex": 0
+    },
+    {
+        "id": "3a32fbcf-69e6-43dc-bce1-b9507bcc4ba6",
+        "name": "焊道 9",
+        "points": [
+            {
+                "id": "077d5580-ec14-42e9-a6bc-58a61b6a514a",
+                "type": "START_SAFE"
+            },
+            {
+                "id": "5f1960b9-84e2-448a-9609-23be1bc21ab1",
+                "type": "START"
+            },
+            {
+                "id": "d6d540ff-7574-4eda-8d98-d9b8aa4ec119",
+                "type": "END"
+            },
+            {
+                "id": "b7d3cf61-fcc0-41eb-86a0-23d9d50b890e",
+                "type": "END_SAFE"
+            }
+        ],
+        "processPath": "",
+        "selectedPointIndex": 0
+    },
+    {
+        "id": "f4c75286-ab09-4dac-91f8-1132834712a6",
+        "name": "焊道 10",
+        "points": [
+            {
+                "id": "c04f4111-ef03-456f-8270-56ad9c45295a",
+                "type": "START_SAFE"
+            },
+            {
+                "id": "918a0f7e-e48e-40b5-8199-fd5fff60ce5f",
+                "type": "START"
+            },
+            {
+                "id": "a5e5ca09-bd1e-4582-9e3e-e4bac7c88881",
+                "type": "END"
+            },
+            {
+                "id": "12d82387-1e50-4264-b1a9-10f5609fab44",
+                "type": "END_SAFE"
+            }
+        ],
+        "processPath": "",
+        "selectedPointIndex": 0
+    },
+    {
+        "id": "24bae6be-a832-45b4-b352-bbe202762753",
+        "name": "焊道 11",
+        "points": [
+            {
+                "id": "51368075-4e34-447c-b9c4-c0262aece418",
+                "type": "START_SAFE"
+            },
+            {
+                "id": "b8ab9f48-8340-4314-8305-a423cb26c3e6",
+                "type": "START"
+            },
+            {
+                "id": "e41139d1-1a85-4e1f-806d-93a2870b7472",
+                "type": "END"
+            },
+            {
+                "id": "9f248d54-f7e5-4f2e-a89d-02bae6ceac09",
+                "type": "END_SAFE"
+            }
+        ],
+        "processPath": "",
+        "selectedPointIndex": 0
+    },
+    {
+        "id": "77c534cb-c1e4-4d28-b807-e4ce42fdfcaf",
+        "name": "焊道 12",
+        "points": [
+            {
+                "id": "d43fcef4-2387-4743-b6c5-feeee2fb02eb",
+                "type": "START_SAFE"
+            },
+            {
+                "id": "217c58e3-7bca-458b-a0bc-1bc932336e04",
+                "type": "START"
+            },
+            {
+                "id": "4abb4d29-5777-473d-aede-f1bf8adfd618",
+                "type": "END"
+            },
+            {
+                "id": "c2af5ae6-4b6f-4fbd-a942-67387e68f6bd",
+                "type": "END_SAFE"
+            }
+        ],
+        "processPath": "",
+        "selectedPointIndex": 0
+    }
+]

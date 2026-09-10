@@ -1,0 +1,19 @@
+{
+    "name": "3K10-11mm-4",
+    "offsetX": "2",
+    "offsetZ": "4",
+    "current": 240.0,
+    "voltage": 26.0,
+    "speed": 7.0,
+    "startArcTime": 200.0,
+    "endArcTime": 1000.0,
+    "endArcCurrent": 240.0,
+    "endArcVoltage": 26.0,
+    "oscillation": {
+        "positionWait": "等待时间内位置静止",
+        "frequency": 2.0,
+        "amplitude": 4.0,
+        "leftStopTime": 300.0,
+        "rightStopTime": 300.0
+    }
+}

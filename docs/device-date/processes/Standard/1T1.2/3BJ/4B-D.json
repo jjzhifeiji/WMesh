@@ -1,0 +1,21 @@
+{
+    "name": "4B-D",
+    "current": 210.0,
+    "voltage": 29.0,
+    "speed": 1.4,
+    "startArcTime": 500.0,
+    "endArcTime": 800.0,
+    "startArcCurrent": 240.0,
+    "endArcCurrent": 200.0,
+    "startArcVoltage": 28.0,
+    "endArcVoltage": 24.0,
+    "oscillation": {
+        "type": "正弦波摆动",
+        "positionWait": "等待时间内位置静止",
+        "frequency": 0.4,
+        "amplitude": 8.0,
+        "leftStopTime": 450.0,
+        "rightStopTime": 450.0,
+        "rightSideLength": 12.0
+    }
+}

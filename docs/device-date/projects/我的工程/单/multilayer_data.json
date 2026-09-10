@@ -1,0 +1,32 @@
+[
+    {
+        "id": "b2e88c66-fa28-4129-aecd-bf6c4e767ded",
+        "name": "多层直线 1",
+        "basePath": {
+            "id": "818a5994-457c-4eaa-99ec-0053586ef54d",
+            "name": "Base Path",
+            "points": [
+                {
+                    "id": "e7091247-77e8-4d19-89ce-06e80322cf05",
+                    "type": "START_SAFE"
+                },
+                {
+                    "id": "c9007c84-c518-428c-9f27-91eb40a4a13e",
+                    "type": "START"
+                },
+                {
+                    "id": "024e0806-6738-415d-b068-055b5ab3075e",
+                    "type": "END"
+                },
+                {
+                    "id": "12913ccf-58dc-42b4-965b-3fedbc5ecd23",
+                    "type": "END_SAFE"
+                }
+            ],
+            "processPath": "",
+            "selectedPointIndex": 0
+        },
+        "passes": [
+        ]
+    }
+]

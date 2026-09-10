@@ -1,0 +1,26 @@
+[
+    {
+        "id": "bf41b1ca-1665-4d9f-bb8a-534efc4e542b",
+        "name": "焊道 1",
+        "points": [
+            {
+                "id": "0fa63593-5ea8-4860-9fb6-0947f2ec2a91",
+                "type": "START_SAFE"
+            },
+            {
+                "id": "d0fd0079-3acf-46fa-bba7-a3475432f09f",
+                "type": "START"
+            },
+            {
+                "id": "7bee5be0-1545-4a12-9956-682f188497ad",
+                "type": "END"
+            },
+            {
+                "id": "c19d7266-8c55-4aa2-83b5-fdc9680548c7",
+                "type": "END_SAFE"
+            }
+        ],
+        "processPath": "",
+        "selectedPointIndex": 0
+    }
+]

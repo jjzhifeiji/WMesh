@@ -1,0 +1,20 @@
+{
+    "name": "2U",
+    "current": 200.0,
+    "voltage": 23.0,
+    "speed": 4.0,
+    "startArcTime": 500.0,
+    "endArcTime": 1000.0,
+    "startArcCurrent": 175.0,
+    "endArcCurrent": 200.0,
+    "startArcVoltage": 20.5,
+    "endArcVoltage": 24.0,
+    "oscillation": {
+        "positionWait": "等待时间内位置静止",
+        "frequency": 0.3,
+        "amplitude": 9.0,
+        "leftStopTime": 350.0,
+        "rightStopTime": 350.0,
+        "rightSideLength": 12.0
+    }
+}

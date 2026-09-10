@@ -1,0 +1,17 @@
+{
+    "name": "新工艺",
+    "offsetX": "5",
+    "current": 200.0,
+    "speed": 11.0,
+    "oscillation": {
+        "frequency": 2.0,
+        "amplitude": 4.0,
+        "leftStopTime": 400.0,
+        "rightStopTime": 400.0,
+        "leftSideLength": 2.0,
+        "rightSideLength": 2.0,
+        "zeroTime": 10.0,
+        "callbackRatio": 5.0,
+        "azimuth": 90.0
+    }
+}

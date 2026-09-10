@@ -1,0 +1,19 @@
+{
+    "name": "99圆弧补板上平焊-摆动",
+    "offsetX": "1",
+    "current": 200.0,
+    "voltage": 24.0,
+    "speed": 8.5,
+    "startArcTime": 200.0,
+    "endArcTime": 600.0,
+    "endArcCurrent": 240.0,
+    "endArcVoltage": 26.0,
+    "oscillation": {
+        "type": "正弦波摆动",
+        "positionWait": "等待时间内位置静止",
+        "frequency": 2.0,
+        "amplitude": 3.6,
+        "leftStopTime": 260.0,
+        "rightStopTime": 350.0
+    }
+}

@@ -1,0 +1,122 @@
+[
+    {
+        "id": "a1f9b548-4e98-4400-822d-4832c74e64d2",
+        "name": "多层直线 1",
+        "basePath": {
+            "id": "bbb413b4-45ae-4f2e-90a3-ee6cab2a9933",
+            "name": "Base Path",
+            "points": [
+                {
+                    "id": "3488981a-1de6-4d1a-921b-2c1cc09707de",
+                    "type": "START_SAFE"
+                },
+                {
+                    "id": "fc526951-c06d-4573-bbf2-3f04976551d8",
+                    "type": "START"
+                },
+                {
+                    "id": "d228846f-17b5-4200-8d61-0f11333b452f",
+                    "type": "END"
+                },
+                {
+                    "id": "00cf90fd-3034-48fd-9595-05b903199b99",
+                    "type": "END_SAFE"
+                }
+            ],
+            "processPath": "",
+            "selectedPointIndex": 0
+        },
+        "passes": [
+        ]
+    },
+    {
+        "id": "15215626-e49f-4500-9ceb-d390fbe2d37e",
+        "name": "多层直线 2",
+        "basePath": {
+            "id": "e4272da4-d3bc-41be-bb55-5ddff2178f82",
+            "name": "Base Path",
+            "points": [
+                {
+                    "id": "bcab32f7-f427-4f89-bc0e-52dc6c56e6fc",
+                    "type": "START_SAFE"
+                },
+                {
+                    "id": "793eabe7-e691-454c-b2ad-d83dcbac2eb8",
+                    "type": "START"
+                },
+                {
+                    "id": "252cdfa3-b6ea-4361-b05c-8b7d0cf9c59e",
+                    "type": "END"
+                },
+                {
+                    "id": "a20cb3db-eb67-4cab-9b19-edefeed60d41",
+                    "type": "END_SAFE"
+                }
+            ],
+            "processPath": "",
+            "selectedPointIndex": 0
+        },
+        "passes": [
+        ]
+    },
+    {
+        "id": "4cd6af34-9b1d-46e0-9f94-37029c641df5",
+        "name": "多层直线 3",
+        "basePath": {
+            "id": "709e0212-e322-4bfc-87d3-f0555b166803",
+            "name": "Base Path",
+            "points": [
+                {
+                    "id": "624d53e3-8ad7-4161-ae36-6c774de61b92",
+                    "type": "START_SAFE"
+                },
+                {
+                    "id": "b7f72cb3-dab7-47ab-867a-2786139bace3",
+                    "type": "START"
+                },
+                {
+                    "id": "fd19fc3f-c575-40e6-ba5f-67edc9a4f673",
+                    "type": "END"
+                },
+                {
+                    "id": "f0a4ffbb-b311-46dc-8bd6-d9c6010ae76e",
+                    "type": "END_SAFE"
+                }
+            ],
+            "processPath": "",
+            "selectedPointIndex": 0
+        },
+        "passes": [
+        ]
+    },
+    {
+        "id": "1fa49016-89b9-46f2-a4a2-55931a3e4651",
+        "name": "多层直线 4",
+        "basePath": {
+            "id": "d14ee705-96af-4d14-aa49-e6139d7e0a47",
+            "name": "Base Path",
+            "points": [
+                {
+                    "id": "d6f56e37-2b89-4c50-8f46-5af6f34f5433",
+                    "type": "START_SAFE"
+                },
+                {
+                    "id": "0ad84b1e-317a-45ac-9b7e-c1f651c712e0",
+                    "type": "START"
+                },
+                {
+                    "id": "b48e6ca7-ca40-4c37-b6c3-43c7172e8d56",
+                    "type": "END"
+                },
+                {
+                    "id": "f6cef039-ad31-401c-a51f-980611dad2fa",
+                    "type": "END_SAFE"
+                }
+            ],
+            "processPath": "",
+            "selectedPointIndex": 0
+        },
+        "passes": [
+        ]
+    }
+]

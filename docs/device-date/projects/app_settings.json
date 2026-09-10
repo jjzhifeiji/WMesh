@@ -1,0 +1,70 @@
+{
+    "selectedToolIndex": 1,
+    "toolCoordinates": [
+        {
+            "x": -3.487,
+            "y": -21.551,
+            "z": 418.636,
+            "rx": 168.12,
+            "ry": 36.809,
+            "rz": 71.725
+        },
+        {
+            "x": -0.39,
+            "y": -210.0,
+            "z": 440.0,
+            "rx": 0.0,
+            "ry": 0.0,
+            "rz": 0.0
+        },
+        {
+            "x": 19.314,
+            "y": -228.888,
+            "z": 343.505,
+            "rx": 0.0,
+            "ry": 0.0,
+            "rz": 0.0
+        },
+        null,
+        {
+            "x": -5.478,
+            "y": -211.18,
+            "z": 441.233,
+            "rx": 0.0,
+            "ry": 0.0,
+            "rz": 0.0
+        },
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+    ],
+    "toolRemarks": [
+        "焊枪向里",
+        "",
+        "",
+        "",
+        "45度焊枪，朝前",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        ""
+    ],
+    "positionMode": "右",
+    "speedMode": "3倍",
+    "lastOpenedProjectPath": "第八轴",
+    "totalWeldingLength": 70.18715860788173,
+    "totalWeldingDuration": 6077,
+    "weldingCurrent": 402.0,
+    "weldingVoltage": 50.0
+}

@@ -1,0 +1,24 @@
+{
+    "name": "1K5mm-712",
+    "current": 183.0,
+    "voltage": 28.0,
+    "speed": 6.0,
+    "startArcTime": 200.0,
+    "endArcTime": 800.0,
+    "startArcCurrent": 175.0,
+    "endArcCurrent": 200.0,
+    "startArcVoltage": 20.5,
+    "endArcVoltage": 22.0,
+    "oscillation": {
+        "type": "正弦波摆动",
+        "positionWait": "等待时间内位置静止",
+        "frequency": 2.0,
+        "amplitude": 2.5,
+        "leftStopTime": 200.0,
+        "rightStopTime": 200.0,
+        "leftSideLength": 2.0,
+        "rightSideLength": 2.0,
+        "zeroTime": 10.0,
+        "callbackRatio": 5.0
+    }
+}

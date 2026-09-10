@@ -1,0 +1,25 @@
+{
+    "name": "1焊角6.5mm以下",
+    "current": 170.5,
+    "voltage": 20.5,
+    "speed": 10.5,
+    "startArcTime": 50.0,
+    "endArcTime": 400.5,
+    "startArcCurrent": 180.5,
+    "endArcCurrent": 160.5,
+    "startArcVoltage": 20.5,
+    "endArcVoltage": 20.5,
+    "oscillation": {
+        "positionWait": "等待时间内位置静止",
+        "frequency": 1.0,
+        "amplitude": 1.5,
+        "leftStopTime": 100.5,
+        "rightStopTime": 100.5,
+        "leftSideLength": 1.5,
+        "rightSideLength": 1.5,
+        "zeroTime": 20.5,
+        "callbackRatio": 10.5,
+        "azimuth": 0.5,
+        "inclination": 0.5
+    }
+}
