@@ -37,7 +37,7 @@ func Incomplete(rows []Row) []Row {
 	var bad []Row
 	for _, r := range rows {
 		if r.ID.String() == "" || r.Action == "" || r.Target == "" ||
-			(r.Result != Allow && r.Result != Deny) || r.TimeSource != Server || r.OccurredAt.IsZero() {
+			(r.Result != Allow && r.Result != Deny) || (r.TimeSource != Server && r.TimeSource != Local) || r.OccurredAt.IsZero() {
 			bad = append(bad, r)
 		}
 	}

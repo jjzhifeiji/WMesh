@@ -9,4 +9,5 @@ type (
 	Factory           = store.Factory
 	InitialSuperAdmin = store.InitialSuperAdmin
 	Session           = store.Session
+	Client            = store.Client
 )

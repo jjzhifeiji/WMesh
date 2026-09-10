@@ -184,7 +184,7 @@ func (s *Store) InsertRuntimeGrant(ctx context.Context, g RuntimeGrant) (Runtime
 		if g.CreatedAt.IsZero() {
 			g.CreatedAt = time.Now().UTC()
 		}
-		if err := tx.Create(&g).Error; err != nil {
+		if err := tx.Select("ID", "ClientID", "Revision", "CanRun", "NotBefore", "NotAfter", "Payload", "Signature", "CreatedAt").Create(&g).Error; err != nil {
 			if domain.IsUniqueViolation(err) {
 				return domain.ErrStaleRevision
 			}

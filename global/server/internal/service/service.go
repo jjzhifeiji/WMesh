@@ -1,4 +1,4 @@
-// Package service 是 WAN 侧入口：唯一管理员、工厂名录和初始化交付。
+// Package service 是 WAN 侧入口：唯一管理员、工厂名录、Client 绑定和初始化交付。
 // 不代建厂内普通账号、组织或角色，也不直连 SQL。
 package service
 

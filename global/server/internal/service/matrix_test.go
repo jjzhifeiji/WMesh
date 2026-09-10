@@ -3,15 +3,19 @@ package service_test
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"errors"
 	"testing"
 
 	"wmesh/global/internal/platform/audit"
 	"wmesh/global/internal/platform/domain"
+	"wmesh/global/internal/platform/id"
 	global "wmesh/global/internal/service"
 )
 
 var matrixIDs = []string{
+	"0.1", "0.2", "0.3", "0.4",
 	"1.1", "1.2", "1.3",
 	"2.1", "2.2",
 	"3.1", "3.2", "3.3",
@@ -75,7 +79,8 @@ func TestMatrix(t *testing.T) {
 		}
 	})
 
-	if _, err := h.WAN.CreateFactory(ctx, wanTok, "厂B", "sa-b", "超管B"); err != nil {
+	facB, err := h.WAN.CreateFactory(ctx, wanTok, "厂B", "sa-b", "超管B")
+	if err != nil {
 		t.Fatal(err)
 	}
 	run("3.1", func(t *testing.T) {
@@ -130,6 +135,56 @@ func TestMatrix(t *testing.T) {
 		dir, err := h.WAN.Directory(ctx, wanTok)
 		if err != nil || len(dir.Factories) != 2 || len(dir.Initials) != 2 {
 			t.Fatalf("%v %+v", err, dir)
+		}
+	})
+
+	cPub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cid := id.New()
+	var bound global.Client
+	run("0.1", func(t *testing.T) {
+		var err error
+		bound, err = h.WAN.BindClient(ctx, wanTok, cid, a.Factory.ID, cPub)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if bound.FactoryID == nil || *bound.FactoryID != a.Factory.ID || bound.BindingRevision != 1 {
+			t.Fatalf("bound %+v", bound)
+		}
+	})
+	run("0.2", func(t *testing.T) {
+		if _, err := h.WAN.BindClient(ctx, wanTok, cid, facB.Factory.ID, cPub); !errors.Is(err, domain.ErrClientBound) {
+			t.Fatalf("got %v", err)
+		}
+		cur, err := h.WAN.ClientByID(ctx, cid)
+		if err != nil || cur.FactoryID == nil || *cur.FactoryID != a.Factory.ID {
+			t.Fatalf("still A: %+v %v", cur, err)
+		}
+	})
+	run("0.3", func(t *testing.T) {
+		reb, err := h.WAN.RebindClient(ctx, wanTok, cid, facB.Factory.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if reb.FactoryID == nil || *reb.FactoryID != facB.Factory.ID || reb.BindingRevision <= bound.BindingRevision {
+			t.Fatalf("rebind %+v", reb)
+		}
+	})
+	run("0.4", func(t *testing.T) {
+		if err := h.WAN.ListPersonOfflineGrants(ctx, wanTok, a.Factory.ID); !errors.Is(err, domain.ErrForbidden) {
+			t.Fatalf("got %v", err)
+		}
+		if err := h.WAN.CreateFactoryOrg(ctx, wanTok, a.Factory.ID, "车间"); !errors.Is(err, domain.ErrForbidden) {
+			t.Fatalf("org %v", err)
+		}
+		if err := h.WAN.ReadAuthSecret(ctx, wanTok, a.Factory.ID); !errors.Is(err, domain.ErrForbidden) {
+			t.Fatalf("secret %v", err)
+		}
+		ok, err := h.WAN.HasTable(ctx, "person_offline_grants")
+		if err != nil || ok {
+			t.Fatalf("offline grants table present=%v err=%v", ok, err)
 		}
 	})
 }

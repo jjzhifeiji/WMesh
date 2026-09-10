@@ -1,0 +1,167 @@
+package service
+
+import (
+	"context"
+	"errors"
+	"time"
+
+	"github.com/google/uuid"
+
+	"wmesh/factory/internal/platform/audit"
+	"wmesh/factory/internal/platform/domain"
+	"wmesh/factory/internal/platform/nodekey"
+)
+
+// AcceptBinding 模拟 WAN 把绑定声明送到本厂；测试夹具调用，不走协议。
+func (s *Service) AcceptBinding(ctx context.Context, clientID uuid.UUID, publicKey []byte, revision int64) (Client, error) {
+	row, err := s.store.AcceptBinding(ctx, clientID, publicKey, revision)
+	if err != nil {
+		_ = s.audit(ctx, nil, nil, "accept_binding", clientID.String(), audit.Deny)
+		return Client{}, err
+	}
+	return row, s.audit(ctx, nil, nil, "accept_binding", clientID.String(), audit.Allow)
+}
+
+// VoidBinding 模拟 WAN 改绑后旧厂作废；此后本厂不得再签发。
+func (s *Service) VoidBinding(ctx context.Context, clientID uuid.UUID) error {
+	if err := s.store.VoidBinding(ctx, clientID); err != nil {
+		_ = s.audit(ctx, nil, nil, "void_binding", clientID.String(), audit.Deny)
+		return err
+	}
+	return s.audit(ctx, nil, nil, "void_binding", clientID.String(), audit.Allow)
+}
+
+func (s *Service) ensureSigningKey(ctx context.Context) (SigningKey, error) {
+	k, err := s.store.SigningKey(ctx)
+	if err == nil {
+		return k, nil
+	}
+	if !errors.Is(err, domain.ErrNotFound) {
+		return SigningKey{}, err
+	}
+	pub, priv, err := nodekey.Generate()
+	if err != nil {
+		return SigningKey{}, err
+	}
+	return s.store.PutSigningKey(ctx, pub, priv)
+}
+
+// SigningPublicKey 给出本厂签发公钥，供本机袋验证；私钥不外送。
+func (s *Service) SigningPublicKey(ctx context.Context) ([]byte, error) {
+	k, err := s.ensureSigningKey(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return k.PublicKey, nil
+}
+
+// IssueRuntimeGrant 由本厂有效超管给已绑定 Client 签发可运行凭证。
+func (s *Service) IssueRuntimeGrant(ctx context.Context, token string, clientID uuid.UUID, notBefore, notAfter time.Time) (RuntimeCred, error) {
+	return s.issueRuntime(ctx, token, clientID, notBefore, notAfter, true, "issue_runtime")
+}
+
+// RevokeRuntimeGrant 签发更高修订且 can_run=false，表示撤销或缩权。
+func (s *Service) RevokeRuntimeGrant(ctx context.Context, token string, clientID uuid.UUID, notBefore, notAfter time.Time) (RuntimeCred, error) {
+	return s.issueRuntime(ctx, token, clientID, notBefore, notAfter, false, "revoke_runtime")
+}
+
+func (s *Service) issueRuntime(ctx context.Context, token string, clientID uuid.UUID, notBefore, notAfter time.Time, canRun bool, action string) (RuntimeCred, error) {
+	acc, err := s.RequireActive(ctx, token)
+	if err != nil {
+		return RuntimeCred{}, err
+	}
+	if err := s.can(ctx, acc, permManageAccount, nil); err != nil {
+		_ = s.audit(ctx, &acc.ID, nil, action, clientID.String(), audit.Deny)
+		return RuntimeCred{}, err
+	}
+	cl, err := s.store.ClientByID(ctx, clientID)
+	if err != nil {
+		_ = s.audit(ctx, &acc.ID, nil, action, clientID.String(), audit.Deny)
+		return RuntimeCred{}, err
+	}
+	if cl.Status != ClientStatusBound {
+		_ = s.audit(ctx, &acc.ID, nil, action, clientID.String(), audit.Deny)
+		return RuntimeCred{}, domain.ErrBindingVoid
+	}
+	key, err := s.ensureSigningKey(ctx)
+	if err != nil {
+		return RuntimeCred{}, err
+	}
+	rev := int64(1)
+	if latest, err := s.store.LatestRuntimeGrant(ctx, clientID); err == nil {
+		rev = latest.Revision + 1
+	} else if !errors.Is(err, domain.ErrNotFound) {
+		return RuntimeCred{}, err
+	}
+	cred := RuntimeCred{
+		FactoryID:    s.store.FactoryID(),
+		ClientID:     clientID,
+		ClientPublic: cl.PublicKey,
+		CanRun:       canRun,
+		NotBefore:    notBefore.UTC(),
+		NotAfter:     notAfter.UTC(),
+		Revision:     rev,
+	}
+	payload, err := encodeRuntime(cred)
+	if err != nil {
+		return RuntimeCred{}, err
+	}
+	cred.Payload = payload
+	cred.Signature = nodekey.Sign(key.PrivateKey, payload)
+	if _, err := s.store.InsertRuntimeGrant(ctx, RuntimeGrant{
+		ClientID:  clientID,
+		Revision:  rev,
+		CanRun:    canRun,
+		NotBefore: cred.NotBefore,
+		NotAfter:  cred.NotAfter,
+		Payload:   payload,
+		Signature: cred.Signature,
+	}); err != nil {
+		_ = s.audit(ctx, &acc.ID, nil, action, clientID.String(), audit.Deny)
+		return RuntimeCred{}, err
+	}
+	if err := s.audit(ctx, &acc.ID, nil, action, clientID.String(), audit.Allow); err != nil {
+		return RuntimeCred{}, err
+	}
+	return cred, nil
+}
+
+// EvaluateNode 按本机袋判定，并记下允许/拒绝与时间来源；不改密钥。
+func (s *Service) EvaluateNode(ctx context.Context, bag Bag, clocks Clocks, action NodeAction) (NodeEval, error) {
+	ev := EvaluateRuntime(bag, clocks, action)
+	name := "node_open"
+	result := audit.Deny
+	switch {
+	case action == NodeContinue && ev.Decision == NodeContinueWeld:
+		name = "node_continue"
+		result = audit.Allow
+	case ev.Decision == NodeAllow:
+		if action == NodeContinue {
+			name = "node_continue"
+		}
+		result = audit.Allow
+	}
+	target := bag.ClientID.String()
+	if err := s.auditTimed(ctx, nil, nil, name, target, result, ev.TimeSource); err != nil {
+		return ev, err
+	}
+	return ev, nil
+}
+
+// RecordAnomaly 发现 Root 或改钟只留痕，不清密钥、不停用节点。
+func (s *Service) RecordAnomaly(ctx context.Context, clientID uuid.UUID, kind string) error {
+	return s.audit(ctx, nil, nil, "node_anomaly", clientID.String()+" "+kind, audit.Allow)
+}
+
+func (s *Service) auditTimed(ctx context.Context, actor *uuid.UUID, claimed *string, action, target, result, timeSource string) error {
+	fid := s.store.FactoryID()
+	return s.store.AppendAudit(ctx, audit.Event{
+		ActorID:      actor,
+		ClaimedLogin: claimed,
+		FactoryID:    &fid,
+		Action:       action,
+		Target:       target,
+		Result:       result,
+		TimeSource:   timeSource,
+	})
+}

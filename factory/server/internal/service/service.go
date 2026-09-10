@@ -1,4 +1,4 @@
-// Package service 是厂内账号权威入口：认证、允许/拒绝和审计。
+// Package service 是厂内账号与节点凭证入口：认证、允许/拒绝和审计。
 // 不管 WAN 管理员，也不直连 SQL，不把本厂口令送到 WAN。
 package service
 

@@ -22,6 +22,9 @@ const (
 
 	ScopeFactory = store.ScopeFactory
 	ScopeOrgUnit = store.ScopeOrgUnit
+
+	ClientStatusBound = store.ClientStatusBound
+	ClientStatusVoid  = store.ClientStatusVoid
 )
 
 func validScope(role, scopeKind string, orgUnitID *uuid.UUID) bool {
@@ -40,4 +43,7 @@ type (
 	WorkContext   = store.WorkContext
 	FactStub      = store.FactStub
 	PersonalAsset = store.PersonalAsset
+	Client        = store.Client
+	SigningKey    = store.SigningKey
+	RuntimeGrant  = store.RuntimeGrant
 )
