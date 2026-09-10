@@ -2,6 +2,7 @@ import { createBrowserRouter } from "react-router";
 import { LoginPage } from "@/features/auth/LoginPage";
 import { DashboardPage } from "@/features/dashboard/DashboardPage";
 import { FactoriesPage } from "@/features/factories/FactoriesPage";
+import { ClientsPage } from "@/features/clients/ClientsPage";
 import { AdminLayout } from "@/layouts/AdminLayout";
 import { AuthLayout } from "@/layouts/AuthLayout";
 import { RequireAuth } from "@/shared/auth/RequireAuth";
@@ -23,6 +24,7 @@ export const router = createBrowserRouter([
     children: [
       { index: true, element: <DashboardPage /> },
       { path: paths.factories, element: <FactoriesPage /> },
+      { path: paths.clients, element: <ClientsPage /> },
       { path: "*", element: <NotFoundPage /> },
     ],
   },

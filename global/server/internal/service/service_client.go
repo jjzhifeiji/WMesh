@@ -69,6 +69,19 @@ func (s *Service) ClientByID(ctx context.Context, clientID uuid.UUID) (Client, e
 	return s.store.ClientByID(ctx, clientID)
 }
 
+// ListClients 列出 WAN 已登记的现场节点，不含私钥。
+func (s *Service) ListClients(ctx context.Context, token string) ([]Client, error) {
+	admin, err := s.RequireAdmin(ctx, token)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.store.ListClients(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return rows, s.audit(ctx, &admin.ID, nil, nil, "list_clients", "clients", audit.Allow)
+}
+
 // ListPersonOfflineGrants 从 WAN 查人员离线授权，一律拒绝。
 func (s *Service) ListPersonOfflineGrants(ctx context.Context, token string, factoryID uuid.UUID) error {
 	return s.denyFactoryManage(ctx, token, factoryID, "list_person_offline_grants", factoryID.String())

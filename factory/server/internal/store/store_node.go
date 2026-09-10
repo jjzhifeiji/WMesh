@@ -136,6 +136,43 @@ func (s *Store) ClientByID(ctx context.Context, clientID uuid.UUID) (Client, err
 	return row, nil
 }
 
+// ListClients 列出本厂已接受的 Client，按最近接受时间倒序。
+func (s *Store) ListClients(ctx context.Context) ([]Client, error) {
+	var rows []Client
+	if err := s.db.WithContext(ctx).Order("bound_at DESC").Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	if rows == nil {
+		rows = []Client{}
+	}
+	return rows, nil
+}
+
+// ListRuntimeGrants 列出节点运行凭证，按 Client、修订从新到旧。
+func (s *Store) ListRuntimeGrants(ctx context.Context) ([]RuntimeGrant, error) {
+	var rows []RuntimeGrant
+	if err := s.db.WithContext(ctx).Order("client_id, revision DESC").Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	if rows == nil {
+		rows = []RuntimeGrant{}
+	}
+	return rows, nil
+}
+
+// ListPersonOfflineGrants 列出人员离线授权各修订，按人、Client、修订从新到旧。
+func (s *Store) ListPersonOfflineGrants(ctx context.Context) ([]PersonOfflineGrant, error) {
+	var rows []personOfflineGrantRow
+	if err := s.db.WithContext(ctx).Order("person_id, client_id, revision DESC").Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	out := make([]PersonOfflineGrant, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, personGrantFromRow(r))
+	}
+	return out, nil
+}
+
 func (s *Store) assertClientBound(ctx context.Context, tx *gorm.DB, clientID uuid.UUID) error {
 	var row Client
 	db := s.db.WithContext(ctx)

@@ -31,7 +31,7 @@ func New(h *hub.Hub, bootstrapToken string) *Handler {
 	return &Handler{Hub: h, BootstrapToken: bootstrapToken, Version: "dev"}
 }
 
-// Router 暴露探活、建厂引导和厂内账号组织接口；未知 API 路径统一回 JSON 404。
+// Router 暴露探活、建厂引导、厂内账号组织和节点授权接口；未知 API 路径统一回 JSON 404。
 func (h *Handler) Router() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", h.healthz)
@@ -54,6 +54,15 @@ func (h *Handler) Router() http.Handler {
 	mux.HandleFunc("POST /v1/factories/{id}/grants/{grantId}/revoke", h.revokeRole)
 	mux.HandleFunc("POST /v1/factories/{id}/assignments", h.assign)
 	mux.HandleFunc("POST /v1/factories/{id}/assignments/end", h.unassign)
+	mux.HandleFunc("GET /v1/factories/{id}/clients", h.listClients)
+	mux.HandleFunc("POST /v1/factories/{id}/clients", h.registerClient)
+	mux.HandleFunc("POST /v1/factories/{id}/clients/{clientId}/void", h.voidClient)
+	mux.HandleFunc("POST /v1/factories/{id}/clients/{clientId}/runtime", h.issueRuntime)
+	mux.HandleFunc("POST /v1/factories/{id}/clients/{clientId}/runtime/revoke", h.revokeRuntime)
+	mux.HandleFunc("GET /v1/factories/{id}/runtime-grants", h.listRuntime)
+	mux.HandleFunc("GET /v1/factories/{id}/person-offline-grants", h.listPersonGrants)
+	mux.HandleFunc("POST /v1/factories/{id}/person-offline-grants", h.issuePerson)
+	mux.HandleFunc("GET /v1/factories/{id}/signing-key", h.signingPublicKey)
 	return mux
 }
 
@@ -510,7 +519,9 @@ func statusOf(err error) int {
 		errors.Is(err, domain.ErrDuplicateRoleGrant), errors.Is(err, domain.ErrDuplicateSession),
 		errors.Is(err, domain.ErrReferenced):
 		return http.StatusConflict
-	case isDomain(err), errors.Is(err, errInvalidID):
+	case errors.Is(err, domain.ErrStaleRevision), errors.Is(err, domain.ErrBindingVoid),
+		errors.Is(err, domain.ErrInvalidKey), errors.Is(err, domain.ErrClientKeyMismatch),
+		isDomain(err), errors.Is(err, errInvalidID):
 		return http.StatusBadRequest
 	default:
 		return http.StatusInternalServerError

@@ -86,5 +86,6 @@ make dev-web     # Vite 开发服务器 :5174，/v1 与 /healthz 代理到 :8081
 - `GET /healthz` 版本、库与 OSS 状态
 - `POST /internal/bootstrap` 仅供 WAN 用共享口令调用：建厂库并写入待启用初始超管
 - `/v1/factories/{id}/…`：`login` `activate` `logout` `me` `me/password` `catalog`、`org-units` `people` `grants` `assignments` 及各自的 `disable` / `revoke` / `end`
+- 节点：`clients`（接受/作废绑定）、`clients/{id}/runtime`（签发/撤销运行许可）、`person-offline-grants`、`signing-key`（仅公钥）
 
 激活口令与会话令牌只在响应里出现一次，库里只存哈希，审计里不出现原文。

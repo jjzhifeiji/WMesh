@@ -79,6 +79,18 @@ func (s *Store) ClientByID(ctx context.Context, clientID uuid.UUID) (Client, err
 	return row, nil
 }
 
+// ListClients 列出已登记的现场节点，不含私钥。
+func (s *Store) ListClients(ctx context.Context) ([]Client, error) {
+	var rows []Client
+	if err := s.db.WithContext(ctx).Order("created_at DESC").Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	if rows == nil {
+		rows = []Client{}
+	}
+	return rows, nil
+}
+
 // BindClient 把未绑定 Client 绑到一厂，绑定修订从 0 升到 1。
 func (s *Store) BindClient(ctx context.Context, clientID, factoryID uuid.UUID) (Client, error) {
 	now := time.Now().UTC()

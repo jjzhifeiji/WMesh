@@ -3,6 +3,9 @@ package httpapi_test
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -66,6 +69,24 @@ func TestWANHTTP(t *testing.T) {
 		t.Fatalf("activation token missing: %s", body)
 	}
 	fid := gjson(t, body, "factory.id")
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pk := base64.StdEncoding.EncodeToString(pub)
+	cid := id.New().String()
+	code, body = do(t, srv, "POST", "/v1/clients", tok, `{"id":"`+cid+`","factoryId":"`+fid+`","publicKey":"`+pk+`"}`)
+	if code != http.StatusCreated {
+		t.Fatalf("bind client %d %s", code, body)
+	}
+	code, body = do(t, srv, "GET", "/v1/clients", tok, "")
+	if code != http.StatusOK || !strings.Contains(body, cid) {
+		t.Fatalf("list clients %d %s", code, body)
+	}
+	code, body = do(t, srv, "GET", "/v1/factories/"+fid+"/offline-grants", tok, "")
+	if code != http.StatusForbidden {
+		t.Fatalf("list offline grants %d %s", code, body)
+	}
 	code, body = do(t, srv, "POST", "/v1/invite-wan-admin", tok, `{"loginName":"other"}`)
 	if code != http.StatusForbidden {
 		t.Fatalf("invite %d %s", code, body)

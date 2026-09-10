@@ -9,6 +9,11 @@ import (
 	"strings"
 	"testing"
 
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/base64"
+	"time"
+
 	"wmesh/factory/internal/httpapi"
 	"wmesh/factory/internal/hub"
 	"wmesh/factory/internal/platform/id"
@@ -119,6 +124,47 @@ func TestFactoryHTTP(t *testing.T) {
 	code, body = do(t, srv, "POST", "/v1/factories/"+missing.String()+"/login", "", `{"loginName":"sa","password":"secret"}`)
 	if code != http.StatusNotFound {
 		t.Fatalf("missing factory %d %s", code, body)
+	}
+
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pk := base64.StdEncoding.EncodeToString(pub)
+	cid := id.New().String()
+	code, body = do(t, srv, "POST", base+"/clients", tok, `{"id":"`+cid+`","publicKey":"`+pk+`","bindingRevision":1}`)
+	if code != http.StatusCreated {
+		t.Fatalf("accept client %d %s", code, body)
+	}
+	code, body = do(t, srv, "GET", base+"/clients", tok, "")
+	if code != http.StatusOK || !strings.Contains(body, cid) {
+		t.Fatalf("list clients %d %s", code, body)
+	}
+	nb := time.Now().UTC().Add(-time.Hour).Format(time.RFC3339)
+	na := time.Now().UTC().Add(24 * time.Hour).Format(time.RFC3339)
+	code, body = do(t, srv, "POST", base+"/clients/"+cid+"/runtime", tok, `{"notBefore":"`+nb+`","notAfter":"`+na+`"}`)
+	if code != http.StatusCreated || !strings.Contains(body, `"canRun":true`) || strings.Contains(body, "payload") {
+		t.Fatalf("issue runtime %d %s", code, body)
+	}
+	code, body = do(t, srv, "GET", base+"/me", tok, "")
+	if code != http.StatusOK {
+		t.Fatalf("me %d %s", code, body)
+	}
+	saID := gjson(t, body, "id")
+	code, body = do(t, srv, "POST", base+"/person-offline-grants", tok, `{"personId":"`+saID+`","clientId":"`+cid+`","notBefore":"`+nb+`","notAfter":"`+na+`"}`)
+	if code != http.StatusCreated {
+		t.Fatalf("issue person %d %s", code, body)
+	}
+	if strings.Contains(body, "passwordHash") || strings.Contains(body, "PasswordHash") {
+		t.Fatalf("person grant leaked hash: %s", body)
+	}
+	code, body = do(t, srv, "GET", base+"/person-offline-grants", tok, "")
+	if code != http.StatusOK || strings.Contains(body, "passwordHash") {
+		t.Fatalf("list person grants %d %s", code, body)
+	}
+	code, body = do(t, srv, "GET", base+"/signing-key", tok, "")
+	if code != http.StatusOK || !strings.Contains(body, "publicKey") {
+		t.Fatalf("signing key %d %s", code, body)
 	}
 }
 

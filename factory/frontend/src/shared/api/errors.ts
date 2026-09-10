@@ -20,6 +20,10 @@ const zh: Record<string, string> = {
   "org unit cannot have two parents": "一个节点只能有一个上级",
   "invalid work context": "工作上下文无效",
   "invalid id": "标识格式不对",
+  "invalid key material": "公钥格式不对，需要 32 字节的 base64 或 hex",
+  "revision is not strictly newer": "修订号必须比已接受的更大",
+  "client binding is void": "本厂绑定已作废，不能再签发",
+  "client public key does not match": "公钥与已登记的不一致",
   "internal error": "服务异常，请稍后再试",
 };
 

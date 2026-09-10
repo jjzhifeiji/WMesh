@@ -40,6 +40,10 @@ export function statusLabel(status: string) {
       return "有效";
     case "disabled":
       return "已停用";
+    case "bound":
+      return "已绑定";
+    case "void":
+      return "已作废";
     default:
       return status;
   }
@@ -52,6 +56,10 @@ export function statusColor(status: string) {
     case "active":
       return "green";
     case "disabled":
+      return "default";
+    case "bound":
+      return "green";
+    case "void":
       return "default";
     default:
       return "default";

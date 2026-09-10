@@ -60,9 +60,10 @@ export const navTree: NavEntry[] = [
     key: "nodes",
     label: "节点与授权",
     icon: <ClusterOutlined />,
+    superAdminOnly: true,
     children: [
-      { key: paths.clients, label: "Client 节点", placeholder: true, description: "本厂现场节点的绑定、运行许可与撤销。" },
-      { key: paths.offlineAuth, label: "人员离线授权", placeholder: true, description: "给本厂有效账号签发绑定到指定 Client 的离线授权。" },
+      { key: paths.clients, label: "Client 节点" },
+      { key: paths.offlineAuth, label: "人员离线授权" },
     ],
   },
   {

@@ -28,7 +28,7 @@ func New(svc *service.Service, version string) *Handler {
 	return &Handler{svc: svc, version: version}
 }
 
-// Router 只暴露探活、名录、建厂和明确拒绝的代管入口；未知 API 路径统一回 JSON 404。
+// Router 只暴露探活、名录、建厂、节点绑定和明确拒绝的代管入口；未知 API 路径统一回 JSON 404。
 func (h *Handler) Router() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", h.healthz)
@@ -38,11 +38,15 @@ func (h *Handler) Router() http.Handler {
 	mux.HandleFunc("GET /v1/me", h.me)
 	mux.HandleFunc("GET /v1/directory", h.directory)
 	mux.HandleFunc("POST /v1/factories", h.createFactory)
+	mux.HandleFunc("GET /v1/clients", h.listClients)
+	mux.HandleFunc("POST /v1/clients", h.bindClient)
+	mux.HandleFunc("POST /v1/clients/{id}/rebind", h.rebindClient)
 	mux.HandleFunc("POST /v1/invite-wan-admin", h.inviteWANAdmin)
 	mux.HandleFunc("POST /v1/factories/{id}/people", h.createFactoryPerson)
 	mux.HandleFunc("POST /v1/factories/{id}/orgs", h.createFactoryOrg)
 	mux.HandleFunc("POST /v1/factories/{id}/roles", h.grantFactoryRole)
 	mux.HandleFunc("GET /v1/factories/{id}/people", h.listFactoryPeople)
+	mux.HandleFunc("GET /v1/factories/{id}/offline-grants", h.listFactoryOfflineGrants)
 	return mux
 }
 
@@ -286,11 +290,13 @@ func statusOf(err error) int {
 		return http.StatusNotFound
 	case errors.Is(err, domain.ErrWANAdminExists), errors.Is(err, domain.ErrLoginNameTaken),
 		errors.Is(err, domain.ErrAlreadyActivated), errors.Is(err, domain.ErrDuplicateAssignment),
-		errors.Is(err, domain.ErrDuplicateRoleGrant), errors.Is(err, domain.ErrDuplicateSession):
+		errors.Is(err, domain.ErrDuplicateRoleGrant), errors.Is(err, domain.ErrDuplicateSession),
+		errors.Is(err, domain.ErrClientBound), errors.Is(err, domain.ErrClientKeyTaken):
 		return http.StatusConflict
 	case errors.Is(err, domain.ErrFactoryBootstrap):
 		return http.StatusBadGateway
-	case isDomain(err), errors.Is(err, errInvalidID):
+	case errors.Is(err, domain.ErrInvalidKey), errors.Is(err, domain.ErrUnbound),
+		isDomain(err), errors.Is(err, errInvalidID):
 		return http.StatusBadRequest
 	default:
 		return http.StatusInternalServerError

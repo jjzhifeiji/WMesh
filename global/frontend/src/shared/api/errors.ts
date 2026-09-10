@@ -8,6 +8,10 @@ const zh: Record<string, string> = {
   "initial super admin already bound": "该厂已经下发过初始超管",
   "wan admin already exists": "WAN 只能有一名管理员",
   "invalid id": "标识格式不对",
+  "invalid key material": "公钥格式不对，需要 32 字节的 base64 或 hex",
+  "client already bound to a factory": "这台节点已经绑到一家工厂，请改绑而不是再绑一次",
+  "client is not bound": "节点还没有绑定工厂",
+  "client public key already registered": "这把公钥已经登记过了",
   "internal error": "服务异常，请稍后再试",
 };
 

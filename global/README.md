@@ -83,6 +83,7 @@ make dev-web     # Vite 开发服务器 :5173，/v1 与 /healthz 代理到 :8080
 - `POST /v1/login` `POST /v1/logout` `GET /v1/me`
 - `GET /v1/directory` 工厂名录 + 各厂初始超管身份（不含口令）
 - `POST /v1/factories` 建厂并返回一次性激活口令（只出现这一次，不落 WAN 库）
-- 其余 `/v1/factories/{id}/people|orgs|roles`、`/v1/invite-wan-admin` 一律 403 并留审计：WAN 不代管厂内
+- `GET /v1/clients` `POST /v1/clients` `POST /v1/clients/{id}/rebind` 节点公钥与一机一厂绑定
+- 其余 `/v1/factories/{id}/people|orgs|roles|offline-grants`、`/v1/invite-wan-admin` 一律 403 并留审计：WAN 不代管厂内
 
 建厂失败（厂端不可达或引导口令不一致）返回 502，名录里不会留下没有超管的空厂。

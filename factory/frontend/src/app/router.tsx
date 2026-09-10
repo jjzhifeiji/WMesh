@@ -3,8 +3,10 @@ import { AccountPage } from "@/features/account/AccountPage";
 import { AssignmentsPage } from "@/features/assignments/AssignmentsPage";
 import { ActivatePage } from "@/features/auth/ActivatePage";
 import { LoginPage } from "@/features/auth/LoginPage";
+import { ClientsPage } from "@/features/clients/ClientsPage";
 import { DashboardPage } from "@/features/dashboard/DashboardPage";
 import { GrantsPage } from "@/features/grants/GrantsPage";
+import { OfflineAuthPage } from "@/features/offline-auth/OfflineAuthPage";
 import { OrgUnitsPage } from "@/features/org/OrgUnitsPage";
 import { PeoplePage } from "@/features/people/PeoplePage";
 import { AdminLayout } from "@/layouts/AdminLayout";
@@ -39,6 +41,8 @@ export const router = createBrowserRouter([
       { path: paths.people, element: sa(<PeoplePage />) },
       { path: paths.grants, element: sa(<GrantsPage />) },
       { path: paths.assignments, element: sa(<AssignmentsPage />) },
+      { path: paths.clients, element: sa(<ClientsPage />) },
+      { path: paths.offlineAuth, element: sa(<OfflineAuthPage />) },
       { path: paths.account, element: <AccountPage /> },
       ...placeholderPaths.map((path) => ({ path, element: <PlaceholderPage /> })),
       { path: "*", element: <NotFoundPage /> },
