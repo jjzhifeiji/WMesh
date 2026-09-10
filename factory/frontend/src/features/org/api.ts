@@ -1,18 +1,8 @@
-import { useCatalogMutation, type OrgType, type OrgUnit } from "@/features/catalog/api";
+import { useCatalogMutation, type OrgUnit } from "@/features/catalog/api";
 import { http } from "@/shared/api/client";
 import { fpath } from "@/shared/auth/session";
 
-export type CreateOrgTypeInput = { name: string };
-export type CreateOrgUnitInput = { typeId: string; name: string; parentId: string | null };
-
-export function useCreateOrgType() {
-  return useCatalogMutation((input: CreateOrgTypeInput) => http.post<OrgType>(fpath("/org-types"), input));
-}
-
-// 停用而非删除：被历史引用过的类型只能停，且其下不能还有有效节点。
-export function useDisableOrgType() {
-  return useCatalogMutation((typeId: string) => http.post<void>(fpath(`/org-types/${typeId}/disable`)));
-}
+export type CreateOrgUnitInput = { name: string; parentId: string | null };
 
 export function useCreateOrgUnit() {
   return useCatalogMutation((input: CreateOrgUnitInput) => http.post<OrgUnit>(fpath("/org-units"), input));
@@ -21,6 +11,16 @@ export function useCreateOrgUnit() {
 // 停用节点：其下不能还有有效子节点；已落库的路径快照不受影响。
 export function useDisableOrgUnit() {
   return useCatalogMutation((unitId: string) => http.post<void>(fpath(`/org-units/${unitId}/disable`)));
+}
+
+// 停用后可再启用；上级必须已经有效。
+export function useEnableOrgUnit() {
+  return useCatalogMutation((unitId: string) => http.post<void>(fpath(`/org-units/${unitId}/enable`)));
+}
+
+// 零引用才物理删除；有下级、当前人员、有效角色或历史事实会被拒绝。
+export function useDeleteOrgUnit() {
+  return useCatalogMutation((unitId: string) => http.del<void>(fpath(`/org-units/${unitId}`)));
 }
 
 export type UnitTreeNode = OrgUnit & { children?: UnitTreeNode[] };

@@ -5,6 +5,7 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -67,23 +68,7 @@ func (s *Store) RenamePerson(ctx context.Context, personID uuid.UUID, displayNam
 	return nil
 }
 
-func (s *Store) CreateOrgType(ctx context.Context, name string) (OrgType, error) {
-	row := OrgType{
-		ID:        id.New(),
-		Name:      name,
-		Status:    StatusActive,
-		CreatedAt: time.Now().UTC(),
-	}
-	if err := s.db.WithContext(ctx).Create(&row).Error; err != nil {
-		return OrgType{}, err
-	}
-	return row, nil
-}
-
-func (s *Store) CreateOrgUnit(ctx context.Context, typeID uuid.UUID, name string, parentID *uuid.UUID) (OrgUnit, error) {
-	if err := s.assertTypeActive(ctx, typeID); err != nil {
-		return OrgUnit{}, err
-	}
+func (s *Store) CreateOrgUnit(ctx context.Context, name string, parentID *uuid.UUID) (OrgUnit, error) {
 	if parentID != nil {
 		if err := s.assertUnitActive(ctx, *parentID); err != nil {
 			return OrgUnit{}, err
@@ -91,7 +76,6 @@ func (s *Store) CreateOrgUnit(ctx context.Context, typeID uuid.UUID, name string
 	}
 	row := OrgUnit{
 		ID:        id.New(),
-		OrgTypeID: typeID,
 		ParentID:  parentID,
 		Name:      name,
 		Status:    StatusActive,
@@ -255,24 +239,80 @@ func (s *Store) RevokeRole(ctx context.Context, grantID uuid.UUID) error {
 	return nil
 }
 
-func (s *Store) DisableOrgType(ctx context.Context, typeID uuid.UUID) error {
+func hasRows(db *gorm.DB, model any, query string, args ...any) (bool, error) {
 	var n int64
-	if err := s.db.WithContext(ctx).Model(&OrgUnit{}).
-		Where("org_type_id = ? AND status = ?", typeID, StatusActive).
-		Count(&n).Error; err != nil {
+	err := db.Model(model).Where(query, args...).Count(&n).Error
+	return n > 0, err
+}
+
+// pathMentions 看事实/资产路径快照里是否出现过该身份。
+func pathMentions(db *gorm.DB, key string, id uuid.UUID) (bool, error) {
+	payload := fmt.Sprintf(`[{"%s":"%s"}]`, key, id)
+	for _, table := range []string{"fact_stubs", "personal_asset_stubs"} {
+		var n int64
+		err := db.Raw("SELECT COUNT(*) FROM "+table+" WHERE org_path @> ?::jsonb", payload).Scan(&n).Error
+		if err != nil {
+			return false, err
+		}
+		if n > 0 {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// DeleteOrgUnit 没有下级、当前人员、有效角色、事实或资产才物理删除。
+func (s *Store) DeleteOrgUnit(ctx context.Context, unitID uuid.UUID) error {
+	if _, err := s.getUnit(ctx, unitID); err != nil {
 		return err
 	}
-	if n > 0 {
-		return domain.ErrHasActiveUnits
-	}
-	res := s.db.WithContext(ctx).Model(&OrgType{}).Where("id = ?", typeID).Update("status", StatusDisabled)
-	if res.Error != nil {
-		return res.Error
-	}
-	if res.RowsAffected == 0 {
-		return domain.ErrNotFound
-	}
-	return nil
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		checks := []struct {
+			model any
+			query string
+			args  []any
+		}{
+			{&OrgUnit{}, "parent_id = ?", []any{unitID}},
+			{&Assignment{}, "org_unit_id = ? AND status = ?", []any{unitID, StatusActive}},
+			{&RoleGrant{}, "org_unit_id = ? AND status = ?", []any{unitID, StatusActive}},
+			{&factRow{}, "org_unit_id = ?", []any{unitID}},
+			{&assetRow{}, "org_unit_id = ?", []any{unitID}},
+		}
+		for _, c := range checks {
+			ok, err := hasRows(tx, c.model, c.query, c.args...)
+			if err != nil {
+				return err
+			}
+			if ok {
+				return domain.ErrReferenced
+			}
+		}
+		ok, err := pathMentions(tx, "id", unitID)
+		if err != nil {
+			return err
+		}
+		if ok {
+			return domain.ErrReferenced
+		}
+		// 已取消的分配、已收回的角色不再挡删除，但外键还在，先清掉。
+		if err := tx.Where("org_unit_id = ?", unitID).Delete(&Assignment{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("org_unit_id = ?", unitID).Delete(&RoleGrant{}).Error; err != nil {
+			return err
+		}
+		res := tx.Where("id = ?", unitID).Delete(&OrgUnit{})
+		if res.Error != nil {
+			if domain.IsForeignKeyViolation(res.Error) {
+				return domain.ErrReferenced
+			}
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			return domain.ErrNotFound
+		}
+		return nil
+	})
 }
 
 func (s *Store) DisableOrgUnit(ctx context.Context, unitID uuid.UUID) error {
@@ -293,6 +333,35 @@ func (s *Store) DisableOrgUnit(ctx context.Context, unitID uuid.UUID) error {
 		return domain.ErrNotFound
 	}
 	return nil
+}
+
+// setStatus 只改状态列，找不到行就当不存在。
+func (s *Store) setStatus(ctx context.Context, model any, id uuid.UUID, status string) error {
+	res := s.db.WithContext(ctx).Model(model).Where("id = ?", id).Update("status", status)
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}
+
+// EnableOrgUnit 重新启用节点；上级必须已经有效。
+func (s *Store) EnableOrgUnit(ctx context.Context, unitID uuid.UUID) error {
+	u, err := s.getUnit(ctx, unitID)
+	if err != nil {
+		return err
+	}
+	if u.Status == StatusActive {
+		return nil
+	}
+	if u.ParentID != nil {
+		if err := s.assertUnitActive(ctx, *u.ParentID); err != nil {
+			return err
+		}
+	}
+	return s.setStatus(ctx, &OrgUnit{}, unitID, StatusActive)
 }
 
 func (s *Store) CreateSession(ctx context.Context, personID uuid.UUID, tokenHash string, expiresAt time.Time) (Session, error) {
@@ -324,20 +393,6 @@ func (s *Store) AppendAudit(ctx context.Context, e audit.Event) error {
 		e.FactoryID = &fid
 	}
 	return s.db.WithContext(ctx).Create(audit.RowFrom(e)).Error
-}
-
-func (s *Store) assertTypeActive(ctx context.Context, typeID uuid.UUID) error {
-	var t OrgType
-	if err := s.db.WithContext(ctx).First(&t, "id = ?", typeID).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return domain.ErrNotFound
-		}
-		return err
-	}
-	if t.Status != StatusActive {
-		return domain.ErrDisabledOrgType
-	}
-	return nil
 }
 
 func (s *Store) getUnit(ctx context.Context, unitID uuid.UUID) (OrgUnit, error) {

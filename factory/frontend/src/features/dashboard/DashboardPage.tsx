@@ -23,7 +23,7 @@ export function DashboardPage() {
     <>
       <PageHeader
         title="概览"
-        description={isSA ? "本厂人员、组织与角色都由你在这里维护；WAN 不代管。" : "当前账号不是工厂超管，只能查看自己的账号与角色。"}
+        description={isSA ? "本厂人员、组织与角色都由你在这里维护；WAN 不代管。" : "当前账号不是工厂超管，组织与人员由超管维护；账号在右上角。"}
       />
       {isSA ? (
         <Row gutter={[16, 16]}>

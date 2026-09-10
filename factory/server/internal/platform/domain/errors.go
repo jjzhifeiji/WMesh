@@ -9,10 +9,9 @@ var (
 	ErrLoginNameTaken      = errors.New("login name already taken")          // 登录名只在本厂唯一
 	ErrNotFound            = errors.New("not found")
 	ErrCycle               = errors.New("org unit parent would create a cycle") // 挂到自己或后代
-	ErrDisabledOrgType     = errors.New("org type is disabled")
 	ErrDisabledOrgUnit     = errors.New("org unit is disabled") // 不能再分配或当新工作上下文
-	ErrHasActiveUnits      = errors.New("org type still has active units")
 	ErrHasActiveChildren   = errors.New("org unit still has active children")
+	ErrReferenced          = errors.New("still referenced") // 还有下级、当前人员、有效角色或历史事实，不能物理删除
 	ErrDuplicateAssignment = errors.New("active assignment already exists")
 	ErrInvalidRoleScope    = errors.New("role and scope do not match") // 角色与允许的作用域不一致
 	ErrDuplicateRoleGrant  = errors.New("active role grant already exists")

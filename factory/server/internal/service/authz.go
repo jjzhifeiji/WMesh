@@ -12,9 +12,8 @@ import (
 type perm int
 
 const (
-	permManageType    perm = iota // 组织类型：仅工厂超管
-	permManageOrg                 // 组织节点：超管或子树内组织管理员
-	permManageAccount             // 建停账号：仅工厂超管
+	permManageOrg perm = iota // 组织节点：超管或子树内组织管理员
+	permManageAccount         // 建停账号：仅工厂超管
 	permAssign                    // 人员分配：超管或子树内组织管理员
 	permGrant                     // 占位，实际走 canGrant
 	permView                      // 只读查看
@@ -74,7 +73,7 @@ func (s *Service) can(ctx context.Context, acc Account, p perm, unit *uuid.UUID)
 		return err
 	}
 	switch p {
-	case permManageType, permManageAccount:
+	case permManageAccount:
 		if isFactorySA(grants) {
 			return nil
 		}

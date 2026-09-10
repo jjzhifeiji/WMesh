@@ -2,7 +2,7 @@ import { LogoutOutlined, UserOutlined } from "@ant-design/icons";
 import { Avatar, Breadcrumb, Dropdown, Layout, Menu, Space, Typography } from "antd";
 import { useState } from "react";
 import { Outlet, useLocation, useNavigate } from "react-router";
-import { menuItems, pageTitles } from "@/app/navigation";
+import { breadcrumbItems, menuItems, openGroupFor } from "@/app/navigation";
 import { paths } from "@/app/routes";
 import { useLogout } from "@/features/auth/api";
 import { useCatalog, useIsSuperAdmin } from "@/features/catalog/api";
@@ -22,13 +22,22 @@ export function AdminLayout() {
 
   return (
     <Layout className="admin-layout">
-      <Layout.Sider collapsible collapsed={collapsed} onCollapse={setCollapsed} width={220}>
+      <Layout.Sider collapsible collapsed={collapsed} onCollapse={setCollapsed} width={232}>
         <div className="admin-brand">{collapsed ? "WM" : "WMesh 厂内管理"}</div>
-        <Menu theme="dark" mode="inline" selectedKeys={[pathname]} items={menuItems(isSA)} onClick={({ key }) => navigate(key)} />
+        <Menu
+          theme="dark"
+          mode="inline"
+          selectedKeys={[pathname]}
+          items={menuItems(isSA)}
+          onClick={({ key }) => {
+            if (key.startsWith("/")) navigate(key);
+          }}
+          defaultOpenKeys={collapsed ? undefined : openGroupFor(pathname)}
+        />
       </Layout.Sider>
       <Layout>
         <Layout.Header className="admin-header">
-          <Breadcrumb items={[{ title: `工厂 ${shortId(factoryId)}` }, { title: pageTitles[pathname] ?? "页面" }]} />
+          <Breadcrumb items={[{ title: `工厂 ${shortId(factoryId)}` }, ...breadcrumbItems(pathname)]} />
           <Space size="middle">
             <Typography.Text>{me ? `${me.displayName}（${me.loginName}）` : "…"}</Typography.Text>
             <Dropdown

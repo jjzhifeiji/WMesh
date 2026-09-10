@@ -42,7 +42,7 @@ src/
     ├── auth/         登录、激活
     ├── catalog/      名册读模型（唯一的 GET，所有写操作成功后让它失效重拉）+ 是否超管
     ├── dashboard/    概览（人员/组织/角色规模、我的角色、服务健康）
-    ├── org/          组织类型、组织节点（树表 + 上级节点树选）
+    ├── org/          组织节点（工厂下一棵树）
     ├── people/       人员（新建待启用账号 → 一次性激活口令）
     ├── grants/       角色授予（角色决定可选作用域）
     ├── assignments/  组织分配
@@ -85,6 +85,6 @@ make dev-web     # Vite 开发服务器 :5174，/v1 与 /healthz 代理到 :8081
 
 - `GET /healthz` 版本、库与 OSS 状态
 - `POST /internal/bootstrap` 仅供 WAN 用共享口令调用：建厂库并写入待启用初始超管
-- `/v1/factories/{id}/…`：`login` `activate` `logout` `me` `me/password` `catalog`、`org-types` `org-units` `people` `grants` `assignments` 及各自的 `disable` / `revoke` / `end`
+- `/v1/factories/{id}/…`：`login` `activate` `logout` `me` `me/password` `catalog`、`org-units` `people` `grants` `assignments` 及各自的 `disable` / `revoke` / `end`
 
 激活口令与会话令牌只在响应里出现一次，库里只存哈希，审计里不出现原文。

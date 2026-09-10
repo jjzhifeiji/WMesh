@@ -38,24 +38,13 @@ type Person struct {
 
 func (Person) TableName() string { return "people" }
 
-// OrgType 是本厂自定义的组织类型（场地、车间等），不预置层数。
-type OrgType struct {
-	ID        uuid.UUID `gorm:"type:uuid;primaryKey" json:"id"` // 组织类型稳定身份
-	Name      string    `gorm:"not null" json:"name"`           // 显示名，不当身份
-	Status    string    `gorm:"not null" json:"status"`         // active / disabled；有有效节点时不能停
-	CreatedAt time.Time `gorm:"not null" json:"createdAt"`      // 创建时间
-}
-
-func (OrgType) TableName() string { return "org_types" }
-
 // OrgUnit 是本厂一棵树上的节点，至多一个父节点，不能跨厂、不能成环。
 type OrgUnit struct {
-	ID        uuid.UUID  `gorm:"type:uuid;primaryKey" json:"id"`      // 节点稳定身份
-	OrgTypeID uuid.UUID  `gorm:"type:uuid;not null" json:"orgTypeId"` // 必须挂本厂已有组织类型
-	ParentID  *uuid.UUID `gorm:"type:uuid" json:"parentId"`           // 空表示直接挂在工厂下
-	Name      string     `gorm:"not null" json:"name"`                // 显示名，改名不改历史快照
-	Status    string     `gorm:"not null" json:"status"`              // 停用后不能再当新工作上下文
-	CreatedAt time.Time  `gorm:"not null" json:"createdAt"`           // 创建时间
+	ID        uuid.UUID  `gorm:"type:uuid;primaryKey" json:"id"` // 节点稳定身份
+	ParentID  *uuid.UUID `gorm:"type:uuid" json:"parentId"`      // 空表示直接挂在工厂下
+	Name      string     `gorm:"not null" json:"name"`           // 显示名，改名不改历史快照
+	Status    string     `gorm:"not null" json:"status"`         // 停用后不能再当新工作上下文
+	CreatedAt time.Time  `gorm:"not null" json:"createdAt"`      // 创建时间
 }
 
 func (OrgUnit) TableName() string { return "org_units" }
@@ -97,11 +86,11 @@ type Session struct {
 
 func (Session) TableName() string { return "sessions" }
 
-// PathNode 是事实发生时路径上的一截：当时的身份、类型和名称。
+// PathNode 是事实发生时路径上的一截：当时的身份和名称。
 type PathNode struct {
-	ID     uuid.UUID `json:"id"`     // 节点稳定身份
-	TypeID uuid.UUID `json:"typeId"` // 当时的组织类型身份
-	Name   string    `json:"name"`   // 当时的显示名，之后改名也不改这里
+	ID     uuid.UUID  `json:"id"`               // 节点稳定身份
+	TypeID *uuid.UUID `json:"typeId,omitempty"` // 旧快照可能带类型身份；新写入不再写
+	Name   string     `json:"name"`             // 当时的显示名，之后改名也不改这里
 }
 
 // WorkContext 是产生事实或个人资产时必须明确选的一个上下文。

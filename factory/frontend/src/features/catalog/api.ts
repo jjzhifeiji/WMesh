@@ -15,16 +15,8 @@ export type Account = {
   status: AccountStatus; // pending / active / disabled
 };
 
-export type OrgType = {
-  id: string; // 组织类型稳定身份
-  name: string; // 显示名，不当身份
-  status: ActiveStatus; // active / disabled；有有效节点时不能停
-  createdAt: string; // 创建时间
-};
-
 export type OrgUnit = {
   id: string; // 节点稳定身份
-  orgTypeId: string; // 必须挂本厂已有组织类型
   parentId: string | null; // 空表示直接挂在工厂下
   name: string; // 显示名，改名不改历史快照
   status: ActiveStatus; // 停用后不能再当新工作上下文
@@ -55,7 +47,6 @@ export type Catalog = {
   me: Account; // 当前会话账号
   myGrants: RoleGrant[]; // 自己的有效角色，任何人都能看到
   people: Account[]; // 本厂人员；非超管为空
-  orgTypes: OrgType[]; // 本厂组织类型
   orgUnits: OrgUnit[]; // 本厂组织节点
   assignments: Assignment[]; // 当前有效分配
   roleGrants: RoleGrant[]; // 当前有效角色授予
@@ -101,8 +92,4 @@ export function personName(catalog: Catalog | undefined, personId: string) {
 export function unitName(catalog: Catalog | undefined, unitId: string | null) {
   if (!unitId) return "（工厂）";
   return catalog?.orgUnits.find((u) => u.id === unitId)?.name ?? unitId;
-}
-
-export function typeName(catalog: Catalog | undefined, typeId: string) {
-  return catalog?.orgTypes.find((t) => t.id === typeId)?.name ?? typeId;
 }

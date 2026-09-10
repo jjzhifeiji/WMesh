@@ -22,7 +22,7 @@ var matrixIDs = []string{
 	"8.1", "8.2", "8.3", "8.4",
 	"9.1", "9.2", "9.3", "9.4", "9.5", "9.6",
 	"10.1", "10.2", "10.3", "10.4", "10.5", "10.6", "10.7", "10.8",
-	"11.1", "11.2", "11.3", "11.4", "11.5",
+	"11.2", "11.3", "11.4", "11.5",
 	"12.1",
 	"13.1", "13.2", "13.3",
 	"14.1", "14.2", "14.3",
@@ -112,38 +112,33 @@ func TestMatrix(t *testing.T) {
 		}
 	})
 
-	var typ factory.OrgType
 	var site, shop, shopB, line, team, spare factory.OrgUnit
 	run("4.1", func(t *testing.T) {
 		var err error
-		typ, err = facA.CreateOrgType(ctx, saA, "场地")
-		if err != nil {
-			t.Fatal(err)
-		}
-		site, err = facA.CreateOrgUnit(ctx, saA, typ.ID, "场地", nil)
+		site, err = facA.CreateOrgUnit(ctx, saA, "场地", nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 	})
 	run("5.1", func(t *testing.T) {
 		var err error
-		shop, err = facA.CreateOrgUnit(ctx, saA, typ.ID, "车间", &site.ID)
+		shop, err = facA.CreateOrgUnit(ctx, saA, "车间", &site.ID)
 		if err != nil {
 			t.Fatal(err)
 		}
-		shopB, err = facA.CreateOrgUnit(ctx, saA, typ.ID, "车间B", &site.ID)
+		shopB, err = facA.CreateOrgUnit(ctx, saA, "车间B", &site.ID)
 		if err != nil {
 			t.Fatal(err)
 		}
-		line, err = facA.CreateOrgUnit(ctx, saA, typ.ID, "产线", &shop.ID)
+		line, err = facA.CreateOrgUnit(ctx, saA, "产线", &shop.ID)
 		if err != nil {
 			t.Fatal(err)
 		}
-		team, err = facA.CreateOrgUnit(ctx, saA, typ.ID, "班组", &line.ID)
+		team, err = facA.CreateOrgUnit(ctx, saA, "班组", &line.ID)
 		if err != nil {
 			t.Fatal(err)
 		}
-		spare, err = facA.CreateOrgUnit(ctx, saA, typ.ID, "备用叶", &shopB.ID)
+		spare, err = facA.CreateOrgUnit(ctx, saA, "备用叶", &shopB.ID)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -174,11 +169,7 @@ func TestMatrix(t *testing.T) {
 			t.Fatalf("got %v", err)
 		}
 	})
-	bTyp, err := facB.CreateOrgType(ctx, saB, "场地")
-	if err != nil {
-		t.Fatal(err)
-	}
-	bUnit, err := facB.CreateOrgUnit(ctx, saB, bTyp.ID, "厂B节点", nil)
+	bUnit, err := facB.CreateOrgUnit(ctx, saB, "厂B节点", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -248,7 +239,7 @@ func TestMatrix(t *testing.T) {
 
 	oa := mustCreateRole(t, ctx, facA, saA, "oa", "oa-pass", factory.RoleOrgAdmin, factory.ScopeOrgUnit, &shop.ID)
 	run("8.1", func(t *testing.T) {
-		if _, err := facA.CreateOrgUnit(ctx, oa.tok, typ.ID, "线2", &shop.ID); err != nil {
+		if _, err := facA.CreateOrgUnit(ctx, oa.tok, "线2", &shop.ID); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -279,12 +270,12 @@ func TestMatrix(t *testing.T) {
 		}
 	})
 	run("9.1", func(t *testing.T) {
-		if _, err := facA.CreateOrgUnit(ctx, oa.tok, typ.ID, "越界", &shopB.ID); !errors.Is(err, domain.ErrForbidden) {
+		if _, err := facA.CreateOrgUnit(ctx, oa.tok, "越界", &shopB.ID); !errors.Is(err, domain.ErrForbidden) {
 			t.Fatalf("got %v", err)
 		}
 	})
 	run("9.2", func(t *testing.T) {
-		if _, err := facA.CreateOrgUnit(ctx, lead.tok, typ.ID, "x", &shop.ID); !errors.Is(err, domain.ErrForbidden) {
+		if _, err := facA.CreateOrgUnit(ctx, lead.tok, "x", &shop.ID); !errors.Is(err, domain.ErrForbidden) {
 			t.Fatalf("got %v", err)
 		}
 		if _, _, err := facA.CreatePerson(ctx, lead.tok, "x", "x"); !errors.Is(err, domain.ErrForbidden) {
@@ -304,7 +295,7 @@ func TestMatrix(t *testing.T) {
 		if _, err := facA.CreateFact(ctx, aud.tok, factory.WorkContext{OrgUnitID: &shop.ID}); !errors.Is(err, domain.ErrWorkContext) && !errors.Is(err, domain.ErrForbidden) {
 			t.Fatalf("got %v", err)
 		}
-		if _, err := facA.CreateOrgUnit(ctx, aud.tok, typ.ID, "z", &shop.ID); !errors.Is(err, domain.ErrForbidden) {
+		if _, err := facA.CreateOrgUnit(ctx, aud.tok, "z", &shop.ID); !errors.Is(err, domain.ErrForbidden) {
 			t.Fatalf("got %v", err)
 		}
 	})
@@ -317,11 +308,6 @@ func TestMatrix(t *testing.T) {
 		}
 	})
 
-	run("11.1", func(t *testing.T) {
-		if err := facA.DisableOrgType(ctx, saA, typ.ID); !errors.Is(err, domain.ErrHasActiveUnits) {
-			t.Fatalf("got %v", err)
-		}
-	})
 	run("11.2", func(t *testing.T) {
 		if err := facA.DisableOrgUnit(ctx, saA, shop.ID); !errors.Is(err, domain.ErrHasActiveChildren) {
 			t.Fatalf("got %v", err)

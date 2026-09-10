@@ -45,23 +45,19 @@ func TestFactoryConstraints(t *testing.T) {
 		t.Fatalf("id changed")
 	}
 
-	typ, err := s.CreateOrgType(ctx, "场地")
-	if err != nil {
-		t.Fatalf("type: %v", err)
-	}
-	site, err := s.CreateOrgUnit(ctx, typ.ID, "一号场地", nil)
+	site, err := s.CreateOrgUnit(ctx, "一号场地", nil)
 	if err != nil {
 		t.Fatalf("site: %v", err)
 	}
-	shop, err := s.CreateOrgUnit(ctx, typ.ID, "车间", &site.ID)
+	shop, err := s.CreateOrgUnit(ctx, "车间", &site.ID)
 	if err != nil {
 		t.Fatalf("shop: %v", err)
 	}
-	line, err := s.CreateOrgUnit(ctx, typ.ID, "产线", &shop.ID)
+	line, err := s.CreateOrgUnit(ctx, "产线", &shop.ID)
 	if err != nil {
 		t.Fatalf("line: %v", err)
 	}
-	team, err := s.CreateOrgUnit(ctx, typ.ID, "班组", &line.ID)
+	team, err := s.CreateOrgUnit(ctx, "班组", &line.ID)
 	if err != nil {
 		t.Fatalf("team: %v", err)
 	}
@@ -115,9 +111,6 @@ func TestFactoryConstraints(t *testing.T) {
 		t.Fatalf("revoke: %v", err)
 	}
 
-	if err := s.DisableOrgType(ctx, typ.ID); err != domain.ErrHasActiveUnits {
-		t.Fatalf("disable type with units: %v", err)
-	}
 	if err := s.DisableOrgUnit(ctx, shop.ID); err != domain.ErrHasActiveChildren {
 		t.Fatalf("disable with children: %v", err)
 	}
@@ -127,7 +120,7 @@ func TestFactoryConstraints(t *testing.T) {
 	if _, err := s.Assign(ctx, p.ID, team.ID); err != domain.ErrDisabledOrgUnit {
 		t.Fatalf("assign disabled: %v", err)
 	}
-	if _, err := s.CreateOrgUnit(ctx, typ.ID, "新班组", &team.ID); err != domain.ErrDisabledOrgUnit {
+	if _, err := s.CreateOrgUnit(ctx, "新班组", &team.ID); err != domain.ErrDisabledOrgUnit {
 		t.Fatalf("child of disabled: %v", err)
 	}
 
@@ -170,11 +163,7 @@ func TestPhysicalDeleteOrgUnitBlockedWhenAssigned(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	typ, err := s.CreateOrgType(ctx, "t")
-	if err != nil {
-		t.Fatal(err)
-	}
-	u, err := s.CreateOrgUnit(ctx, typ.ID, "u", nil)
+	u, err := s.CreateOrgUnit(ctx, "u", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,5 +172,86 @@ func TestPhysicalDeleteOrgUnitBlockedWhenAssigned(t *testing.T) {
 	}
 	if err := facDB.Exec("DELETE FROM org_units WHERE id = ?", u.ID).Error; !domain.IsForeignKeyViolation(err) {
 		t.Fatalf("expected fk, got %v", err)
+	}
+	if err := s.DeleteOrgUnit(ctx, u.ID); err != domain.ErrReferenced {
+		t.Fatalf("delete assigned: %v", err)
+	}
+}
+
+func TestDeleteOrgWhenUnreferenced(t *testing.T) {
+	ctx := context.Background()
+	facDB, facID := testpg.Fresh(t)
+	s := store.Open(facDB, facID)
+	u, err := s.CreateOrgUnit(ctx, "u", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := s.CreateOrgUnit(ctx, "child", &u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteOrgUnit(ctx, u.ID); err != domain.ErrReferenced {
+		t.Fatalf("delete parent: %v", err)
+	}
+	if err := s.DeleteOrgUnit(ctx, child.ID); err != nil {
+		t.Fatalf("delete unused child: %v", err)
+	}
+	if err := s.DeleteOrgUnit(ctx, u.ID); err != nil {
+		t.Fatalf("delete emptied parent: %v", err)
+	}
+}
+
+func TestDeleteOrgAfterUnassignAndRevoke(t *testing.T) {
+	ctx := context.Background()
+	facDB, facID := testpg.Fresh(t)
+	s := store.Open(facDB, facID)
+	p, err := s.CreatePerson(ctx, "p", "人", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, err := s.CreateOrgUnit(ctx, "u", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Assign(ctx, p.ID, u.ID); err != nil {
+		t.Fatal(err)
+	}
+	g, err := s.GrantRole(ctx, p.ID, store.RoleOperator, store.ScopeOrgUnit, &u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteOrgUnit(ctx, u.ID); err != domain.ErrReferenced {
+		t.Fatalf("active refs: %v", err)
+	}
+	if err := s.Unassign(ctx, p.ID, u.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RevokeRole(ctx, g.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteOrgUnit(ctx, u.ID); err != nil {
+		t.Fatalf("after end/revoke: %v", err)
+	}
+}
+
+func TestEnableOrgAfterDisable(t *testing.T) {
+	ctx := context.Background()
+	facDB, facID := testpg.Fresh(t)
+	s := store.Open(facDB, facID)
+	u, err := s.CreateOrgUnit(ctx, "u", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DisableOrgUnit(ctx, u.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateOrgUnit(ctx, "child", &u.ID); err != domain.ErrDisabledOrgUnit {
+		t.Fatalf("create under disabled: %v", err)
+	}
+	if err := s.EnableOrgUnit(ctx, u.ID); err != nil {
+		t.Fatalf("enable unit: %v", err)
+	}
+	if _, err := s.CreateOrgUnit(ctx, "child", &u.ID); err != nil {
+		t.Fatalf("create after enable: %v", err)
 	}
 }

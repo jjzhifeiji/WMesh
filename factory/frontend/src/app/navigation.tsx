@@ -1,30 +1,139 @@
 import {
   ApartmentOutlined,
+  AppstoreOutlined,
+  AuditOutlined,
+  CloudSyncOutlined,
+  ClusterOutlined,
   DashboardOutlined,
-  IdcardOutlined,
-  SafetyCertificateOutlined,
-  TagsOutlined,
   TeamOutlined,
-  UserOutlined,
 } from "@ant-design/icons";
 import type { MenuProps } from "antd";
+import type { ReactNode } from "react";
 import { paths } from "./routes";
 
-type NavItem = { key: string; label: string; icon: React.ReactNode; superAdminOnly?: boolean };
+type NavLeaf = {
+  key: string;
+  label: string;
+  superAdminOnly?: boolean;
+  placeholder?: boolean;
+  description?: string;
+};
 
-// 侧边栏菜单定义；标了 superAdminOnly 的只给工厂超管看。新功能在这里加一项、在 router 里加一条路由。
-export const navItems: NavItem[] = [
-  { key: paths.dashboard, label: "概览", icon: <DashboardOutlined /> },
-  { key: paths.orgTypes, label: "组织类型", icon: <TagsOutlined />, superAdminOnly: true },
-  { key: paths.orgUnits, label: "组织节点", icon: <ApartmentOutlined />, superAdminOnly: true },
-  { key: paths.people, label: "人员", icon: <TeamOutlined />, superAdminOnly: true },
-  { key: paths.grants, label: "角色授予", icon: <SafetyCertificateOutlined />, superAdminOnly: true },
-  { key: paths.assignments, label: "组织分配", icon: <IdcardOutlined />, superAdminOnly: true },
-  { key: paths.account, label: "我的账号", icon: <UserOutlined /> },
-];
+type NavGroup = {
+  key: string;
+  label: string;
+  icon: ReactNode;
+  superAdminOnly?: boolean;
+  children: NavLeaf[];
+};
 
-export function menuItems(isSuperAdmin: boolean): NonNullable<MenuProps["items"]> {
-  return navItems.filter((i) => isSuperAdmin || !i.superAdminOnly).map(({ key, label, icon }) => ({ key, label, icon }));
+type NavEntry = (NavLeaf & { icon: ReactNode; children?: undefined }) | NavGroup;
+
+function allowed(isSuperAdmin: boolean, item: { superAdminOnly?: boolean }) {
+  return isSuperAdmin || !item.superAdminOnly;
 }
 
-export const pageTitles: Record<string, string> = Object.fromEntries(navItems.map((i) => [i.key, i.label]));
+// 侧栏两级菜单：现有页按组织 / 人员拆组；后续组先占位。我的账号只在顶栏。
+export const navTree: NavEntry[] = [
+  { key: paths.dashboard, label: "概览", icon: <DashboardOutlined /> },
+  {
+    key: "org",
+    label: "组织",
+    icon: <ApartmentOutlined />,
+    superAdminOnly: true,
+    children: [
+      { key: paths.orgUnits, label: "组织节点" },
+    ],
+  },
+  {
+    key: "access",
+    label: "人员与权限",
+    icon: <TeamOutlined />,
+    superAdminOnly: true,
+    children: [
+      { key: paths.people, label: "人员" },
+      { key: paths.assignments, label: "组织分配" },
+      { key: paths.grants, label: "角色授予" },
+    ],
+  },
+  {
+    key: "nodes",
+    label: "节点与授权",
+    icon: <ClusterOutlined />,
+    children: [
+      { key: paths.clients, label: "Client 节点", placeholder: true, description: "本厂现场节点的绑定、运行许可与撤销。" },
+      { key: paths.offlineAuth, label: "人员离线授权", placeholder: true, description: "给本厂有效账号签发绑定到指定 Client 的离线授权。" },
+    ],
+  },
+  {
+    key: "assets",
+    label: "资产",
+    icon: <AppstoreOutlined />,
+    children: [
+      { key: paths.processes, label: "工艺", placeholder: true, description: "厂级工艺的制作、维护与升档。" },
+      { key: paths.projects, label: "工程", placeholder: true, description: "工程及其依赖工艺的治理。" },
+      { key: paths.fieldFiles, label: "现场文件", placeholder: true, description: "Client 上传的点云/图片记录，本体在本厂对象存储。" },
+    ],
+  },
+  {
+    key: "delivery",
+    label: "下发与同步",
+    icon: <CloudSyncOutlined />,
+    children: [
+      { key: paths.distribute, label: "下发与缓存", placeholder: true, description: "向本厂 Client 下发资产并调控缓存。" },
+      { key: paths.sync, label: "汇聚与 Intent", placeholder: true, description: "弱网汇聚、幂等合并与意图收敛。" },
+    ],
+  },
+  {
+    key: "audit",
+    label: "审计",
+    icon: <AuditOutlined />,
+    children: [
+      { key: paths.auditEvents, label: "操作审计", placeholder: true, description: "本厂操作留痕查询，不含认证秘密。" },
+      { key: paths.auditStats, label: "统计", placeholder: true, description: "按事实发生时的组织路径归集，历史不随调动改写。" },
+    ],
+  },
+];
+
+export const accountTitle = "我的账号";
+
+export function openGroupFor(pathname: string): string[] {
+  for (const entry of navTree) {
+    if (entry.children?.some((c) => c.key === pathname)) return [entry.key];
+  }
+  return [];
+}
+
+export const placeholderPaths = navTree.flatMap((entry) =>
+  (entry.children ?? []).filter((c) => c.placeholder).map((c) => c.key),
+);
+
+export function menuItems(isSuperAdmin: boolean): NonNullable<MenuProps["items"]> {
+  return navTree.flatMap((entry) => {
+    if (!allowed(isSuperAdmin, entry)) return [];
+    if (entry.children) {
+      const children = entry.children.filter((c) => allowed(isSuperAdmin, c)).map((c) => ({ key: c.key, label: c.label }));
+      if (children.length === 0) return [];
+      return [{ key: entry.key, icon: entry.icon, label: entry.label, children }];
+    }
+    return [{ key: entry.key, icon: entry.icon, label: entry.label }];
+  });
+}
+
+export function breadcrumbItems(pathname: string): { title: string }[] {
+  if (pathname === paths.account) return [{ title: accountTitle }];
+  for (const entry of navTree) {
+    if (entry.key === pathname) return [{ title: entry.label }];
+    const leaf = entry.children?.find((c) => c.key === pathname);
+    if (leaf) return [{ title: entry.label }, { title: leaf.label }];
+  }
+  return [{ title: "页面" }];
+}
+
+export function placeholderMeta(pathname: string): { title: string; description?: string } | undefined {
+  for (const entry of navTree) {
+    const leaf = entry.children?.find((c) => c.key === pathname && c.placeholder);
+    if (leaf) return { title: leaf.label, description: leaf.description };
+  }
+  return undefined;
+}

@@ -35,7 +35,7 @@ func (s *Store) PathSnapshot(ctx context.Context, unitID uuid.UUID) ([]PathNode,
 		if err != nil {
 			return nil, err
 		}
-		chain = append(chain, PathNode{ID: u.ID, TypeID: u.OrgTypeID, Name: u.Name})
+		chain = append(chain, PathNode{ID: u.ID, Name: u.Name})
 		if u.ParentID == nil {
 			break
 		}

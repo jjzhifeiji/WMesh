@@ -38,27 +38,23 @@ func TestPermCircle(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	typ, err := facA.CreateOrgType(ctx, saA, "场地")
-	if err != nil {
-		t.Fatalf("4.1 type: %v", err)
-	}
-	site, err := facA.CreateOrgUnit(ctx, saA, typ.ID, "场地", nil)
+	site, err := facA.CreateOrgUnit(ctx, saA, "场地", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	shopA, err := facA.CreateOrgUnit(ctx, saA, typ.ID, "车间A", &site.ID)
+	shopA, err := facA.CreateOrgUnit(ctx, saA, "车间A", &site.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	shopB, err := facA.CreateOrgUnit(ctx, saA, typ.ID, "车间B", &site.ID)
+	shopB, err := facA.CreateOrgUnit(ctx, saA, "车间B", &site.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	line, err := facA.CreateOrgUnit(ctx, saA, typ.ID, "产线", &shopA.ID)
+	line, err := facA.CreateOrgUnit(ctx, saA, "产线", &shopA.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := facA.CreateOrgUnit(ctx, saA, typ.ID, "班组", &line.ID); err != nil {
+	if _, err := facA.CreateOrgUnit(ctx, saA, "班组", &line.ID); err != nil {
 		t.Fatalf("5.1: %v", err)
 	}
 
@@ -103,13 +99,13 @@ func TestPermCircle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := facA.CreateOrgUnit(ctx, oaTok, typ.ID, "线2", &shopA.ID); err != nil {
+	if _, err := facA.CreateOrgUnit(ctx, oaTok, "线2", &shopA.ID); err != nil {
 		t.Fatalf("8.1/9.5: %v", err)
 	}
-	if _, err := facA.CreateOrgUnit(ctx, oaTok, typ.ID, "越界", &shopB.ID); !errors.Is(err, domain.ErrForbidden) {
+	if _, err := facA.CreateOrgUnit(ctx, oaTok, "越界", &shopB.ID); !errors.Is(err, domain.ErrForbidden) {
 		t.Fatalf("9.1 sibling: %v", err)
 	}
-	if _, err := facA.CreateOrgUnit(ctx, oaTok, typ.ID, "根", nil); !errors.Is(err, domain.ErrForbidden) {
+	if _, err := facA.CreateOrgUnit(ctx, oaTok, "根", nil); !errors.Is(err, domain.ErrForbidden) {
 		t.Fatalf("9.1 parent/root: %v", err)
 	}
 	if err := facA.ReparentOrgUnit(ctx, oaTok, shopA.ID, &shopB.ID); !errors.Is(err, domain.ErrForbidden) {
@@ -139,7 +135,7 @@ func TestPermCircle(t *testing.T) {
 	if err := facA.ViewOrg(ctx, leadTok, shopA.ID); err != nil {
 		t.Fatalf("8.2 lead: %v", err)
 	}
-	if _, err := facA.CreateOrgUnit(ctx, leadTok, typ.ID, "x", &shopA.ID); !errors.Is(err, domain.ErrForbidden) {
+	if _, err := facA.CreateOrgUnit(ctx, leadTok, "x", &shopA.ID); !errors.Is(err, domain.ErrForbidden) {
 		t.Fatalf("9.2 lead org: %v", err)
 	}
 	if _, _, err := facA.CreatePerson(ctx, leadTok, "x", "x"); !errors.Is(err, domain.ErrForbidden) {
@@ -194,7 +190,7 @@ func TestPermCircle(t *testing.T) {
 	if err := facA.Operate(ctx, audTok, shopA.ID); !errors.Is(err, domain.ErrForbidden) {
 		t.Fatalf("9.4 operate: %v", err)
 	}
-	if _, err := facA.CreateOrgUnit(ctx, audTok, typ.ID, "z", &shopA.ID); !errors.Is(err, domain.ErrForbidden) {
+	if _, err := facA.CreateOrgUnit(ctx, audTok, "z", &shopA.ID); !errors.Is(err, domain.ErrForbidden) {
 		t.Fatalf("9.4 org: %v", err)
 	}
 

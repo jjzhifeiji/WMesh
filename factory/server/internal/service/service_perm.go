@@ -38,26 +38,8 @@ func (s *Service) CreatePerson(ctx context.Context, token, loginName, displayNam
 	return accountOf(p), act, nil
 }
 
-// CreateOrgType 创建本厂自定义组织类型；只有工厂超管可以做。
-func (s *Service) CreateOrgType(ctx context.Context, token, name string) (OrgType, error) {
-	acc, err := s.RequireActive(ctx, token)
-	if err != nil {
-		return OrgType{}, err
-	}
-	if err := s.can(ctx, acc, permManageType, nil); err != nil {
-		_ = s.audit(ctx, &acc.ID, nil, "create_org_type", name, audit.Deny)
-		return OrgType{}, err
-	}
-	row, err := s.store.CreateOrgType(ctx, name)
-	if err != nil {
-		_ = s.audit(ctx, &acc.ID, nil, "create_org_type", name, audit.Deny)
-		return OrgType{}, err
-	}
-	return row, s.audit(ctx, &acc.ID, nil, "create_org_type", row.ID.String(), audit.Allow)
-}
-
 // CreateOrgUnit 挂本厂组织节点。无父节点表示直挂工厂，只有超管能建这种根节点。
-func (s *Service) CreateOrgUnit(ctx context.Context, token string, typeID uuid.UUID, name string, parentID *uuid.UUID) (OrgUnit, error) {
+func (s *Service) CreateOrgUnit(ctx context.Context, token, name string, parentID *uuid.UUID) (OrgUnit, error) {
 	acc, err := s.RequireActive(ctx, token)
 	if err != nil {
 		return OrgUnit{}, err
@@ -66,7 +48,7 @@ func (s *Service) CreateOrgUnit(ctx context.Context, token string, typeID uuid.U
 		_ = s.audit(ctx, &acc.ID, nil, "create_org_unit", name, audit.Deny)
 		return OrgUnit{}, err
 	}
-	row, err := s.store.CreateOrgUnit(ctx, typeID, name, parentID)
+	row, err := s.store.CreateOrgUnit(ctx, name, parentID)
 	if err != nil {
 		_ = s.audit(ctx, &acc.ID, nil, "create_org_unit", name, audit.Deny)
 		return OrgUnit{}, err
@@ -208,21 +190,21 @@ func (s *Service) ViewOrg(ctx context.Context, token string, unitID uuid.UUID) e
 	return s.audit(ctx, &acc.ID, nil, "view_org", unitID.String(), audit.Allow)
 }
 
-// DisableOrgType 停用组织类型；其下还有有效节点时拒绝，且不能物理删除。
-func (s *Service) DisableOrgType(ctx context.Context, token string, typeID uuid.UUID) error {
+// DeleteOrgUnit 无引用才删；有下级、当前人员、有效角色或历史事实就拒绝。
+func (s *Service) DeleteOrgUnit(ctx context.Context, token string, unitID uuid.UUID) error {
 	acc, err := s.RequireActive(ctx, token)
 	if err != nil {
 		return err
 	}
-	if err := s.can(ctx, acc, permManageType, nil); err != nil {
-		_ = s.audit(ctx, &acc.ID, nil, "disable_org_type", typeID.String(), audit.Deny)
+	if err := s.can(ctx, acc, permManageOrg, &unitID); err != nil {
+		_ = s.audit(ctx, &acc.ID, nil, "delete_org_unit", unitID.String(), audit.Deny)
 		return err
 	}
-	if err := s.store.DisableOrgType(ctx, typeID); err != nil {
-		_ = s.audit(ctx, &acc.ID, nil, "disable_org_type", typeID.String(), audit.Deny)
+	if err := s.store.DeleteOrgUnit(ctx, unitID); err != nil {
+		_ = s.audit(ctx, &acc.ID, nil, "delete_org_unit", unitID.String(), audit.Deny)
 		return err
 	}
-	return s.audit(ctx, &acc.ID, nil, "disable_org_type", typeID.String(), audit.Allow)
+	return s.audit(ctx, &acc.ID, nil, "delete_org_unit", unitID.String(), audit.Allow)
 }
 
 // DisableOrgUnit 停用组织节点；还有有效子节点时拒绝。旧分配留下，但不能再当新上下文。
@@ -240,4 +222,21 @@ func (s *Service) DisableOrgUnit(ctx context.Context, token string, unitID uuid.
 		return err
 	}
 	return s.audit(ctx, &acc.ID, nil, "disable_org_unit", unitID.String(), audit.Allow)
+}
+
+// EnableOrgUnit 重新启用组织节点；上级仍停用时拒绝。
+func (s *Service) EnableOrgUnit(ctx context.Context, token string, unitID uuid.UUID) error {
+	acc, err := s.RequireActive(ctx, token)
+	if err != nil {
+		return err
+	}
+	if err := s.can(ctx, acc, permManageOrg, &unitID); err != nil {
+		_ = s.audit(ctx, &acc.ID, nil, "enable_org_unit", unitID.String(), audit.Deny)
+		return err
+	}
+	if err := s.store.EnableOrgUnit(ctx, unitID); err != nil {
+		_ = s.audit(ctx, &acc.ID, nil, "enable_org_unit", unitID.String(), audit.Deny)
+		return err
+	}
+	return s.audit(ctx, &acc.ID, nil, "enable_org_unit", unitID.String(), audit.Allow)
 }

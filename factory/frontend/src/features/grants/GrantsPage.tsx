@@ -69,7 +69,7 @@ export function GrantsPage() {
     <>
       <PageHeader
         title="角色授予"
-        description="工厂超管只能整厂；组织管理员、负责人只能挂节点；工程师、操作员、审计员两者皆可。"
+        description="工厂超管只能整厂；管理员只能挂节点；操作员、审计员两者皆可。"
         extra={
           <Button type="primary" icon={<PlusOutlined />} onClick={() => setOpen(true)}>
             授予角色

@@ -32,7 +32,6 @@ func validScope(role, scopeKind string, orgUnitID *uuid.UUID) bool {
 type (
 	Store         = store.Store
 	Person        = store.Person
-	OrgType       = store.OrgType
 	OrgUnit       = store.OrgUnit
 	Assignment    = store.Assignment
 	RoleGrant     = store.RoleGrant

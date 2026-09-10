@@ -1,19 +1,26 @@
 // 固定枚举的中文展示名与颜色；枚举值以服务端为准。
-
+// 授予页只出这四个；负责人、工艺工程师服务端仍认，只是不再新授。
 export const ROLES = [
   { value: "factory_super_admin", label: "工厂超管", scopes: ["factory"] },
-  { value: "org_admin", label: "组织管理员", scopes: ["org_unit"] },
-  { value: "org_lead", label: "组织负责人", scopes: ["org_unit"] },
-  { value: "process_engineer", label: "工艺工程师", scopes: ["factory", "org_unit"] },
+  { value: "org_admin", label: "管理员", scopes: ["org_unit"] },
   { value: "operator", label: "操作员", scopes: ["factory", "org_unit"] },
   { value: "auditor", label: "审计员", scopes: ["factory", "org_unit"] },
 ] as const;
+
+const ROLE_LABELS: Record<string, string> = {
+  factory_super_admin: "工厂超管",
+  org_admin: "管理员",
+  org_lead: "组织负责人",
+  process_engineer: "工艺工程师",
+  operator: "操作员",
+  auditor: "审计员",
+};
 
 export type Role = (typeof ROLES)[number]["value"];
 export type ScopeKind = "factory" | "org_unit";
 
 export function roleLabel(role: string) {
-  return ROLES.find((r) => r.value === role)?.label ?? role;
+  return ROLE_LABELS[role] ?? role;
 }
 
 // 该角色允许挂的作用域；服务端也会再校验一次。

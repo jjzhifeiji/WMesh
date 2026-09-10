@@ -26,23 +26,19 @@ func TestAttrCircle(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	typ, err := fac.CreateOrgType(ctx, saTok, "场地")
+	site, err := fac.CreateOrgUnit(ctx, saTok, "场地", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	site, err := fac.CreateOrgUnit(ctx, saTok, typ.ID, "场地", nil)
+	shopA, err := fac.CreateOrgUnit(ctx, saTok, "车间A", &site.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	shopA, err := fac.CreateOrgUnit(ctx, saTok, typ.ID, "车间A", &site.ID)
+	shopB, err := fac.CreateOrgUnit(ctx, saTok, "车间B", &site.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	shopB, err := fac.CreateOrgUnit(ctx, saTok, typ.ID, "车间B", &site.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	team, err := fac.CreateOrgUnit(ctx, saTok, typ.ID, "班组", &shopA.ID)
+	team, err := fac.CreateOrgUnit(ctx, saTok, "班组", &shopA.ID)
 	if err != nil {
 		t.Fatal(err)
 	}

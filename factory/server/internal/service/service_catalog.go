@@ -11,7 +11,6 @@ type Catalog struct {
 	Me          Account      `json:"me"`          // 当前会话账号
 	MyGrants    []RoleGrant  `json:"myGrants"`    // 当前账号的有效角色，任何人都能看自己的
 	People      []Account    `json:"people"`      // 本厂人员，不含认证秘密；非超管为空
-	OrgTypes    []OrgType    `json:"orgTypes"`    // 本厂组织类型
 	OrgUnits    []OrgUnit    `json:"orgUnits"`    // 本厂组织节点
 	Assignments []Assignment `json:"assignments"` // 当前有效分配
 	RoleGrants  []RoleGrant  `json:"roleGrants"`  // 当前有效角色授予
@@ -27,7 +26,6 @@ func (s *Service) Catalog(ctx context.Context, token string) (Catalog, error) {
 		Me:          acc,
 		MyGrants:    []RoleGrant{},
 		People:      []Account{},
-		OrgTypes:    []OrgType{},
 		OrgUnits:    []OrgUnit{},
 		Assignments: []Assignment{},
 		RoleGrants:  []RoleGrant{},
@@ -47,9 +45,6 @@ func (s *Service) Catalog(ctx context.Context, token string) (Catalog, error) {
 	}
 	for _, p := range people {
 		out.People = append(out.People, accountOf(p))
-	}
-	if out.OrgTypes, err = s.store.ListOrgTypes(ctx); err != nil {
-		return Catalog{}, err
 	}
 	if out.OrgUnits, err = s.store.ListOrgUnits(ctx); err != nil {
 		return Catalog{}, err

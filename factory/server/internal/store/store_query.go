@@ -121,12 +121,6 @@ func (s *Store) PersonCount(ctx context.Context) (int64, error) {
 	return n, err
 }
 
-func (s *Store) OrgTypeCount(ctx context.Context) (int64, error) {
-	var n int64
-	err := s.db.WithContext(ctx).Model(&OrgType{}).Count(&n).Error
-	return n, err
-}
-
 func (s *Store) RoleGrantCount(ctx context.Context) (int64, error) {
 	var n int64
 	err := s.db.WithContext(ctx).Model(&RoleGrant{}).Count(&n).Error
@@ -216,13 +210,6 @@ func (s *Store) AssignmentCount(ctx context.Context, personID uuid.UUID) (int64,
 // ListPeople 列出本厂全部人员行；调用方不得把口令哈希交给前端。
 func (s *Store) ListPeople(ctx context.Context) ([]Person, error) {
 	var rows []Person
-	err := s.db.WithContext(ctx).Order("created_at").Find(&rows).Error
-	return rows, err
-}
-
-// ListOrgTypes 列出本厂组织类型。
-func (s *Store) ListOrgTypes(ctx context.Context) ([]OrgType, error) {
-	var rows []OrgType
 	err := s.db.WithContext(ctx).Order("created_at").Find(&rows).Error
 	return rows, err
 }

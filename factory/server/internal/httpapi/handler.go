@@ -44,10 +44,10 @@ func (h *Handler) Router() http.Handler {
 	mux.HandleFunc("GET /v1/factories/{id}/me", h.me)
 	mux.HandleFunc("POST /v1/factories/{id}/me/password", h.changePassword)
 	mux.HandleFunc("GET /v1/factories/{id}/catalog", h.catalog)
-	mux.HandleFunc("POST /v1/factories/{id}/org-types", h.createOrgType)
-	mux.HandleFunc("POST /v1/factories/{id}/org-types/{typeId}/disable", h.disableOrgType)
 	mux.HandleFunc("POST /v1/factories/{id}/org-units", h.createOrgUnit)
 	mux.HandleFunc("POST /v1/factories/{id}/org-units/{unitId}/disable", h.disableOrgUnit)
+	mux.HandleFunc("POST /v1/factories/{id}/org-units/{unitId}/enable", h.enableOrgUnit)
+	mux.HandleFunc("DELETE /v1/factories/{id}/org-units/{unitId}", h.deleteOrgUnit)
 	mux.HandleFunc("POST /v1/factories/{id}/people", h.createPerson)
 	mux.HandleFunc("POST /v1/factories/{id}/people/{personId}/disable", h.disablePerson)
 	mux.HandleFunc("POST /v1/factories/{id}/grants", h.grantRole)
@@ -87,12 +87,7 @@ type passwordReq struct {
 	Password string `json:"password"` // 新日常口令，不进审计
 }
 
-type nameReq struct {
-	Name string `json:"name"` // 组织类型或节点显示名
-}
-
 type createUnitReq struct {
-	TypeID   string  `json:"typeId"`   // 本厂组织类型
 	Name     string  `json:"name"`     // 节点显示名
 	ParentID *string `json:"parentId"` // 空表示直挂工厂
 }
@@ -248,37 +243,6 @@ func (h *Handler) catalog(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (h *Handler) createOrgType(w http.ResponseWriter, r *http.Request) {
-	h.withFactory(w, r, func(svc *service.Service) {
-		var req nameReq
-		if err := decodeJSON(r, &req); err != nil {
-			writeBadRequest(w, err)
-			return
-		}
-		row, err := svc.CreateOrgType(r.Context(), bearer(r), req.Name)
-		if err != nil {
-			writeErr(w, err)
-			return
-		}
-		writeJSON(w, http.StatusCreated, row)
-	})
-}
-
-func (h *Handler) disableOrgType(w http.ResponseWriter, r *http.Request) {
-	h.withFactory(w, r, func(svc *service.Service) {
-		typeID, err := uuid.Parse(r.PathValue("typeId"))
-		if err != nil {
-			writeBadRequest(w, errInvalidID)
-			return
-		}
-		if err := svc.DisableOrgType(r.Context(), bearer(r), typeID); err != nil {
-			writeErr(w, err)
-			return
-		}
-		w.WriteHeader(http.StatusNoContent)
-	})
-}
-
 func (h *Handler) createOrgUnit(w http.ResponseWriter, r *http.Request) {
 	h.withFactory(w, r, func(svc *service.Service) {
 		var req createUnitReq
@@ -286,17 +250,12 @@ func (h *Handler) createOrgUnit(w http.ResponseWriter, r *http.Request) {
 			writeBadRequest(w, err)
 			return
 		}
-		typeID, err := uuid.Parse(req.TypeID)
-		if err != nil {
-			writeBadRequest(w, errInvalidID)
-			return
-		}
 		parentID, err := parseOptUUID(req.ParentID)
 		if err != nil {
 			writeBadRequest(w, err)
 			return
 		}
-		row, err := svc.CreateOrgUnit(r.Context(), bearer(r), typeID, req.Name, parentID)
+		row, err := svc.CreateOrgUnit(r.Context(), bearer(r), req.Name, parentID)
 		if err != nil {
 			writeErr(w, err)
 			return
@@ -313,6 +272,36 @@ func (h *Handler) disableOrgUnit(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := svc.DisableOrgUnit(r.Context(), bearer(r), unitID); err != nil {
+			writeErr(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+}
+
+func (h *Handler) enableOrgUnit(w http.ResponseWriter, r *http.Request) {
+	h.withFactory(w, r, func(svc *service.Service) {
+		unitID, err := uuid.Parse(r.PathValue("unitId"))
+		if err != nil {
+			writeBadRequest(w, errInvalidID)
+			return
+		}
+		if err := svc.EnableOrgUnit(r.Context(), bearer(r), unitID); err != nil {
+			writeErr(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+}
+
+func (h *Handler) deleteOrgUnit(w http.ResponseWriter, r *http.Request) {
+	h.withFactory(w, r, func(svc *service.Service) {
+		unitID, err := uuid.Parse(r.PathValue("unitId"))
+		if err != nil {
+			writeBadRequest(w, errInvalidID)
+			return
+		}
+		if err := svc.DeleteOrgUnit(r.Context(), bearer(r), unitID); err != nil {
 			writeErr(w, err)
 			return
 		}
@@ -518,7 +507,8 @@ func statusOf(err error) int {
 		return http.StatusNotFound
 	case errors.Is(err, domain.ErrWANAdminExists), errors.Is(err, domain.ErrLoginNameTaken),
 		errors.Is(err, domain.ErrAlreadyActivated), errors.Is(err, domain.ErrDuplicateAssignment),
-		errors.Is(err, domain.ErrDuplicateRoleGrant), errors.Is(err, domain.ErrDuplicateSession):
+		errors.Is(err, domain.ErrDuplicateRoleGrant), errors.Is(err, domain.ErrDuplicateSession),
+		errors.Is(err, domain.ErrReferenced):
 		return http.StatusConflict
 	case isDomain(err), errors.Is(err, errInvalidID):
 		return http.StatusBadRequest
@@ -530,7 +520,7 @@ func statusOf(err error) int {
 func isDomain(err error) bool {
 	for _, t := range []error{
 		domain.ErrCycle, domain.ErrWorkContext, domain.ErrMultiParent, domain.ErrInvalidRoleScope,
-		domain.ErrDisabledOrgType, domain.ErrDisabledOrgUnit, domain.ErrHasActiveUnits, domain.ErrHasActiveChildren,
+		domain.ErrDisabledOrgUnit, domain.ErrHasActiveChildren,
 	} {
 		if errors.Is(err, t) {
 			return true

@@ -73,16 +73,28 @@ func TestFactoryHTTP(t *testing.T) {
 	if !strings.Contains(body, `"myGrants":[{`) || !strings.Contains(body, `"role":"factory_super_admin"`) {
 		t.Fatalf("catalog must expose caller's own grants: %s", body)
 	}
-	code, body = do(t, srv, "POST", base+"/org-types", tok, `{"name":"车间"}`)
-	if code != http.StatusCreated {
-		t.Fatalf("org type %d %s", code, body)
-	}
-	typeID := gjson(t, body, "id")
-	code, body = do(t, srv, "POST", base+"/org-units", tok, `{"typeId":"`+typeID+`","name":"一车间"}`)
+	code, body = do(t, srv, "POST", base+"/org-units", tok, `{"name":"一车间"}`)
 	if code != http.StatusCreated {
 		t.Fatalf("org unit %d %s", code, body)
 	}
 	unitID := gjson(t, body, "id")
+	code, body = do(t, srv, "POST", base+"/org-units", tok, `{"name":"空节点"}`)
+	if code != http.StatusCreated {
+		t.Fatalf("empty unit %d %s", code, body)
+	}
+	emptyID := gjson(t, body, "id")
+	code, body = do(t, srv, "POST", base+"/org-units/"+emptyID+"/disable", tok, "")
+	if code != http.StatusNoContent {
+		t.Fatalf("disable unit %d %s", code, body)
+	}
+	code, body = do(t, srv, "POST", base+"/org-units/"+emptyID+"/enable", tok, "")
+	if code != http.StatusNoContent {
+		t.Fatalf("enable unit %d %s", code, body)
+	}
+	code, body = do(t, srv, "DELETE", base+"/org-units/"+emptyID, tok, "")
+	if code != http.StatusNoContent {
+		t.Fatalf("delete unused unit %d %s", code, body)
+	}
 	code, body = do(t, srv, "POST", base+"/people", tok, `{"loginName":"op1","displayName":"操作员"}`)
 	if code != http.StatusCreated {
 		t.Fatalf("person %d %s", code, body)
@@ -98,6 +110,10 @@ func TestFactoryHTTP(t *testing.T) {
 	code, body = do(t, srv, "POST", base+"/assignments", tok, `{"personId":"`+personID+`","orgUnitId":"`+unitID+`"}`)
 	if code != http.StatusNoContent {
 		t.Fatalf("assign %d %s", code, body)
+	}
+	code, body = do(t, srv, "DELETE", base+"/org-units/"+unitID, tok, "")
+	if code != http.StatusConflict || gjson(t, body, "error") != "still referenced" {
+		t.Fatalf("delete referenced unit %d %s", code, body)
 	}
 	missing := id.New()
 	code, body = do(t, srv, "POST", "/v1/factories/"+missing.String()+"/login", "", `{"loginName":"sa","password":"secret"}`)
