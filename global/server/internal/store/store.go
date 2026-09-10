@@ -41,27 +41,35 @@ func (s *Store) CreateAdmin(ctx context.Context, loginName, passwordHash string)
 	return row, nil
 }
 
-func (s *Store) CreateFactory(ctx context.Context, name string) (Factory, error) {
-	row := Factory{
-		ID:        id.New(),
-		Name:      name,
-		CreatedAt: time.Now().UTC(),
-	}
-	if err := s.db.WithContext(ctx).Create(&row).Error; err != nil {
-		return Factory{}, err
-	}
-	return row, nil
+// Ping 只确认 WAN 库连接可用。
+func (s *Store) Ping(ctx context.Context) error {
+	return s.db.WithContext(ctx).Exec("SELECT 1").Error
 }
 
-// BindInitialSuperAdmin 记下该厂初始超管身份与登录名，不存口令。
-func (s *Store) BindInitialSuperAdmin(ctx context.Context, factoryID, personID uuid.UUID, loginName string) error {
-	row := InitialSuperAdmin{
-		FactoryID: factoryID,
-		PersonID:  personID,
-		LoginName: loginName,
-		CreatedAt: time.Now().UTC(),
+// RegisterFactory 用调用方给的稳定身份写入名录，并在同一事务绑定初始超管，不存口令。
+func (s *Store) RegisterFactory(ctx context.Context, factoryID uuid.UUID, name string, personID uuid.UUID, saLogin string) (Factory, error) {
+	now := time.Now().UTC()
+	fac := Factory{ID: factoryID, Name: name, CreatedAt: now}
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&fac).Error; err != nil {
+			return err
+		}
+		return bindInitialSuperAdmin(tx, factoryID, personID, saLogin, now)
+	})
+	if err != nil {
+		return Factory{}, err
 	}
-	if err := s.db.WithContext(ctx).Create(&row).Error; err != nil {
+	return fac, nil
+}
+
+// BindInitialSuperAdmin 记下该厂初始超管身份与登录名；一厂只能绑一名。
+func (s *Store) BindInitialSuperAdmin(ctx context.Context, factoryID, personID uuid.UUID, loginName string) error {
+	return bindInitialSuperAdmin(s.db.WithContext(ctx), factoryID, personID, loginName, time.Now().UTC())
+}
+
+func bindInitialSuperAdmin(tx *gorm.DB, factoryID, personID uuid.UUID, loginName string, at time.Time) error {
+	row := InitialSuperAdmin{FactoryID: factoryID, PersonID: personID, LoginName: loginName, CreatedAt: at}
+	if err := tx.Create(&row).Error; err != nil {
 		if domain.IsUniqueViolation(err) {
 			return domain.ErrInitialSAExists
 		}

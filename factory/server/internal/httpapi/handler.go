@@ -2,32 +2,41 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 
 	"wmesh/factory/internal/hub"
 	"wmesh/factory/internal/platform/domain"
+	"wmesh/factory/internal/platform/secret"
 	"wmesh/factory/internal/service"
 )
 
 // Handler 按 URL 里的工厂身份选库，并把会话头交给应用服务。
 type Handler struct {
 	Hub            *hub.Hub
-	BootstrapToken string // 建厂引导共享口令，只用于 /internal/bootstrap
+	BootstrapToken string                      // 建厂引导共享口令，只用于 /internal/bootstrap
+	Version        string                      // 构建版本，随探活返回，便于核对升级是否生效
+	OSSProbe       func(context.Context) error // 探对象存储是否在线；空表示本厂未接 OSS
 }
 
 // New 组装厂内 HTTP 适配器。
 func New(h *hub.Hub, bootstrapToken string) *Handler {
-	return &Handler{Hub: h, BootstrapToken: bootstrapToken}
+	return &Handler{Hub: h, BootstrapToken: bootstrapToken, Version: "dev"}
 }
 
-// Router 暴露建厂引导和厂内账号组织接口。
+// Router 暴露探活、建厂引导和厂内账号组织接口；未知 API 路径统一回 JSON 404。
 func (h *Handler) Router() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", h.healthz)
+	mux.HandleFunc("/v1/", func(w http.ResponseWriter, _ *http.Request) { writeErr(w, domain.ErrNotFound) })
+	mux.HandleFunc("/internal/", func(w http.ResponseWriter, _ *http.Request) { writeErr(w, domain.ErrNotFound) })
 	mux.HandleFunc("POST /internal/bootstrap", h.bootstrap)
 	mux.HandleFunc("POST /v1/factories/{id}/login", h.login)
 	mux.HandleFunc("POST /v1/factories/{id}/activate", h.activate)
@@ -110,8 +119,36 @@ type assignReq struct {
 	OrgUnitID string `json:"orgUnitId"` // 本厂有效节点
 }
 
+type healthResp struct {
+	Status  string `json:"status"`  // ok 或 degraded
+	Version string `json:"version"` // 构建版本
+	DB      string `json:"db"`      // ok 或 down
+	OSS     string `json:"oss"`     // ok / down / off（未配置）
+}
+
+// healthz 库不通回 503 让编排判定不健康；OSS 掉线只标 degraded，不影响账号管理继续服务。
+func (h *Handler) healthz(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+	resp := healthResp{Status: "ok", Version: h.Version, DB: "ok", OSS: "off"}
+	code := http.StatusOK
+	if err := h.Hub.Ping(ctx); err != nil {
+		resp.Status, resp.DB, code = "degraded", "down", http.StatusServiceUnavailable
+		slog.Warn("healthz db ping failed", "err", err)
+	}
+	if h.OSSProbe != nil {
+		resp.OSS = "ok"
+		if err := h.OSSProbe(ctx); err != nil {
+			resp.Status, resp.OSS = "degraded", "down"
+			slog.Warn("healthz oss probe failed", "err", err)
+		}
+	}
+	writeJSON(w, code, resp)
+}
+
 func (h *Handler) bootstrap(w http.ResponseWriter, r *http.Request) {
-	if bearer(r) != h.BootstrapToken || h.BootstrapToken == "" {
+	// 共享口令恒定时间比对；没配口令时一律拒绝，不给空口令放行。
+	if h.BootstrapToken == "" || !secret.Equal(bearer(r), h.BootstrapToken) {
 		writeErr(w, domain.ErrUnauthorized)
 		return
 	}
@@ -457,10 +494,12 @@ func writeBadRequest(w http.ResponseWriter, err error) {
 	writeJSON(w, http.StatusBadRequest, errorBody{Error: err.Error()})
 }
 
+// writeErr 只把业务错误原话给前端；5xx 细节只进日志，不出网。
 func writeErr(w http.ResponseWriter, err error) {
 	code := statusOf(err)
 	msg := err.Error()
 	if code == http.StatusInternalServerError {
+		slog.Error("request failed", "err", err)
 		msg = "internal error"
 	}
 	writeJSON(w, code, errorBody{Error: msg})

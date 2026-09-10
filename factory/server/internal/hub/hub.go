@@ -46,6 +46,17 @@ func New(adminDSN string) (*Hub, error) {
 	return &Hub{adminDSN: adminDSN, admin: admin, tenants: map[uuid.UUID]*tenant{}}, nil
 }
 
+// Ping 只确认维护库连接可用，给探活用；不打开任何厂库。
+func (h *Hub) Ping(ctx context.Context) error {
+	h.mu.Lock()
+	admin := h.admin
+	h.mu.Unlock()
+	if admin == nil {
+		return domain.ErrNotFound
+	}
+	return admin.WithContext(ctx).Exec("SELECT 1").Error
+}
+
 // Bootstrap 为目标厂建库并写入待启用初始超管；激活口令只返回给调用方。
 func (h *Hub) Bootstrap(ctx context.Context, factoryID uuid.UUID, saLogin, saDisplay string) (uuid.UUID, string, error) {
 	svc, err := h.ensure(factoryID)

@@ -71,7 +71,7 @@ func (s *Store) FactoryByID(ctx context.Context, factoryID uuid.UUID) (Factory, 
 }
 
 func (s *Store) ListFactories(ctx context.Context) ([]Factory, error) {
-	var rows []Factory
+	rows := []Factory{}
 	err := s.db.WithContext(ctx).Order("created_at").Find(&rows).Error
 	return rows, err
 }
@@ -85,6 +85,13 @@ func (s *Store) InitialSuperAdmin(ctx context.Context, factoryID uuid.UUID) (Ini
 		return InitialSuperAdmin{}, err
 	}
 	return row, nil
+}
+
+// ListInitialSuperAdmins 一次取全部工厂的初始超管对账行，不含口令。
+func (s *Store) ListInitialSuperAdmins(ctx context.Context) ([]InitialSuperAdmin, error) {
+	rows := []InitialSuperAdmin{}
+	err := s.db.WithContext(ctx).Order("created_at").Find(&rows).Error
+	return rows, err
 }
 
 func (s *Store) ListAudit(ctx context.Context) ([]audit.Row, error) {

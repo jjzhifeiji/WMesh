@@ -29,9 +29,21 @@ func TestFactoryHTTP(t *testing.T) {
 	t.Cleanup(srv.Close)
 	base := "/v1/factories/" + fid.String()
 
-	code, body := do(t, srv, "POST", "/internal/bootstrap", "", `{"factoryId":"`+fid.String()+`","saLogin":"sa","saDisplay":"超管"}`)
+	code, body := do(t, srv, "GET", "/healthz", "", "")
+	if code != http.StatusOK || gjson(t, body, "db") != "ok" || gjson(t, body, "oss") != "off" {
+		t.Fatalf("healthz %d %s", code, body)
+	}
+	code, body = do(t, srv, "GET", "/v1/nope", "", "")
+	if code != http.StatusNotFound || gjson(t, body, "error") != "not found" {
+		t.Fatalf("unknown api %d %s", code, body)
+	}
+	code, body = do(t, srv, "POST", "/internal/bootstrap", "", `{"factoryId":"`+fid.String()+`","saLogin":"sa","saDisplay":"超管"}`)
 	if code != http.StatusUnauthorized {
 		t.Fatalf("anon bootstrap %d %s", code, body)
+	}
+	code, body = do(t, srv, "POST", "/internal/bootstrap", "boot-secre", `{"factoryId":"`+fid.String()+`","saLogin":"sa","saDisplay":"超管"}`)
+	if code != http.StatusUnauthorized {
+		t.Fatalf("wrong token bootstrap %d %s", code, body)
 	}
 	code, body = do(t, srv, "POST", "/internal/bootstrap", "boot-secret", `{"factoryId":"`+fid.String()+`","saLogin":"sa","saDisplay":"超管"}`)
 	if code != http.StatusCreated {
@@ -57,6 +69,9 @@ func TestFactoryHTTP(t *testing.T) {
 	}
 	if strings.Contains(body, "PasswordHash") || strings.Contains(body, "passwordHash") || strings.Contains(body, "activationTokenHash") {
 		t.Fatalf("secret leaked: %s", body)
+	}
+	if !strings.Contains(body, `"myGrants":[{`) || !strings.Contains(body, `"role":"factory_super_admin"`) {
+		t.Fatalf("catalog must expose caller's own grants: %s", body)
 	}
 	code, body = do(t, srv, "POST", base+"/org-types", tok, `{"name":"车间"}`)
 	if code != http.StatusCreated {

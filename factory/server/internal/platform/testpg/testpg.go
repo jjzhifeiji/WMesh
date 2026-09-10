@@ -3,7 +3,7 @@ package testpg
 
 import (
 	"context"
-	"fmt"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -53,7 +53,7 @@ func CreateDB(t *testing.T, admin *gorm.DB, prefix string) (name, dsn string) {
 	t.Cleanup(func() {
 		_ = admin.Exec("DROP DATABASE IF EXISTS " + quoteIdent(name) + " WITH (FORCE)").Error
 	})
-	dsn = swapDB(AdminDSN(), name)
+	dsn = swapDB(t, AdminDSN(), name)
 	return name, dsn
 }
 
@@ -80,11 +80,13 @@ func quoteIdent(name string) string {
 	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
 }
 
-func swapDB(dsn, name string) string {
-	const key = "/postgres"
-	i := strings.LastIndex(dsn, key)
-	if i < 0 {
-		return fmt.Sprintf("postgres://wmesh:wmesh@127.0.0.1:55433/%s?sslmode=disable", name)
+// swapDB 只换 DSN 里的库名，账号口令和参数照旧。
+func swapDB(t *testing.T, dsn, name string) string {
+	t.Helper()
+	u, err := url.Parse(dsn)
+	if err != nil {
+		t.Fatalf("parse dsn: %v", err)
 	}
-	return dsn[:i] + "/" + name + dsn[i+len(key):]
+	u.Path = "/" + name
+	return u.String()
 }

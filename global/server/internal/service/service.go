@@ -4,13 +4,13 @@ package service
 
 import (
 	"context"
-	"errors"
 	"time"
 
 	"github.com/google/uuid"
 
 	"wmesh/global/internal/platform/audit"
 	"wmesh/global/internal/platform/domain"
+	"wmesh/global/internal/platform/id"
 	"wmesh/global/internal/platform/secret"
 )
 
@@ -33,8 +33,8 @@ func NewService(store *Store, boot FactoryBootstrap) *Service {
 
 // CreatedFactory 是创建工厂的交付结果；激活口令只给夹具，不写 WAN 库。
 type CreatedFactory struct {
-	Factory         Factory   `json:"factory"`
-	SuperAdminID    uuid.UUID `json:"superAdminId"`
+	Factory         Factory   `json:"factory"`         // 刚写入名录的工厂
+	SuperAdminID    uuid.UUID `json:"superAdminId"`    // 厂库里的初始超管身份
 	ActivationToken string    `json:"activationToken"` // 一次性激活口令原文，禁止写入审计
 }
 
@@ -43,7 +43,18 @@ type Directory struct {
 	Initials  []InitialSuperAdmin `json:"initials"`  // 各厂初始超管身份，不含口令
 }
 
-// BootstrapAdmin 写入唯一 WAN 管理员；已有管理员则拒绝。
+// Ping 只确认 WAN 库可达，给探活用。
+func (s *Service) Ping(ctx context.Context) error {
+	return s.store.Ping(ctx)
+}
+
+// AdminExists 给进程启动判断是否还需引导，避免每次重启都留一条拒绝审计。
+func (s *Service) AdminExists(ctx context.Context) (bool, error) {
+	n, err := s.store.AdminCount(ctx)
+	return n > 0, err
+}
+
+// BootstrapAdmin 写入唯一 WAN 管理员；已有管理员则拒绝并留审计。
 func (s *Service) BootstrapAdmin(ctx context.Context, loginName, password string) error {
 	hash, err := secret.HashPassword(password)
 	if err != nil {
@@ -51,9 +62,6 @@ func (s *Service) BootstrapAdmin(ctx context.Context, loginName, password string
 	}
 	if _, err := s.store.CreateAdmin(ctx, loginName, hash); err != nil {
 		_ = s.audit(ctx, nil, &loginName, nil, "bootstrap_wan_admin", loginName, audit.Deny)
-		if errors.Is(err, domain.ErrWANAdminExists) {
-			return err
-		}
 		return err
 	}
 	return s.audit(ctx, nil, &loginName, nil, "bootstrap_wan_admin", loginName, audit.Allow)
@@ -113,18 +121,17 @@ func (s *Service) CreateFactory(ctx context.Context, token, name, saLogin, saDis
 		_ = s.audit(ctx, nil, nil, nil, "create_factory", name, audit.Deny)
 		return CreatedFactory{}, err
 	}
-	fac, err := s.store.CreateFactory(ctx, name)
+	// 先发身份、先在厂库落初始超管，成功后才进 WAN 名录；厂端失败时名录里不留没有超管的空厂。
+	fid := id.New()
+	personID, actToken, err := s.boot.Bootstrap(ctx, fid, saLogin, saDisplay)
 	if err != nil {
-		_ = s.audit(ctx, &admin.ID, nil, nil, "create_factory", name, audit.Deny)
+		_ = s.audit(ctx, &admin.ID, nil, &fid, "create_factory", name, audit.Deny)
 		return CreatedFactory{}, err
 	}
-	personID, actToken, err := s.boot.Bootstrap(ctx, fac.ID, saLogin, saDisplay)
+	// 名录与初始超管对账同一事务写入，避免只有其一。
+	fac, err := s.store.RegisterFactory(ctx, fid, name, personID, saLogin)
 	if err != nil {
-		_ = s.audit(ctx, &admin.ID, nil, &fac.ID, "create_factory", fac.ID.String(), audit.Deny)
-		return CreatedFactory{}, err
-	}
-	if err := s.store.BindInitialSuperAdmin(ctx, fac.ID, personID, saLogin); err != nil {
-		_ = s.audit(ctx, &admin.ID, nil, &fac.ID, "create_factory", fac.ID.String(), audit.Deny)
+		_ = s.audit(ctx, &admin.ID, nil, &fid, "create_factory", name, audit.Deny)
 		return CreatedFactory{}, err
 	}
 	if err := s.audit(ctx, &admin.ID, nil, &fac.ID, "create_factory", fac.ID.String()+" "+personID.String(), audit.Allow); err != nil {
@@ -189,13 +196,9 @@ func (s *Service) Directory(ctx context.Context, token string) (Directory, error
 	if err != nil {
 		return Directory{}, err
 	}
-	initials := make([]InitialSuperAdmin, 0, len(facs))
-	for _, f := range facs {
-		row, err := s.store.InitialSuperAdmin(ctx, f.ID)
-		if err != nil {
-			return Directory{}, err
-		}
-		initials = append(initials, row)
+	initials, err := s.store.ListInitialSuperAdmins(ctx)
+	if err != nil {
+		return Directory{}, err
 	}
 	if err := s.audit(ctx, &admin.ID, nil, nil, "read_directory", "wan", audit.Allow); err != nil {
 		return Directory{}, err

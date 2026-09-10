@@ -2,10 +2,13 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -15,17 +18,21 @@ import (
 
 // Handler 把会话头和应用服务接到路由上。
 type Handler struct {
-	svc *service.Service
+	svc      *service.Service
+	version  string                      // 构建版本，随探活返回，便于核对升级是否生效
+	OSSProbe func(context.Context) error // 探对象存储是否在线；空表示未接 OSS
 }
 
 // New 组装 WAN HTTP 适配器。
-func New(svc *service.Service) *Handler {
-	return &Handler{svc: svc}
+func New(svc *service.Service, version string) *Handler {
+	return &Handler{svc: svc, version: version}
 }
 
-// Router 只暴露名录、建厂和明确拒绝的代管入口。
+// Router 只暴露探活、名录、建厂和明确拒绝的代管入口；未知 API 路径统一回 JSON 404。
 func (h *Handler) Router() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", h.healthz)
+	mux.HandleFunc("/v1/", func(w http.ResponseWriter, _ *http.Request) { writeErr(w, domain.ErrNotFound) })
 	mux.HandleFunc("POST /v1/login", h.login)
 	mux.HandleFunc("POST /v1/logout", h.logout)
 	mux.HandleFunc("GET /v1/me", h.me)
@@ -73,6 +80,33 @@ type factoryOrgReq struct {
 
 type factoryRoleReq struct {
 	Target string `json:"target"` // 授权目标；WAN 不得代授
+}
+
+type healthResp struct {
+	Status  string `json:"status"`  // ok 或 degraded
+	Version string `json:"version"` // 构建版本
+	DB      string `json:"db"`      // ok 或 down
+	OSS     string `json:"oss"`     // ok / down / off（未配置）
+}
+
+// healthz 库不通回 503 让编排判定不健康；OSS 掉线只标 degraded，不影响名录管理继续服务。
+func (h *Handler) healthz(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+	resp := healthResp{Status: "ok", Version: h.version, DB: "ok", OSS: "off"}
+	code := http.StatusOK
+	if err := h.svc.Ping(ctx); err != nil {
+		resp.Status, resp.DB, code = "degraded", "down", http.StatusServiceUnavailable
+		slog.Warn("healthz db ping failed", "err", err)
+	}
+	if h.OSSProbe != nil {
+		resp.OSS = "ok"
+		if err := h.OSSProbe(ctx); err != nil {
+			resp.Status, resp.OSS = "degraded", "down"
+			slog.Warn("healthz oss probe failed", "err", err)
+		}
+	}
+	writeJSON(w, code, resp)
 }
 
 func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
@@ -224,11 +258,17 @@ func writeBadRequest(w http.ResponseWriter, err error) {
 	writeJSON(w, http.StatusBadRequest, errorBody{Error: err.Error()})
 }
 
+// writeErr 只把业务错误原话给前端；5xx 细节只进日志，不出网。
 func writeErr(w http.ResponseWriter, err error) {
 	code := statusOf(err)
 	msg := err.Error()
-	if code == http.StatusInternalServerError {
+	switch {
+	case code == http.StatusInternalServerError:
+		slog.Error("request failed", "err", err)
 		msg = "internal error"
+	case errors.Is(err, domain.ErrFactoryBootstrap):
+		slog.Error("factory bootstrap failed", "err", err)
+		msg = domain.ErrFactoryBootstrap.Error()
 	}
 	writeJSON(w, code, errorBody{Error: msg})
 }
@@ -248,6 +288,8 @@ func statusOf(err error) int {
 		errors.Is(err, domain.ErrAlreadyActivated), errors.Is(err, domain.ErrDuplicateAssignment),
 		errors.Is(err, domain.ErrDuplicateRoleGrant), errors.Is(err, domain.ErrDuplicateSession):
 		return http.StatusConflict
+	case errors.Is(err, domain.ErrFactoryBootstrap):
+		return http.StatusBadGateway
 	case isDomain(err), errors.Is(err, errInvalidID):
 		return http.StatusBadRequest
 	default:

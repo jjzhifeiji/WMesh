@@ -7,11 +7,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+
+	"wmesh/global/internal/platform/domain"
 )
 
 // Client 把建厂引导发到厂端 /internal/bootstrap。
@@ -33,7 +36,10 @@ type bootResp struct {
 	Error           string `json:"error"`
 }
 
-// Bootstrap 在目标厂库写入待启用初始超管，激活口令只带回调用方。
+// 厂端响应体上限，防止异常网关把整页 HTML 灌进来。
+const maxBody = 64 << 10
+
+// Bootstrap 在目标厂库写入待启用初始超管，激活口令只带回调用方；任何失败都收成 ErrFactoryBootstrap。
 func (c *Client) Bootstrap(ctx context.Context, factoryID uuid.UUID, saLogin, saDisplay string) (uuid.UUID, string, error) {
 	httpClient := c.HTTP
 	if httpClient == nil {
@@ -52,25 +58,29 @@ func (c *Client) Bootstrap(ctx context.Context, factoryID uuid.UUID, saLogin, sa
 	req.Header.Set("Authorization", "Bearer "+c.Token)
 	res, err := httpClient.Do(req)
 	if err != nil {
-		return uuid.Nil, "", err
+		return uuid.Nil, "", fmt.Errorf("%w: %v", domain.ErrFactoryBootstrap, err)
 	}
 	defer res.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(res.Body, maxBody))
+	if err != nil {
+		return uuid.Nil, "", fmt.Errorf("%w: read response: %v", domain.ErrFactoryBootstrap, err)
+	}
 	var out bootResp
-	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
-		return uuid.Nil, "", err
+	if jsonErr := json.Unmarshal(raw, &out); jsonErr != nil && res.StatusCode < 300 {
+		return uuid.Nil, "", fmt.Errorf("%w: bad response body", domain.ErrFactoryBootstrap)
 	}
 	if res.StatusCode >= 300 {
 		if out.Error != "" {
-			return uuid.Nil, "", fmt.Errorf("%s", out.Error)
+			return uuid.Nil, "", fmt.Errorf("%w: http %d: %s", domain.ErrFactoryBootstrap, res.StatusCode, out.Error)
 		}
-		return uuid.Nil, "", fmt.Errorf("factory bootstrap http %d", res.StatusCode)
+		return uuid.Nil, "", fmt.Errorf("%w: http %d", domain.ErrFactoryBootstrap, res.StatusCode)
 	}
 	personID, err := uuid.Parse(out.PersonID)
 	if err != nil {
-		return uuid.Nil, "", err
+		return uuid.Nil, "", fmt.Errorf("%w: bad person id", domain.ErrFactoryBootstrap)
 	}
 	if out.ActivationToken == "" {
-		return uuid.Nil, "", fmt.Errorf("factory bootstrap missing activation token")
+		return uuid.Nil, "", fmt.Errorf("%w: missing activation token", domain.ErrFactoryBootstrap)
 	}
 	return personID, out.ActivationToken, nil
 }

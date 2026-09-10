@@ -88,8 +88,9 @@ func (s *Service) Activate(ctx context.Context, loginName, activationToken, pass
 	return s.audit(ctx, &p.ID, &loginName, "activate", p.ID.String(), audit.Allow)
 }
 
+// activationOK 恒定时间比对激活口令哈希，不给按位猜测的机会。
 func activationOK(storedHash, token string) bool {
-	return storedHash == secret.TokenHash(token)
+	return secret.Equal(storedHash, secret.TokenHash(token))
 }
 
 // Login 只接受本厂有效账号；待启用、已停用或口令错误都拒绝，审计不记秘密。

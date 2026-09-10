@@ -1,0 +1,83 @@
+# 厂内一键部署：app（API + 管理端静态页）+ db（每厂一个库，按工厂身份自动建）+ oss（RustFS，S3 兼容对象存储）。
+# 用法：cp .env.example .env && 改口令 && docker compose up -d --build --wait
+name: wmesh-factory
+
+services:
+  app:
+    image: ${WMESH_REGISTRY:-}wmesh-factory-app:${WMESH_VERSION:-dev}
+    build:
+      context: .
+      args:
+        VERSION: ${WMESH_BUILD_VERSION:-${WMESH_VERSION:-dev}}
+    environment:
+      # 连维护库；各厂库 wmesh_fac_<id> 由服务按工厂身份在同一实例上创建
+      WMESH_DSN: postgres://wmesh:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/postgres?sslmode=disable
+      WMESH_BOOTSTRAP_TOKEN: ${WMESH_BOOTSTRAP_TOKEN:?set WMESH_BOOTSTRAP_TOKEN in .env}
+      WMESH_OSS_ENDPOINT: http://oss:9000
+      WMESH_OSS_BUCKET: ${OSS_BUCKET:-wmesh-factory}
+      WMESH_OSS_ACCESS_KEY: ${OSS_ACCESS_KEY:-wmesh}
+      WMESH_OSS_SECRET_KEY: ${OSS_SECRET_KEY:?set OSS_SECRET_KEY in .env}
+    ports:
+      - "${HTTP_PORT:-8081}:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+      oss:
+        condition: service_healthy
+    restart: unless-stopped
+    logging: &logging
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  db:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: wmesh
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql
+    ports:
+      - "15433:5432"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wmesh -d postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    logging: *logging
+
+  # RustFS（Apache-2.0，S3 兼容）：S3 端点 9000，管理台 9001（用同一对密钥登录）。
+  # 默认桶由 app 启动时按 WMESH_OSS_BUCKET 自动创建。MinIO 社区版已停更归档，不再使用。
+  oss:
+    image: rustfs/rustfs:1.0.0-rc.5
+    environment:
+      RUSTFS_VOLUMES: /data
+      RUSTFS_ADDRESS: 0.0.0.0:9000
+      RUSTFS_CONSOLE_ENABLE: "true"
+      RUSTFS_CONSOLE_ADDRESS: 0.0.0.0:9001
+      RUSTFS_ACCESS_KEY: ${OSS_ACCESS_KEY:-wmesh}
+      RUSTFS_SECRET_KEY: ${OSS_SECRET_KEY:?set OSS_SECRET_KEY in .env}
+      RUSTFS_OBS_LOGGER_LEVEL: info
+    volumes:
+      - ossdata:/data
+      - osslogs:/logs
+    ports:
+      - "${OSS_PORT:-9002}:9000"
+      - "${OSS_CONSOLE_PORT:-9003}:9001"
+    security_opt:
+      - "no-new-privileges:true"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9000/health >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    logging: *logging
+
+volumes:
+  pgdata:
+  ossdata:
+  osslogs:

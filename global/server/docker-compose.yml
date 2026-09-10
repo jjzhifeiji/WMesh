@@ -1,11 +1,16 @@
+# 仅供 go test 用的一次性测试库；每例测试自己建库、跑迁移、用完销毁。部署编排见上一级目录。
+name: wmesh-global-test
+
 services:
   postgres:
-    image: postgres:16-alpine
+    image: postgres:18-alpine
     environment:
       POSTGRES_USER: wmesh
       POSTGRES_PASSWORD: wmesh
     ports:
       - "55432:5432"
+    tmpfs:
+      - /var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U wmesh"]
       interval: 2s

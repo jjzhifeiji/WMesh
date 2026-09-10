@@ -1,9 +1,0 @@
-.git
-**/.DS_Store
-**/node_modules
-**/dist
-/bin/
-tmp/
-*.exe
-.env
-docs/device-date

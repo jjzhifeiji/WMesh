@@ -27,5 +27,6 @@ var (
 	ErrSessionExpired      = errors.New("session expired")
 	ErrLastAdmin           = errors.New("last factory super admin") // 会把有效厂级超管入口变成零
 	ErrMultiParent         = errors.New("org unit cannot have two parents")
-	ErrWorkContext         = errors.New("invalid work context") // 没选、选了未分配节点、或直属与节点同时选
+	ErrWorkContext         = errors.New("invalid work context")     // 没选、选了未分配节点、或直属与节点同时选
+	ErrFactoryBootstrap    = errors.New("factory bootstrap failed") // 厂端引导不可达或拒绝；WAN 不落名录，可重试
 )

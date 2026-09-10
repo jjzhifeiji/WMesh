@@ -1,2 +1,0 @@
-# 自建 Postgres：官方 16 打成我们的库镜像，库名和账号由编排注入。
-FROM postgres:16-alpine

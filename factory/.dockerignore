@@ -1,0 +1,9 @@
+**/node_modules
+**/dist
+**/.DS_Store
+**/*.md
+.env
+.env.*
+Makefile
+docker-compose.yml
+server/docker-compose.yml

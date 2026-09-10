@@ -31,16 +31,19 @@ func TestWANConstraints(t *testing.T) {
 		t.Fatalf("singleton admin: n=%d err=%v", n, err)
 	}
 
-	fac, err := s.CreateFactory(ctx, "厂A")
+	fac, err := s.RegisterFactory(ctx, id.New(), "厂A", id.New(), "sa-a")
 	if err != nil {
 		t.Fatalf("factory: %v", err)
 	}
-	pid := id.New()
-	if err := s.BindInitialSuperAdmin(ctx, fac.ID, pid, "sa-a"); err != nil {
-		t.Fatalf("bind sa: %v", err)
-	}
 	if err := s.BindInitialSuperAdmin(ctx, fac.ID, id.New(), "sa-a-2"); err != domain.ErrInitialSAExists {
 		t.Fatalf("second initial sa: %v", err)
+	}
+	// 同一身份重复注册会整体回滚，名录里不会多出一行。
+	if _, err := s.RegisterFactory(ctx, fac.ID, "厂A重复", id.New(), "sa-a-3"); err == nil {
+		t.Fatalf("duplicate factory id must fail")
+	}
+	if facs, err := s.ListFactories(ctx); err != nil || len(facs) != 1 {
+		t.Fatalf("factories after rollback: n=%d err=%v", len(facs), err)
 	}
 
 	if _, err := s.CreateSession(ctx, admin.ID, "tok-hash", time.Now().Add(time.Hour)); err != nil {

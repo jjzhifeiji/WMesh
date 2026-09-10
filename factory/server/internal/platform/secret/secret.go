@@ -13,9 +13,10 @@ import (
 	"golang.org/x/crypto/argon2"
 )
 
+// Argon2id 参数取 OWASP 推荐下限（19 MiB、2 轮、单线程）；参数随哈希一起存，日后调高不影响旧口令校验。
 const (
-	argonTime    = 1
-	argonMemory  = 16 * 1024
+	argonTime    = 2
+	argonMemory  = 19 * 1024
 	argonThreads = uint8(1)
 	argonKeyLen  = 32
 	saltLen      = 16
@@ -70,7 +71,13 @@ func RandomToken() (string, error) {
 	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 
+// TokenHash 是令牌落库形态；令牌本身随机高熵，SHA-256 足够。
 func TokenHash(token string) string {
 	sum := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(sum[:])
+}
+
+// Equal 恒定时间比较两段秘密（如共享口令、哈希串），避免按前缀长度泄露。
+func Equal(a, b string) bool {
+	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }

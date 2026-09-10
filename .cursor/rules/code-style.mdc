@@ -8,7 +8,7 @@ alwaysApply: true
 
 编辑本仓 Go 时遵循下列规范。分库与账号边界见 `docs/平台架构核心需求.md`、`docs/specs/01-账号体系.md`。
 
-工程目录：`global/`、`factory/` 各自只有 `frontend/`（React）和 `server/`（Go）。`go.mod`、`docker-compose.yml`、`migrations/` 只放在 `server/` 里。底座在 `internal/platform/`，业务在 `internal/service` 与 `internal/store`，验收测试与应用服务同目录。禁止把业务 Go 放在工程根下。禁止 WAN 查询厂内人员、组织、角色、日常口令。表结构只走本工程 `migrations/` 向前 SQL；禁止 GORM AutoMigrate；禁止改写已落库路径快照或审计原文。标识符与错误字符串用英文；业务对错用本侧 `internal/platform/domain`，不把 SQL 原文抛给调用方。矩阵验收走应用服务和 `go test`；HTTP 只做会话与 JSON 适配，不得绕过 Service，也不得把 SQL 原文抛给前端。
+工程目录：`global/`、`factory/` 各自只有 `frontend/`（React）和 `server/`（Go）两个子目录，外加本工程的部署与说明文件（`Dockerfile`、`docker-compose.yml`、`Makefile`、`.env.example`、`README.md`）。`go.mod`、`migrations/` 只放在 `server/` 里；`server/docker-compose.yml` 只起测试库。仓库根不放部署文件。底座在 `internal/platform/`，业务在 `internal/service` 与 `internal/store`，验收测试与应用服务同目录。禁止把业务 Go 放在工程根下。禁止 WAN 查询厂内人员、组织、角色、日常口令。表结构只走本工程 `migrations/` 向前 SQL；禁止 GORM AutoMigrate；禁止改写已落库路径快照或审计原文。标识符与错误字符串用英文；业务对错用本侧 `internal/platform/domain`，不把 SQL 原文抛给调用方。矩阵验收走应用服务和 `go test`；HTTP 只做会话与 JSON 适配，不得绕过 Service，也不得把 SQL 原文抛给前端。
 
 ## 1. 注释
 
@@ -19,11 +19,11 @@ alwaysApply: true
 - **包**：管什么、明确不管什么。
 - **导出类型**：一行 godoc，说清职责。
 - **导出函数 / 方法 / 错误**：签名正上方一行 godoc。
-- **模型 / 请求 / 响应 / DTO 字段**：每业务字段一行 `//`；状态注明枚举出处。
+- **模型 / 请求 / 响应 / DTO 字段**：每业务字段一行 `//`；落库实体每个列（含 id、时间戳、哈希）都要有；状态注明枚举出处。
 - **业务常量 / 包级业务 var**：须有注释。
 - **方法内关键逻辑**：默认拒绝、最后管理员、工作上下文、分库边界、停用保护、路径快照、无环、幂等——inline `//` 写约束与原因，不复述代码。
 - **跨包 / 跨层调用**（service、store、audit、secret）：调用前一行 `//` 说明做什么。同函数内连续同类写错误可共用一句。
-- **迁移 SQL**：文件头写本版改了什么；独有约束在旁边注明。
+- **迁移 SQL**：文件头写本版改了什么；独有约束在旁边注明。**每张表、每个列必须 `COMMENT ON`（库内注释），与实体注释同义。**
 - **测试**：文件头写对应阶段或矩阵范围；`TestMatrix` 子测试名保持编号即可。
 
 **应当**
@@ -74,3 +74,7 @@ cmd/server → internal/httpapi → internal/service → Store → 本侧库
 | 导入 `wmesh/global` | `factory/server/`（厂内不查 WAN 库） |
 
 改库表 / store / 认证授权路径前：在对应 `server/` 目录跑 `go test ./...`。
+
+## 3. 前端分层（frontend/src）
+
+`app/`（装配：providers / router / routes / navigation）→ `layouts/`（骨架）→ `features/<功能>/`（`api.ts` 放类型与查询/变更 hook，页面与弹窗同目录）→ `shared/`（api client、auth、ui、labels，不含业务）。页面不直接 `fetch`，一律经 `shared/api/client`；路径只用 `app/routes.ts` 常量；新功能 = 新 `features/` 目录 + 路由一条 + 菜单一项。改完跑 `npm run lint && npm run typecheck`。

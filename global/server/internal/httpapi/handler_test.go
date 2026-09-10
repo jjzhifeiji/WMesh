@@ -34,10 +34,18 @@ func TestWANHTTP(t *testing.T) {
 	if err := svc.BootstrapAdmin(context.Background(), "w", "wan-secret"); err != nil {
 		t.Fatalf("bootstrap: %v", err)
 	}
-	srv := httptest.NewServer(httpapi.New(svc).Router())
+	srv := httptest.NewServer(httpapi.New(svc, "test").Router())
 	t.Cleanup(srv.Close)
 
-	code, body := do(t, srv, "POST", "/v1/login", "", `{"loginName":"w","password":"bad"}`)
+	code, body := do(t, srv, "GET", "/healthz", "", "")
+	if code != http.StatusOK || gjson(t, body, "db") != "ok" || gjson(t, body, "version") != "test" || gjson(t, body, "oss") != "off" {
+		t.Fatalf("healthz %d %s", code, body)
+	}
+	code, body = do(t, srv, "GET", "/v1/nope", "", "")
+	if code != http.StatusNotFound || gjson(t, body, "error") != "not found" {
+		t.Fatalf("unknown api %d %s", code, body)
+	}
+	code, body = do(t, srv, "POST", "/v1/login", "", `{"loginName":"w","password":"bad"}`)
 	if code != http.StatusUnauthorized {
 		t.Fatalf("bad login %d %s", code, body)
 	}

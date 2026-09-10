@@ -1,4 +1,4 @@
-// Package migrate 按文件名顺序执行向前 SQL，不做生产降级。
+// Package migrate 按文件名顺序执行向前 SQL，不做生产降级，也不改已落库的历史数据。
 package migrate
 
 import (
@@ -11,7 +11,7 @@ import (
 	"gorm.io/gorm"
 )
 
-// Up 按文件名顺序套用尚未记录的 SQL；已套用的跳过，避免进程重启把表再建一遍。
+// Up 按文件名顺序套用尚未记录的 SQL；每个文件连同记录行在一个事务里，失败整体回滚，重启可重试。
 func Up(db *gorm.DB, fsys fs.FS, dir string) error {
 	if err := db.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
 		name TEXT PRIMARY KEY,
@@ -19,19 +19,8 @@ func Up(db *gorm.DB, fsys fs.FS, dir string) error {
 	)`).Error; err != nil {
 		return err
 	}
-	entries, err := fs.ReadDir(fsys, dir)
+	names, err := listSQL(fsys, dir)
 	if err != nil {
-		return err
-	}
-	names := make([]string, 0, len(entries))
-	for _, e := range entries {
-		if e.IsDir() || path.Ext(e.Name()) != ".sql" {
-			continue
-		}
-		names = append(names, e.Name())
-	}
-	sort.Strings(names)
-	if err := stampLegacy(db, names); err != nil {
 		return err
 	}
 	for _, name := range names {
@@ -46,53 +35,113 @@ func Up(db *gorm.DB, fsys fs.FS, dir string) error {
 		if err != nil {
 			return fmt.Errorf("read %s: %w", name, err)
 		}
-		for i, stmt := range splitSQL(string(body)) {
-			if err := db.Exec(stmt).Error; err != nil {
-				return fmt.Errorf("apply %s #%d: %w", name, i+1, err)
+		err = db.Transaction(func(tx *gorm.DB) error {
+			for i, stmt := range splitSQL(string(body)) {
+				if err := tx.Exec(stmt).Error; err != nil {
+					return fmt.Errorf("apply %s #%d: %w", name, i+1, err)
+				}
 			}
-		}
-		if err := db.Exec("INSERT INTO schema_migrations (name, applied_at) VALUES (?, NOW())", name).Error; err != nil {
+			return tx.Exec("INSERT INTO schema_migrations (name, applied_at) VALUES (?, NOW())", name).Error
+		})
+		if err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// stampLegacy 给改版前已经建好表的库补迁移记录，避免重启再执行建表 SQL。
-func stampLegacy(db *gorm.DB, names []string) error {
-	var n int64
-	if err := db.Raw("SELECT COUNT(*) FROM schema_migrations").Scan(&n).Error; err != nil {
-		return err
+func listSQL(fsys fs.FS, dir string) ([]string, error) {
+	entries, err := fs.ReadDir(fsys, dir)
+	if err != nil {
+		return nil, err
 	}
-	if n > 0 {
-		return nil
-	}
-	var exists bool
-	if err := db.Raw(`SELECT EXISTS (
-		SELECT 1 FROM information_schema.tables
-		WHERE table_schema = 'public' AND table_name IN ('people', 'factories')
-	)`).Scan(&exists).Error; err != nil {
-		return err
-	}
-	if !exists {
-		return nil
-	}
-	for _, name := range names {
-		if err := db.Exec("INSERT INTO schema_migrations (name, applied_at) VALUES (?, NOW())", name).Error; err != nil {
-			return err
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if e.IsDir() || path.Ext(e.Name()) != ".sql" {
+			continue
 		}
+		names = append(names, e.Name())
 	}
-	return nil
+	sort.Strings(names)
+	return names, nil
 }
 
+// splitSQL 按分号切语句，但不切开单引号串、$$ 函数体和行注释里的分号。
 func splitSQL(s string) []string {
-	parts := strings.Split(s, ";")
-	out := make([]string, 0, len(parts))
-	for _, p := range parts {
-		p = strings.TrimSpace(p)
-		if p != "" {
-			out = append(out, p)
+	var out []string
+	var cur strings.Builder
+	flush := func() {
+		if t := strings.TrimSpace(cur.String()); t != "" {
+			out = append(out, t)
+		}
+		cur.Reset()
+	}
+	for i := 0; i < len(s); {
+		switch {
+		case strings.HasPrefix(s[i:], "--"):
+			// 行注释整行照抄，里面的分号不算语句结束。
+			end := strings.IndexByte(s[i:], '\n')
+			if end < 0 {
+				end = len(s) - i
+			}
+			cur.WriteString(s[i : i+end])
+			i += end
+		case s[i] == '\'':
+			// 单引号串，'' 是转义；没闭合就照抄到结尾交给数据库报错。
+			j := i + 1
+			for j < len(s) {
+				if s[j] == '\'' {
+					if j+1 < len(s) && s[j+1] == '\'' {
+						j += 2
+						continue
+					}
+					break
+				}
+				j++
+			}
+			if j < len(s) {
+				j++
+			}
+			cur.WriteString(s[i:j])
+			i = j
+		case s[i] == '$':
+			tag := dollarTag(s[i:])
+			if tag == "" {
+				cur.WriteByte(s[i])
+				i++
+				continue
+			}
+			j := len(s)
+			if end := strings.Index(s[i+len(tag):], tag); end >= 0 {
+				j = i + len(tag) + end + len(tag)
+			}
+			cur.WriteString(s[i:j])
+			i = j
+		case s[i] == ';':
+			flush()
+			i++
+		default:
+			cur.WriteByte(s[i])
+			i++
 		}
 	}
+	flush()
 	return out
+}
+
+// dollarTag 识别 $$ 或 $tag$ 开头，返回完整标记；不是则返回空。
+func dollarTag(s string) string {
+	if len(s) < 2 || s[0] != '$' {
+		return ""
+	}
+	for j := 1; j < len(s); j++ {
+		c := s[j]
+		if c == '$' {
+			return s[:j+1]
+		}
+		if !(c == '_' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || j > 1 && c >= '0' && c <= '9') {
+			return ""
+		}
+	}
+	return ""
 }

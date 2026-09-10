@@ -1,0 +1,75 @@
+/* 只放布局骨架与少量全局样式；组件样式交给 antd 主题。 */
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+.admin-layout {
+  min-height: 100vh;
+}
+
+.admin-brand {
+  height: 56px;
+  display: flex;
+  align-items: center;
+  padding: 0 20px;
+  color: #fff;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.admin-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 24px;
+  background: #fff;
+  border-bottom: 1px solid #f0f0f0;
+  height: 56px;
+  line-height: 56px;
+}
+
+.admin-content {
+  padding: 24px;
+}
+
+.page-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.auth-layout {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  background: linear-gradient(160deg, #eef3f0 0%, #f7f5ef 100%);
+  padding: 24px;
+}
+
+.auth-card {
+  width: 100%;
+  max-width: 400px;
+}
+
+.secret-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.secret-item {
+  display: grid;
+  gap: 2px;
+  word-break: break-all;
+}
