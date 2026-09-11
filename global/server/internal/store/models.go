@@ -66,3 +66,85 @@ type Client struct {
 }
 
 func (Client) TableName() string { return "clients" }
+
+const (
+	KindProcess = "process" // 可复用工艺
+	KindProject = "project" // 一次作业工程
+
+	AssetLevelPlatform = "platform" // 平台级，只在 WAN
+
+	AssetDraft     = "draft"     // 草稿
+	AssetAvailable = "available" // 可用
+	AssetDisabled  = "disabled"  // 停用
+)
+
+// AssetDep 是工程钉死的一条工艺依赖。
+type AssetDep struct {
+	ID       uuid.UUID `json:"id"`       // 被依赖工艺稳定身份
+	Revision int64      `json:"revision"` // 钉死的工艺修订
+	Digest   []byte     `json:"digest"`   // 当时该修订的 SHA-256 摘要
+}
+
+// AssetSnapshot 是厂级升平台用的内存快照，不测协议。
+type AssetSnapshot struct {
+	SourceID        uuid.UUID  // 源厂级身份
+	SourceRevision  int64      // 源修订
+	SourceFactoryID uuid.UUID  // 源厂
+	Kind            string     // process / project
+	Name            string     // 显示名
+	Content         []byte     // 正文
+	Digest          []byte     // 摘要
+	Copyable        bool       // 源是否可复制
+	Status          string     // 源状态
+	Deps            []AssetDep // 源依赖
+}
+
+// Asset 是一条平台级工艺或工程的当前行。
+type Asset struct {
+	ID              uuid.UUID  // 稳定身份
+	Kind            string     // process / project
+	Level           string     // 固定 platform
+	Name            string     // 显示名
+	Status          string     // draft / available / disabled
+	Copyable        bool       // 平台级必须为否
+	Revision        int64      // 当前修订
+	Content         []byte     // 正文；不进审计
+	Digest          []byte     // SHA-256 32 字节
+	CreatorID       uuid.UUID  // WAN 管理员
+	SourceID        *uuid.UUID // 升档源厂级身份
+	SourceRevision  *int64    // 升档源修订
+	SourceFactoryID *uuid.UUID // 升档源厂
+	Deps            []AssetDep // 工艺必须空
+	CreatedAt       time.Time  // 创建时间
+	UpdatedAt       time.Time  // 最近升高修订的时间
+}
+
+// AssetWrite 是一次改名/改内容/改状态/改依赖的写入；可复制在 WAN 保持为否。
+type AssetWrite struct {
+	Name    string     // 显示名
+	Content []byte     // 正文
+	Digest  []byte     // 与正文对应的摘要
+	Status  string     // 状态
+	Deps    []AssetDep // 工程依赖；工艺必须空
+}
+
+type assetRow struct {
+	ID              uuid.UUID  `gorm:"type:uuid;primaryKey"` // 稳定身份
+	Kind            string     `gorm:"not null"`             // process / project
+	Level           string     `gorm:"not null"`             // 固定 platform
+	Name            string     `gorm:"not null"`             // 显示名
+	Status          string     `gorm:"not null"`             // draft / available / disabled
+	Copyable        bool       `gorm:"not null"`             // 必须为否
+	Revision        int64      `gorm:"not null"`             // 当前修订
+	Content         []byte     `gorm:"type:bytea;not null"` // 正文
+	Digest          []byte     `gorm:"type:bytea;not null"` // SHA-256
+	CreatorID       uuid.UUID  `gorm:"type:uuid;not null"`   // WAN 管理员
+	SourceID        *uuid.UUID `gorm:"type:uuid"`            // 升档源厂级身份
+	SourceRevision  *int64     `gorm:"column:source_revision"` // 升档源修订
+	SourceFactoryID *uuid.UUID `gorm:"type:uuid"`            // 升档源厂
+	Deps            []byte     `gorm:"type:jsonb;not null"`  // 依赖 JSON
+	CreatedAt       time.Time  `gorm:"not null"`             // 创建时间
+	UpdatedAt       time.Time  `gorm:"not null"`             // 最近升高修订的时间
+}
+
+func (assetRow) TableName() string { return "assets" }

@@ -25,6 +25,15 @@ const (
 
 	ClientStatusBound = store.ClientStatusBound
 	ClientStatusVoid  = store.ClientStatusVoid
+
+	KindProcess = store.KindProcess
+	KindProject = store.KindProject
+
+	AssetLevelFactory  = store.AssetLevelFactory
+	AssetLevelPersonal = store.AssetLevelPersonal
+	AssetDraft         = store.AssetDraft
+	AssetAvailable     = store.AssetAvailable
+	AssetDisabled      = store.AssetDisabled
 )
 
 func validScope(role, scopeKind string, orgUnitID *uuid.UUID) bool {
@@ -49,4 +58,7 @@ type (
 	OrgOption          = store.OrgOption
 	RoleSnapshot       = store.RoleSnapshot
 	PersonOfflineGrant = store.PersonOfflineGrant
+	Asset              = store.Asset
+	AssetDep           = store.AssetDep
+	AssetSnapshot      = store.AssetSnapshot
 )

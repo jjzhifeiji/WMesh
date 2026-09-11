@@ -1,4 +1,4 @@
-// Package store 只读写本厂库：人员、组织、角色、会话、归属桩和本厂 Client 凭证。
+// Package store 只读写本厂库：人员、组织、角色、会话、归属桩、本厂 Client 凭证和本厂工艺/工程。
 // 不判定允许/拒绝，也不回调应用服务。
 package store
 
@@ -248,7 +248,7 @@ func hasRows(db *gorm.DB, model any, query string, args ...any) (bool, error) {
 // pathMentions 看事实/资产路径快照里是否出现过该身份。
 func pathMentions(db *gorm.DB, key string, id uuid.UUID) (bool, error) {
 	payload := fmt.Sprintf(`[{"%s":"%s"}]`, key, id)
-	for _, table := range []string{"fact_stubs", "personal_asset_stubs"} {
+	for _, table := range []string{"fact_stubs", "personal_asset_stubs", "assets"} {
 		var n int64
 		err := db.Raw("SELECT COUNT(*) FROM "+table+" WHERE org_path @> ?::jsonb", payload).Scan(&n).Error
 		if err != nil {
@@ -277,6 +277,7 @@ func (s *Store) DeleteOrgUnit(ctx context.Context, unitID uuid.UUID) error {
 			{&RoleGrant{}, "org_unit_id = ? AND status = ?", []any{unitID, StatusActive}},
 			{&factRow{}, "org_unit_id = ?", []any{unitID}},
 			{&assetRow{}, "org_unit_id = ?", []any{unitID}},
+			{&governedAssetRow{}, "org_unit_id = ?", []any{unitID}},
 		}
 		for _, c := range checks {
 			ok, err := hasRows(tx, c.model, c.query, c.args...)

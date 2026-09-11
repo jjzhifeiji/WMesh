@@ -31,6 +31,8 @@ func NewService(store *Store, boot FactoryBootstrap) *Service {
 	return &Service{store: store, boot: boot}
 }
 
+func (s *Service) Store() *Store { return s.store }
+
 // CreatedFactory 是创建工厂的交付结果；激活口令只给夹具，不写 WAN 库。
 type CreatedFactory struct {
 	Factory         Factory   `json:"factory"`         // 刚写入名录的工厂

@@ -1,4 +1,4 @@
-// Package store 只碰 WAN 库：管理员、工厂名录、初始超管对账、Client 绑定和审计。
+// Package store 只碰 WAN 库：管理员、工厂名录、初始超管对账、Client 绑定、平台级资产和审计。
 // 不判定允许/拒绝，也不回调应用服务；不见厂内人员、组织或人员离线授权。
 package store
 
@@ -14,7 +14,7 @@ import (
 	"wmesh/global/internal/platform/id"
 )
 
-// Store 只碰 WAN 库：管理员、工厂名录、Client 绑定和 WAN 审计。
+// Store 只碰 WAN 库：管理员、工厂名录、Client 绑定、平台级资产和 WAN 审计。
 type Store struct {
 	db *gorm.DB
 }

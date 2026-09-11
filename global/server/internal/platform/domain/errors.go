@@ -34,4 +34,9 @@ var (
 	ErrFactoryKeyExists    = errors.New("factory public key already registered")
 	ErrClientBound         = errors.New("client already bound to a factory") // 已属一厂，不能再绑到另一厂
 	ErrUnbound             = errors.New("client is not bound")               // 未绑定不能改绑
+	ErrRevisionConflict    = errors.New("revision does not match")         // 资产期望修订对不上
+	ErrIntegrity           = errors.New("asset integrity check failed")      // 正文与摘要不一致或摘要长度不对
+	ErrAssetNotAvailable   = errors.New("asset is not available")            // 草稿或停用，不能当可用资产
+	ErrAssetNotCopyable    = errors.New("asset is not copyable")            // 不可复制不得升档
+	ErrAssetDependency     = errors.New("asset dependency missing or mismatched") // 工程依赖缺失或错配
 )

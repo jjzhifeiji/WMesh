@@ -25,6 +25,16 @@ const (
 
 	ScopeFactory = "factory"  // 覆盖本厂及当时全部组织节点
 	ScopeOrgUnit = "org_unit" // 只覆盖该节点及当时子树
+
+	KindProcess = "process" // 可复用工艺
+	KindProject = "project" // 一次作业工程
+
+	AssetLevelFactory  = "factory"  // 本厂厂级
+	AssetLevelPersonal = "personal" // 本厂个人级
+
+	AssetDraft     = "draft"     // 草稿：不可依赖、不可升档
+	AssetAvailable = "available" // 可用
+	AssetDisabled  = "disabled"  // 停用后不得改内容或升档
 )
 
 // Person 是本厂一个自然人账号，固定只属于本厂库，不属于任何组织节点。
@@ -231,3 +241,79 @@ type assetRow struct {
 }
 
 func (assetRow) TableName() string { return "personal_asset_stubs" }
+
+// AssetDep 是工程钉死的一条工艺依赖：身份、修订和当时摘要。
+type AssetDep struct {
+	ID       uuid.UUID `json:"id"`       // 被依赖工艺稳定身份
+	Revision int64      `json:"revision"` // 钉死的工艺修订
+	Digest   []byte     `json:"digest"`   // 当时该修订的 SHA-256 摘要
+}
+
+// AssetSnapshot 是厂级升平台用的内存快照，不测协议。
+type AssetSnapshot struct {
+	SourceID        uuid.UUID  // 源厂级身份
+	SourceRevision  int64      // 源修订
+	SourceFactoryID uuid.UUID  // 源厂
+	Kind            string     // process / project
+	Name            string     // 显示名
+	Content         []byte     // 正文
+	Digest          []byte     // 摘要
+	Copyable        bool       // 源是否可复制
+	Status          string     // 源状态
+	Deps            []AssetDep // 源依赖（身份+修订+摘要）
+}
+
+// Asset 是本厂一条工艺或工程的当前行，不含历史正文。
+type Asset struct {
+	ID             uuid.UUID  // 稳定身份
+	Kind           string     // process / project
+	Level          string     // factory / personal
+	Name           string     // 显示名，不当身份
+	Status         string     // draft / available / disabled
+	Copyable       bool       // 可否升档
+	Revision       int64      // 当前修订
+	Content        []byte     // 不透明正文；不进审计
+	Digest         []byte     // SHA-256 32 字节
+	CreatorID      uuid.UUID  // 创建人
+	FactoryID      uuid.UUID  // 所属本厂
+	OrgUnitID      *uuid.UUID // 创建时节点；直属为空
+	OrgPath        []PathNode // 创建时路径
+	SourceID       *uuid.UUID // 升档源身份
+	SourceRevision *int64    // 升档源修订
+	Deps           []AssetDep // 工艺必须空
+	CreatedAt      time.Time  // 创建时间
+	UpdatedAt      time.Time  // 最近升高修订的时间
+}
+
+// AssetWrite 是一次改名/改内容/改可复制/改状态/改依赖的写入。
+type AssetWrite struct {
+	Name     string     // 显示名
+	Content  []byte     // 正文
+	Digest   []byte     // 与正文对应的摘要
+	Copyable bool       // 可复制
+	Status   string     // 状态
+	Deps     []AssetDep // 工程依赖；工艺必须空
+}
+
+type governedAssetRow struct {
+	ID             uuid.UUID  `gorm:"type:uuid;primaryKey"` // 稳定身份
+	Kind           string     `gorm:"not null"`             // process / project
+	Level          string     `gorm:"not null"`             // factory / personal
+	Name           string     `gorm:"not null"`             // 显示名
+	Status         string     `gorm:"not null"`             // draft / available / disabled
+	Copyable       bool       `gorm:"not null"`             // 可否升档
+	Revision       int64      `gorm:"not null"`             // 当前修订
+	Content        []byte     `gorm:"type:bytea;not null"` // 正文
+	Digest         []byte     `gorm:"type:bytea;not null"` // SHA-256
+	CreatorID      uuid.UUID  `gorm:"type:uuid;not null"`   // 创建人
+	FactoryID      uuid.UUID  `gorm:"type:uuid;not null"`   // 所属本厂
+	OrgUnitID      *uuid.UUID `gorm:"type:uuid"`            // 创建时节点
+	OrgPath        []byte     `gorm:"type:jsonb;not null"`  // 路径快照
+	SourceID       *uuid.UUID `gorm:"type:uuid"`            // 升档源
+	SourceRevision *int64     `gorm:"column:source_revision"` // 升档源修订
+	Deps           []byte     `gorm:"type:jsonb;not null"`  // 依赖 JSON
+	CreatedAt      time.Time  `gorm:"not null"`             // 创建时间
+	UpdatedAt      time.Time  `gorm:"not null"`             // 最近升高修订的时间
+}
+
+func (governedAssetRow) TableName() string { return "assets" }

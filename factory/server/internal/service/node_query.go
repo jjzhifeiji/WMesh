@@ -13,7 +13,7 @@ import (
 type RuntimeGrantView struct {
 	ClientID  uuid.UUID `json:"clientId"`  // 签给哪台 Client
 	Revision  int64     `json:"revision"`  // 该 Client 最高修订
-	CanRun    bool      `json:"canRun"`   // 本修订是否允许运行
+	CanRun    bool      `json:"canRun"`    // 本修订是否允许运行
 	NotBefore time.Time `json:"notBefore"` // 生效时间
 	NotAfter  time.Time `json:"notAfter"`  // 失效时间
 	CreatedAt time.Time `json:"createdAt"` // 写入时间
@@ -24,12 +24,12 @@ type PersonGrantView struct {
 	PersonID      uuid.UUID      `json:"personId"`      // 本厂账号
 	ClientID      uuid.UUID      `json:"clientId"`      // 绑定 Client
 	LoginName     string         `json:"loginName"`     // 签发时登录名
-	AllowDirect   bool           `json:"allowDirect"`    // 是否允许 Factory 直属
-	OrgSnapshot   []OrgOption    `json:"orgSnapshot"`    // 当时可选节点
+	AllowDirect   bool           `json:"allowDirect"`   // 是否允许 Factory 直属
+	OrgSnapshot   []OrgOption    `json:"orgSnapshot"`   // 当时可选节点
 	RolesSnapshot []RoleSnapshot `json:"rolesSnapshot"` // 当时角色
 	Active        bool           `json:"active"`        // 签发时账号是否有效
-	NotBefore     time.Time      `json:"notBefore"`      // 生效时间
-	NotAfter      time.Time      `json:"notAfter"`       // 失效时间
+	NotBefore     time.Time      `json:"notBefore"`     // 生效时间
+	NotAfter      time.Time      `json:"notAfter"`      // 失效时间
 	Revision      int64          `json:"revision"`      // 人员授权修订
 }
 

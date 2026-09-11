@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 
 	"wmesh/factory/internal/platform/audit"
+	"wmesh/factory/internal/platform/digest"
 	"wmesh/factory/internal/platform/domain"
 	"wmesh/factory/internal/platform/id"
 	"wmesh/factory/internal/platform/testpg"
@@ -363,6 +364,97 @@ func TestClientBindingAndGrants(t *testing.T) {
 	}
 	if err := s.AppendAudit(ctx, audit.Event{Action: "issue", Target: cid.String(), Result: audit.Allow, TimeSource: audit.Local}); err != nil {
 		t.Fatalf("local audit: %v", err)
+	}
+}
+
+func TestFactoryAssets(t *testing.T) {
+	ctx := context.Background()
+	facDB, facID := testpg.Fresh(t)
+	s := store.Open(facDB, facID)
+	p, err := s.CreatePerson(ctx, "pe", "工艺师", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unit, err := s.CreateOrgUnit(ctx, "车间", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, err := s.PathSnapshot(ctx, unit.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := []byte(`{"current":200}`)
+	sum := digest.Sum(body)
+	a, err := s.InsertGovernedAsset(ctx, store.Asset{
+		Kind: store.KindProcess, Level: store.AssetLevelFactory, Name: "焊接",
+		Status: store.AssetDraft, Copyable: true, Content: body, Digest: sum,
+		CreatorID: p.ID, OrgUnitID: &unit.ID, OrgPath: path,
+	})
+	if err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	if a.ID == uuid.Nil || a.Revision != 1 || a.FactoryID != facID || a.Name != "焊接" {
+		t.Fatalf("asset: %+v", a)
+	}
+	oldID := a.ID
+	renamed, err := s.UpdateGovernedAsset(ctx, a.ID, 1, store.AssetWrite{
+		Name: "焊接-2", Content: body, Digest: sum, Copyable: true, Status: store.AssetDraft,
+	})
+	if err != nil || renamed.ID != oldID || renamed.Revision != 2 || renamed.Name != "焊接-2" {
+		t.Fatalf("rename: %+v %v", renamed, err)
+	}
+	if _, err := s.UpdateGovernedAsset(ctx, a.ID, 1, store.AssetWrite{
+		Name: "旧修订", Content: body, Digest: sum, Copyable: true, Status: store.AssetDraft,
+	}); err != domain.ErrRevisionConflict {
+		t.Fatalf("conflict: %v", err)
+	}
+	got, err := s.GovernedAssetByID(ctx, a.ID)
+	if err != nil || got.Name != "焊接-2" || got.Revision != 2 {
+		t.Fatalf("unchanged after conflict: %+v %v", got, err)
+	}
+
+	if _, err := s.InsertGovernedAsset(ctx, store.Asset{
+		Kind: store.KindProcess, Level: store.AssetLevelFactory, Name: "坏依赖",
+		Status: store.AssetDraft, Copyable: true, Content: body, Digest: sum,
+		CreatorID: p.ID, Deps: []store.AssetDep{{ID: a.ID, Revision: 1, Digest: sum}},
+	}); err != domain.ErrAssetDependency {
+		t.Fatalf("process deps: %v", err)
+	}
+	if _, err := s.InsertGovernedAsset(ctx, store.Asset{
+		Kind: store.KindProcess, Level: store.AssetLevelFactory, Name: "短摘要",
+		Status: store.AssetDraft, Copyable: true, Content: body, Digest: []byte("short"),
+		CreatorID: p.ID,
+	}); err != domain.ErrIntegrity {
+		t.Fatalf("short digest: %v", err)
+	}
+
+	proj, err := s.InsertGovernedAsset(ctx, store.Asset{
+		Kind: store.KindProject, Level: store.AssetLevelFactory, Name: "作业",
+		Status: store.AssetAvailable, Copyable: true, Content: []byte(`{"beads":1}`),
+		Digest: digest.Sum([]byte(`{"beads":1}`)), CreatorID: p.ID,
+		Deps: []store.AssetDep{{ID: a.ID, Revision: 2, Digest: sum}},
+	})
+	if err != nil || len(proj.Deps) != 1 || proj.Deps[0].ID != a.ID {
+		t.Fatalf("project: %+v %v", proj, err)
+	}
+	snap, err := s.ExportAssetSnapshot(ctx, a.ID)
+	if err != nil || snap.SourceID != a.ID || snap.SourceFactoryID != facID || snap.SourceRevision != 2 {
+		t.Fatalf("snapshot: %+v %v", snap, err)
+	}
+
+	if err := facDB.Exec("UPDATE assets SET content = ? WHERE id = ?", []byte("dirty"), a.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	dirty, err := s.GovernedAssetByID(ctx, a.ID)
+	if err != nil || digest.Match(dirty.Content, dirty.Digest) {
+		t.Fatalf("tamper should break digest: match=%v err=%v", digest.Match(dirty.Content, dirty.Digest), err)
+	}
+	if err := facDB.Exec("DELETE FROM assets WHERE id = ?", a.ID).Error; err == nil {
+		t.Fatal("physical delete must fail")
+	}
+	var stubExists bool
+	if err := facDB.Raw("SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name='personal_asset_stubs')").Scan(&stubExists).Error; err != nil || !stubExists {
+		t.Fatalf("stubs must remain: %v %v", stubExists, err)
 	}
 }
 

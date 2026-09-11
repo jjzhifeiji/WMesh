@@ -32,4 +32,9 @@ var (
 	ErrClientKeyMismatch   = errors.New("client public key does not match")
 	ErrStaleRevision       = errors.New("revision is not strictly newer") // 只接受更高修订
 	ErrBindingVoid         = errors.New("client binding is void")         // 作废后不得再签发
+	ErrRevisionConflict    = errors.New("revision does not match")         // 资产期望修订对不上
+	ErrIntegrity           = errors.New("asset integrity check failed")      // 正文与摘要不一致或摘要长度不对
+	ErrAssetNotAvailable   = errors.New("asset is not available")            // 草稿或停用，不能当可用资产
+	ErrAssetNotCopyable    = errors.New("asset is not copyable")            // 不可复制不得升档
+	ErrAssetDependency     = errors.New("asset dependency missing or mismatched") // 工程依赖缺失或错配
 )

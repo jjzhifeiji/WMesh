@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"wmesh/global/internal/platform/audit"
+	"wmesh/global/internal/platform/digest"
 	"wmesh/global/internal/platform/domain"
 	"wmesh/global/internal/platform/id"
 	"wmesh/global/internal/platform/testpg"
@@ -154,6 +155,73 @@ func TestWANClientBinding(t *testing.T) {
 		ActorID: &admin.ID, FactoryID: &b.ID, TimeSource: audit.Local,
 	}); err != nil {
 		t.Fatalf("local audit: %v", err)
+	}
+}
+
+func TestWANPlatformAssets(t *testing.T) {
+	ctx := context.Background()
+	db := testpg.Fresh(t)
+	s := store.Open(db)
+	admin, err := s.CreateAdmin(ctx, "wan", "hash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fac, err := s.RegisterFactory(ctx, id.New(), "厂A", id.New(), "sa-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := []byte(`{"voltage":40}`)
+	sum := digest.Sum(body)
+	a, err := s.InsertAsset(ctx, store.Asset{
+		Kind: store.KindProcess, Name: "平台工艺", Status: store.AssetDraft,
+		Copyable: true, Content: body, Digest: sum, CreatorID: admin.ID,
+	})
+	if err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	if a.Level != store.AssetLevelPlatform || a.Copyable || a.Revision != 1 {
+		t.Fatalf("platform defaults: %+v", a)
+	}
+	src := id.New()
+	rev := int64(3)
+	promoted, err := s.InsertAsset(ctx, store.Asset{
+		Kind: store.KindProcess, Name: "升档来的", Status: store.AssetAvailable,
+		Content: body, Digest: sum, CreatorID: admin.ID,
+		SourceID: &src, SourceRevision: &rev, SourceFactoryID: &fac.ID,
+	})
+	if err != nil || promoted.SourceID == nil || *promoted.SourceID != src || promoted.Copyable {
+		t.Fatalf("promoted: %+v %v", promoted, err)
+	}
+	if _, err := s.UpdateAsset(ctx, a.ID, 1, store.AssetWrite{
+		Name: "平台工艺-2", Content: body, Digest: sum, Status: store.AssetAvailable,
+	}); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if _, err := s.UpdateAsset(ctx, a.ID, 1, store.AssetWrite{
+		Name: "旧", Content: body, Digest: sum, Status: store.AssetDraft,
+	}); err != domain.ErrRevisionConflict {
+		t.Fatalf("conflict: %v", err)
+	}
+	if err := db.Exec("UPDATE assets SET content = ? WHERE id = ?", []byte("dirty"), a.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	dirty, err := s.AssetByID(ctx, a.ID)
+	if err != nil || digest.Match(dirty.Content, dirty.Digest) {
+		t.Fatalf("tamper: match=%v err=%v", digest.Match(dirty.Content, dirty.Digest), err)
+	}
+	if err := db.Exec("DELETE FROM assets WHERE id = ?", a.ID).Error; err == nil {
+		t.Fatal("physical delete must fail")
+	}
+	if err := db.Exec(
+		`INSERT INTO assets (id, kind, level, name, status, copyable, revision, content, digest, creator_id, deps)
+		 VALUES (?, 'process', 'platform', '放宽', 'draft', true, 1, decode('00','hex'), ?, ?, '[]'::jsonb)`,
+		id.New(), sum, admin.ID,
+	).Error; !domain.IsCheckViolation(err) {
+		t.Fatalf("copyable true: %v", err)
+	}
+	ok, err := s.HasTable(ctx, "people")
+	if err != nil || ok {
+		t.Fatalf("wan must not have people: %v %v", ok, err)
 	}
 }
 
