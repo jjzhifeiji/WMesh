@@ -381,6 +381,16 @@ func (s *Service) ActivateProject(ctx context.Context, bag *Bag, clocks Clocks, 
 			_ = s.auditTimed(ctx, &cred.PersonID, nil, "activate_closure", closureTarget(snap), audit.Deny, src)
 			return err
 		}
+		if root.Level != AssetLevelPersonal {
+			g, err := s.store.ClientGrant(ctx, projectID, bag.ClientID)
+			if err != nil || !g.Active {
+				_ = s.auditTimed(ctx, &cred.PersonID, nil, "activate_closure", closureTarget(snap), audit.Deny, src)
+				if err != nil && !errors.Is(err, domain.ErrNotFound) {
+					return err
+				}
+				return domain.ErrForbidden
+			}
+		}
 	} else if root.Status != AssetAvailable {
 		_ = s.auditTimed(ctx, &cred.PersonID, nil, "activate_closure", closureTarget(snap), audit.Deny, src)
 		return domain.ErrAssetNotAvailable

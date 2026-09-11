@@ -35,6 +35,9 @@ const (
 	AssetDraft         = store.AssetDraft
 	AssetAvailable     = store.AssetAvailable
 	AssetDisabled      = store.AssetDisabled
+
+	UploadPointCloud = store.UploadPointCloud
+	UploadImage      = store.UploadImage
 )
 
 func validScope(role, scopeKind string, orgUnitID *uuid.UUID) bool {
@@ -65,4 +68,5 @@ type (
 	AssetReplica       = store.AssetReplica
 	ClosureMember      = store.ClosureMember
 	ClosureSnapshot    = store.ClosureSnapshot
+	UploadRecord       = store.UploadRecord
 )

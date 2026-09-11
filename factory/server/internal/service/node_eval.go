@@ -72,6 +72,27 @@ type Bag struct {
 	Closures               []ClosureSnapshot // 已缓存工程闭包，正文只在袋内
 	ActiveID               *uuid.UUID        // 当前激活工程；空则未激活
 	ActiveRevision         int64             // 当前激活修订；无激活为 0
+	PendingFacts           []PendingFact     // 待汇聚运行事实，未成功前不进厂库
+	PendingUploads         []PendingUpload   // 待汇聚点云/图片，正文只在袋内
+	FailFlush              bool              // 夹具：本次汇聚失败，队列不动
+}
+
+// PendingFact 是本机待汇聚的一条运行事实。
+type PendingFact struct {
+	ID        uuid.UUID  // 产生端稳定身份
+	CreatorID uuid.UUID  // 创建账号
+	OrgUnitID *uuid.UUID // 发生节点；直属为空
+	OrgPath   []PathNode // 发生时路径快照
+}
+
+// PendingUpload 是本机待汇聚的一条点云或图片。
+type PendingUpload struct {
+	ID        uuid.UUID // 产生端稳定身份
+	Kind      string    // point_cloud / image
+	Content   []byte    // 正文，Flush 前只在袋内
+	Digest    []byte    // SHA-256 摘要
+	CreatorID uuid.UUID // 上传人
+	ClientID  uuid.UUID // 来源 Client
 }
 
 // PersonCred 是签给本机某账号的人员离线授权快照。

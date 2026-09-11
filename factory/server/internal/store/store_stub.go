@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -64,6 +65,64 @@ func (s *Store) InsertFact(ctx context.Context, creatorID uuid.UUID, unitID *uui
 		return FactStub{}, err
 	}
 	return factFromRow(row), nil
+}
+
+// MergeFact 按产生端身份写入；已有且字段相同则原样返回，不同则拒绝覆盖。
+func (s *Store) MergeFact(ctx context.Context, in FactStub) (FactStub, error) {
+	if in.ID == uuid.Nil {
+		return FactStub{}, domain.ErrNotFound
+	}
+	got, err := s.FactByID(ctx, in.ID)
+	if err == nil {
+		if got.CreatorID != in.CreatorID || !sameOptUUID(got.OrgUnitID, in.OrgUnitID) || !pathEqual(got.OrgPath, in.OrgPath) {
+			return FactStub{}, domain.ErrIntegrity
+		}
+		return got, nil
+	}
+	if !errors.Is(err, domain.ErrNotFound) {
+		return FactStub{}, err
+	}
+	raw, err := marshalPath(in.OrgPath)
+	if err != nil {
+		return FactStub{}, err
+	}
+	row := factRow{
+		ID:        in.ID,
+		CreatorID: in.CreatorID,
+		FactoryID: s.factoryID,
+		OrgUnitID: in.OrgUnitID,
+		OrgPath:   raw,
+		CreatedAt: time.Now().UTC(),
+	}
+	if err := s.db.WithContext(ctx).Create(&row).Error; err != nil {
+		if domain.IsUniqueViolation(err) {
+			return s.MergeFact(ctx, in)
+		}
+		if domain.IsForeignKeyViolation(err) {
+			return FactStub{}, domain.ErrNotFound
+		}
+		return FactStub{}, err
+	}
+	return factFromRow(row), nil
+}
+
+func sameOptUUID(a, b *uuid.UUID) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	return *a == *b
+}
+
+func pathEqual(a, b []PathNode) bool {
+	ra, errA := marshalPath(a)
+	rb, errB := marshalPath(b)
+	if errA != nil || errB != nil {
+		return false
+	}
+	return bytes.Equal(ra, rb)
 }
 
 func (s *Store) InsertAsset(ctx context.Context, creatorID uuid.UUID, unitID *uuid.UUID, path []PathNode, content string) (PersonalAsset, error) {

@@ -40,4 +40,5 @@ var (
 	ErrClosureIncomplete   = errors.New("closure is incomplete")                  // 组包缺成员或读不到钉死修订
 	ErrClosureMismatch     = errors.New("closure revision mismatch")              // 组包串版：身份或修订被顶替
 	ErrClientCacheFull     = errors.New("client cache is full")                   // 工程份已达缓存上限
+	ErrSyncRetry           = errors.New("sync retry required")                // 弱网汇聚失败，队列保留可再试
 )

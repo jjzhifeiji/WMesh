@@ -437,3 +437,33 @@ type clientRecordRow struct {
 }
 
 func (clientRecordRow) TableName() string { return "client_distribution_records" }
+
+const (
+	UploadPointCloud = "point_cloud" // 点云
+	UploadImage      = "image"       // 图片
+)
+
+// UploadRecord 是 Client 主动上传点云/图片的元数据，不含正文。
+type UploadRecord struct {
+	ID        uuid.UUID // 产生端稳定身份，汇聚幂等键
+	Kind      string    // point_cloud / image
+	ObjectKey string    // 对象存储键
+	Digest    []byte    // SHA-256 摘要 32 字节
+	ByteSize  int64     // 正文字节数
+	CreatorID uuid.UUID // 上传人
+	ClientID  uuid.UUID // 来源 Client
+	CreatedAt time.Time // 首次汇聚时间
+}
+
+type uploadRow struct {
+	ID        uuid.UUID `gorm:"type:uuid;primaryKey"` // 产生端稳定身份
+	Kind      string    `gorm:"not null"`              // point_cloud / image
+	ObjectKey string    `gorm:"not null"`              // 对象键
+	Digest    []byte    `gorm:"type:bytea;not null"`    // SHA-256
+	ByteSize  int64     `gorm:"not null"`               // 字节数
+	CreatorID uuid.UUID `gorm:"type:uuid;not null"`    // 上传人
+	ClientID  uuid.UUID `gorm:"type:uuid;not null"`    // 来源 Client
+	CreatedAt time.Time `gorm:"not null"`              // 首次汇聚时间
+}
+
+func (uploadRow) TableName() string { return "upload_records" }

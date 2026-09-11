@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 
 	"wmesh/factory/internal/platform/audit"
+	"wmesh/factory/internal/platform/blob"
 	"wmesh/factory/internal/platform/domain"
 	"wmesh/factory/internal/platform/secret"
 )
@@ -19,11 +20,12 @@ const sessionTTL = 12 * time.Hour // 厂内在线会话有效期
 // Service 是厂内认证与受保护操作入口；权限与归属在同包其他文件。
 type Service struct {
 	store *Store
+	blobs blob.Store // 上传正文；不进库、不进审计
 }
 
 // NewService 组装厂内应用服务；调用方先打开这一家厂库。
 func NewService(store *Store) *Service {
-	return &Service{store: store}
+	return &Service{store: store, blobs: blob.NewMemory()}
 }
 
 func (s *Service) Store() *Store { return s.store }
