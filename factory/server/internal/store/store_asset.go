@@ -108,6 +108,19 @@ func (s *Store) UpdateGovernedAsset(ctx context.Context, assetID uuid.UUID, expe
 	return out, err
 }
 
+// ListGovernedAssets 列出本厂工艺/工程当前行，不含正文。
+func (s *Store) ListGovernedAssets(ctx context.Context) ([]Asset, error) {
+	var rows []governedAssetRow
+	if err := s.db.WithContext(ctx).Omit("Content").Order("updated_at DESC").Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	out := make([]Asset, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, assetFromGoverned(row))
+	}
+	return out, nil
+}
+
 // GovernedAssetByID 读本厂一条工艺/工程当前行，含正文。
 func (s *Store) GovernedAssetByID(ctx context.Context, assetID uuid.UUID) (Asset, error) {
 	var row governedAssetRow

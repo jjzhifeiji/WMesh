@@ -510,6 +510,76 @@ func (s *Service) ExportAssetSnapshot(ctx context.Context, token string, assetID
 	return snap, s.audit(ctx, &acc.ID, nil, "export_asset", assetTarget(src.ID, src.Revision), audit.Allow)
 }
 
+// AssetAuthorContext 是制作工艺/工程时可选的工作位置。
+type AssetAuthorContext struct {
+	AllowDirect bool      `json:"allowDirect"` // 整厂作用域工艺工程师可直属工厂
+	OrgUnits    []OrgUnit `json:"orgUnits"`    // 本人已分配且作用域覆盖的有效节点
+}
+
+// AuthorContext 给出当前账号可用来创建资产的工作位置。
+func (s *Service) AuthorContext(ctx context.Context, token string) (AssetAuthorContext, error) {
+	acc, err := s.RequireActive(ctx, token)
+	if err != nil {
+		return AssetAuthorContext{}, err
+	}
+	out := AssetAuthorContext{OrgUnits: []OrgUnit{}}
+	if err := s.canAuthorFactory(ctx, acc, nil); err == nil {
+		out.AllowDirect = true
+	} else if !errors.Is(err, domain.ErrForbidden) {
+		return AssetAuthorContext{}, err
+	}
+	assigns, err := s.store.ActiveAssignments(ctx, acc.ID)
+	if err != nil {
+		return AssetAuthorContext{}, err
+	}
+	for _, a := range assigns {
+		unit, err := s.store.Unit(ctx, a.OrgUnitID)
+		if err != nil {
+			return AssetAuthorContext{}, err
+		}
+		if unit.Status != StatusActive {
+			continue
+		}
+		if err := s.canAuthorFactory(ctx, acc, &unit.ID); err != nil {
+			if errors.Is(err, domain.ErrForbidden) {
+				continue
+			}
+			return AssetAuthorContext{}, err
+		}
+		out.OrgUnits = append(out.OrgUnits, unit)
+	}
+	return out, nil
+}
+
+// ListAssets 按许可过滤本厂工艺/工程元数据；kind 空则两种都回，不含正文。
+func (s *Service) ListAssets(ctx context.Context, token, kind string) ([]Asset, error) {
+	acc, err := s.RequireActive(ctx, token)
+	if err != nil {
+		return nil, err
+	}
+	if kind != "" && kind != KindProcess && kind != KindProject {
+		return nil, domain.ErrNotFound
+	}
+	rows, err := s.store.ListGovernedAssets(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := []Asset{}
+	for _, a := range rows {
+		if kind != "" && a.Kind != kind {
+			continue
+		}
+		if err := s.canViewAssetMeta(ctx, acc, a); err != nil {
+			if errors.Is(err, domain.ErrForbidden) {
+				continue
+			}
+			return nil, err
+		}
+		out = append(out, stripContent(a))
+	}
+	return out, nil
+}
+
 // RehomeAsset 拒绝改挂创建人或创建路径。
 func (s *Service) RehomeAsset(ctx context.Context, token string, assetID uuid.UUID) error {
 	acc, err := s.RequireActive(ctx, token)

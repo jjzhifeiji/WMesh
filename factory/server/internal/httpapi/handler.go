@@ -31,7 +31,7 @@ func New(h *hub.Hub, bootstrapToken string) *Handler {
 	return &Handler{Hub: h, BootstrapToken: bootstrapToken, Version: "dev"}
 }
 
-// Router 暴露探活、建厂引导、厂内账号组织和节点授权接口；未知 API 路径统一回 JSON 404。
+// Router 暴露探活、建厂引导、厂内账号组织、节点授权和资产接口；未知 API 路径统一回 JSON 404。
 func (h *Handler) Router() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", h.healthz)
@@ -63,6 +63,18 @@ func (h *Handler) Router() http.Handler {
 	mux.HandleFunc("GET /v1/factories/{id}/person-offline-grants", h.listPersonGrants)
 	mux.HandleFunc("POST /v1/factories/{id}/person-offline-grants", h.issuePerson)
 	mux.HandleFunc("GET /v1/factories/{id}/signing-key", h.signingPublicKey)
+	mux.HandleFunc("GET /v1/factories/{id}/asset-author-context", h.assetAuthorContext)
+	mux.HandleFunc("GET /v1/factories/{id}/assets", h.listAssets)
+	mux.HandleFunc("POST /v1/factories/{id}/assets", h.createAsset)
+	mux.HandleFunc("GET /v1/factories/{id}/assets/{assetId}", h.getAsset)
+	mux.HandleFunc("GET /v1/factories/{id}/assets/{assetId}/content", h.readAssetContent)
+	mux.HandleFunc("GET /v1/factories/{id}/assets/{assetId}/snapshot", h.exportAsset)
+	mux.HandleFunc("POST /v1/factories/{id}/assets/{assetId}/rename", h.renameAsset)
+	mux.HandleFunc("POST /v1/factories/{id}/assets/{assetId}/content", h.updateAssetContent)
+	mux.HandleFunc("POST /v1/factories/{id}/assets/{assetId}/copyable", h.setAssetCopyable)
+	mux.HandleFunc("POST /v1/factories/{id}/assets/{assetId}/publish", h.publishAsset)
+	mux.HandleFunc("POST /v1/factories/{id}/assets/{assetId}/disable", h.disableAsset)
+	mux.HandleFunc("POST /v1/factories/{id}/assets/{assetId}/promote", h.promoteAsset)
 	return mux
 }
 
@@ -517,7 +529,7 @@ func statusOf(err error) int {
 	case errors.Is(err, domain.ErrWANAdminExists), errors.Is(err, domain.ErrLoginNameTaken),
 		errors.Is(err, domain.ErrAlreadyActivated), errors.Is(err, domain.ErrDuplicateAssignment),
 		errors.Is(err, domain.ErrDuplicateRoleGrant), errors.Is(err, domain.ErrDuplicateSession),
-		errors.Is(err, domain.ErrReferenced):
+		errors.Is(err, domain.ErrReferenced), errors.Is(err, domain.ErrRevisionConflict):
 		return http.StatusConflict
 	case errors.Is(err, domain.ErrStaleRevision), errors.Is(err, domain.ErrBindingVoid),
 		errors.Is(err, domain.ErrInvalidKey), errors.Is(err, domain.ErrClientKeyMismatch),
@@ -532,6 +544,7 @@ func isDomain(err error) bool {
 	for _, t := range []error{
 		domain.ErrCycle, domain.ErrWorkContext, domain.ErrMultiParent, domain.ErrInvalidRoleScope,
 		domain.ErrDisabledOrgUnit, domain.ErrHasActiveChildren,
+		domain.ErrIntegrity, domain.ErrAssetNotAvailable, domain.ErrAssetNotCopyable, domain.ErrAssetDependency,
 	} {
 		if errors.Is(err, t) {
 			return true

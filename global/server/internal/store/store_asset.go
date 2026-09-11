@@ -91,6 +91,19 @@ func (s *Store) UpdateAsset(ctx context.Context, assetID uuid.UUID, expected int
 	return out, err
 }
 
+// ListAssets 列出平台级当前行，不含正文。
+func (s *Store) ListAssets(ctx context.Context) ([]Asset, error) {
+	var rows []assetRow
+	if err := s.db.WithContext(ctx).Omit("Content").Order("updated_at DESC").Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	out := make([]Asset, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, assetFromRow(row))
+	}
+	return out, nil
+}
+
 // AssetByID 读平台级当前行，含正文。
 func (s *Store) AssetByID(ctx context.Context, assetID uuid.UUID) (Asset, error) {
 	var row assetRow

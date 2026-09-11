@@ -1,4 +1,5 @@
 import { createBrowserRouter } from "react-router";
+import { AssetsPage } from "@/features/assets/AssetsPage";
 import { AccountPage } from "@/features/account/AccountPage";
 import { AssignmentsPage } from "@/features/assignments/AssignmentsPage";
 import { ActivatePage } from "@/features/auth/ActivatePage";
@@ -43,6 +44,8 @@ export const router = createBrowserRouter([
       { path: paths.assignments, element: sa(<AssignmentsPage />) },
       { path: paths.clients, element: sa(<ClientsPage />) },
       { path: paths.offlineAuth, element: sa(<OfflineAuthPage />) },
+      { path: paths.processes, element: <AssetsPage kind="process" /> },
+      { path: paths.projects, element: <AssetsPage kind="project" /> },
       { path: paths.account, element: <AccountPage /> },
       ...placeholderPaths.map((path) => ({ path, element: <PlaceholderPage /> })),
       { path: "*", element: <NotFoundPage /> },

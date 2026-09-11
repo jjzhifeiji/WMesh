@@ -71,8 +71,8 @@ export const navTree: NavEntry[] = [
     label: "资产",
     icon: <AppstoreOutlined />,
     children: [
-      { key: paths.processes, label: "工艺", placeholder: true, description: "厂级工艺的制作、维护与升档。" },
-      { key: paths.projects, label: "工程", placeholder: true, description: "工程及其依赖工艺的治理。" },
+      { key: paths.processes, label: "工艺", description: "厂级工艺的制作、维护与升档。" },
+      { key: paths.projects, label: "工程", description: "工程及其依赖工艺的治理。" },
       { key: paths.fieldFiles, label: "现场文件", placeholder: true, description: "Client 上传的点云/图片记录，本体在本厂对象存储。" },
     ],
   },

@@ -5,11 +5,13 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -99,6 +101,48 @@ func TestWANHTTP(t *testing.T) {
 	if code != http.StatusForbidden {
 		t.Fatalf("list people %d %s", code, body)
 	}
+	code, body = do(t, srv, "POST", "/v1/assets", tok, `{"kind":"process","name":"平台焊","content":"wan-body"}`)
+	if code != http.StatusCreated {
+		t.Fatalf("create platform process %d %s", code, body)
+	}
+	pid := gjson(t, body, "id")
+	code, body = do(t, srv, "GET", "/v1/assets?kind=process", tok, "")
+	if code != http.StatusOK || !strings.Contains(body, pid) || strings.Contains(body, "wan-body") {
+		t.Fatalf("list platform %d %s", code, body)
+	}
+	code, body = do(t, srv, "GET", "/v1/assets/"+pid+"/content", tok, "")
+	if code != http.StatusOK || gjson(t, body, "content") != "wan-body" {
+		t.Fatalf("read platform content %d %s", code, body)
+	}
+	code, body = do(t, srv, "POST", "/v1/assets/"+pid+"/publish", tok, `{"expected":1}`)
+	if code != http.StatusOK {
+		t.Fatalf("publish platform %d %s", code, body)
+	}
+	code, body = do(t, srv, "GET", "/v1/assets/"+pid, tok, "")
+	if code != http.StatusOK {
+		t.Fatalf("get platform %d %s", code, body)
+	}
+	digest := gjson(t, body, "digest")
+	rev := gjson(t, body, "revision")
+	code, body = do(t, srv, "POST", "/v1/assets", tok, `{"kind":"project","name":"平台工程","content":"job","deps":[{"id":"`+pid+`","revision":`+rev+`,"digest":"`+digest+`"}]}`)
+	if code != http.StatusCreated {
+		t.Fatalf("create platform project %d %s", code, body)
+	}
+	sum := sha256.Sum256([]byte("from-fac"))
+	snap := `{"sourceId":"` + id.New().String() + `","sourceRevision":1,"sourceFactoryId":"` + fid + `","kind":"process","name":"收厂级","content":"` + base64.StdEncoding.EncodeToString([]byte("from-fac")) + `","digest":"` + base64.StdEncoding.EncodeToString(sum[:]) + `","copyable":true,"status":"available","deps":[]}`
+	code, body = do(t, srv, "POST", "/v1/assets/promote", tok, snap)
+	if code != http.StatusCreated {
+		t.Fatalf("promote snapshot %d %s", code, body)
+	}
+	aid := id.New().String()
+	code, body = do(t, srv, "POST", "/v1/factories/"+fid+"/assets", tok, `{"name":"厂级","content":"x"}`)
+	if code != http.StatusForbidden {
+		t.Fatalf("proxy factory asset %d %s", code, body)
+	}
+	code, body = do(t, srv, "GET", "/v1/factories/"+fid+"/assets/"+aid, tok, "")
+	if code != http.StatusForbidden {
+		t.Fatalf("get factory asset %d %s", code, body)
+	}
 	code, _ = do(t, srv, "GET", "/v1/directory", "", "")
 	if code != http.StatusUnauthorized {
 		t.Fatalf("anon directory %d", code)
@@ -148,8 +192,12 @@ func gjson(t *testing.T, body, path string) string {
 		cur = mm[p]
 	}
 	s, ok := cur.(string)
-	if !ok {
-		t.Fatalf("%s not string in %s", path, body)
+	if ok {
+		return s
 	}
-	return s
+	if n, ok := cur.(float64); ok {
+		return strconv.FormatInt(int64(n), 10)
+	}
+	t.Fatalf("%s not string in %s", path, body)
+	return ""
 }

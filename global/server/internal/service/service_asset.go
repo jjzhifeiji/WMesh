@@ -253,6 +253,28 @@ func (s *Service) UpdateFactoryAsset(ctx context.Context, token string, factoryI
 	return s.denyFactoryManage(ctx, token, factoryID, "update_factory_asset", assetID.String())
 }
 
+// ListPlatformAssets 列出平台级元数据；kind 空则两种都回，不含正文。
+func (s *Service) ListPlatformAssets(ctx context.Context, token, kind string) ([]Asset, error) {
+	if _, err := s.RequireAdmin(ctx, token); err != nil {
+		return nil, err
+	}
+	if kind != "" && kind != KindProcess && kind != KindProject {
+		return nil, domain.ErrNotFound
+	}
+	rows, err := s.store.ListAssets(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := []Asset{}
+	for _, a := range rows {
+		if kind != "" && a.Kind != kind {
+			continue
+		}
+		out = append(out, stripContent(a))
+	}
+	return out, nil
+}
+
 func (s *Service) mutatePlatform(ctx context.Context, token string, assetID uuid.UUID, expected int64, action string, patch func(Asset) (store.AssetWrite, error)) (Asset, error) {
 	admin, err := s.RequireAdmin(ctx, token)
 	if err != nil {

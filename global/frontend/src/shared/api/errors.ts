@@ -12,6 +12,11 @@ const zh: Record<string, string> = {
   "client already bound to a factory": "这台节点已经绑到一家工厂，请改绑而不是再绑一次",
   "client is not bound": "节点还没有绑定工厂",
   "client public key already registered": "这把公钥已经登记过了",
+  "revision does not match": "别人已经改过这条，请刷新后再写",
+  "asset integrity check failed": "内容与摘要对不上，不能当有效资产用",
+  "asset is not available": "草稿或已停用，不能这样用",
+  "asset is not copyable": "不可复制，不能升档",
+  "asset dependency missing or mismatched": "依赖的工艺不存在、未发布或修订对不上",
   "internal error": "服务异常，请稍后再试",
 };
 

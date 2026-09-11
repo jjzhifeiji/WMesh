@@ -28,7 +28,7 @@ func New(svc *service.Service, version string) *Handler {
 	return &Handler{svc: svc, version: version}
 }
 
-// Router 只暴露探活、名录、建厂、节点绑定和明确拒绝的代管入口；未知 API 路径统一回 JSON 404。
+// Router 只暴露探活、名录、建厂、节点绑定、平台级资产和明确拒绝的代管入口；未知 API 路径统一回 JSON 404。
 func (h *Handler) Router() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", h.healthz)
@@ -47,6 +47,17 @@ func (h *Handler) Router() http.Handler {
 	mux.HandleFunc("POST /v1/factories/{id}/roles", h.grantFactoryRole)
 	mux.HandleFunc("GET /v1/factories/{id}/people", h.listFactoryPeople)
 	mux.HandleFunc("GET /v1/factories/{id}/offline-grants", h.listFactoryOfflineGrants)
+	mux.HandleFunc("GET /v1/assets", h.listAssets)
+	mux.HandleFunc("POST /v1/assets", h.createAsset)
+	mux.HandleFunc("POST /v1/assets/promote", h.promoteAsset)
+	mux.HandleFunc("GET /v1/assets/{assetId}", h.getAsset)
+	mux.HandleFunc("GET /v1/assets/{assetId}/content", h.readAssetContent)
+	mux.HandleFunc("POST /v1/assets/{assetId}/rename", h.renameAsset)
+	mux.HandleFunc("POST /v1/assets/{assetId}/publish", h.publishAsset)
+	mux.HandleFunc("POST /v1/factories/{id}/assets", h.createFactoryAsset)
+	mux.HandleFunc("GET /v1/factories/{id}/assets/{assetId}", h.getFactoryAsset)
+	mux.HandleFunc("GET /v1/factories/{id}/assets/{assetId}/content", h.readFactoryAssetContent)
+	mux.HandleFunc("POST /v1/factories/{id}/assets/{assetId}", h.updateFactoryAsset)
 	return mux
 }
 
@@ -291,7 +302,8 @@ func statusOf(err error) int {
 	case errors.Is(err, domain.ErrWANAdminExists), errors.Is(err, domain.ErrLoginNameTaken),
 		errors.Is(err, domain.ErrAlreadyActivated), errors.Is(err, domain.ErrDuplicateAssignment),
 		errors.Is(err, domain.ErrDuplicateRoleGrant), errors.Is(err, domain.ErrDuplicateSession),
-		errors.Is(err, domain.ErrClientBound), errors.Is(err, domain.ErrClientKeyTaken):
+		errors.Is(err, domain.ErrClientBound), errors.Is(err, domain.ErrClientKeyTaken),
+		errors.Is(err, domain.ErrRevisionConflict):
 		return http.StatusConflict
 	case errors.Is(err, domain.ErrFactoryBootstrap):
 		return http.StatusBadGateway
@@ -307,6 +319,7 @@ func isDomain(err error) bool {
 	for _, t := range []error{
 		domain.ErrCycle, domain.ErrWorkContext, domain.ErrMultiParent, domain.ErrInvalidRoleScope,
 		domain.ErrDisabledOrgType, domain.ErrDisabledOrgUnit, domain.ErrHasActiveUnits, domain.ErrHasActiveChildren,
+		domain.ErrIntegrity, domain.ErrAssetNotAvailable, domain.ErrAssetNotCopyable, domain.ErrAssetDependency,
 	} {
 		if errors.Is(err, t) {
 			return true

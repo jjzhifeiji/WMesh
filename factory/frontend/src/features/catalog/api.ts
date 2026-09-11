@@ -67,6 +67,11 @@ export function useIsSuperAdmin() {
   return data?.myGrants.some((g) => g.role === "factory_super_admin" && g.scopeKind === "factory") ?? false;
 }
 
+export function useIsProcessEngineer() {
+  const { data } = useCatalog();
+  return data?.myGrants.some((g) => g.role === "process_engineer") ?? false;
+}
+
 // 所有改名册的写操作都用它：成功后让名册失效重拉。
 export function useCatalogMutation<TData, TVars>(
   mutationFn: (vars: TVars) => Promise<TData>,

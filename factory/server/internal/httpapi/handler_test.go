@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -166,6 +167,67 @@ func TestFactoryHTTP(t *testing.T) {
 	if code != http.StatusOK || !strings.Contains(body, "publicKey") {
 		t.Fatalf("signing key %d %s", code, body)
 	}
+
+	code, body = do(t, srv, "POST", base+"/grants", tok, `{"personId":"`+saID+`","role":"process_engineer","scopeKind":"factory"}`)
+	if code != http.StatusCreated {
+		t.Fatalf("grant pe %d %s", code, body)
+	}
+	code, body = do(t, srv, "GET", base+"/asset-author-context", tok, "")
+	if code != http.StatusOK || !strings.Contains(body, `"allowDirect":true`) {
+		t.Fatalf("author context %d %s", code, body)
+	}
+	code, body = do(t, srv, "POST", base+"/assets", tok, `{"kind":"process","level":"factory","name":"焊A","content":"secret-body","direct":true}`)
+	if code != http.StatusCreated {
+		t.Fatalf("create process %d %s", code, body)
+	}
+	pid := gjson(t, body, "id")
+	code, body = do(t, srv, "GET", base+"/assets?kind=process", tok, "")
+	if code != http.StatusOK || !strings.Contains(body, pid) || strings.Contains(body, "secret-body") {
+		t.Fatalf("list process %d %s", code, body)
+	}
+	code, body = do(t, srv, "GET", base+"/assets/"+pid+"/content", tok, "")
+	if code != http.StatusOK || gjson(t, body, "content") != "secret-body" {
+		t.Fatalf("read content %d %s", code, body)
+	}
+	code, body = do(t, srv, "POST", base+"/assets/"+pid+"/rename", tok, `{"expected":1,"name":"焊A2"}`)
+	if code != http.StatusOK || gjson(t, body, "name") != "焊A2" {
+		t.Fatalf("rename %d %s", code, body)
+	}
+	code, body = do(t, srv, "POST", base+"/assets/"+pid+"/publish", tok, `{"expected":2}`)
+	if code != http.StatusOK {
+		t.Fatalf("publish %d %s", code, body)
+	}
+	code, body = do(t, srv, "POST", base+"/assets/"+pid+"/rename", tok, `{"expected":1,"name":"旧修订"}`)
+	if code != http.StatusConflict || gjson(t, body, "error") != "revision does not match" {
+		t.Fatalf("stale rename %d %s", code, body)
+	}
+	code, body = do(t, srv, "GET", base+"/assets/"+pid, tok, "")
+	if code != http.StatusOK {
+		t.Fatalf("get process %d %s", code, body)
+	}
+	digest := gjson(t, body, "digest")
+	rev := gjson(t, body, "revision")
+	code, body = do(t, srv, "POST", base+"/assets", tok, `{"kind":"project","level":"factory","name":"工程A","content":"job","direct":true,"deps":[{"id":"`+pid+`","revision":`+rev+`,"digest":"`+digest+`"}]}`)
+	if code != http.StatusCreated {
+		t.Fatalf("create project %d %s", code, body)
+	}
+	code, body = do(t, srv, "POST", base+"/assets", tok, `{"kind":"process","level":"personal","name":"个人焊","content":"mine","direct":true}`)
+	if code != http.StatusCreated {
+		t.Fatalf("create personal %d %s", code, body)
+	}
+	persID := gjson(t, body, "id")
+	code, body = do(t, srv, "POST", base+"/assets/"+persID+"/publish", tok, `{"expected":1}`)
+	if code != http.StatusOK {
+		t.Fatalf("publish personal %d %s", code, body)
+	}
+	code, body = do(t, srv, "POST", base+"/assets/"+persID+"/promote", tok, "")
+	if code != http.StatusCreated || strings.Contains(body, "mine") {
+		t.Fatalf("promote %d %s", code, body)
+	}
+	code, body = do(t, srv, "GET", base+"/assets/"+pid+"/snapshot", tok, "")
+	if code != http.StatusOK || gjson(t, body, "sourceId") != pid || !strings.Contains(body, base64.StdEncoding.EncodeToString([]byte("secret-body"))) {
+		t.Fatalf("snapshot %d %s", code, body)
+	}
 }
 
 func do(t *testing.T, srv *httptest.Server, method, path, token, body string) (int, string) {
@@ -211,8 +273,12 @@ func gjson(t *testing.T, body, path string) string {
 		cur = mm[p]
 	}
 	s, ok := cur.(string)
-	if !ok {
-		t.Fatalf("%s not string in %s", path, body)
+	if ok {
+		return s
 	}
-	return s
+	if n, ok := cur.(float64); ok {
+		return strconv.FormatInt(int64(n), 10)
+	}
+	t.Fatalf("%s not string in %s", path, body)
+	return ""
 }

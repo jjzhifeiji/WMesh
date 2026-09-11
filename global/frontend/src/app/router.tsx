@@ -3,6 +3,7 @@ import { LoginPage } from "@/features/auth/LoginPage";
 import { DashboardPage } from "@/features/dashboard/DashboardPage";
 import { FactoriesPage } from "@/features/factories/FactoriesPage";
 import { ClientsPage } from "@/features/clients/ClientsPage";
+import { AssetsPage } from "@/features/assets/AssetsPage";
 import { AdminLayout } from "@/layouts/AdminLayout";
 import { AuthLayout } from "@/layouts/AuthLayout";
 import { RequireAuth } from "@/shared/auth/RequireAuth";
@@ -25,6 +26,8 @@ export const router = createBrowserRouter([
       { index: true, element: <DashboardPage /> },
       { path: paths.factories, element: <FactoriesPage /> },
       { path: paths.clients, element: <ClientsPage /> },
+      { path: paths.processes, element: <AssetsPage kind="process" /> },
+      { path: paths.projects, element: <AssetsPage kind="project" /> },
       { path: "*", element: <NotFoundPage /> },
     ],
   },
