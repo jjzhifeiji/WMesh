@@ -62,6 +62,24 @@ cmd/server → internal/httpapi → internal/service → Store → 本侧库
 ```
 验收测试与应用服务同目录（`package service_test`）。`internal/platform` 是底座，不是测试包。HTTP 放在 `internal/httpapi/`，只转调应用服务。
 
+业务按域拆文件，禁止把多域堆进同一个 `.go`。包仍是 `service` / `store` / `httpapi`，不另起子包。
+
+| 域 | 管什么 | 厂内文件 | WAN 文件 |
+| --- | --- | --- | --- |
+| 装配 | 入口、探活、审计辅助 | `service.go`、`store.go`、`httpapi/handler.go` | 同左 |
+| auth | 登录、激活、会话 | `auth.go` | `auth.go` |
+| directory | 工厂名录、建厂、拒代管 | — | `directory.go` |
+| org | 人员、组织、角色、名册 | `org.go`、`catalog.go`、`authz.go` | — |
+| attr | 事实桩、个人资产桩、工作上下文 | `attr.go` | — |
+| node / client | Client 绑定、离线授权 | `node.go`、`node_eval.go`、`node_query.go`、`node_person.go` | `client.go` |
+| asset | 工艺/工程治理 | `asset.go` | `asset.go` |
+| closure | 组包、下发、副本 | `closure.go`、`distribute.go` | `closure.go` |
+| sync | 上传汇聚 | `sync.go` | — |
+
+`httpapi` 另有 `codec.go`（JSON/错误适配）。`types.go` 只做 store 类型别名，按域分组。新能力加对应域文件，不要写回 `service.go` / `models.go`。
+
+`httpapi.Router` 只装配探活与 404，各域自己 `mountXxx`。`service.Service` 按域类型组合（`Auth` / `Org` / `Assets` 等），HTTP 调 `svc.Auth` / `svc.Org`，不要把方法写回一个上帝 `Service`。Store 仍一个库连接，按域拆文件。
+
 | 禁止 | 位置 |
 |------|------|
 | Service 绕过 Store 直接拼业务 SQL | `global/server/internal/service/`、`factory/server/internal/service/` |

@@ -20,7 +20,7 @@ const (
 	permOperate                   // 节点上的业务操作，不含超管自动经营权
 )
 
-func (s *Service) grantsOf(ctx context.Context, personID uuid.UUID) ([]RoleGrant, error) {
+func (s *kernel) grantsOf(ctx context.Context, personID uuid.UUID) ([]RoleGrant, error) {
 	return s.store.ActiveGrants(ctx, personID)
 }
 
@@ -33,7 +33,7 @@ func isFactorySA(grants []RoleGrant) bool {
 	return false
 }
 
-func (s *Service) covers(ctx context.Context, grants []RoleGrant, unit *uuid.UUID) (bool, error) {
+func (s *kernel) covers(ctx context.Context, grants []RoleGrant, unit *uuid.UUID) (bool, error) {
 	for _, g := range grants {
 		// Factory 作用域覆盖本厂当时全部节点。
 		if g.ScopeKind == ScopeFactory {
@@ -67,7 +67,7 @@ func withRoles(grants []RoleGrant, roles ...string) []RoleGrant {
 }
 
 // can 按角色并集判断；组织管理员不能管父节点或兄弟分支。
-func (s *Service) can(ctx context.Context, acc Account, p perm, unit *uuid.UUID) error {
+func (s *kernel) can(ctx context.Context, acc Account, p perm, unit *uuid.UUID) error {
 	grants, err := s.grantsOf(ctx, acc.ID)
 	if err != nil {
 		return err
@@ -128,7 +128,7 @@ func (s *Service) can(ctx context.Context, acc Account, p perm, unit *uuid.UUID)
 }
 
 // canGrant：超管可授本厂全部固定角色；组织管理员只能在当前子树内授非超管角色。
-func (s *Service) canGrant(ctx context.Context, acc Account, role, scopeKind string, orgUnitID *uuid.UUID) error {
+func (s *kernel) canGrant(ctx context.Context, acc Account, role, scopeKind string, orgUnitID *uuid.UUID) error {
 	if !validScope(role, scopeKind, orgUnitID) {
 		return domain.ErrInvalidRoleScope
 	}
@@ -154,7 +154,7 @@ func (s *Service) canGrant(ctx context.Context, acc Account, role, scopeKind str
 }
 
 // guardLastAdminOnDisable 在激活后生效；待启用超管不计入有效管理入口。
-func (s *Service) guardLastAdminOnDisable(ctx context.Context, personID uuid.UUID) error {
+func (s *kernel) guardLastAdminOnDisable(ctx context.Context, personID uuid.UUID) error {
 	p, err := s.store.PersonByID(ctx, personID)
 	if err != nil {
 		return err
@@ -179,7 +179,7 @@ func (s *Service) guardLastAdminOnDisable(ctx context.Context, personID uuid.UUI
 	return nil
 }
 
-func (s *Service) guardLastAdminOnRevoke(ctx context.Context, g RoleGrant) error {
+func (s *kernel) guardLastAdminOnRevoke(ctx context.Context, g RoleGrant) error {
 	if g.Status != StatusActive || g.Role != RoleFactorySuperAdmin || g.ScopeKind != ScopeFactory {
 		return nil
 	}

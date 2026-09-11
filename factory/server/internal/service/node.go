@@ -13,7 +13,7 @@ import (
 )
 
 // AcceptBinding 模拟 WAN 把绑定声明送到本厂；测试夹具调用，不走协议。
-func (s *Service) AcceptBinding(ctx context.Context, clientID uuid.UUID, publicKey []byte, revision int64) (Client, error) {
+func (s *Node) AcceptBinding(ctx context.Context, clientID uuid.UUID, publicKey []byte, revision int64) (Client, error) {
 	row, err := s.store.AcceptBinding(ctx, clientID, publicKey, revision)
 	if err != nil {
 		_ = s.audit(ctx, nil, nil, "accept_binding", clientID.String(), audit.Deny)
@@ -23,7 +23,7 @@ func (s *Service) AcceptBinding(ctx context.Context, clientID uuid.UUID, publicK
 }
 
 // VoidBinding 模拟 WAN 改绑后旧厂作废；此后本厂不得再签发。
-func (s *Service) VoidBinding(ctx context.Context, clientID uuid.UUID) error {
+func (s *Node) VoidBinding(ctx context.Context, clientID uuid.UUID) error {
 	if err := s.store.VoidBinding(ctx, clientID); err != nil {
 		_ = s.audit(ctx, nil, nil, "void_binding", clientID.String(), audit.Deny)
 		return err
@@ -31,7 +31,7 @@ func (s *Service) VoidBinding(ctx context.Context, clientID uuid.UUID) error {
 	return s.audit(ctx, nil, nil, "void_binding", clientID.String(), audit.Allow)
 }
 
-func (s *Service) ensureSigningKey(ctx context.Context) (SigningKey, error) {
+func (s *Node) ensureSigningKey(ctx context.Context) (SigningKey, error) {
 	k, err := s.store.SigningKey(ctx)
 	if err == nil {
 		return k, nil
@@ -47,7 +47,7 @@ func (s *Service) ensureSigningKey(ctx context.Context) (SigningKey, error) {
 }
 
 // SigningPublicKey 给出本厂签发公钥，供本机袋验证；私钥不外送。
-func (s *Service) SigningPublicKey(ctx context.Context) ([]byte, error) {
+func (s *Node) SigningPublicKey(ctx context.Context) ([]byte, error) {
 	k, err := s.ensureSigningKey(ctx)
 	if err != nil {
 		return nil, err
@@ -56,16 +56,16 @@ func (s *Service) SigningPublicKey(ctx context.Context) ([]byte, error) {
 }
 
 // IssueRuntimeGrant 由本厂有效超管给已绑定 Client 签发可运行凭证。
-func (s *Service) IssueRuntimeGrant(ctx context.Context, token string, clientID uuid.UUID, notBefore, notAfter time.Time) (RuntimeCred, error) {
+func (s *Node) IssueRuntimeGrant(ctx context.Context, token string, clientID uuid.UUID, notBefore, notAfter time.Time) (RuntimeCred, error) {
 	return s.issueRuntime(ctx, token, clientID, notBefore, notAfter, true, "issue_runtime")
 }
 
 // RevokeRuntimeGrant 签发更高修订且 can_run=false，表示撤销或缩权。
-func (s *Service) RevokeRuntimeGrant(ctx context.Context, token string, clientID uuid.UUID, notBefore, notAfter time.Time) (RuntimeCred, error) {
+func (s *Node) RevokeRuntimeGrant(ctx context.Context, token string, clientID uuid.UUID, notBefore, notAfter time.Time) (RuntimeCred, error) {
 	return s.issueRuntime(ctx, token, clientID, notBefore, notAfter, false, "revoke_runtime")
 }
 
-func (s *Service) issueRuntime(ctx context.Context, token string, clientID uuid.UUID, notBefore, notAfter time.Time, canRun bool, action string) (RuntimeCred, error) {
+func (s *Node) issueRuntime(ctx context.Context, token string, clientID uuid.UUID, notBefore, notAfter time.Time, canRun bool, action string) (RuntimeCred, error) {
 	acc, err := s.RequireActive(ctx, token)
 	if err != nil {
 		return RuntimeCred{}, err
@@ -127,7 +127,7 @@ func (s *Service) issueRuntime(ctx context.Context, token string, clientID uuid.
 }
 
 // EvaluateNode 按本机袋判定，并记下允许/拒绝与时间来源；不改密钥。
-func (s *Service) EvaluateNode(ctx context.Context, bag Bag, clocks Clocks, action NodeAction) (NodeEval, error) {
+func (s *Node) EvaluateNode(ctx context.Context, bag Bag, clocks Clocks, action NodeAction) (NodeEval, error) {
 	ev := EvaluateRuntime(bag, clocks, action)
 	name := "node_open"
 	result := audit.Deny
@@ -149,11 +149,11 @@ func (s *Service) EvaluateNode(ctx context.Context, bag Bag, clocks Clocks, acti
 }
 
 // RecordAnomaly 发现 Root 或改钟只留痕，不清密钥、不停用节点。
-func (s *Service) RecordAnomaly(ctx context.Context, clientID uuid.UUID, kind string) error {
+func (s *Node) RecordAnomaly(ctx context.Context, clientID uuid.UUID, kind string) error {
 	return s.audit(ctx, nil, nil, "node_anomaly", clientID.String()+" "+kind, audit.Allow)
 }
 
-func (s *Service) auditTimed(ctx context.Context, actor *uuid.UUID, claimed *string, action, target, result, timeSource string) error {
+func (s *kernel) auditTimed(ctx context.Context, actor *uuid.UUID, claimed *string, action, target, result, timeSource string) error {
 	fid := s.store.FactoryID()
 	return s.store.AppendAudit(ctx, audit.Event{
 		ActorID:      actor,

@@ -1,34 +1,72 @@
-// Package service 是厂内账号与节点凭证入口：认证、允许/拒绝和审计。
+// Package service 是厂内应用入口：认证、允许/拒绝和审计。
 // 不管 WAN 管理员，也不直连 SQL，不把本厂口令送到 WAN。
+// 按域分类型：Auth / Org / Attr / Node / Assets / Closure / Sync；本文件只组装。
 package service
 
 import (
 	"context"
-	"errors"
-	"time"
 
 	"github.com/google/uuid"
 
 	"wmesh/factory/internal/platform/audit"
 	"wmesh/factory/internal/platform/blob"
-	"wmesh/factory/internal/platform/domain"
-	"wmesh/factory/internal/platform/secret"
 )
 
-const sessionTTL = 12 * time.Hour // 厂内在线会话有效期
-
-// Service 是厂内认证与受保护操作入口；权限与归属在同包其他文件。
-type Service struct {
+// kernel 是各域共用的本厂库与审计；不对外当业务入口。
+type kernel struct {
 	store *Store
 	blobs blob.Store // 上传正文；不进库、不进审计
 }
 
-// NewService 组装厂内应用服务；调用方先打开这一家厂库。
-func NewService(store *Store) *Service {
-	return &Service{store: store, blobs: blob.NewMemory()}
+// Auth 管登录、激活、会话和账号停用。
+type Auth struct{ *kernel }
+
+// Org 管人员、组织、角色和名册。
+type Org struct{ *kernel }
+
+// Attr 管事实桩、个人资产桩和工作上下文。
+type Attr struct{ *kernel }
+
+// Node 管 Client 绑定、节点凭证和人员离线授权。
+type Node struct{ *kernel }
+
+// Assets 管本厂工艺/工程治理。
+type Assets struct{ *kernel }
+
+// Closure 管组包、下发、缓存和平台级副本。
+type Closure struct{ *kernel }
+
+// Sync 管上传入队与回连汇聚。
+type Sync struct{ *kernel }
+
+// Service 组装各域；HTTP 调 svc.Auth / svc.Org，验收仍可走提升方法。
+type Service struct {
+	*kernel
+	*Auth
+	*Org
+	*Attr
+	*Node
+	*Assets
+	*Closure
+	*Sync
 }
 
-func (s *Service) Store() *Store { return s.store }
+// NewService 组装厂内应用服务；调用方先打开这一家厂库。
+func NewService(st *Store) *Service {
+	k := &kernel{store: st, blobs: blob.NewMemory()}
+	return &Service{
+		kernel:  k,
+		Auth:    &Auth{k},
+		Org:     &Org{k},
+		Attr:    &Attr{k},
+		Node:    &Node{k},
+		Assets:  &Assets{k},
+		Closure: &Closure{k},
+		Sync:    &Sync{k},
+	}
+}
+
+func (k *kernel) Store() *Store { return k.store }
 
 // Account 是对外可见的账号视图，不含口令或激活口令。
 type Account struct {
@@ -42,190 +80,13 @@ func accountOf(p Person) Account {
 	return Account{ID: p.ID, LoginName: p.LoginName, DisplayName: p.DisplayName, Status: p.Status}
 }
 
-// BootstrapInitial 在本厂写入待启用初始超管和预置厂级超管角色，激活口令只返回给交付方。
-func (s *Service) BootstrapInitial(ctx context.Context, saLogin, saDisplay string) (Account, string, error) {
-	p, err := s.store.CreatePerson(ctx, saLogin, saDisplay, true)
-	if err != nil {
-		return Account{}, "", err
-	}
-	token, err := secret.RandomToken()
-	if err != nil {
-		return Account{}, "", err
-	}
-	if err := s.store.SetActivationHash(ctx, p.ID, secret.TokenHash(token)); err != nil {
-		return Account{}, "", err
-	}
-	if _, err := s.store.GrantRole(ctx, p.ID, RoleFactorySuperAdmin, ScopeFactory, nil); err != nil {
-		return Account{}, "", err
-	}
-	if err := s.audit(ctx, nil, &saLogin, "bootstrap_initial_sa", p.ID.String(), audit.Allow); err != nil {
-		return Account{}, "", err
-	}
-	return accountOf(p), token, nil
+func (k *kernel) ListAudit(ctx context.Context) ([]audit.Row, error) {
+	return k.store.ListAudit(ctx)
 }
 
-// Activate 由持有者自己设日常口令，账号转为有效；WAN 不得代设。
-func (s *Service) Activate(ctx context.Context, loginName, activationToken, password string) error {
-	p, err := s.store.PersonByLogin(ctx, loginName)
-	if err != nil {
-		_ = s.audit(ctx, nil, &loginName, "activate", loginName, audit.Deny)
-		return domain.ErrInvalidActivation
-	}
-	if p.Status != StatusPending {
-		_ = s.audit(ctx, &p.ID, &loginName, "activate", p.ID.String(), audit.Deny)
-		return domain.ErrAlreadyActivated
-	}
-	if p.ActivationTokenHash == nil || !activationOK(*p.ActivationTokenHash, activationToken) {
-		_ = s.audit(ctx, &p.ID, &loginName, "activate", p.ID.String(), audit.Deny)
-		return domain.ErrInvalidActivation
-	}
-	hash, err := secret.HashPassword(password)
-	if err != nil {
-		return err
-	}
-	if err := s.store.ActivatePerson(ctx, p.ID, hash); err != nil {
-		_ = s.audit(ctx, &p.ID, &loginName, "activate", p.ID.String(), audit.Deny)
-		return err
-	}
-	return s.audit(ctx, &p.ID, &loginName, "activate", p.ID.String(), audit.Allow)
-}
-
-// activationOK 恒定时间比对激活口令哈希，不给按位猜测的机会。
-func activationOK(storedHash, token string) bool {
-	return secret.Equal(storedHash, secret.TokenHash(token))
-}
-
-// Login 只接受本厂有效账号；待启用、已停用或口令错误都拒绝，审计不记秘密。
-func (s *Service) Login(ctx context.Context, loginName, password string) (string, error) {
-	p, err := s.store.PersonByLogin(ctx, loginName)
-	if err != nil {
-		_ = s.audit(ctx, nil, &loginName, "login", s.store.FactoryID().String(), audit.Deny)
-		return "", domain.ErrInvalidCredentials
-	}
-	// 待启用可预写角色，但角色不生效，也不能登录。
-	if p.Status == StatusPending {
-		_ = s.audit(ctx, &p.ID, &loginName, "login", s.store.FactoryID().String(), audit.Deny)
-		return "", domain.ErrAccountPending
-	}
-	if p.Status == StatusDisabled {
-		_ = s.audit(ctx, &p.ID, &loginName, "login", s.store.FactoryID().String(), audit.Deny)
-		return "", domain.ErrAccountDisabled
-	}
-	if p.PasswordHash == nil || !secret.VerifyPassword(*p.PasswordHash, password) {
-		_ = s.audit(ctx, &p.ID, &loginName, "login", s.store.FactoryID().String(), audit.Deny)
-		return "", domain.ErrInvalidCredentials
-	}
-	token, err := secret.RandomToken()
-	if err != nil {
-		return "", err
-	}
-	if _, err := s.store.CreateSession(ctx, p.ID, secret.TokenHash(token), time.Now().UTC().Add(sessionTTL)); err != nil {
-		return "", err
-	}
-	if err := s.audit(ctx, &p.ID, &loginName, "login", s.store.FactoryID().String(), audit.Allow); err != nil {
-		_ = s.store.DeleteSessionByTokenHash(ctx, secret.TokenHash(token))
-		return "", err
-	}
-	return token, nil
-}
-
-// Logout 立刻结束当前会话，账号仍保持原状态。
-func (s *Service) Logout(ctx context.Context, token string) error {
-	sess, err := s.store.SessionByTokenHash(ctx, secret.TokenHash(token))
-	if err != nil {
-		_ = s.audit(ctx, nil, nil, "logout", s.store.FactoryID().String(), audit.Deny)
-		return domain.ErrUnauthorized
-	}
-	if err := s.store.DeleteSessionByTokenHash(ctx, secret.TokenHash(token)); err != nil {
-		return err
-	}
-	return s.audit(ctx, &sess.PersonID, nil, "logout", s.store.FactoryID().String(), audit.Allow)
-}
-
-// RequireActive 校验会话后重查账号状态；停用或待启用的旧会话也不能再做新操作。
-func (s *Service) RequireActive(ctx context.Context, token string) (Account, error) {
-	sess, err := s.store.SessionByTokenHash(ctx, secret.TokenHash(token))
-	if err != nil {
-		if errors.Is(err, domain.ErrSessionExpired) {
-			_ = s.audit(ctx, nil, nil, "protect", s.store.FactoryID().String(), audit.Deny)
-			return Account{}, domain.ErrUnauthorized
-		}
-		_ = s.audit(ctx, nil, nil, "protect", s.store.FactoryID().String(), audit.Deny)
-		return Account{}, domain.ErrUnauthorized
-	}
-	p, err := s.store.PersonByID(ctx, sess.PersonID)
-	if err != nil {
-		return Account{}, err
-	}
-	if p.Status == StatusPending {
-		_ = s.audit(ctx, &p.ID, &p.LoginName, "protect", p.ID.String(), audit.Deny)
-		return Account{}, domain.ErrAccountPending
-	}
-	if p.Status != StatusActive {
-		_ = s.audit(ctx, &p.ID, &p.LoginName, "protect", p.ID.String(), audit.Deny)
-		return Account{}, domain.ErrAccountDisabled
-	}
-	return accountOf(p), nil
-}
-
-// ChangePassword 改日常口令，稳定身份不变，审计不写口令原文。
-func (s *Service) ChangePassword(ctx context.Context, token, newPassword string) error {
-	acc, err := s.RequireActive(ctx, token)
-	if err != nil {
-		return err
-	}
-	hash, err := secret.HashPassword(newPassword)
-	if err != nil {
-		return err
-	}
-	if err := s.store.SetPasswordHash(ctx, acc.ID, hash); err != nil {
-		return err
-	}
-	return s.audit(ctx, &acc.ID, &acc.LoginName, "change_password", acc.ID.String(), audit.Allow)
-}
-
-// Rename 改显示名或登录名，不改稳定身份。
-func (s *Service) Rename(ctx context.Context, token, displayName, loginName string) error {
-	acc, err := s.RequireActive(ctx, token)
-	if err != nil {
-		return err
-	}
-	if err := s.store.RenamePerson(ctx, acc.ID, displayName, loginName); err != nil {
-		_ = s.audit(ctx, &acc.ID, &loginName, "rename", acc.ID.String(), audit.Deny)
-		return err
-	}
-	return s.audit(ctx, &acc.ID, &loginName, "rename", acc.ID.String(), audit.Allow)
-}
-
-// DisableAccount 停用本厂账号；若会去掉最后一名有效厂级超管则拒绝。
-func (s *Service) DisableAccount(ctx context.Context, token string, targetID uuid.UUID) error {
-	acc, err := s.RequireActive(ctx, token)
-	if err != nil {
-		return err
-	}
-	if err := s.can(ctx, acc, permManageAccount, nil); err != nil {
-		_ = s.audit(ctx, &acc.ID, nil, "disable_account", targetID.String(), audit.Deny)
-		return err
-	}
-	// 激活后必须至少留一个「有效账号 + 厂级超管角色」。
-	if err := s.guardLastAdminOnDisable(ctx, targetID); err != nil {
-		_ = s.audit(ctx, &acc.ID, nil, "disable_account", targetID.String(), audit.Deny)
-		return err
-	}
-	if err := s.store.SetPersonStatus(ctx, targetID, StatusDisabled); err != nil {
-		_ = s.audit(ctx, &acc.ID, nil, "disable_account", targetID.String(), audit.Deny)
-		return err
-	}
-	return s.audit(ctx, &acc.ID, nil, "disable_account", targetID.String(), audit.Allow)
-}
-
-func (s *Service) ListAudit(ctx context.Context) ([]audit.Row, error) {
-	return s.store.ListAudit(ctx)
-}
-
-func (s *Service) audit(ctx context.Context, actor *uuid.UUID, claimed *string, action, target, result string) error {
-	fid := s.store.FactoryID()
-	return s.store.AppendAudit(ctx, audit.Event{
+func (k *kernel) audit(ctx context.Context, actor *uuid.UUID, claimed *string, action, target, result string) error {
+	fid := k.store.FactoryID()
+	return k.store.AppendAudit(ctx, audit.Event{
 		ActorID:      actor,
 		ClaimedLogin: claimed,
 		FactoryID:    &fid,

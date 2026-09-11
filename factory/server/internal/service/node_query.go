@@ -34,7 +34,7 @@ type PersonGrantView struct {
 }
 
 // RegisterBinding 由本厂有效超管登记 WAN 已送达的 Client 绑定。
-func (s *Service) RegisterBinding(ctx context.Context, token string, clientID uuid.UUID, publicKey []byte, revision int64) (Client, error) {
+func (s *Node) RegisterBinding(ctx context.Context, token string, clientID uuid.UUID, publicKey []byte, revision int64) (Client, error) {
 	acc, err := s.RequireActive(ctx, token)
 	if err != nil {
 		return Client{}, err
@@ -52,7 +52,7 @@ func (s *Service) RegisterBinding(ctx context.Context, token string, clientID uu
 }
 
 // VoidClientBinding 由本厂有效超管把本厂绑定标作废，之后不得再签发。
-func (s *Service) VoidClientBinding(ctx context.Context, token string, clientID uuid.UUID) error {
+func (s *Node) VoidClientBinding(ctx context.Context, token string, clientID uuid.UUID) error {
 	acc, err := s.RequireActive(ctx, token)
 	if err != nil {
 		return err
@@ -69,7 +69,7 @@ func (s *Service) VoidClientBinding(ctx context.Context, token string, clientID 
 }
 
 // ListClients 列出本厂已接受的 Client；不含私钥。
-func (s *Service) ListClients(ctx context.Context, token string) ([]Client, error) {
+func (s *Node) ListClients(ctx context.Context, token string) ([]Client, error) {
 	acc, err := s.RequireActive(ctx, token)
 	if err != nil {
 		return nil, err
@@ -86,7 +86,7 @@ func (s *Service) ListClients(ctx context.Context, token string) ([]Client, erro
 }
 
 // ListRuntimeGrants 每台 Client 只回最高修订，不含声明原文和签名。
-func (s *Service) ListRuntimeGrants(ctx context.Context, token string) ([]RuntimeGrantView, error) {
+func (s *Node) ListRuntimeGrants(ctx context.Context, token string) ([]RuntimeGrantView, error) {
 	acc, err := s.RequireActive(ctx, token)
 	if err != nil {
 		return nil, err
@@ -115,7 +115,7 @@ func (s *Service) ListRuntimeGrants(ctx context.Context, token string) ([]Runtim
 }
 
 // ListPersonGrantViews 列出每人每 Client 的最高修订，不含口令哈希。
-func (s *Service) ListPersonGrantViews(ctx context.Context, token string) ([]PersonGrantView, error) {
+func (s *Node) ListPersonGrantViews(ctx context.Context, token string) ([]PersonGrantView, error) {
 	acc, err := s.RequireActive(ctx, token)
 	if err != nil {
 		return nil, err
