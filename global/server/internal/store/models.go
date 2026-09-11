@@ -148,3 +148,77 @@ type assetRow struct {
 }
 
 func (assetRow) TableName() string { return "assets" }
+
+// ClosureMember 是闭包里的一条资产快照，含正文。
+type ClosureMember struct {
+	ID       uuid.UUID  `json:"id"`       // 稳定身份
+	Kind     string     `json:"kind"`     // process / project
+	Level    string     `json:"level"`    // 固定 platform
+	Name     string     `json:"name"`     // 显示名
+	Status   string     `json:"status"`   // 组包时状态
+	Copyable bool       `json:"copyable"` // 与源相同
+	Revision int64      `json:"revision"` // 钉死修订
+	Content  []byte     `json:"content"`  // 正文
+	Digest   []byte     `json:"digest"`   // 内容 SHA-256
+	Deps     []AssetDep `json:"deps"`     // 工艺必须空
+}
+
+// ClosureSnapshot 是一份平台级工程或工艺的完整快照，不是新身份。
+type ClosureSnapshot struct {
+	Kind            string          `json:"kind"`            // process / project
+	AssetID         uuid.UUID       `json:"assetId"`         // 根资产身份
+	Revision        int64           `json:"revision"`        // 根修订
+	Level           string          `json:"level"`           // 固定 platform
+	Copyable        bool            `json:"copyable"`        // 必须为否
+	Status          string          `json:"status"`          // 组包时状态
+	TargetFactoryID *uuid.UUID      `json:"targetFactoryId"` // 目标工厂
+	TargetClientID  *uuid.UUID      `json:"targetClientId"`  // WAN→厂为空
+	Members         []ClosureMember `json:"members"`         // 根在前，其余按 deps 顺序
+	Digest          []byte          `json:"digest"`          // 整包 SHA-256
+}
+
+// DistributionGrant 是某平台级资产可否下发到某厂。
+type DistributionGrant struct {
+	ID        uuid.UUID `json:"id"`        // 授权记录身份
+	AssetID   uuid.UUID `json:"assetId"`   // 平台级资产
+	FactoryID uuid.UUID `json:"factoryId"` // 目标工厂
+	Active    bool      `json:"active"`    // 是否仍有效
+	CreatedAt time.Time `json:"createdAt"` // 授权时间
+	UpdatedAt time.Time `json:"updatedAt"` // 最近变更
+}
+
+// DistributionRecord 是向某厂下发过的一份修订，不含正文。
+type DistributionRecord struct {
+	ID            uuid.UUID  `json:"id"`            // 记录身份
+	AssetID       uuid.UUID  `json:"assetId"`       // 根资产
+	Revision      int64      `json:"revision"`      // 下发修订
+	FactoryID     uuid.UUID  `json:"factoryId"`     // 目标工厂
+	Kind          string     `json:"kind"`          // process / project
+	ClosureDigest []byte     `json:"closureDigest"` // 整包摘要
+	Members       []AssetDep `json:"members"`       // 成员身份+修订+摘要
+	CreatedAt     time.Time  `json:"createdAt"`     // 首次下发时间
+}
+
+type distGrantRow struct {
+	ID        uuid.UUID `gorm:"type:uuid;primaryKey"` // 授权身份
+	AssetID   uuid.UUID `gorm:"type:uuid;not null"`   // 平台级资产
+	FactoryID uuid.UUID `gorm:"type:uuid;not null"`   // 工厂
+	Active    bool      `gorm:"not null"`             // 是否有效
+	CreatedAt time.Time `gorm:"not null"`             // 授权时间
+	UpdatedAt time.Time `gorm:"not null"`             // 最近变更
+}
+
+func (distGrantRow) TableName() string { return "distribution_grants" }
+
+type distRecordRow struct {
+	ID            uuid.UUID `gorm:"type:uuid;primaryKey"` // 记录身份
+	AssetID       uuid.UUID `gorm:"type:uuid;not null"`   // 根资产
+	Revision      int64     `gorm:"not null"`             // 修订
+	FactoryID     uuid.UUID `gorm:"type:uuid;not null"`   // 工厂
+	Kind          string    `gorm:"not null"`             // process / project
+	ClosureDigest []byte    `gorm:"type:bytea;not null"`  // 整包摘要
+	Members       []byte    `gorm:"type:jsonb;not null"`  // 成员 JSON
+	CreatedAt     time.Time `gorm:"not null"`             // 首次下发
+}
+
+func (distRecordRow) TableName() string { return "distribution_records" }

@@ -185,14 +185,36 @@ func (s *Service) CreateFactoryProject(ctx context.Context, token string, wc Wor
 
 func (s *Service) assertFactoryProcessDeps(ctx context.Context, deps []AssetDep) error {
 	for _, d := range deps {
-		p, err := s.loadChecked(ctx, d.ID)
-		if err != nil {
+		p, err := s.store.GovernedAssetByID(ctx, d.ID)
+		if err == nil {
+			if !digest.Match(p.Content, p.Digest) {
+				return domain.ErrIntegrity
+			}
+			if p.Kind != KindProcess || p.Level != AssetLevelFactory || p.Revision != d.Revision || !bytes.Equal(p.Digest, d.Digest) {
+				return domain.ErrAssetDependency
+			}
+			if p.Status != AssetAvailable {
+				return domain.ErrAssetNotAvailable
+			}
+			continue
+		}
+		if !errors.Is(err, domain.ErrNotFound) {
 			return err
 		}
-		if p.Kind != KindProcess || p.Level != AssetLevelFactory || p.Revision != d.Revision || !bytes.Equal(p.Digest, d.Digest) {
+		r, err := s.store.ReplicaByIDRev(ctx, d.ID, d.Revision)
+		if err != nil {
+			if errors.Is(err, domain.ErrNotFound) {
+				return domain.ErrAssetDependency
+			}
+			return err
+		}
+		if !digest.Match(r.Content, r.Digest) {
+			return domain.ErrIntegrity
+		}
+		if r.Kind != KindProcess || r.Level != AssetLevelPlatform || r.Revision != d.Revision || !bytes.Equal(r.Digest, d.Digest) {
 			return domain.ErrAssetDependency
 		}
-		if p.Status != AssetAvailable {
+		if r.Status != AssetAvailable {
 			return domain.ErrAssetNotAvailable
 		}
 	}

@@ -57,18 +57,21 @@ type RuntimeCred struct {
 
 // Bag 是夹具里的本机持有物：密钥、信任材料、已接受凭证和连通/焊接标记。
 type Bag struct {
-	ClientID               uuid.UUID    // 本机稳定身份
-	PublicKey              []byte       // 本机公钥
-	PrivateKey             []byte       // 本机私钥；不进厂库
-	FactoryID              uuid.UUID    // 当前认定所属工厂
-	FactoryPublic          []byte       // 本厂签发公钥
-	Connected              bool         // 已连网则跟服务器钟并接受新修订
-	Welding                bool         // 进行中焊接：过期/撤销时仍继续
-	AssetAllowed           bool         // 资产桩；离线受保护操作必须为真
-	AcceptedRevision       int64        // 已接受的最高节点修订
-	Runtime                *RuntimeCred // 当前生效的节点凭证
-	AcceptedPersonRevision int64        // 已接受的最高人员授权修订
-	Person                 *PersonCred  // 当前生效的人员离线授权
+	ClientID               uuid.UUID         // 本机稳定身份
+	PublicKey              []byte            // 本机公钥
+	PrivateKey             []byte            // 本机私钥；不进厂库
+	FactoryID              uuid.UUID         // 当前认定所属工厂
+	FactoryPublic          []byte            // 本厂签发公钥
+	Connected              bool              // 已连网则跟服务器钟并接受新修订
+	Welding                bool              // 进行中焊接：过期/撤销时仍继续
+	AssetAllowed           bool              // 资产桩；离线受保护操作必须为真
+	AcceptedRevision       int64             // 已接受的最高节点修订
+	Runtime                *RuntimeCred      // 当前生效的节点凭证
+	AcceptedPersonRevision int64             // 已接受的最高人员授权修订
+	Person                 *PersonCred       // 当前生效的人员离线授权
+	Closures               []ClosureSnapshot // 已缓存工程闭包，正文只在袋内
+	ActiveID               *uuid.UUID        // 当前激活工程；空则未激活
+	ActiveRevision         int64             // 当前激活修订；无激活为 0
 }
 
 // PersonCred 是签给本机某账号的人员离线授权快照。

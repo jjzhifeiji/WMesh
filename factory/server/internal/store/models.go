@@ -31,6 +31,7 @@ const (
 
 	AssetLevelFactory  = "factory"  // 本厂厂级
 	AssetLevelPersonal = "personal" // 本厂个人级
+	AssetLevelPlatform = "platform" // 已下发到本厂的平台级副本
 
 	AssetDraft     = "draft"     // 草稿：不可依赖、不可升档
 	AssetAvailable = "available" // 可用
@@ -317,3 +318,122 @@ type governedAssetRow struct {
 }
 
 func (governedAssetRow) TableName() string { return "assets" }
+
+// ClosureMember 是闭包里的一条资产快照，含正文。
+type ClosureMember struct {
+	ID        uuid.UUID  `json:"id"`        // 稳定身份
+	Kind      string     `json:"kind"`      // process / project
+	Level     string     `json:"level"`     // platform / factory / personal
+	Name      string     `json:"name"`      // 显示名
+	Status    string     `json:"status"`    // 送达时状态
+	Copyable  bool       `json:"copyable"`  // 与源相同
+	Revision  int64      `json:"revision"`  // 钉死修订
+	Content   []byte     `json:"content"`   // 正文
+	Digest    []byte     `json:"digest"`    // 内容 SHA-256
+	Deps      []AssetDep `json:"deps"`      // 工艺必须空
+	CreatorID *uuid.UUID `json:"creatorId"` // 个人级创建人；其余可空
+}
+
+// ClosureSnapshot 是一份工程或单条工艺的完整快照，不是新身份。
+type ClosureSnapshot struct {
+	Kind            string          `json:"kind"`            // process / project
+	AssetID         uuid.UUID       `json:"assetId"`         // 根资产身份
+	Revision        int64           `json:"revision"`        // 根修订
+	Level           string          `json:"level"`           // 与源相同
+	Copyable        bool            `json:"copyable"`        // 与源相同
+	Status          string          `json:"status"`          // 与源相同
+	TargetFactoryID *uuid.UUID      `json:"targetFactoryId"` // WAN→厂时必填
+	TargetClientID  *uuid.UUID      `json:"targetClientId"`  // 厂→Client 或个人级装袋时必填
+	Members         []ClosureMember `json:"members"`         // 根在前，其余按 deps 顺序
+	Digest          []byte          `json:"digest"`          // 整包 SHA-256
+}
+
+// AssetReplica 是已送达本厂的一条平台级（身份, 修订）只读副本。
+type AssetReplica struct {
+	ID         uuid.UUID  `json:"id"`         // 平台级稳定身份
+	Revision   int64      `json:"revision"`   // 送达修订
+	Kind       string     `json:"kind"`       // process / project
+	Level      string     `json:"level"`      // 固定 platform
+	Name       string     `json:"name"`       // 显示名
+	Status     string     `json:"status"`     // 送达时状态
+	Copyable   bool       `json:"copyable"`   // 必须为否
+	Content    []byte     `json:"content"`    // 正文
+	Digest     []byte     `json:"digest"`     // SHA-256
+	Deps       []AssetDep `json:"deps"`       // 工艺必须空
+	ReceivedAt time.Time  `json:"receivedAt"` // 本厂收到时间
+}
+
+// FactorySettings 是本厂一份设置，目前只有 Client 工程缓存上限。
+type FactorySettings struct {
+	ID                int16 `json:"id"`                // 固定 1
+	MaxCachedProjects int   `json:"maxCachedProjects"` // 每 Client 工程份上限，≥1
+}
+
+// ClientDistributionGrant 是某工程可否下发到某 Client。
+type ClientDistributionGrant struct {
+	ID        uuid.UUID `json:"id"`        // 授权记录身份
+	ProjectID uuid.UUID `json:"projectId"` // 工程身份
+	ClientID  uuid.UUID `json:"clientId"`  // 目标 Client
+	Active    bool      `json:"active"`    // 是否仍有效
+	GrantedBy uuid.UUID `json:"grantedBy"` // 授权超管
+	CreatedAt time.Time `json:"createdAt"` // 授权时间
+	UpdatedAt time.Time `json:"updatedAt"` // 最近变更
+}
+
+// ClientDistributionRecord 是向 Client 下发过的一份工程修订，不含正文。
+type ClientDistributionRecord struct {
+	ID            uuid.UUID  `json:"id"`            // 记录身份
+	ProjectID     uuid.UUID  `json:"projectId"`     // 工程身份
+	Revision      int64      `json:"revision"`      // 下发修订
+	ClientID      uuid.UUID  `json:"clientId"`      // 目标 Client
+	ClosureDigest []byte     `json:"closureDigest"` // 整包摘要
+	Members       []AssetDep `json:"members"`       // 成员身份+修订+摘要
+	CreatedAt     time.Time  `json:"createdAt"`     // 首次下发时间
+}
+
+type replicaRow struct {
+	ID         uuid.UUID `gorm:"type:uuid;primaryKey"` // 平台级身份
+	Revision   int64     `gorm:"primaryKey"`           // 送达修订
+	Kind       string    `gorm:"not null"`             // process / project
+	Level      string    `gorm:"not null"`             // platform
+	Name       string    `gorm:"not null"`             // 显示名
+	Status     string    `gorm:"not null"`             // 送达时状态
+	Copyable   bool      `gorm:"not null"`             // 必须为否
+	Content    []byte    `gorm:"type:bytea;not null"`  // 正文
+	Digest     []byte    `gorm:"type:bytea;not null"`  // SHA-256
+	Deps       []byte    `gorm:"type:jsonb;not null"`  // 依赖 JSON
+	ReceivedAt time.Time `gorm:"not null"`             // 收到时间
+}
+
+func (replicaRow) TableName() string { return "asset_replicas" }
+
+type factorySettingsRow struct {
+	ID                int16 `gorm:"primaryKey"` // 固定 1
+	MaxCachedProjects int   `gorm:"not null"`   // 缓存上限
+}
+
+func (factorySettingsRow) TableName() string { return "factory_settings" }
+
+type clientGrantRow struct {
+	ID        uuid.UUID `gorm:"type:uuid;primaryKey"` // 授权身份
+	ProjectID uuid.UUID `gorm:"type:uuid;not null"`   // 工程
+	ClientID  uuid.UUID `gorm:"type:uuid;not null"`   // Client
+	Active    bool      `gorm:"not null"`             // 是否有效
+	GrantedBy uuid.UUID `gorm:"type:uuid;not null"`   // 超管
+	CreatedAt time.Time `gorm:"not null"`             // 授权时间
+	UpdatedAt time.Time `gorm:"not null"`             // 最近变更
+}
+
+func (clientGrantRow) TableName() string { return "client_distribution_grants" }
+
+type clientRecordRow struct {
+	ID            uuid.UUID `gorm:"type:uuid;primaryKey"` // 记录身份
+	ProjectID     uuid.UUID `gorm:"type:uuid;not null"`   // 工程
+	Revision      int64     `gorm:"not null"`             // 修订
+	ClientID      uuid.UUID `gorm:"type:uuid;not null"`   // Client
+	ClosureDigest []byte    `gorm:"type:bytea;not null"`  // 整包摘要
+	Members       []byte    `gorm:"type:jsonb;not null"`  // 成员 JSON
+	CreatedAt     time.Time `gorm:"not null"`             // 首次下发
+}
+
+func (clientRecordRow) TableName() string { return "client_distribution_records" }

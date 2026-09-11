@@ -239,3 +239,19 @@ func (s *Store) TamperAssetContent(ctx context.Context, assetID uuid.UUID, conte
 	}
 	return nil
 }
+
+// TamperAssetDeps 只改依赖 JSON 不升修订，供缺失夹具使用。
+func (s *Store) TamperAssetDeps(ctx context.Context, assetID uuid.UUID, deps []AssetDep) error {
+	raw, err := json.Marshal(deps)
+	if err != nil {
+		return err
+	}
+	res := s.db.WithContext(ctx).Model(&governedAssetRow{}).Where("id = ?", assetID).Update("deps", raw)
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}

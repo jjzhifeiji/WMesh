@@ -31,6 +31,7 @@ const (
 
 	AssetLevelFactory  = store.AssetLevelFactory
 	AssetLevelPersonal = store.AssetLevelPersonal
+	AssetLevelPlatform = store.AssetLevelPlatform
 	AssetDraft         = store.AssetDraft
 	AssetAvailable     = store.AssetAvailable
 	AssetDisabled      = store.AssetDisabled
@@ -61,4 +62,7 @@ type (
 	Asset              = store.Asset
 	AssetDep           = store.AssetDep
 	AssetSnapshot      = store.AssetSnapshot
+	AssetReplica       = store.AssetReplica
+	ClosureMember      = store.ClosureMember
+	ClosureSnapshot    = store.ClosureSnapshot
 )
