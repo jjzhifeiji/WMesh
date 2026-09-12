@@ -82,8 +82,8 @@ func TestFactoryConstraints(t *testing.T) {
 	if _, err := s.Assign(ctx, p.ID, site.ID); err != nil {
 		t.Fatalf("assign: %v", err)
 	}
-	if _, err := s.Assign(ctx, p.ID, shop.ID); err != nil {
-		t.Fatalf("second assign: %v", err)
+	if _, err := s.Assign(ctx, p.ID, shop.ID); err != domain.ErrDuplicateAssignment {
+		t.Fatalf("second unit: %v", err)
 	}
 	if _, err := s.Assign(ctx, p.ID, site.ID); err != domain.ErrDuplicateAssignment {
 		t.Fatalf("dup assign: %v", err)
@@ -275,18 +275,33 @@ func TestClientBindingAndGrants(t *testing.T) {
 
 	cPub, _ := mustEd25519(t)
 	cid := id.New()
-	c, err := s.AcceptBinding(ctx, cid, cPub, 1)
+	c, err := s.AcceptBinding(ctx, cid, "焊机-1", cPub, 1)
 	if err != nil {
 		t.Fatalf("accept: %v", err)
 	}
-	if c.Status != store.ClientStatusBound || c.BindingRevision != 1 {
+	if c.Status != store.ClientStatusBound || c.BindingRevision != 1 || c.Name != "焊机-1" {
 		t.Fatalf("client: %+v", c)
 	}
-	if _, err := s.AcceptBinding(ctx, cid, cPub, 1); err != domain.ErrStaleRevision {
+	who, err := s.CreatePerson(ctx, "op-a", "操作员A", false)
+	if err != nil {
+		t.Fatalf("person: %v", err)
+	}
+	if err := s.SetClientOperator(ctx, cid, who.ID); err != nil {
+		t.Fatalf("set operator: %v", err)
+	}
+	listed, err := s.ListClients(ctx)
+	if err != nil || len(listed) != 1 || listed[0].OperatorID == nil || *listed[0].OperatorID != who.ID {
+		t.Fatalf("list operator: %+v %v", listed, err)
+	}
+	ren, err := s.RenameClient(ctx, cid, "一线焊机")
+	if err != nil || ren.Name != "一线焊机" {
+		t.Fatalf("rename: %+v %v", ren, err)
+	}
+	if _, err := s.AcceptBinding(ctx, cid, "焊机-1", cPub, 1); err != nil {
 		t.Fatalf("stale bind: %v", err)
 	}
 	other, _ := mustEd25519(t)
-	if _, err := s.AcceptBinding(ctx, cid, other, 2); err != domain.ErrClientKeyMismatch {
+	if _, err := s.AcceptBinding(ctx, cid, "焊机-1", other, 2); err != domain.ErrClientKeyMismatch {
 		t.Fatalf("key mismatch: %v", err)
 	}
 
@@ -311,41 +326,12 @@ func TestClientBindingAndGrants(t *testing.T) {
 		t.Fatalf("latest runtime: %+v %v", got, err)
 	}
 
-	p, err := s.CreatePerson(ctx, "op", "操作员", false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	unit, err := s.CreateOrgUnit(ctx, "车间", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	path, err := s.PathSnapshot(ctx, unit.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	pg, err := s.InsertPersonOfflineGrant(ctx, store.PersonOfflineGrant{
-		PersonID: p.ID, ClientID: cid, Revision: 1, LoginName: "op", PasswordHash: "hash",
-		AllowDirect:   true,
-		OrgSnapshot:   []store.OrgOption{{OrgUnitID: unit.ID, Path: path}},
-		RolesSnapshot: []store.RoleSnapshot{{Role: store.RoleOperator, ScopeKind: store.ScopeFactory}},
-		NotBefore:     now, NotAfter: later, Payload: []byte("person-1"), Signature: sig,
-	})
-	if err != nil {
-		t.Fatalf("person grant: %v", err)
-	}
-	if _, err := s.InsertPersonOfflineGrant(ctx, store.PersonOfflineGrant{
-		PersonID: p.ID, ClientID: cid, Revision: 1, LoginName: "op", PasswordHash: "hash",
-		NotBefore: now, NotAfter: later, Payload: []byte("person-1b"), Signature: sig,
-	}); err != domain.ErrStaleRevision {
-		t.Fatalf("stale person: %v", err)
-	}
-	latestP, err := s.LatestPersonOfflineGrant(ctx, p.ID, cid)
-	if err != nil || latestP.ID != pg.ID || latestP.LoginName != "op" || len(latestP.OrgSnapshot) != 1 {
-		t.Fatalf("latest person: %+v %v", latestP, err)
-	}
-
 	if err := s.VoidBinding(ctx, cid); err != nil {
 		t.Fatal(err)
+	}
+	voided, err := s.ClientByID(ctx, cid)
+	if err != nil || voided.OperatorID != nil {
+		t.Fatalf("void clears operator: %+v %v", voided, err)
 	}
 	if _, err := s.InsertRuntimeGrant(ctx, store.RuntimeGrant{
 		ClientID: cid, Revision: 2, CanRun: false,
@@ -353,7 +339,7 @@ func TestClientBindingAndGrants(t *testing.T) {
 	}); err != domain.ErrBindingVoid {
 		t.Fatalf("void runtime: %v", err)
 	}
-	reb, err := s.AcceptBinding(ctx, cid, cPub, 3)
+	reb, err := s.AcceptBinding(ctx, cid, "焊机-1", cPub, 3)
 	if err != nil || reb.Status != store.ClientStatusBound || reb.BindingRevision != 3 {
 		t.Fatalf("re-accept: %+v %v", reb, err)
 	}
@@ -449,8 +435,15 @@ func TestFactoryAssets(t *testing.T) {
 	if err != nil || digest.Match(dirty.Content, dirty.Digest) {
 		t.Fatalf("tamper should break digest: match=%v err=%v", digest.Match(dirty.Content, dirty.Digest), err)
 	}
-	if err := facDB.Exec("DELETE FROM assets WHERE id = ?", a.ID).Error; err == nil {
-		t.Fatal("physical delete must fail")
+	used, err := s.AssetIsReferenced(ctx, a.ID)
+	if err != nil || !used {
+		t.Fatalf("referenced: %v %v", used, err)
+	}
+	if err := s.DeleteGovernedAsset(ctx, proj.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteGovernedAsset(ctx, a.ID); err != nil {
+		t.Fatal(err)
 	}
 	var stubExists bool
 	if err := facDB.Raw("SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name='personal_asset_stubs')").Scan(&stubExists).Error; err != nil || !stubExists {

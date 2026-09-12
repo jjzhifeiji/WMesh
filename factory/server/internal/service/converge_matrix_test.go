@@ -1,4 +1,4 @@
-// 阶段2第6圈：在线收敛与离线事实归属 14.1～16.3。
+// 阶段2：在线收敛与事实归属 14.1～16.3；人员状态以厂库为准。
 package service_test
 
 import (
@@ -40,7 +40,7 @@ func testConvergeMatrix(t *testing.T, run func(string, func(*testing.T))) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := facA.AcceptBinding(ctx, cidA, pubA, 1); err != nil {
+	if _, err := facA.AcceptBinding(ctx, cidA, "Client-A1", pubA, 1); err != nil {
 		t.Fatal(err)
 	}
 	facPubA, err := facA.SigningPublicKey(ctx)
@@ -65,13 +65,11 @@ func testConvergeMatrix(t *testing.T, run func(string, func(*testing.T))) {
 		t.Fatal(err)
 	}
 
-	op, act, err := facA.CreatePerson(ctx, saTok, "op-a", "操作员A")
+	op, err := facA.CreatePerson(ctx, saTok, "op-a", "操作员A")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := facA.Activate(ctx, "op-a", act, "op-pass"); err != nil {
-		t.Fatal(err)
-	}
+	mustAdoptPassword(t, ctx, facA, "op-a", "op-pass")
 	opGrant, err := facA.GrantRole(ctx, saTok, op.ID, factory.RoleOperator, factory.ScopeFactory, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -79,28 +77,20 @@ func testConvergeMatrix(t *testing.T, run func(string, func(*testing.T))) {
 	if err := facA.Assign(ctx, saTok, op.ID, shopA.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := facA.Assign(ctx, saTok, op.ID, shopB.ID); err != nil {
-		t.Fatal(err)
-	}
-
-	credV1, err := facA.IssuePersonOfflineGrant(ctx, saTok, op.ID, cidA, nb, na)
-	if err != nil {
-		t.Fatal(err)
-	}
 
 	offline := bagOf(seedA.ID, cidA, pubA, privA, facPubA)
 	offline.AssetAllowed = true
 	offline.ApplyRuntime(runtime)
-	offline.ApplyPerson(credV1)
+	oid := op.ID
+	offline.OperatorID = &oid
 
 	online := bagOf(seedA.ID, cidA, pubA, privA, facPubA)
 	online.Connected = true
 	online.AssetAllowed = true
 	online.ApplyRuntime(runtime)
-	online.ApplyPerson(credV1)
+	online.OperatorID = &oid
 
-	var factA16, factA14 factory.FactStub
-	var credLatest factory.PersonCred
+	var factA16 factory.FactStub
 
 	run("16.1", func(t *testing.T) {
 		var err error
@@ -117,6 +107,9 @@ func testConvergeMatrix(t *testing.T, run func(string, func(*testing.T))) {
 	})
 
 	if err := facA.Unassign(ctx, saTok, op.ID, shopA.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := facA.Assign(ctx, saTok, op.ID, shopB.ID); err != nil {
 		t.Fatal(err)
 	}
 	if err := facA.ReparentOrgUnit(ctx, saTok, shopA.ID, &shopB.ID); err != nil {
@@ -159,41 +152,23 @@ func testConvergeMatrix(t *testing.T, run func(string, func(*testing.T))) {
 	})
 
 	run("14.2", func(t *testing.T) {
-		var err error
-		factA14, err = facA.CreateOfflineFact(ctx, offline, valid, "op-a", "op-pass", factory.WorkContext{OrgUnitID: &shopA.ID})
-		if err != nil {
-			t.Fatal(err)
+		if _, err := facA.CreateOfflineFact(ctx, offline, valid, "op-a", "op-pass", factory.WorkContext{OrgUnitID: &shopA.ID}); !errors.Is(err, domain.ErrWorkContext) {
+			t.Fatalf("old unit A still allowed: %v", err)
 		}
-		if factA14.OrgUnitID == nil || *factA14.OrgUnitID != shopA.ID || pathHas(factA14.OrgPath, shopB.ID) || pathName(factA14.OrgPath, shopA.ID) != "车间A" {
-			t.Fatalf("old snapshot lost: %+v", factA14)
+		ev, err := facA.EvaluateOfflineOp(ctx, offline, valid, "op-a", "op-pass")
+		if err != nil || ev.Decision != factory.NodeAllow {
+			t.Fatalf("node still %+v %v", ev, err)
 		}
 		rows, err := facA.ListAudit(ctx)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if audit.ContainsAny(audit.Dump(rows), "op-pass", credV1.PasswordHash) {
+		if audit.ContainsAny(audit.Dump(rows), "op-pass") {
 			t.Fatal("secret leaked")
-		}
-		found := false
-		for _, r := range rows {
-			if r.Action == "create_fact" && r.Result == audit.Allow && r.TimeSource == audit.Local && r.Target == factA14.ID.String() {
-				found = true
-				if r.OrgUnitID == nil || *r.OrgUnitID != shopA.ID || !pathHas(factA14.OrgPath, shopA.ID) {
-					t.Fatalf("audit path: %+v", r)
-				}
-			}
-		}
-		if !found {
-			t.Fatal("missing local create_fact audit")
 		}
 	})
 
 	run("14.1", func(t *testing.T) {
-		v2, err := facA.IssuePersonOfflineGrant(ctx, saTok, op.ID, cidA, nb, na)
-		if err != nil {
-			t.Fatal(err)
-		}
-		online.ApplyPerson(v2)
 		if _, err := facA.CreateOfflineFact(ctx, online, valid, "op-a", "op-pass", factory.WorkContext{OrgUnitID: &shopA.ID}); !errors.Is(err, domain.ErrWorkContext) {
 			t.Fatalf("old unit A: %v", err)
 		}
@@ -207,11 +182,6 @@ func testConvergeMatrix(t *testing.T, run func(string, func(*testing.T))) {
 		if err := facA.RevokeRole(ctx, saTok, opGrant.ID); err != nil {
 			t.Fatal(err)
 		}
-		v3, err := facA.IssuePersonOfflineGrant(ctx, saTok, op.ID, cidA, nb, na)
-		if err != nil {
-			t.Fatal(err)
-		}
-		online.ApplyPerson(v3)
 		ev, err := facA.EvaluateOfflineOp(ctx, online, valid, "op-a", "op-pass")
 		if err != nil || ev.Decision != factory.NodeDeny || ev.TimeSource != audit.Server {
 			t.Fatalf("revoke %+v %v", ev, err)
@@ -219,11 +189,6 @@ func testConvergeMatrix(t *testing.T, run func(string, func(*testing.T))) {
 		if err := facA.DisableAccount(ctx, saTok, op.ID); err != nil {
 			t.Fatal(err)
 		}
-		v4, err := facA.IssuePersonOfflineGrant(ctx, saTok, op.ID, cidA, nb, na)
-		if err != nil {
-			t.Fatal(err)
-		}
-		online.ApplyPerson(v4)
 		login, err := facA.LoginOffline(ctx, online, valid, "op-a", "op-pass")
 		if err != nil || login.Decision != factory.NodeDeny {
 			t.Fatalf("disable %+v %v", login, err)
@@ -238,10 +203,9 @@ func testConvergeMatrix(t *testing.T, run func(string, func(*testing.T))) {
 				nA++
 			}
 		}
-		if nA != 2 {
+		if nA != 1 {
 			t.Fatalf("new old-range facts: %d", nA)
 		}
-		credLatest = v4
 		rows, err := facA.ListAudit(ctx)
 		if err != nil {
 			t.Fatal(err)
@@ -256,35 +220,16 @@ func testConvergeMatrix(t *testing.T, run func(string, func(*testing.T))) {
 
 	run("14.3", func(t *testing.T) {
 		offline.Connected = true
-		offline.ApplyPerson(credLatest)
 		ev, err := facA.EvaluateOfflineOp(ctx, offline, valid, "op-a", "op-pass")
 		if err != nil || ev.Decision != factory.NodeDeny {
 			t.Fatalf("reconnect %+v %v", ev, err)
 		}
-		got, err := facA.GetFact(ctx, saTok, factA14.ID)
+		got, err := facA.GetFact(ctx, saTok, factA16.ID)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if got.OrgUnitID == nil || *got.OrgUnitID != shopA.ID || pathName(got.OrgPath, shopA.ID) != "车间A" || pathHas(got.OrgPath, shopB.ID) {
-			t.Fatalf("14.2 rewritten: %+v", got.OrgPath)
-		}
-	})
-
-	run("15.1", func(t *testing.T) {
-		offline.ApplyPerson(credV1)
-		if offline.AcceptedPersonRevision != credLatest.Revision {
-			t.Fatalf("rolled back to %d", offline.AcceptedPersonRevision)
-		}
-		login, err := facA.LoginOffline(ctx, offline, valid, "op-a", "op-pass")
-		if err != nil || login.Decision != factory.NodeDeny {
-			t.Fatalf("stale grant %+v %v", login, err)
-		}
-		rows, err := facA.ListAudit(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !audit.HasResult(rows, "person_login", audit.Deny) {
-			t.Fatal("rollback not audited")
+			t.Fatalf("16.1 rewritten: %+v", got.OrgPath)
 		}
 	})
 }

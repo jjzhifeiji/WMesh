@@ -19,7 +19,7 @@ var matrixIDs = []string{
 	"1.1", "1.2", "1.3",
 	"2.1", "2.2",
 	"3.1", "3.2", "3.3",
-	"17.1", "17.2",
+	"17.1", "17.2", "17.3",
 	"18.1", "18.2", "18.3",
 }
 
@@ -103,6 +103,19 @@ func TestMatrix(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
+	run("17.3", func(t *testing.T) {
+		if err := h.WAN.ChangePassword(ctx, wanTok, "wan-secret-2"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := h.WAN.Login(ctx, "w", wanPass); !errors.Is(err, domain.ErrInvalidCredentials) {
+			t.Fatal(err)
+		}
+		tok, err := h.WAN.Login(ctx, "w", "wan-secret-2")
+		if err != nil {
+			t.Fatal(err)
+		}
+		wanTok = tok
+	})
 	run("17.1", func(t *testing.T) {
 		rows, err := h.WAN.ListAudit(ctx)
 		if err != nil {
@@ -111,7 +124,7 @@ func TestMatrix(t *testing.T) {
 		if bad := audit.Incomplete(rows); len(bad) > 0 {
 			t.Fatalf("incomplete audit %#v", bad[0])
 		}
-		if audit.ContainsAny(audit.Dump(rows), wanPass, wanTok) {
+		if audit.ContainsAny(audit.Dump(rows), wanPass, "wan-secret-2", wanTok) {
 			t.Fatalf("secret leaked")
 		}
 	})
@@ -146,16 +159,16 @@ func TestMatrix(t *testing.T) {
 	var bound global.Client
 	run("0.1", func(t *testing.T) {
 		var err error
-		bound, err = h.WAN.BindClient(ctx, wanTok, cid, a.Factory.ID, cPub)
+		bound, err = h.WAN.BindClient(ctx, wanTok, cid, a.Factory.ID, "Client-A1", cPub)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if bound.FactoryID == nil || *bound.FactoryID != a.Factory.ID || bound.BindingRevision != 1 {
+		if bound.FactoryID == nil || *bound.FactoryID != a.Factory.ID || bound.BindingRevision != 1 || bound.Name != "Client-A1" {
 			t.Fatalf("bound %+v", bound)
 		}
 	})
 	run("0.2", func(t *testing.T) {
-		if _, err := h.WAN.BindClient(ctx, wanTok, cid, facB.Factory.ID, cPub); !errors.Is(err, domain.ErrClientBound) {
+		if _, err := h.WAN.BindClient(ctx, wanTok, cid, facB.Factory.ID, "Client-A1", cPub); !errors.Is(err, domain.ErrClientBound) {
 			t.Fatalf("got %v", err)
 		}
 		cur, err := h.WAN.ClientByID(ctx, cid)

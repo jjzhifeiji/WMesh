@@ -2,205 +2,151 @@ package service
 
 import (
 	"context"
-	"errors"
-	"time"
 
 	"github.com/google/uuid"
 
 	"wmesh/factory/internal/platform/audit"
 	"wmesh/factory/internal/platform/domain"
-	"wmesh/factory/internal/platform/nodekey"
+	"wmesh/factory/internal/platform/secret"
 )
 
-// IssuePersonOfflineGrant 由本厂有效超管签发绑定某 Client 的人员离线授权；停用账号可签更高修订，快照记为无效。
-func (s *Node) IssuePersonOfflineGrant(ctx context.Context, token string, personID, clientID uuid.UUID, notBefore, notAfter time.Time) (PersonCred, error) {
-	acc, err := s.RequireActive(ctx, token)
+// loginPerson 核对本厂有效账号和密码；不签发授权，他厂袋直接拒绝。
+func (s *kernel) loginPerson(ctx context.Context, bag Bag, clocks Clocks, loginName, password string) (Person, NodeEval) {
+	_, src := bagNow(bag, clocks)
+	ev := NodeEval{Decision: NodeDeny, TimeSource: src}
+	if bag.FactoryID != s.store.FactoryID() {
+		return Person{}, ev
+	}
+	p, err := s.store.PersonByLogin(ctx, loginName)
 	if err != nil {
-		return PersonCred{}, err
+		return Person{}, ev
 	}
-	target := personID.String() + " " + clientID.String()
-	if err := s.can(ctx, acc, permManageAccount, nil); err != nil {
-		_ = s.audit(ctx, &acc.ID, nil, "issue_person_offline", target, audit.Deny)
-		return PersonCred{}, err
+	if p.Status != StatusActive || p.PasswordHash == nil || *p.PasswordHash == "" {
+		return Person{}, ev
 	}
-	p, err := s.store.PersonByID(ctx, personID)
-	if err != nil {
-		_ = s.audit(ctx, &acc.ID, nil, "issue_person_offline", target, audit.Deny)
-		return PersonCred{}, err
+	if !secret.VerifyPassword(*p.PasswordHash, password) {
+		return Person{}, ev
 	}
-	if p.Status == StatusPending {
-		_ = s.audit(ctx, &acc.ID, nil, "issue_person_offline", target, audit.Deny)
-		return PersonCred{}, domain.ErrAccountPending
-	}
-	if p.PasswordHash == nil {
-		_ = s.audit(ctx, &acc.ID, nil, "issue_person_offline", target, audit.Deny)
-		return PersonCred{}, domain.ErrAccountDisabled
-	}
-	cl, err := s.store.ClientByID(ctx, clientID)
-	if err != nil {
-		_ = s.audit(ctx, &acc.ID, nil, "issue_person_offline", target, audit.Deny)
-		return PersonCred{}, err
-	}
-	if cl.Status != ClientStatusBound {
-		_ = s.audit(ctx, &acc.ID, nil, "issue_person_offline", target, audit.Deny)
-		return PersonCred{}, domain.ErrBindingVoid
-	}
-	key, err := s.ensureSigningKey(ctx)
-	if err != nil {
-		return PersonCred{}, err
-	}
-	roles, err := s.store.ActiveGrants(ctx, personID)
-	if err != nil {
-		return PersonCred{}, err
-	}
-	snap := make([]RoleSnapshot, 0, len(roles))
-	allowDirect := false
-	for _, g := range roles {
-		snap = append(snap, RoleSnapshot{Role: g.Role, ScopeKind: g.ScopeKind, OrgUnitID: g.OrgUnitID})
-		if g.ScopeKind == ScopeFactory {
-			allowDirect = true
-		}
-	}
-	assigns, err := s.store.ActiveAssignments(ctx, personID)
-	if err != nil {
-		return PersonCred{}, err
-	}
-	orgs := make([]OrgOption, 0, len(assigns))
-	for _, a := range assigns {
-		path, err := s.store.PathSnapshot(ctx, a.OrgUnitID)
-		if err != nil {
-			return PersonCred{}, err
-		}
-		orgs = append(orgs, OrgOption{OrgUnitID: a.OrgUnitID, Path: path})
-	}
-	rev := int64(1)
-	if latest, err := s.store.LatestPersonOfflineGrant(ctx, personID, clientID); err == nil {
-		rev = latest.Revision + 1
-	} else if !errors.Is(err, domain.ErrNotFound) {
-		return PersonCred{}, err
-	}
-	cred := PersonCred{
-		FactoryID:     s.store.FactoryID(),
-		ClientID:      clientID,
-		ClientPublic:  cl.PublicKey,
-		PersonID:      personID,
-		LoginName:     p.LoginName,
-		PasswordHash:  *p.PasswordHash,
-		AllowDirect:   allowDirect,
-		OrgSnapshot:   orgs,
-		RolesSnapshot: snap,
-		Active:        p.Status == StatusActive, // 停用后新开按停用快照
-		NotBefore:     notBefore.UTC(),
-		NotAfter:      notAfter.UTC(),
-		Revision:      rev,
-	}
-	payload, err := encodePerson(cred)
-	if err != nil {
-		return PersonCred{}, err
-	}
-	cred.Payload = payload
-	cred.Signature = nodekey.Sign(key.PrivateKey, payload)
-	if _, err := s.store.InsertPersonOfflineGrant(ctx, PersonOfflineGrant{
-		PersonID:      personID,
-		ClientID:      clientID,
-		Revision:      rev,
-		LoginName:     cred.LoginName,
-		PasswordHash:  cred.PasswordHash,
-		AllowDirect:   cred.AllowDirect,
-		OrgSnapshot:   cred.OrgSnapshot,
-		RolesSnapshot: cred.RolesSnapshot,
-		NotBefore:     cred.NotBefore,
-		NotAfter:      cred.NotAfter,
-		Payload:       payload,
-		Signature:     cred.Signature,
-	}); err != nil {
-		_ = s.audit(ctx, &acc.ID, nil, "issue_person_offline", target, audit.Deny)
-		return PersonCred{}, err
-	}
-	if err := s.audit(ctx, &acc.ID, nil, "issue_person_offline", target, audit.Allow); err != nil {
-		return PersonCred{}, err
-	}
-	return cred, nil
+	ev.Decision = NodeAllow
+	return p, ev
 }
 
-// LoginOffline 只凭本机袋核验人员授权与口令；缺一不可。
+func (s *kernel) canOperateAs(ctx context.Context, personID uuid.UUID) (bool, error) {
+	grants, err := s.store.ActiveGrants(ctx, personID)
+	if err != nil {
+		return false, err
+	}
+	for _, g := range grants {
+		if g.Role == RoleOperator || g.Role == RoleProcessEngineer {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (s *kernel) operatorAccount(ctx context.Context, bag Bag) (Account, error) {
+	if bag.OperatorID == nil {
+		return Account{}, domain.ErrForbidden
+	}
+	p, err := s.store.PersonByID(ctx, *bag.OperatorID)
+	if err != nil {
+		return Account{}, err
+	}
+	if p.Status != StatusActive {
+		return Account{}, domain.ErrForbidden
+	}
+	return accountOf(p), nil
+}
+
+func personActor(bag *Bag) *uuid.UUID {
+	if bag == nil || bag.OperatorID == nil {
+		return nil
+	}
+	id := *bag.OperatorID
+	return &id
+}
+
+func actorID(p Person, ev NodeEval) *uuid.UUID {
+	if ev.Decision != NodeAllow {
+		return nil
+	}
+	id := p.ID
+	return &id
+}
+
+// LoginOffline 用本厂有效账号+密码登录本厂设备；不另签发人员授权。
 func (s *Node) LoginOffline(ctx context.Context, bag Bag, clocks Clocks, loginName, password string) (NodeEval, error) {
-	ev := LoginOfflineEval(bag, clocks, loginName, password)
-	var actor *uuid.UUID
-	if bag.Person != nil {
-		id := bag.Person.PersonID
-		actor = &id
-	}
+	p, ev := s.loginPerson(ctx, bag, clocks, loginName, password)
 	result := audit.Deny
 	if ev.Decision == NodeAllow {
 		result = audit.Allow
+		if err := s.rememberOperator(ctx, bag.ClientID, p.ID); err != nil {
+			return ev, err
+		}
 	}
-	if err := s.auditTimed(ctx, actor, &loginName, "person_login", bag.ClientID.String(), result, ev.TimeSource); err != nil {
+	if err := s.auditTimed(ctx, actorID(p, ev), &loginName, "person_login", bag.ClientID.String(), result, ev.TimeSource); err != nil {
 		return ev, err
 	}
 	return ev, nil
 }
 
-// EvaluateOfflineOp 离线新开受保护操作：人员、节点、资产桩都允许才允许。
+// EvaluateOfflineOp 本厂有效操作员/工程师 + 节点凭证 + 资产桩，三者都过才允许。
 func (s *Node) EvaluateOfflineOp(ctx context.Context, bag Bag, clocks Clocks, loginName, password string) (NodeEval, error) {
-	ev := EvaluateOffline(bag, clocks, loginName, password)
-	var actor *uuid.UUID
-	if bag.Person != nil {
-		id := bag.Person.PersonID
-		actor = &id
-	}
+	p, ev := s.evalOffline(ctx, bag, clocks, loginName, password)
 	result := audit.Deny
 	if ev.Decision == NodeAllow {
 		result = audit.Allow
 	}
-	if err := s.auditTimed(ctx, actor, &loginName, "person_open", bag.ClientID.String(), result, ev.TimeSource); err != nil {
+	if err := s.auditTimed(ctx, actorID(p, ev), &loginName, "person_open", bag.ClientID.String(), result, ev.TimeSource); err != nil {
 		return ev, err
 	}
 	return ev, nil
 }
 
-// CreateOfflineFact 按本机袋人员授权快照选定上下文并写入发生时路径，不查当前分配或当前树。
-func (s *Node) CreateOfflineFact(ctx context.Context, bag Bag, clocks Clocks, loginName, password string, wc WorkContext) (FactStub, error) {
-	ev := EvaluateOffline(bag, clocks, loginName, password)
-	var actor *uuid.UUID
-	cred, ok := currentPerson(bag)
-	if ok {
-		id := cred.PersonID
-		actor = &id
+func (s *kernel) evalOffline(ctx context.Context, bag Bag, clocks Clocks, loginName, password string) (Person, NodeEval) {
+	p, ev := s.loginPerson(ctx, bag, clocks, loginName, password)
+	if ev.Decision != NodeAllow {
+		return p, ev
 	}
-	if bag.FactoryID != s.store.FactoryID() || ev.Decision != NodeAllow || !ok {
+	node := EvaluateRuntime(bag, clocks, NodeOpen)
+	if node.Decision != NodeAllow {
+		ev.Decision = NodeDeny
+		ev.TimeSource = node.TimeSource
+		return p, ev
+	}
+	ok, err := s.canOperateAs(ctx, p.ID)
+	if err != nil || !ok || !bag.AssetAllowed {
+		ev.Decision = NodeDeny
+		return p, ev
+	}
+	if err := s.rememberOperator(ctx, bag.ClientID, p.ID); err != nil {
+		ev.Decision = NodeDeny
+		return p, ev
+	}
+	return p, ev
+}
+
+func (s *kernel) rememberOperator(ctx context.Context, clientID, personID uuid.UUID) error {
+	return s.store.SetClientOperator(ctx, clientID, personID)
+}
+
+// CreateOfflineFact 用当前厂库分配选定上下文并冻结发生时路径；账号停用或无分配即拒绝。
+func (s *Node) CreateOfflineFact(ctx context.Context, bag Bag, clocks Clocks, loginName, password string, wc WorkContext) (FactStub, error) {
+	p, ev := s.evalOffline(ctx, bag, clocks, loginName, password)
+	actor := actorID(p, ev)
+	if bag.FactoryID != s.store.FactoryID() || ev.Decision != NodeAllow {
 		_ = s.auditAtSrc(ctx, actor, "create_fact", "fact", audit.Deny, ev.TimeSource, nil, nil)
 		return FactStub{}, domain.ErrForbidden
 	}
-	unitID, path, err := resolveOfflineContext(cred, wc)
+	unitID, path, err := s.resolveWorkContext(ctx, accountOf(p), wc)
 	if err != nil {
 		_ = s.auditAtSrc(ctx, actor, "create_fact", "fact", audit.Deny, ev.TimeSource, unitID, path)
 		return FactStub{}, err
 	}
-	row, err := s.store.InsertFact(ctx, cred.PersonID, unitID, path)
+	row, err := s.store.InsertFact(ctx, p.ID, unitID, path)
 	if err != nil {
 		_ = s.auditAtSrc(ctx, actor, "create_fact", "fact", audit.Deny, ev.TimeSource, unitID, path)
 		return FactStub{}, err
 	}
 	return row, s.auditAtSrc(ctx, actor, "create_fact", row.ID.String(), audit.Allow, ev.TimeSource, unitID, path)
-}
-
-// resolveOfflineContext 只认人员授权快照里的节点或直属，不查当前厂库树。
-func resolveOfflineContext(cred PersonCred, wc WorkContext) (*uuid.UUID, []PathNode, error) {
-	if wc.Direct == (wc.OrgUnitID != nil) {
-		return nil, nil, domain.ErrWorkContext // 没选或同时选了两个
-	}
-	if wc.Direct {
-		if !cred.AllowDirect {
-			return nil, []PathNode{}, domain.ErrWorkContext
-		}
-		return nil, []PathNode{}, nil
-	}
-	for _, o := range cred.OrgSnapshot {
-		if o.OrgUnitID == *wc.OrgUnitID {
-			id := o.OrgUnitID
-			return &id, append([]PathNode(nil), o.Path...), nil
-		}
-	}
-	return wc.OrgUnitID, nil, domain.ErrWorkContext
 }

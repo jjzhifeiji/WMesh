@@ -24,7 +24,7 @@ func (s *Auth) BootstrapAdmin(ctx context.Context, loginName, password string) e
 	return s.audit(ctx, nil, &loginName, nil, "bootstrap_wan_admin", loginName, audit.Allow)
 }
 
-// Login 校验 WAN 口令并开会话；失败只记被声明登录名，不记口令。
+// Login 校验 WAN 密码并开会话；失败只记被声明登录名，不记密码。
 func (s *Auth) Login(ctx context.Context, loginName, password string) (string, error) {
 	admin, err := s.store.AdminByLogin(ctx, loginName)
 	if err != nil {
@@ -47,6 +47,42 @@ func (s *Auth) Login(ctx context.Context, loginName, password string) (string, e
 		return "", err
 	}
 	return token, nil
+}
+
+// ChangePassword 改自己的日常密码，稳定身份不变，审计不写密码原文。
+func (s *Auth) ChangePassword(ctx context.Context, token, newPassword string) error {
+	admin, err := s.RequireAdmin(ctx, token)
+	if err != nil {
+		return err
+	}
+	hash, err := secret.HashPassword(newPassword)
+	if err != nil {
+		return err
+	}
+	if err := s.store.SetAdminPassword(ctx, admin.ID, hash); err != nil {
+		return err
+	}
+	return s.audit(ctx, &admin.ID, &admin.LoginName, nil, "change_password", admin.ID.String(), audit.Allow)
+}
+
+// ResetAdminPassword 按登录名覆盖唯一管理员密码哈希，并作废其全部会话。
+func (s *Auth) ResetAdminPassword(ctx context.Context, loginName, password string) error {
+	admin, err := s.store.AdminByLogin(ctx, loginName)
+	if err != nil {
+		_ = s.audit(ctx, nil, &loginName, nil, "reset_wan_admin", loginName, audit.Deny)
+		return err
+	}
+	hash, err := secret.HashPassword(password)
+	if err != nil {
+		return err
+	}
+	if err := s.store.SetAdminPassword(ctx, admin.ID, hash); err != nil {
+		return err
+	}
+	if err := s.store.DeleteSessionsForAdmin(ctx, admin.ID); err != nil {
+		return err
+	}
+	return s.audit(ctx, &admin.ID, &loginName, nil, "reset_wan_admin", admin.ID.String(), audit.Allow)
 }
 
 // Logout 结束当前 WAN 会话，不等于停用管理员。

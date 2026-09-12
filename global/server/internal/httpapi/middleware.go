@@ -1,7 +1,10 @@
 package httpapi
 
 import (
+	"bufio"
+	"errors"
 	"log/slog"
+	"net"
 	"net/http"
 	"runtime/debug"
 	"strings"
@@ -55,4 +58,20 @@ func (w *statusWriter) WriteHeader(code int) {
 func (w *statusWriter) Write(b []byte) (int, error) {
 	w.wrote = true
 	return w.ResponseWriter.Write(b)
+}
+
+func (w *statusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+func (w *statusWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	h, ok := w.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, errors.New("hijack not supported")
+	}
+	return h.Hijack()
+}
+
+func (w *statusWriter) Flush() {
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
 }

@@ -1,4 +1,4 @@
-// 阶段3第4圈：WAN 侧平台级制作、升档快照、完整性（4.1、4.3、1.3、16.1～16.2）。
+// 阶段3第4圈：WAN 侧平台级制作、升档快照、完整性（4.1、4.3、4.4、1.3、16.1～16.2）。
 package service_test
 
 import (
@@ -45,17 +45,37 @@ func testWANAssetIdentity(t *testing.T, run func(string, func(*testing.T))) {
 		t.Fatal(err)
 	}
 	run("4.3", func(t *testing.T) {
-		if err := h.WAN.SetPlatformCopyable(ctx, tok, proc.ID, proc.Revision, true); !errors.Is(err, domain.ErrAssetNotCopyable) {
-			t.Fatalf("got %v", err)
-		}
-		got, err := h.WAN.GetPlatformAsset(ctx, tok, proc.ID)
-		if err != nil || got.Copyable || got.Revision != proc.Revision {
+		got, err := h.WAN.SetPlatformCopyable(ctx, tok, proc.ID, proc.Revision, true)
+		if err != nil || !got.Copyable {
 			t.Fatalf("%+v %v", got, err)
+		}
+		proc = got
+	})
+	run("4.4", func(t *testing.T) {
+		draft, err := h.WAN.CreatePlatformProcess(ctx, tok, "可复制草稿", []byte("draft-copy"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := h.WAN.SetPlatformCopyable(ctx, tok, draft.ID, draft.Revision, true)
+		if err != nil || !got.Copyable {
+			t.Fatalf("%+v %v", got, err)
+		}
+		pub, err := h.WAN.PublishPlatformAsset(ctx, tok, got.ID, got.Revision)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tight, err := h.WAN.SetPlatformCopyable(ctx, tok, pub.ID, pub.Revision, false)
+		if err != nil || tight.Copyable {
+			t.Fatalf("%+v %v", tight, err)
+		}
+		wide, err := h.WAN.SetPlatformCopyable(ctx, tok, tight.ID, tight.Revision, true)
+		if err != nil || !wide.Copyable {
+			t.Fatalf("%+v %v", wide, err)
 		}
 	})
 	run("16.2", func(t *testing.T) {
 		gotBody, err := h.WAN.ReadPlatformAssetContent(ctx, tok, proc.ID)
-		if err != nil || !bytes.Equal(gotBody, body) {
+		if err != nil || !bytes.Equal(gotBody, applyProcess(body)) {
 			t.Fatalf("%q %v", gotBody, err)
 		}
 		rows, err := h.WAN.ListAudit(ctx)
@@ -85,11 +105,24 @@ func testWANAssetIdentity(t *testing.T, run func(string, func(*testing.T))) {
 			t.Fatal(err)
 		}
 		if promoted.ID == srcID || promoted.Level != global.AssetLevelPlatform || promoted.Revision != 1 ||
-			promoted.Copyable || promoted.Status != global.AssetAvailable || promoted.Content != nil ||
+			promoted.Copyable || promoted.Status != global.AssetDraft || promoted.Content != nil ||
 			promoted.SourceID == nil || *promoted.SourceID != srcID ||
 			promoted.SourceRevision == nil || *promoted.SourceRevision != 1 ||
 			promoted.SourceFactoryID == nil || *promoted.SourceFactoryID != fac.Factory.ID {
 			t.Fatalf("%+v", promoted)
+		}
+		listed, err := h.WAN.ListPlatformAssets(ctx, tok, global.KindProcess)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var listedName string
+		for _, a := range listed {
+			if a.ID == promoted.ID {
+				listedName = a.SourceFactoryName
+			}
+		}
+		if listedName != "厂A" {
+			t.Fatalf("source factory display %q", listedName)
 		}
 		if err := h.WAN.GetFactoryAsset(ctx, tok, fac.Factory.ID, srcID); !errors.Is(err, domain.ErrForbidden) {
 			t.Fatalf("got %v", err)

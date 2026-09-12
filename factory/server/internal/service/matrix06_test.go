@@ -85,6 +85,30 @@ func testAssetPromote(t *testing.T, run func(string, func(*testing.T))) {
 			t.Fatalf("%q %v", got, err)
 		}
 	})
+	run("8.4", func(t *testing.T) {
+		again, err := facA.PromoteToFactory(ctx, pe.tok, personal.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if again.ID != promoted.ID || again.Revision != promoted.Revision {
+			t.Fatalf("skip %+v want %+v", again, promoted)
+		}
+	})
+	run("8.5", func(t *testing.T) {
+		changed, err := facA.UpdateAssetContent(ctx, pe.tok, personal.ID, personal.Revision, []byte("personal-v2"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		personal = changed
+		got, err := facA.PromoteToFactory(ctx, pe.tok, personal.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.ID != promoted.ID || got.Revision != promoted.Revision+1 || !bytes.Equal(got.Digest, personal.Digest) {
+			t.Fatalf("overwrite %+v from %+v", got, personal)
+		}
+		promoted = got
+	})
 	run("8.2", func(t *testing.T) {
 		if err := facA.Assign(ctx, saA, pe.acc.ID, shopB.ID); err != nil {
 			t.Fatal(err)
@@ -97,7 +121,7 @@ func testAssetPromote(t *testing.T, run func(string, func(*testing.T))) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := facA.PromoteToFactory(ctx, peShop.tok, src.ID); !errors.Is(err, domain.ErrForbidden) {
+		if _, err := facA.PromoteToFactory(ctx, peShop.tok, src.ID); err != nil {
 			t.Fatalf("got %v", err)
 		}
 		still, err := facA.GetAsset(ctx, pe.tok, src.ID)
@@ -106,7 +130,7 @@ func testAssetPromote(t *testing.T, run func(string, func(*testing.T))) {
 		}
 	})
 	run("8.3", func(t *testing.T) {
-		if _, err := facA.PromoteToFactory(ctx, saA, personal.ID); !errors.Is(err, domain.ErrForbidden) {
+		if _, err := facA.PromoteToFactory(ctx, saA, personal.ID); err != nil {
 			t.Fatalf("got %v", err)
 		}
 	})
@@ -382,6 +406,9 @@ func testAssetPromote(t *testing.T, run func(string, func(*testing.T))) {
 		}
 	})
 	run("17.1", func(t *testing.T) {
+		if err := facA.Unassign(ctx, saA, pe.acc.ID, shopB.ID); err != nil {
+			t.Fatal(err)
+		}
 		if err := facA.Assign(ctx, saA, pe.acc.ID, shop.ID); err != nil {
 			t.Fatal(err)
 		}

@@ -3,7 +3,12 @@ export const paths = {
   login: "/login",
   dashboard: "/",
   factories: "/factories",
-  clients: "/clients",
+  clients: "/devices",
   processes: "/assets/processes",
   projects: "/assets/projects",
+  templates: "/assets/templates",
+  distribute: "/delivery/distribute",
+  auditEvents: "/audit/events",
+  auditStats: "/audit/stats",
+  account: "/account",
 } as const;

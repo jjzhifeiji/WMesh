@@ -53,17 +53,15 @@ export const navTree: NavEntry[] = [
     children: [
       { key: paths.people, label: "人员" },
       { key: paths.assignments, label: "组织分配" },
-      { key: paths.grants, label: "角色授予" },
     ],
   },
   {
-    key: "nodes",
-    label: "节点与授权",
+    key: "devices",
+    label: "设备",
     icon: <ClusterOutlined />,
     superAdminOnly: true,
     children: [
-      { key: paths.clients, label: "Client 节点" },
-      { key: paths.offlineAuth, label: "人员离线授权" },
+      { key: paths.clients, label: "设备" },
     ],
   },
   {

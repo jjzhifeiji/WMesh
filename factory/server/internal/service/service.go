@@ -1,6 +1,6 @@
 // Package service 是厂内应用入口：认证、允许/拒绝和审计。
-// 不管 WAN 管理员，也不直连 SQL，不把本厂口令送到 WAN。
-// 按域分类型：Auth / Org / Attr / Node / Assets / Closure / Sync；本文件只组装。
+// 不管 WAN 管理员，也不直连 SQL，不把本厂密码送到 WAN。
+// 按域分类型：Auth / Org / Attr / Node / Assets / Templates / Closure / Sync；本文件只组装。
 package service
 
 import (
@@ -18,7 +18,7 @@ type kernel struct {
 	blobs blob.Store // 上传正文；不进库、不进审计
 }
 
-// Auth 管登录、激活、会话和账号停用。
+// Auth 管登录、激活、会话、停用和密码重置。
 type Auth struct{ *kernel }
 
 // Org 管人员、组织、角色和名册。
@@ -27,11 +27,14 @@ type Org struct{ *kernel }
 // Attr 管事实桩、个人资产桩和工作上下文。
 type Attr struct{ *kernel }
 
-// Node 管 Client 绑定、节点凭证和人员离线授权。
+// Node 管本厂已分配的设备和运行凭证。
 type Node struct{ *kernel }
 
 // Assets 管本厂工艺/工程治理。
 type Assets struct{ *kernel }
+
+// Templates 管已收的工艺/工程字段模版。
+type Templates struct{ *kernel }
 
 // Closure 管组包、下发、缓存和平台级副本。
 type Closure struct{ *kernel }
@@ -47,6 +50,7 @@ type Service struct {
 	*Attr
 	*Node
 	*Assets
+	*Templates
 	*Closure
 	*Sync
 }
@@ -60,15 +64,16 @@ func NewService(st *Store) *Service {
 		Org:     &Org{k},
 		Attr:    &Attr{k},
 		Node:    &Node{k},
-		Assets:  &Assets{k},
-		Closure: &Closure{k},
+		Assets:    &Assets{k},
+		Templates: &Templates{k},
+		Closure:   &Closure{k},
 		Sync:    &Sync{k},
 	}
 }
 
 func (k *kernel) Store() *Store { return k.store }
 
-// Account 是对外可见的账号视图，不含口令或激活口令。
+// Account 是对外可见的账号视图，不含密码或激活码。
 type Account struct {
 	ID          uuid.UUID `json:"id"`          // 稳定身份，改名也不变
 	LoginName   string    `json:"loginName"`   // 厂内登录名，一厂唯一

@@ -23,7 +23,7 @@ type OrgUnit struct {
 
 func (OrgUnit) TableName() string { return "org_units" }
 
-// Assignment 是人员到组织节点的关系；取消只把状态标成已结束，不删行。
+// Assignment 是人员到组织节点的关系；每人最多一条有效分配，取消只把状态标成已结束，不删行。
 type Assignment struct {
 	ID        uuid.UUID  `gorm:"type:uuid;primaryKey" json:"id"`      // 分配关系稳定身份
 	PersonID  uuid.UUID  `gorm:"type:uuid;not null" json:"personId"`  // 本厂人员
@@ -135,6 +135,7 @@ func (s *Store) wouldCycle(ctx context.Context, nodeID, newParent uuid.UUID) (bo
 	return false, nil
 }
 
+// Assign 把人员放到本厂恰好一个有效节点；已有有效分配再分到另一节点则拒绝。
 func (s *Store) Assign(ctx context.Context, personID, unitID uuid.UUID) (Assignment, error) {
 	if err := s.assertUnitActive(ctx, unitID); err != nil {
 		return Assignment{}, err
@@ -337,7 +338,7 @@ func (s *Store) RoleGrantCount(ctx context.Context) (int64, error) {
 
 func (s *Store) ActiveGrants(ctx context.Context, personID uuid.UUID) ([]RoleGrant, error) {
 	var rows []RoleGrant
-	err := s.db.WithContext(ctx).Where("person_id = ? AND status = ?", personID, StatusActive).Find(&rows).Error
+	err := s.db.WithContext(ctx).Where("person_id = ? AND status = ?", personID, StatusActive).Order("created_at DESC").Find(&rows).Error
 	return rows, err
 }
 
@@ -415,30 +416,30 @@ func (s *Store) AssignmentCount(ctx context.Context, personID uuid.UUID) (int64,
 	return n, err
 }
 
-// ListOrgUnits 列出本厂组织节点。
+// ListOrgUnits 列出本厂组织节点，按创建时间从新到旧。
 func (s *Store) ListOrgUnits(ctx context.Context) ([]OrgUnit, error) {
 	var rows []OrgUnit
-	err := s.db.WithContext(ctx).Order("created_at").Find(&rows).Error
+	err := s.db.WithContext(ctx).Order("created_at DESC").Find(&rows).Error
 	return rows, err
 }
 
 // ActiveAssignments 列出某人当前有效的组织分配。
 func (s *Store) ActiveAssignments(ctx context.Context, personID uuid.UUID) ([]Assignment, error) {
 	var rows []Assignment
-	err := s.db.WithContext(ctx).Where("person_id = ? AND status = ?", personID, StatusActive).Order("created_at").Find(&rows).Error
+	err := s.db.WithContext(ctx).Where("person_id = ? AND status = ?", personID, StatusActive).Order("created_at DESC").Find(&rows).Error
 	return rows, err
 }
 
 // ListAssignments 列出当前有效人员分配。
 func (s *Store) ListAssignments(ctx context.Context) ([]Assignment, error) {
 	var rows []Assignment
-	err := s.db.WithContext(ctx).Where("status = ?", StatusActive).Order("created_at").Find(&rows).Error
+	err := s.db.WithContext(ctx).Where("status = ?", StatusActive).Order("created_at DESC").Find(&rows).Error
 	return rows, err
 }
 
 // ListRoleGrants 列出当前有效角色授予。
 func (s *Store) ListRoleGrants(ctx context.Context) ([]RoleGrant, error) {
 	var rows []RoleGrant
-	err := s.db.WithContext(ctx).Where("status = ?", StatusActive).Order("created_at").Find(&rows).Error
+	err := s.db.WithContext(ctx).Where("status = ?", StatusActive).Order("created_at DESC").Find(&rows).Error
 	return rows, err
 }

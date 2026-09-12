@@ -1,71 +1,80 @@
 import { PlusOutlined } from "@ant-design/icons";
-import { App, Button, Card, Form, Input, Modal, Select, Table, Typography, type TableColumnsType } from "antd";
+import { App, Button, Card, Form, Input, Modal, Select, Space, Table, type TableColumnsType } from "antd";
 import { useMemo, useState } from "react";
 import { useDirectory } from "@/features/factories/api";
 import { errorMessage } from "@/shared/api/client";
 import { formatTime } from "@/shared/format";
 import { IdText } from "@/shared/ui/IdText";
 import { PageHeader } from "@/shared/ui/PageHeader";
-import { useBindClient, useClients, useRebindClient, type BindClientInput, type Client } from "./api";
+import {
+  useAssignClient,
+  useClients,
+  useRebindClient,
+  useRegisterClient,
+  useRenameClient,
+  type Client,
+  type RegisterClientInput,
+} from "./api";
 
-// WAN 只登记公钥和所属工厂；厂内人员授权从这里查不到。
+// WAN 名录里的自有设备：起名、分给工厂；厂端通道自动落库。
 export function ClientsPage() {
   const clients = useClients();
   const dir = useDirectory();
-  const bind = useBindClient();
+  const register = useRegisterClient();
+  const rename = useRenameClient();
+  const assign = useAssignClient();
   const rebind = useRebindClient();
   const { message } = App.useApp();
   const [open, setOpen] = useState(false);
-  const [rebindFor, setRebindFor] = useState<Client | null>(null);
-  const [newId, setNewId] = useState("");
-  const [form] = Form.useForm<BindClientInput>();
-  const [rebindForm] = Form.useForm<{ factoryId: string }>();
+  const [renameFor, setRenameFor] = useState<Client | null>(null);
+  const [moveFor, setMoveFor] = useState<Client | null>(null);
+  const [form] = Form.useForm<RegisterClientInput>();
+  const [renameForm] = Form.useForm<{ name: string }>();
+  const [moveForm] = Form.useForm<{ factoryId: string }>();
 
+  const factories = dir.data?.factories ?? [];
   const factoryName = useMemo(() => {
-    const m = new Map((dir.data?.factories ?? []).map((f) => [f.id, f.name]));
-    return (id: string | null) => (id ? (m.get(id) ?? id) : "未绑定");
-  }, [dir.data]);
+    const m = new Map(factories.map((f) => [f.id, f.name]));
+    return (id: string | null) => (id ? (m.get(id) ?? id) : "未分配");
+  }, [factories]);
 
   const columns: TableColumnsType<Client> = [
-    { title: "节点身份", dataIndex: "id", render: (id: string) => <IdText id={id} /> },
-    {
-      title: "公钥",
-      dataIndex: "publicKey",
-      render: (v: string) => (
-        <Typography.Text code copyable={{ text: v, tooltips: ["复制公钥", "已复制"] }} style={{ maxWidth: 180 }} ellipsis>
-          {v}
-        </Typography.Text>
-      ),
-    },
+    { title: "名称", dataIndex: "name" },
+    { title: "识别号", dataIndex: "id", width: 280, render: (id: string) => <IdText id={id} /> },
     { title: "所属工厂", dataIndex: "factoryId", render: (id: string | null) => factoryName(id) },
-    { title: "绑定修订", dataIndex: "bindingRevision", width: 100 },
-    { title: "绑定时间", dataIndex: "boundAt", width: 170, render: (v: string | null) => formatTime(v) },
+    { title: "创建时间", dataIndex: "createdAt", width: 170, render: (v: string) => formatTime(v) },
+    { title: "分配时间", dataIndex: "boundAt", width: 170, render: (v: string | null) => formatTime(v) },
     {
       title: "操作",
       key: "actions",
-      width: 100,
-      render: (_, row) =>
-        row.factoryId ? (
-          <Button size="small" onClick={() => setRebindFor(row)}>
-            改绑
+      width: 180,
+      render: (_, row) => (
+        <Space size={4}>
+          <Button size="small" onClick={() => { setRenameFor(row); renameForm.setFieldsValue({ name: row.name }); }}>
+            改名
           </Button>
-        ) : null,
+          {row.factoryId ? (
+            <Button size="small" onClick={() => { setMoveFor(row); moveForm.resetFields(); }}>
+              改分
+            </Button>
+          ) : (
+            <Button size="small" onClick={() => { setMoveFor(row); moveForm.resetFields(); }}>
+              分配
+            </Button>
+          )}
+        </Space>
+      ),
     },
   ];
-
-  const openBind = () => {
-    setNewId(crypto.randomUUID());
-    setOpen(true);
-  };
 
   return (
     <>
       <PageHeader
-        title="Client 绑定"
-        description="一台节点同一时刻只属一个厂。改绑会升高修订；厂内人员、组织和口令仍不在这里。"
+        title="设备"
+        description="先起一个给人看的名字，再分给工厂。识别号由系统给出，不能改。"
         extra={
-          <Button type="primary" icon={<PlusOutlined />} onClick={openBind}>
-            绑定节点
+          <Button type="primary" icon={<PlusOutlined />} onClick={() => setOpen(true)}>
+            登记设备
           </Button>
         }
       />
@@ -73,72 +82,104 @@ export function ClientsPage() {
         <Table<Client> rowKey="id" columns={columns} dataSource={clients.data ?? []} loading={clients.isLoading} pagination={{ pageSize: 20, hideOnSinglePage: true }} />
       </Card>
       <Modal
-        title="绑定节点"
+        title="登记设备"
         open={open}
         onCancel={() => setOpen(false)}
-        okText="绑定"
-        confirmLoading={bind.isPending}
+        okText="登记"
+        confirmLoading={register.isPending}
         destroyOnHidden
         onOk={() => form.submit()}
       >
-        <Form<BindClientInput>
-          key={newId}
+        <Form<RegisterClientInput>
           form={form}
           layout="vertical"
           requiredMark={false}
-          initialValues={{ id: newId }}
           onFinish={(values) =>
-            bind.mutate(values, {
-              onSuccess: () => {
-                message.success("已绑定");
-                setOpen(false);
+            register.mutate(
+              { name: values.name, factoryId: values.factoryId || undefined },
+              {
+                onSuccess: () => {
+                  message.success(values.factoryId ? "已登记并分配到工厂" : "已登记，稍后分配");
+                  setOpen(false);
+                  form.resetFields();
+                },
+                onError: (e) => message.error(errorMessage(e)),
               },
-              onError: (e) => message.error(errorMessage(e)),
-            })
+            )
           }
         >
-          <Form.Item name="id" label="Client 稳定身份" extra="可改成现场已有身份；关闭前请抄走，厂内接受绑定时要用。" rules={[{ required: true, message: "请输入节点身份" }]}>
-            <Input autoComplete="off" />
+          <Form.Item name="name" label="名称" extra="给现场看的名字，可随时改；识别号登记后自动给出。" rules={[{ required: true, message: "请输入名称" }, { max: 64, message: "最多 64 个字" }]}>
+            <Input autoFocus maxLength={64} placeholder="例如 焊机-12" />
           </Form.Item>
-          <Form.Item name="factoryId" label="工厂" rules={[{ required: true, message: "请选择工厂" }]}>
-            <Select options={(dir.data?.factories ?? []).map((f) => ({ value: f.id, label: f.name }))} />
-          </Form.Item>
-          <Form.Item name="publicKey" label="本机公钥" extra="32 字节公钥，base64 或 hex。不要粘贴私钥。" rules={[{ required: true, message: "请输入公钥" }]}>
-            <Input.TextArea rows={3} />
+          <Form.Item name="factoryId" label="分给工厂" extra="不选则先进入名录。">
+            <Select allowClear placeholder="稍后分配" options={factories.filter((f) => f.status === "active").map((f) => ({ value: f.id, label: f.name }))} />
           </Form.Item>
         </Form>
       </Modal>
       <Modal
-        title="改绑到另一厂"
-        open={rebindFor !== null}
-        onCancel={() => setRebindFor(null)}
-        okText="改绑"
-        confirmLoading={rebind.isPending}
+        title="改名"
+        open={renameFor !== null}
+        onCancel={() => setRenameFor(null)}
+        okText="保存"
+        confirmLoading={rename.isPending}
         destroyOnHidden
-        onOk={() => rebindForm.submit()}
+        onOk={() => renameForm.submit()}
       >
-        <Form<{ factoryId: string }>
-          form={rebindForm}
+        <Form<{ name: string }>
+          form={renameForm}
           layout="vertical"
           requiredMark={false}
           onFinish={(values) => {
-            if (!rebindFor) return;
-            rebind.mutate(
-              { id: rebindFor.id, factoryId: values.factoryId },
+            if (!renameFor) return;
+            rename.mutate(
+              { id: renameFor.id, name: values.name },
               {
                 onSuccess: () => {
-                  message.success("已改绑");
-                  setRebindFor(null);
+                  message.success("已改名");
+                  setRenameFor(null);
                 },
                 onError: (e) => message.error(errorMessage(e)),
               },
             );
           }}
         >
-          <Form.Item name="factoryId" label="新工厂" rules={[{ required: true, message: "请选择工厂" }]}>
+          <Form.Item name="name" label="名称" rules={[{ required: true, message: "请输入名称" }, { max: 64, message: "最多 64 个字" }]}>
+            <Input maxLength={64} />
+          </Form.Item>
+        </Form>
+      </Modal>
+      <Modal
+        title={moveFor?.factoryId ? "改分到另一厂" : "分配到工厂"}
+        open={moveFor !== null}
+        onCancel={() => setMoveFor(null)}
+        okText={moveFor?.factoryId ? "改分" : "分配"}
+        confirmLoading={assign.isPending || rebind.isPending}
+        destroyOnHidden
+        onOk={() => moveForm.submit()}
+      >
+        <Form<{ factoryId: string }>
+          form={moveForm}
+          layout="vertical"
+          requiredMark={false}
+          onFinish={(values) => {
+            if (!moveFor) return;
+            const mut = moveFor.factoryId ? rebind : assign;
+            mut.mutate(
+              { id: moveFor.id, factoryId: values.factoryId },
+              {
+                onSuccess: () => {
+                  message.success(moveFor.factoryId ? "已改分" : "已分配");
+                  setMoveFor(null);
+                },
+                onError: (e) => message.error(errorMessage(e)),
+              },
+            );
+          }}
+        >
+          <Form.Item name="factoryId" label="工厂" rules={[{ required: true, message: "请选择工厂" }]}>
             <Select
-              options={(dir.data?.factories ?? [])
-                .filter((f) => f.id !== rebindFor?.factoryId)
+              options={factories
+                .filter((f) => f.status === "active" && f.id !== moveFor?.factoryId)
                 .map((f) => ({ value: f.id, label: f.name }))}
             />
           </Form.Item>

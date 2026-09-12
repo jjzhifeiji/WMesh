@@ -18,7 +18,7 @@ export function useMe() {
   return useQuery({ queryKey: authKeys.me, queryFn: ({ signal }) => http.get<Me>("/v1/me", signal) });
 }
 
-// 登录成功即持有令牌；口令只在这一次请求里出现。
+// 登录成功即持有令牌；密码只在这一次请求里出现。
 export function useLogin() {
   return useMutation({
     mutationFn: (input: LoginInput) => http.post<{ token: string }>("/v1/login", input),

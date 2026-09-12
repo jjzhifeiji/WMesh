@@ -66,6 +66,25 @@ func TestAuthCircle(t *testing.T) {
 	if err := h.WAN.ReadAuthSecret(ctx, wanTok, created.Factory.ID); !errors.Is(err, domain.ErrForbidden) {
 		t.Fatalf("18.2: %v", err)
 	}
+	if err := h.WAN.ChangePassword(ctx, wanTok, "wan-pass-2"); err != nil {
+		t.Fatalf("change password: %v", err)
+	}
+	if _, err := h.WAN.Login(ctx, wanLogin, wanPass); !errors.Is(err, domain.ErrInvalidCredentials) {
+		t.Fatalf("old wan pass: %v", err)
+	}
+	tok2, err := h.WAN.Login(ctx, wanLogin, "wan-pass-2")
+	if err != nil {
+		t.Fatalf("login after change: %v", err)
+	}
+	if err := h.WAN.ResetAdminPassword(ctx, wanLogin, "wan-pass-3"); err != nil {
+		t.Fatalf("reset wan: %v", err)
+	}
+	if _, err := h.WAN.RequireAdmin(ctx, tok2); !errors.Is(err, domain.ErrUnauthorized) {
+		t.Fatalf("reset must drop sessions: %v", err)
+	}
+	if _, err := h.WAN.Login(ctx, wanLogin, "wan-pass-3"); err != nil {
+		t.Fatalf("login after reset: %v", err)
+	}
 	for _, table := range []string{"people", "org_types", "org_units", "role_grants"} {
 		ok, err := h.WAN.HasTable(ctx, table)
 		if err != nil || ok {
@@ -77,7 +96,7 @@ func TestAuthCircle(t *testing.T) {
 		t.Fatal(err)
 	}
 	dump := audit.Dump(wanAudit)
-	if audit.ContainsAny(dump, wanPass, wanTok) {
+	if audit.ContainsAny(dump, wanPass, "wan-pass-2", "wan-pass-3", wanTok, tok2) {
 		t.Fatalf("17 secret leaked in audit")
 	}
 	if !audit.HasResult(wanAudit, "bootstrap_wan_admin", audit.Deny) {
@@ -88,6 +107,9 @@ func TestAuthCircle(t *testing.T) {
 	}
 	if !audit.HasResult(wanAudit, "login", audit.Allow) || !audit.HasResult(wanAudit, "login", audit.Deny) {
 		t.Fatalf("17.2 wan login audit missing")
+	}
+	if !audit.HasResult(wanAudit, "change_password", audit.Allow) || !audit.HasResult(wanAudit, "reset_wan_admin", audit.Allow) {
+		t.Fatalf("wan password audit missing")
 	}
 	if !audit.HasResult(wanAudit, "create_factory", audit.Allow) {
 		t.Fatalf("2.1 no allow audit")

@@ -11,7 +11,7 @@ import { useChangePassword, type ChangePasswordInput } from "./api";
 
 type FormValues = ChangePasswordInput & { confirm: string };
 
-// 我的账号：看自己的身份与角色，改自己的口令；人人可用。
+// 我的账号：看自己的身份与角色，改自己的密码；人人可用。
 export function AccountPage() {
   const catalog = useCatalog();
   const { factoryId } = useSession();
@@ -22,7 +22,7 @@ export function AccountPage() {
 
   return (
     <>
-      <PageHeader title="我的账号" description="显示名、登录名和口令都可以变，稳定身份永远不变。" />
+      <PageHeader title="我的账号" description="显示名、登录名和密码都可以变，稳定身份永远不变。" />
       <Row gutter={[16, 16]}>
         <Col xs={24} lg={14}>
           <Card title="基本信息" loading={catalog.isLoading}>
@@ -54,7 +54,7 @@ export function AccountPage() {
           </Card>
         </Col>
         <Col xs={24} lg={10}>
-          <Card title="修改口令">
+          <Card title="修改密码">
             <Form<FormValues>
               form={form}
               layout="vertical"
@@ -64,7 +64,7 @@ export function AccountPage() {
                   { password },
                   {
                     onSuccess: () => {
-                      message.success("口令已更新");
+                      message.success("密码已更新");
                       form.resetFields();
                     },
                     onError: (e) => message.error(errorMessage(e)),
@@ -74,9 +74,9 @@ export function AccountPage() {
             >
               <Form.Item
                 name="password"
-                label="新口令"
+                label="新密码"
                 rules={[
-                  { required: true, message: "请输入新口令" },
+                  { required: true, message: "请输入新密码" },
                   { min: 8, message: "至少 8 位" },
                 ]}
               >
@@ -96,7 +96,7 @@ export function AccountPage() {
                 <Input.Password prefix={<LockOutlined />} autoComplete="new-password" />
               </Form.Item>
               <Button type="primary" htmlType="submit" loading={change.isPending}>
-                更新口令
+                更新密码
               </Button>
             </Form>
           </Card>

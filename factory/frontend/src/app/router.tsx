@@ -3,11 +3,10 @@ import { AssetsPage } from "@/features/assets/AssetsPage";
 import { AccountPage } from "@/features/account/AccountPage";
 import { AssignmentsPage } from "@/features/assignments/AssignmentsPage";
 import { ActivatePage } from "@/features/auth/ActivatePage";
+import { ClaimPage } from "@/features/auth/ClaimPage";
 import { LoginPage } from "@/features/auth/LoginPage";
 import { ClientsPage } from "@/features/clients/ClientsPage";
 import { DashboardPage } from "@/features/dashboard/DashboardPage";
-import { GrantsPage } from "@/features/grants/GrantsPage";
-import { OfflineAuthPage } from "@/features/offline-auth/OfflineAuthPage";
 import { OrgUnitsPage } from "@/features/org/OrgUnitsPage";
 import { PeoplePage } from "@/features/people/PeoplePage";
 import { AdminLayout } from "@/layouts/AdminLayout";
@@ -28,6 +27,7 @@ export const router = createBrowserRouter([
     children: [
       { path: paths.login, element: <LoginPage /> },
       { path: paths.activate, element: <ActivatePage /> },
+      { path: paths.claim, element: <ClaimPage /> },
     ],
   },
   {
@@ -40,10 +40,8 @@ export const router = createBrowserRouter([
       { index: true, element: <DashboardPage /> },
       { path: paths.orgUnits, element: sa(<OrgUnitsPage />) },
       { path: paths.people, element: sa(<PeoplePage />) },
-      { path: paths.grants, element: sa(<GrantsPage />) },
       { path: paths.assignments, element: sa(<AssignmentsPage />) },
       { path: paths.clients, element: sa(<ClientsPage />) },
-      { path: paths.offlineAuth, element: sa(<OfflineAuthPage />) },
       { path: paths.processes, element: <AssetsPage kind="process" /> },
       { path: paths.projects, element: <AssetsPage kind="project" /> },
       { path: paths.account, element: <AccountPage /> },

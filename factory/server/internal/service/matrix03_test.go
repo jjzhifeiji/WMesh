@@ -177,19 +177,41 @@ func testAssetIdentity(t *testing.T, run func(string, func(*testing.T))) {
 		}
 	})
 	run("3.5", func(t *testing.T) {
-		if err := facA.ReenableAsset(ctx, pe.tok, weld.ID, weld.Revision); !errors.Is(err, domain.ErrAssetNotAvailable) {
-			t.Fatalf("got %v", err)
+		got, err := facA.ReenableAsset(ctx, pe.tok, weld.ID, weld.Revision)
+		if err != nil {
+			t.Fatal(err)
 		}
-		still, err := facA.GetAsset(ctx, pe.tok, weld.ID)
-		if err != nil || still.Status != factory.AssetDisabled {
-			t.Fatalf("%+v %v", still, err)
+		if got.Status != factory.AssetAvailable || got.Revision != weld.Revision+1 {
+			t.Fatalf("%+v", got)
 		}
+		weld = got
 	})
 	run("3.6", func(t *testing.T) {
-		if err := facA.DeleteAsset(ctx, pe.tok, weld.ID); !errors.Is(err, domain.ErrReferenced) {
+		if err := facA.DeleteAsset(ctx, pe.tok, weld.ID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := facA.GetAsset(ctx, pe.tok, weld.ID); !errors.Is(err, domain.ErrNotFound) {
 			t.Fatalf("got %v", err)
 		}
-		if _, err := facA.GetAsset(ctx, pe.tok, weld.ID); err != nil {
+	})
+	run("3.7", func(t *testing.T) {
+		p, err := facA.CreateFactoryProcess(ctx, pe.tok, direct, "被依赖", body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		p, err = facA.PublishAsset(ctx, pe.tok, p.ID, p.Revision)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := facA.CreateFactoryProject(ctx, pe.tok, direct, "钉死依赖", body, []factory.AssetDep{{
+			ID: p.ID, Revision: p.Revision, Digest: p.Digest,
+		}}); err != nil {
+			t.Fatal(err)
+		}
+		if err := facA.DeleteAsset(ctx, pe.tok, p.ID); !errors.Is(err, domain.ErrReferenced) {
+			t.Fatalf("got %v", err)
+		}
+		if _, err := facA.GetAsset(ctx, pe.tok, p.ID); err != nil {
 			t.Fatal(err)
 		}
 	})

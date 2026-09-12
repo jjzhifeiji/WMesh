@@ -6,9 +6,9 @@ alwaysApply: true
 
 # 代码注释与分层
 
-编辑本仓 Go 时遵循下列规范。分库与账号边界见 `docs/平台架构核心需求.md`、`docs/specs/01-账号体系.md`。
+编辑本仓 Go 时遵循下列规范。分库与账号边界见 `docs/平台架构核心需求.md`。
 
-工程目录：`global/`、`factory/` 各自只有 `frontend/`（React）和 `server/`（Go）两个子目录，外加本工程的部署与说明文件（`Dockerfile`、`docker-compose.yml`、`Makefile`、`.env.example`、`README.md`）。`go.mod`、`migrations/` 只放在 `server/` 里；`server/docker-compose.yml` 只起测试库。仓库根不放部署文件。底座在 `internal/platform/`，业务在 `internal/service` 与 `internal/store`，验收测试与应用服务同目录。禁止把业务 Go 放在工程根下。禁止 WAN 查询厂内人员、组织、角色、日常口令。表结构只走本工程 `migrations/` 向前 SQL；禁止 GORM AutoMigrate；禁止改写已落库路径快照或审计原文。标识符与错误字符串用英文；业务对错用本侧 `internal/platform/domain`，不把 SQL 原文抛给调用方。矩阵验收走应用服务和 `go test`；HTTP 只做会话与 JSON 适配，不得绕过 Service，也不得把 SQL 原文抛给前端。
+工程目录：`global/`、`factory/` 各自只有 `frontend/`（React）和 `server/`（Go）两个子目录，外加本工程的部署与说明文件（`Dockerfile`、`docker-compose.yml`、`Makefile`、`.env.example`、`README.md`）。`go.mod`、`migrations/` 只放在 `server/` 里；`server/docker-compose.yml` 只起测试库。仓库根不放部署文件。底座在 `internal/platform/`，业务在 `internal/service` 与 `internal/store`，验收测试与应用服务同目录。禁止把业务 Go 放在工程根下。禁止 WAN 查询厂内人员、组织、角色、日常密码。表结构只走本工程 `migrations/` 向前 SQL；禁止 GORM AutoMigrate；禁止改写已落库路径快照或审计原文。标识符与错误字符串用英文；业务对错用本侧 `internal/platform/domain`，不把 SQL 原文抛给调用方。矩阵验收走应用服务和 `go test`；HTTP 只做会话与 JSON 适配，不得绕过 Service，也不得把 SQL 原文抛给前端。
 
 ## 1. 注释
 
@@ -84,10 +84,10 @@ cmd/server → internal/httpapi → internal/service → Store → 本侧库
 |------|------|
 | Service 绕过 Store 直接拼业务 SQL | `global/server/internal/service/`、`factory/server/internal/service/` |
 | Store 回调 Service | 包内反向 |
-| WAN 读厂内人员 / 组织 / 角色 / 日常口令 | `global/server/` |
+| WAN 读厂内人员 / 组织 / 角色 / 日常密码 | `global/server/` |
 | 厂库当 WAN 名录 | `factory/server/` |
 | GORM AutoMigrate；迁移改历史快照 / 审计原文 | 全仓 |
-| 口令 / 令牌原文进审计或进 WAN | 全仓 |
+| 密码 / 令牌原文进审计或进 WAN | 全仓 |
 | 导入 `wmesh/factory` | `global/server/`（只认工厂稳定身份） |
 | 导入 `wmesh/global` | `factory/server/`（厂内不查 WAN 库） |
 

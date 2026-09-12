@@ -34,15 +34,15 @@ func TestWANConstraints(t *testing.T) {
 		t.Fatalf("singleton admin: n=%d err=%v", n, err)
 	}
 
-	fac, err := s.RegisterFactory(ctx, id.New(), "厂A", id.New(), "sa-a")
+	fac, err := s.RegisterFactory(ctx, id.New(), "厂A", id.New(), "sa-a", "超管A", "enroll-a")
 	if err != nil {
 		t.Fatalf("factory: %v", err)
 	}
-	if err := s.BindInitialSuperAdmin(ctx, fac.ID, id.New(), "sa-a-2"); err != domain.ErrInitialSAExists {
+	if err := s.BindInitialSuperAdmin(ctx, fac.ID, id.New(), "sa-a-2", "超管2"); err != domain.ErrInitialSAExists {
 		t.Fatalf("second initial sa: %v", err)
 	}
 	// 同一身份重复注册会整体回滚，名录里不会多出一行。
-	if _, err := s.RegisterFactory(ctx, fac.ID, "厂A重复", id.New(), "sa-a-3"); err == nil {
+	if _, err := s.RegisterFactory(ctx, fac.ID, "厂A重复", id.New(), "sa-a-3", "超管3", "enroll-dup"); err == nil {
 		t.Fatalf("duplicate factory id must fail")
 	}
 	if facs, err := s.ListFactories(ctx); err != nil || len(facs) != 1 {
@@ -78,11 +78,11 @@ func TestWANClientBinding(t *testing.T) {
 	if _, err := s.CreateAdmin(ctx, "wan", "hash"); err != nil {
 		t.Fatal(err)
 	}
-	a, err := s.RegisterFactory(ctx, id.New(), "厂A", id.New(), "sa-a")
+	a, err := s.RegisterFactory(ctx, id.New(), "厂A", id.New(), "sa-a", "超管A", "enroll-a")
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := s.RegisterFactory(ctx, id.New(), "厂B", id.New(), "sa-b")
+	b, err := s.RegisterFactory(ctx, id.New(), "厂B", id.New(), "sa-b", "超管B", "enroll-b")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,14 +99,21 @@ func TestWANClientBinding(t *testing.T) {
 	}
 
 	cPub, _ := mustEd25519(t)
-	c, err := s.CreateClient(ctx, id.New(), cPub)
+	c, err := s.CreateClient(ctx, id.New(), "焊机-A", cPub)
 	if err != nil {
 		t.Fatalf("create client: %v", err)
 	}
-	if c.FactoryID != nil || c.BindingRevision != 0 {
+	if c.Name != "焊机-A" || c.FactoryID != nil || c.BindingRevision != 0 {
 		t.Fatalf("unbound: %+v", c)
 	}
-	if _, err := s.CreateClient(ctx, id.New(), cPub); err != domain.ErrClientKeyTaken {
+	pending, err := s.CreateClient(ctx, id.New(), "待上线", nil)
+	if err != nil || pending.Name != "待上线" || len(pending.PublicKey) != 0 {
+		t.Fatalf("no pubkey: %+v %v", pending, err)
+	}
+	if _, err := s.CreateClient(ctx, id.New(), "  ", nil); err != domain.ErrInvalidName {
+		t.Fatalf("empty name: %v", err)
+	}
+	if _, err := s.CreateClient(ctx, id.New(), "焊机-A2", cPub); err != domain.ErrClientKeyTaken {
 		t.Fatalf("dup pubkey: %v", err)
 	}
 
@@ -133,7 +140,7 @@ func TestWANClientBinding(t *testing.T) {
 	}
 
 	unboundPub, _ := mustEd25519(t)
-	u, err := s.CreateClient(ctx, id.New(), unboundPub)
+	u, err := s.CreateClient(ctx, id.New(), "焊机-U", unboundPub)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,7 +173,7 @@ func TestWANPlatformAssets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fac, err := s.RegisterFactory(ctx, id.New(), "厂A", id.New(), "sa-a")
+	fac, err := s.RegisterFactory(ctx, id.New(), "厂A", id.New(), "sa-a", "超管A", "enroll-a")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,8 +186,8 @@ func TestWANPlatformAssets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("insert: %v", err)
 	}
-	if a.Level != store.AssetLevelPlatform || a.Copyable || a.Revision != 1 {
-		t.Fatalf("platform defaults: %+v", a)
+	if a.Level != store.AssetLevelPlatform || !a.Copyable || a.Revision != 1 {
+		t.Fatalf("platform copyable: %+v", a)
 	}
 	src := id.New()
 	rev := int64(3)
@@ -209,14 +216,14 @@ func TestWANPlatformAssets(t *testing.T) {
 	if err != nil || digest.Match(dirty.Content, dirty.Digest) {
 		t.Fatalf("tamper: match=%v err=%v", digest.Match(dirty.Content, dirty.Digest), err)
 	}
-	if err := db.Exec("DELETE FROM assets WHERE id = ?", a.ID).Error; err == nil {
-		t.Fatal("physical delete must fail")
+	if err := s.DeleteAsset(ctx, a.ID); err != nil {
+		t.Fatal(err)
 	}
 	if err := db.Exec(
 		`INSERT INTO assets (id, kind, level, name, status, copyable, revision, content, digest, creator_id, deps)
-		 VALUES (?, 'process', 'platform', '放宽', 'draft', true, 1, decode('00','hex'), ?, ?, '[]'::jsonb)`,
+		 VALUES (?, 'process', 'platform', '可复制草稿', 'draft', true, 1, decode('00','hex'), ?, ?, '[]'::jsonb)`,
 		id.New(), sum, admin.ID,
-	).Error; !domain.IsCheckViolation(err) {
+	).Error; err != nil {
 		t.Fatalf("copyable true: %v", err)
 	}
 	ok, err := s.HasTable(ctx, "people")

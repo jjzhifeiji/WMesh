@@ -80,7 +80,7 @@ func quoteIdent(name string) string {
 	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
 }
 
-// swapDB 只换 DSN 里的库名，账号口令和参数照旧。
+// swapDB 只换 DSN 里的库名，账号密码和参数照旧。
 func swapDB(t *testing.T, dsn, name string) string {
 	t.Helper()
 	u, err := url.Parse(dsn)

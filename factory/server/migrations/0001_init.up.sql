@@ -6,8 +6,8 @@ CREATE TABLE people (
     login_name TEXT NOT NULL, -- 本厂内唯一登录名，不是身份
     display_name TEXT NOT NULL, -- 显示名，可改
     status TEXT NOT NULL CHECK (status IN ('pending', 'active', 'disabled')), -- pending / active / disabled
-    password_hash TEXT, -- 日常口令哈希，只存在本厂；激活前为空
-    activation_token_hash TEXT, -- 一次性激活口令哈希，激活后清空
+    password_hash TEXT, -- 日常密码哈希，只存在本厂；激活前为空
+    activation_token_hash TEXT, -- 一次性激活密码哈希，激活后清空
     is_initial_super_admin BOOLEAN NOT NULL DEFAULT false, -- 本厂唯一的 WAN 下发初始超管
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(), -- 账号创建时间
     UNIQUE (login_name)

@@ -4,15 +4,16 @@ import (
 	"net/http"
 )
 
-func (h *Handler) mountAuth(mux *http.ServeMux) { // WAN 管理员登录与会话
+func (h *Handler) mountAuth(mux *http.ServeMux) { // WAN 管理员登录、会话与改密码
 	mux.HandleFunc("POST /v1/login", h.login)
 	mux.HandleFunc("POST /v1/logout", h.logout)
 	mux.HandleFunc("GET /v1/me", h.me)
+	mux.HandleFunc("POST /v1/me/password", h.changePassword)
 }
 
 type loginReq struct {
 	LoginName string `json:"loginName"` // WAN 管理员登录名
-	Password  string `json:"password"`  // 日常口令，不进审计
+	Password  string `json:"password"`  // 日常密码，不进审计
 }
 
 type tokenResp struct {
@@ -53,4 +54,21 @@ func (h *Handler) me(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, meResp{ID: admin.ID.String(), LoginName: admin.LoginName})
+}
+
+type passwordReq struct {
+	Password string `json:"password"` // 新日常密码，不进审计
+}
+
+func (h *Handler) changePassword(w http.ResponseWriter, r *http.Request) {
+	var req passwordReq
+	if err := decodeJSON(r, &req); err != nil {
+		writeBadRequest(w, err)
+		return
+	}
+	if err := h.svc.Auth.ChangePassword(r.Context(), bearer(r), req.Password); err != nil {
+		writeErr(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }

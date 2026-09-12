@@ -1,20 +1,20 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { factoryKeys } from "@/features/factories/api";
 import { http } from "@/shared/api/client";
 
 export type Client = {
-  id: string; // Client 稳定身份
-  publicKey: string; // 本机公钥，无私钥
-  factoryId: string | null; // 当前所属工厂；空表示未绑定
-  bindingRevision: number; // 绑定修订；未绑定为 0
-  boundAt: string | null; // 当前这次绑定生效时间
+  id: string; // 固定识别号，全局唯一身份
+  name: string; // 给人看的名字，可改
+  publicKey?: string | null; // 本机公钥；未上线为空
+  factoryId: string | null; // 当前所属工厂；空表示未分配
+  bindingRevision: number; // 绑定修订；未分配为 0
+  boundAt: string | null; // 当前这次分配生效时间
   createdAt: string; // 身份登记时间
 };
 
-export type BindClientInput = {
-  id: string;
-  factoryId: string;
-  publicKey: string;
+export type RegisterClientInput = {
+  name: string;
+  factoryId?: string;
 };
 
 export const clientKeys = { all: ["wan-clients"] as const };
@@ -23,14 +23,37 @@ export function useClients() {
   return useQuery({
     queryKey: clientKeys.all,
     queryFn: ({ signal }) => http.get<Client[]>("/v1/clients", signal),
+    refetchInterval: 5000,
+    placeholderData: keepPreviousData,
   });
 }
 
-export function useBindClient() {
+function invalidateClients(qc: ReturnType<typeof useQueryClient>) {
+  void qc.invalidateQueries({ queryKey: clientKeys.all });
+  void qc.invalidateQueries({ queryKey: factoryKeys.directory });
+}
+
+export function useRegisterClient() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (input: BindClientInput) => http.post<Client>("/v1/clients", input),
-    onSuccess: () => qc.invalidateQueries({ queryKey: clientKeys.all }),
+    mutationFn: (input: RegisterClientInput) => http.post<Client>("/v1/clients", input),
+    onSuccess: () => invalidateClients(qc),
+  });
+}
+
+export function useRenameClient() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { id: string; name: string }) => http.patch<Client>(`/v1/clients/${input.id}`, { name: input.name }),
+    onSuccess: () => invalidateClients(qc),
+  });
+}
+
+export function useAssignClient() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { id: string; factoryId: string }) => http.post<Client>(`/v1/clients/${input.id}/assign`, { factoryId: input.factoryId }),
+    onSuccess: () => invalidateClients(qc),
   });
 }
 
@@ -38,9 +61,6 @@ export function useRebindClient() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (input: { id: string; factoryId: string }) => http.post<Client>(`/v1/clients/${input.id}/rebind`, { factoryId: input.factoryId }),
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: clientKeys.all });
-      void qc.invalidateQueries({ queryKey: factoryKeys.directory });
-    },
+    onSuccess: () => invalidateClients(qc),
   });
 }

@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -14,13 +15,13 @@ import (
 
 const sessionTTL = 12 * time.Hour // 厂内在线会话有效期
 
-// BootstrapInitial 在本厂写入待启用初始超管和预置厂级超管角色，激活口令只返回给交付方。
+// BootstrapInitial 在本厂写入待启用初始超管和预置厂级超管角色，激活码只返回给交付方。
 func (s *Auth) BootstrapInitial(ctx context.Context, saLogin, saDisplay string) (Account, string, error) {
 	p, err := s.store.CreatePerson(ctx, saLogin, saDisplay, true)
 	if err != nil {
 		return Account{}, "", err
 	}
-	token, err := secret.RandomToken()
+	token, err := secret.ActivationCode()
 	if err != nil {
 		return Account{}, "", err
 	}
@@ -36,8 +37,52 @@ func (s *Auth) BootstrapInitial(ctx context.Context, saLogin, saDisplay string) 
 	return accountOf(p), token, nil
 }
 
-// Activate 由持有者自己设日常口令，账号转为有效；WAN 不得代设。
+// AcceptEnrollment 按 WAN 约定身份写入初始超管并当场自设密码，完成激活。
+func (s *Auth) AcceptEnrollment(ctx context.Context, personID uuid.UUID, loginName, displayName, password string) (Account, error) {
+	if password == "" {
+		return Account{}, domain.ErrInvalidActivation
+	}
+	p, err := s.store.PersonByID(ctx, personID)
+	if errors.Is(err, domain.ErrNotFound) {
+		p, err = s.store.CreatePersonAt(ctx, personID, loginName, displayName, true)
+		if err != nil {
+			_ = s.audit(ctx, nil, &loginName, "enroll_factory", personID.String(), audit.Deny)
+			return Account{}, err
+		}
+	} else if err != nil {
+		return Account{}, err
+	} else if !p.IsInitialSuperAdmin || p.LoginName != loginName {
+		_ = s.audit(ctx, &p.ID, &loginName, "enroll_factory", personID.String(), audit.Deny)
+		return Account{}, domain.ErrInvalidEnrollment
+	}
+	if _, err := s.store.GrantRole(ctx, p.ID, RoleFactorySuperAdmin, ScopeFactory, nil); err != nil && !errors.Is(err, domain.ErrDuplicateRoleGrant) {
+		_ = s.audit(ctx, &p.ID, &loginName, "enroll_factory", p.ID.String(), audit.Deny)
+		return Account{}, err
+	}
+	if p.Status == StatusActive {
+		return accountOf(p), nil
+	}
+	hash, err := secret.HashPassword(password)
+	if err != nil {
+		return Account{}, err
+	}
+	if err := s.store.ActivatePerson(ctx, p.ID, hash); err != nil {
+		_ = s.audit(ctx, &p.ID, &loginName, "activate", p.ID.String(), audit.Deny)
+		return Account{}, err
+	}
+	if err := s.audit(ctx, &p.ID, &loginName, "enroll_factory", p.ID.String(), audit.Allow); err != nil {
+		return Account{}, err
+	}
+	return accountOf(p), s.audit(ctx, &p.ID, &loginName, "activate", p.ID.String(), audit.Allow)
+}
+
+// Activate 由持有者自己设日常密码，账号转为有效；WAN 不得代设。
 func (s *Auth) Activate(ctx context.Context, loginName, activationToken, password string) error {
+	if err := s.requireFactoryOpen(ctx); err != nil {
+		_ = s.audit(ctx, nil, &loginName, "activate", s.store.FactoryID().String(), audit.Deny)
+		return err
+	}
+	activationToken = strings.TrimSpace(activationToken)
 	p, err := s.store.PersonByLogin(ctx, loginName)
 	if err != nil {
 		_ = s.audit(ctx, nil, &loginName, "activate", loginName, audit.Deny)
@@ -62,13 +107,17 @@ func (s *Auth) Activate(ctx context.Context, loginName, activationToken, passwor
 	return s.audit(ctx, &p.ID, &loginName, "activate", p.ID.String(), audit.Allow)
 }
 
-// activationOK 恒定时间比对激活口令哈希，不给按位猜测的机会。
+// activationOK 恒定时间比对激活码哈希，不给按位猜测的机会。
 func activationOK(storedHash, token string) bool {
 	return secret.Equal(storedHash, secret.TokenHash(token))
 }
 
-// Login 只接受本厂有效账号；待启用、已停用或口令错误都拒绝，审计不记秘密。
+// Login 只接受本厂有效账号；待启用、已停用或密码错误都拒绝，审计不记秘密。
 func (s *Auth) Login(ctx context.Context, loginName, password string) (string, error) {
+	if err := s.requireFactoryOpen(ctx); err != nil {
+		_ = s.audit(ctx, nil, &loginName, "login", s.store.FactoryID().String(), audit.Deny)
+		return "", err
+	}
 	p, err := s.store.PersonByLogin(ctx, loginName)
 	if err != nil {
 		_ = s.audit(ctx, nil, &loginName, "login", s.store.FactoryID().String(), audit.Deny)
@@ -125,6 +174,10 @@ func (s *kernel) RequireActive(ctx context.Context, token string) (Account, erro
 		_ = s.audit(ctx, nil, nil, "protect", s.store.FactoryID().String(), audit.Deny)
 		return Account{}, domain.ErrUnauthorized
 	}
+	if err := s.requireFactoryOpen(ctx); err != nil {
+		_ = s.audit(ctx, &sess.PersonID, nil, "protect", s.store.FactoryID().String(), audit.Deny)
+		return Account{}, err
+	}
 	p, err := s.store.PersonByID(ctx, sess.PersonID)
 	if err != nil {
 		return Account{}, err
@@ -140,7 +193,7 @@ func (s *kernel) RequireActive(ctx context.Context, token string) (Account, erro
 	return accountOf(p), nil
 }
 
-// ChangePassword 改日常口令，稳定身份不变，审计不写口令原文。
+// ChangePassword 改日常密码，稳定身份不变，审计不写密码原文。
 func (s *Auth) ChangePassword(ctx context.Context, token, newPassword string) error {
 	acc, err := s.RequireActive(ctx, token)
 	if err != nil {
@@ -189,4 +242,78 @@ func (s *Auth) DisableAccount(ctx context.Context, token string, targetID uuid.U
 		return err
 	}
 	return s.audit(ctx, &acc.ID, nil, "disable_account", targetID.String(), audit.Allow)
+}
+
+// ResetPassword 超管把本厂其他人日常密码改回登录名+123456；旧密码立刻失效，会话作废。
+func (s *Auth) ResetPassword(ctx context.Context, token string, targetID uuid.UUID) (Account, error) {
+	acc, err := s.RequireActive(ctx, token)
+	if err != nil {
+		return Account{}, err
+	}
+	if err := s.can(ctx, acc, permManageAccount, nil); err != nil {
+		_ = s.audit(ctx, &acc.ID, nil, "reset_password", targetID.String(), audit.Deny)
+		return Account{}, err
+	}
+	// 自己忘了也得由另一名超管改；登录着的人走改密码。
+	if acc.ID == targetID {
+		_ = s.audit(ctx, &acc.ID, nil, "reset_password", targetID.String(), audit.Deny)
+		return Account{}, domain.ErrForbidden
+	}
+	p, err := s.store.PersonByID(ctx, targetID)
+	if err != nil {
+		_ = s.audit(ctx, &acc.ID, nil, "reset_password", targetID.String(), audit.Deny)
+		return Account{}, err
+	}
+	hash, err := secret.HashPassword(secret.DefaultPersonPassword(p.LoginName))
+	if err != nil {
+		return Account{}, err
+	}
+	next := StatusActive
+	if p.Status == StatusDisabled {
+		next = StatusDisabled
+	}
+	if err := s.store.ApplyPersonPassword(ctx, p.ID, hash, next); err != nil {
+		_ = s.audit(ctx, &acc.ID, &p.LoginName, "reset_password", p.ID.String(), audit.Deny)
+		return Account{}, err
+	}
+	if err := s.store.DeleteSessionsForPerson(ctx, p.ID); err != nil {
+		return Account{}, err
+	}
+	p, err = s.store.PersonByID(ctx, p.ID)
+	if err != nil {
+		return Account{}, err
+	}
+	if err := s.audit(ctx, &acc.ID, &p.LoginName, "reset_password", p.ID.String(), audit.Allow); err != nil {
+		return Account{}, err
+	}
+	return accountOf(p), nil
+}
+
+// EnableAccount 恢复已停用账号；有日常密码的回到有效，否则回到待启用。不删账号。
+func (s *Auth) EnableAccount(ctx context.Context, token string, targetID uuid.UUID) error {
+	acc, err := s.RequireActive(ctx, token)
+	if err != nil {
+		return err
+	}
+	if err := s.can(ctx, acc, permManageAccount, nil); err != nil {
+		_ = s.audit(ctx, &acc.ID, nil, "enable_account", targetID.String(), audit.Deny)
+		return err
+	}
+	p, err := s.store.PersonByID(ctx, targetID)
+	if err != nil {
+		_ = s.audit(ctx, &acc.ID, nil, "enable_account", targetID.String(), audit.Deny)
+		return err
+	}
+	if p.Status != StatusDisabled {
+		return s.audit(ctx, &acc.ID, nil, "enable_account", targetID.String(), audit.Allow)
+	}
+	next := StatusPending
+	if p.PasswordHash != nil && *p.PasswordHash != "" {
+		next = StatusActive
+	}
+	if err := s.store.SetPersonStatus(ctx, targetID, next); err != nil {
+		_ = s.audit(ctx, &acc.ID, nil, "enable_account", targetID.String(), audit.Deny)
+		return err
+	}
+	return s.audit(ctx, &acc.ID, nil, "enable_account", targetID.String(), audit.Allow)
 }

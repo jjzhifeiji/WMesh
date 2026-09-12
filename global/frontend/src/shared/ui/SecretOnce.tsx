@@ -5,7 +5,7 @@ type Props = {
   items: { label: string; value: string }[];
 };
 
-// 一次性秘密（激活口令等）只在这一屏出现，关掉就再也拿不到；每项都能一键复制。
+// 一次性秘密（激活码等）只在这一屏出现，关掉就再也拿不到；每项都能一键复制。
 export function SecretOnce({ title, items }: Props) {
   return (
     <Alert

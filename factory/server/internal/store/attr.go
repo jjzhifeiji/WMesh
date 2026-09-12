@@ -238,7 +238,7 @@ func (s *Store) AssetContent(ctx context.Context, assetID uuid.UUID) (creatorID 
 
 func (s *Store) FactsByCreator(ctx context.Context, creatorID uuid.UUID) ([]FactStub, error) {
 	var rows []factRow
-	if err := s.db.WithContext(ctx).Where("creator_id = ?", creatorID).Order("created_at").Find(&rows).Error; err != nil {
+	if err := s.db.WithContext(ctx).Where("creator_id = ?", creatorID).Order("created_at DESC").Find(&rows).Error; err != nil {
 		return nil, err
 	}
 	out := make([]FactStub, 0, len(rows))

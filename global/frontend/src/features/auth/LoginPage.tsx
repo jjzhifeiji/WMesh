@@ -21,7 +21,7 @@ export function LoginPage() {
       <Typography.Title level={3} style={{ marginTop: 0 }}>
         WMesh 云端总控
       </Typography.Title>
-      <Typography.Paragraph type="secondary">只登录唯一 WAN 管理员，不代管任何厂内人员。</Typography.Paragraph>
+      <Typography.Paragraph type="secondary">只登录唯一 WAN 管理员，不代管任何厂内人员。登录后可改密码。</Typography.Paragraph>
       <Form<LoginInput>
         layout="vertical"
         requiredMark={false}
@@ -30,7 +30,7 @@ export function LoginPage() {
         <Form.Item name="loginName" label="登录名" rules={[{ required: true, message: "请输入登录名" }]}>
           <Input prefix={<UserOutlined />} autoComplete="username" autoFocus />
         </Form.Item>
-        <Form.Item name="password" label="口令" rules={[{ required: true, message: "请输入口令" }]}>
+        <Form.Item name="password" label="密码" rules={[{ required: true, message: "请输入密码" }]}>
           <Input.Password prefix={<LockOutlined />} autoComplete="current-password" />
         </Form.Item>
         {login.isError ? <Alert type="error" showIcon message={errorMessage(login.error)} style={{ marginBottom: 16 }} /> : null}

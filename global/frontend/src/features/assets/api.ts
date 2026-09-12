@@ -16,13 +16,13 @@ export type Asset = {
   level: "platform"; // 固定平台级
   name: string; // 显示名
   status: AssetStatus; // draft / available / disabled
-  copyable: boolean; // 平台级必须为否
+	copyable: boolean; // 可否被上一级复制；新建默认为否
   revision: number; // 当前修订
   digest: string; // SHA-256
   creatorId: string; // WAN 管理员
   sourceId: string | null; // 升档源厂级身份
   sourceRevision: number | null; // 升档源修订
-  sourceFactoryId: string | null; // 升档源厂
+  sourceFactory: string; // 来源厂显示名；本端新建由服务端写好
   deps: AssetDep[]; // 工艺必须空
   createdAt: string; // 创建时间
   updatedAt: string; // 最近升高修订的时间
@@ -53,6 +53,7 @@ function useAssetMutation<TData, TVars>(mutationFn: (vars: TVars) => Promise<TDa
     mutationFn,
     onSuccess: async () => {
       await qc.invalidateQueries({ queryKey: assetKeys.all });
+      await qc.invalidateQueries({ queryKey: ["wan-asset-content"] });
     },
   });
 }
@@ -61,9 +62,27 @@ export function useCreateAsset() {
   return useAssetMutation((input: CreateAssetInput) => http.post<Asset>("/v1/assets", input));
 }
 
+export function useCopyAsset() {
+  return useAssetMutation((input: { id: string; name: string }) =>
+    http.post<Asset>(`/v1/assets/${input.id}/copy`, { name: input.name }),
+  );
+}
+
 export function useRenameAsset() {
   return useAssetMutation((input: { id: string; expected: number; name: string }) =>
     http.post<Asset>(`/v1/assets/${input.id}/rename`, { expected: input.expected, name: input.name }),
+  );
+}
+
+export function useUpdateAssetContent() {
+  return useAssetMutation((input: { id: string; expected: number; content: string }) =>
+    http.post<Asset>(`/v1/assets/${input.id}/content`, { expected: input.expected, content: input.content }),
+  );
+}
+
+export function useSetAssetCopyable() {
+  return useAssetMutation((input: { id: string; expected: number; copyable: boolean }) =>
+    http.post<Asset>(`/v1/assets/${input.id}/copyable`, { expected: input.expected, copyable: input.copyable }),
   );
 }
 
@@ -73,8 +92,44 @@ export function usePublishAsset() {
   );
 }
 
-export function usePromoteSnapshot() {
-  return useAssetMutation((snap: unknown) => http.post<Asset>("/v1/assets/promote", snap));
+export function useDisableAsset() {
+  return useAssetMutation((input: { id: string; expected: number }) =>
+    http.post<Asset>(`/v1/assets/${input.id}/disable`, { expected: input.expected }),
+  );
+}
+
+export function useEnableAsset() {
+  return useAssetMutation((input: { id: string; expected: number }) =>
+    http.post<Asset>(`/v1/assets/${input.id}/enable`, { expected: input.expected }),
+  );
+}
+
+export function useDeleteAsset() {
+  return useAssetMutation((id: string) => http.post(`/v1/assets/${id}/delete`));
+}
+
+export type PromotableAsset = {
+  id: string; // 厂级稳定身份
+  kind: AssetKind;
+  name: string; // 显示名
+  revision: number;
+  digest: string; // 摘要
+  status: AssetStatus;
+  copyable: boolean;
+};
+
+export function usePromotableAssets(factoryId: string | null, kind: AssetKind) {
+  return useQuery({
+    queryKey: ["promotable", factoryId, kind],
+    queryFn: ({ signal }) => http.get<PromotableAsset[]>(`/v1/factories/${factoryId}/promotable-assets?kind=${kind}`, signal),
+    enabled: Boolean(factoryId),
+  });
+}
+
+export function usePromoteFromFactory() {
+  return useAssetMutation((input: { factoryId: string; assetId: string }) =>
+    http.post<Asset>("/v1/assets/promote-from", input),
+  );
 }
 
 export function useAssetContent(id: string | null) {

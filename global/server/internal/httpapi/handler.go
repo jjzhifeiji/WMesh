@@ -1,5 +1,5 @@
 // Package httpapi 把 WAN 应用服务适配成 JSON HTTP。不绕过 Service，不把 SQL 原文抛给前端。
-// 文件按域拆：auth / directory / client / asset；本文件只装配路由和探活。
+// 文件按域拆：auth / directory / channel / client / asset / template；本文件只装配路由和探活。
 package httpapi
 
 import (
@@ -15,13 +15,14 @@ import (
 // Handler 把会话头和应用服务接到路由上。
 type Handler struct {
 	svc      *service.Service
+	live     *liveConns                  // 当前钉死的厂端通道世代
 	version  string                      // 构建版本，随探活返回，便于核对升级是否生效
 	OSSProbe func(context.Context) error // 探对象存储是否在线；空表示未接 OSS
 }
 
 // New 组装 WAN HTTP 适配器。
 func New(svc *service.Service, version string) *Handler {
-	return &Handler{svc: svc, version: version}
+	return &Handler{svc: svc, live: newLiveConns(), version: version}
 }
 
 // Router 只装配探活和各域路由；未知 API 路径统一回 JSON 404。
@@ -31,8 +32,10 @@ func (h *Handler) Router() http.Handler {
 	mux.HandleFunc("/v1/", func(w http.ResponseWriter, _ *http.Request) { writeErr(w, domain.ErrNotFound) })
 	h.mountAuth(mux)
 	h.mountDirectory(mux)
+	h.mountChannel(mux)
 	h.mountClient(mux)
 	h.mountAsset(mux)
+	h.mountTemplate(mux)
 	return mux
 }
 

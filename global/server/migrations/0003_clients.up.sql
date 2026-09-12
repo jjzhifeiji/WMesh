@@ -1,5 +1,5 @@
 -- WAN 登记 Client 公钥与一机一厂绑定；工厂只存签发公钥。审计时间来源可记 local。
--- 不含厂内人员、组织、角色、口令或人员离线授权正文；不含任何私钥。
+-- 不含厂内人员、组织、角色、密码或人员离线授权正文；不含任何私钥。
 
 CREATE TABLE factory_public_keys (
     factory_id UUID PRIMARY KEY REFERENCES factories (id), -- 该厂签发公钥，一对一

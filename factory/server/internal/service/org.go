@@ -10,32 +10,36 @@ import (
 	"wmesh/factory/internal/platform/secret"
 )
 
-// CreatePerson 由工厂超管创建待启用账号，并把激活口令交给交付方。
-func (s *Org) CreatePerson(ctx context.Context, token, loginName, displayName string) (Account, string, error) {
+// CreatePerson 由工厂超管创建本厂账号，默认日常密码为登录名+123456，直接有效；不发激活码。
+func (s *Org) CreatePerson(ctx context.Context, token, loginName, displayName string) (Account, error) {
 	acc, err := s.RequireActive(ctx, token)
 	if err != nil {
-		return Account{}, "", err
+		return Account{}, err
 	}
 	if err := s.can(ctx, acc, permManageAccount, nil); err != nil {
 		_ = s.audit(ctx, &acc.ID, &loginName, "create_person", loginName, audit.Deny)
-		return Account{}, "", err
+		return Account{}, err
 	}
 	p, err := s.store.CreatePerson(ctx, loginName, displayName, false)
 	if err != nil {
 		_ = s.audit(ctx, &acc.ID, &loginName, "create_person", loginName, audit.Deny)
-		return Account{}, "", err
+		return Account{}, err
 	}
-	act, err := secret.RandomToken()
+	hash, err := secret.HashPassword(secret.DefaultPersonPassword(loginName))
 	if err != nil {
-		return Account{}, "", err
+		return Account{}, err
 	}
-	if err := s.store.SetActivationHash(ctx, p.ID, secret.TokenHash(act)); err != nil {
-		return Account{}, "", err
+	if err := s.store.ActivatePerson(ctx, p.ID, hash); err != nil {
+		return Account{}, err
+	}
+	p, err = s.store.PersonByID(ctx, p.ID)
+	if err != nil {
+		return Account{}, err
 	}
 	if err := s.audit(ctx, &acc.ID, &loginName, "create_person", p.ID.String(), audit.Allow); err != nil {
-		return Account{}, "", err
+		return Account{}, err
 	}
-	return accountOf(p), act, nil
+	return accountOf(p), nil
 }
 
 // CreateOrgUnit 挂本厂组织节点。无父节点表示直挂工厂，只有超管能建这种根节点。
@@ -87,7 +91,7 @@ func (s *Org) AddParent(ctx context.Context, token string, unitID, parentID uuid
 	return domain.ErrMultiParent
 }
 
-// Assign 把人员放到本厂有效节点；分配不等于授权，也不能分到他厂或已停用节点。
+// Assign 把人员放到本厂恰好一个有效节点；已有有效分配再分则拒绝。分配不等于授权。
 func (s *Org) Assign(ctx context.Context, token string, personID, unitID uuid.UUID) error {
 	acc, err := s.RequireActive(ctx, token)
 	if err != nil {

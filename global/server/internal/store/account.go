@@ -16,7 +16,7 @@ import (
 type Admin struct {
 	ID           uuid.UUID `gorm:"type:uuid;primaryKey" json:"id"`        // WAN 管理员稳定身份
 	LoginName    string    `gorm:"not null;uniqueIndex" json:"loginName"` // WAN 登录名，全库唯一
-	PasswordHash string    `gorm:"not null" json:"-"`                     // 日常口令哈希，只存在 WAN 库
+	PasswordHash string    `gorm:"not null" json:"-"`                     // 日常密码哈希，只存在 WAN 库
 	CreatedAt    time.Time `gorm:"not null" json:"createdAt"`             // 账号创建时间
 }
 
@@ -118,4 +118,21 @@ func (s *Store) DeleteSessionByTokenHash(ctx context.Context, tokenHash string) 
 		return domain.ErrNotFound
 	}
 	return nil
+}
+
+// SetAdminPassword 只改哈希，不改登录名，也不写第二人。
+func (s *Store) SetAdminPassword(ctx context.Context, adminID uuid.UUID, passwordHash string) error {
+	res := s.db.WithContext(ctx).Model(&Admin{}).Where("id = ?", adminID).Update("password_hash", passwordHash)
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}
+
+// DeleteSessionsForAdmin 作废该管理员全部在线会话；没有会话不算错。
+func (s *Store) DeleteSessionsForAdmin(ctx context.Context, adminID uuid.UUID) error {
+	return s.db.WithContext(ctx).Where("admin_id = ?", adminID).Delete(&Session{}).Error
 }

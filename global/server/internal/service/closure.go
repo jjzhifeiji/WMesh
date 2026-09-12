@@ -98,7 +98,7 @@ func closureTarget(snap ClosureSnapshot) string {
 }
 
 func (s *Closure) packPlatform(ctx context.Context, root Asset) (ClosureSnapshot, error) {
-	if root.Status != AssetAvailable {
+	if root.Status != AssetAvailable && root.Status != AssetDisabled {
 		return ClosureSnapshot{}, domain.ErrAssetNotAvailable
 	}
 	rest := make([]ClosureMember, 0, len(root.Deps))
@@ -167,23 +167,40 @@ func (s *Closure) DistributeToFactory(ctx context.Context, token string, assetID
 	if err != nil {
 		return ClosureSnapshot{}, err
 	}
-	target := assetID.String() + " factory=" + factoryID.String()
+	root, err := s.loadChecked(ctx, assetID)
+	if err != nil {
+		_ = s.audit(ctx, &admin.ID, nil, &factoryID, "distribute_closure", assetID.String()+" factory="+factoryID.String(), audit.Deny)
+		return ClosureSnapshot{}, err
+	}
+	if root.Status != AssetAvailable {
+		_ = s.audit(ctx, &admin.ID, nil, &factoryID, "distribute_closure", assetID.String()+" factory="+factoryID.String(), audit.Deny)
+		return ClosureSnapshot{}, domain.ErrAssetNotAvailable
+	}
+	snap, err := s.deliverToFactory(ctx, assetID, factoryID)
+	if err != nil {
+		_ = s.audit(ctx, &admin.ID, nil, &factoryID, "distribute_closure", assetID.String()+" factory="+factoryID.String(), audit.Deny)
+		return ClosureSnapshot{}, err
+	}
+	if err := s.audit(ctx, &admin.ID, nil, &factoryID, "distribute_closure", closureTarget(snap), audit.Allow); err != nil {
+		return ClosureSnapshot{}, err
+	}
+	return snap, nil
+}
+
+func (s *Closure) deliverToFactory(ctx context.Context, assetID, factoryID uuid.UUID) (ClosureSnapshot, error) {
 	grant, err := s.store.FactoryGrant(ctx, assetID, factoryID)
-	if err != nil || !grant.Active {
-		_ = s.audit(ctx, &admin.ID, nil, &factoryID, "distribute_closure", target, audit.Deny)
-		if err != nil {
-			return ClosureSnapshot{}, err
-		}
+	if err != nil {
+		return ClosureSnapshot{}, err
+	}
+	if !grant.Active {
 		return ClosureSnapshot{}, domain.ErrForbidden
 	}
 	root, err := s.loadChecked(ctx, assetID)
 	if err != nil {
-		_ = s.audit(ctx, &admin.ID, nil, &factoryID, "distribute_closure", target, audit.Deny)
 		return ClosureSnapshot{}, err
 	}
 	snap, err := s.packPlatform(ctx, root)
 	if err != nil {
-		_ = s.audit(ctx, &admin.ID, nil, &factoryID, "distribute_closure", target, audit.Deny)
 		return ClosureSnapshot{}, err
 	}
 	fid := factoryID
@@ -196,33 +213,55 @@ func (s *Closure) DistributeToFactory(ctx context.Context, token string, assetID
 		AssetID: snap.AssetID, Revision: snap.Revision, FactoryID: factoryID,
 		Kind: snap.Kind, ClosureDigest: snap.Digest, Members: members,
 	}); err != nil {
-		_ = s.audit(ctx, &admin.ID, nil, &factoryID, "distribute_closure", target, audit.Deny)
-		return ClosureSnapshot{}, err
-	}
-	if err := s.audit(ctx, &admin.ID, nil, &factoryID, "distribute_closure", closureTarget(snap), audit.Allow); err != nil {
 		return ClosureSnapshot{}, err
 	}
 	return snap, nil
 }
 
-// UpdatePlatformAssetContent 改正文并重算摘要。
-func (s *Closure) UpdatePlatformAssetContent(ctx context.Context, token string, assetID uuid.UUID, expected int64, content []byte) (Asset, error) {
-	return s.mutatePlatform(ctx, token, assetID, expected, "update_asset", func(cur Asset) (store.AssetWrite, error) {
-		if cur.Status == AssetDisabled {
-			return store.AssetWrite{}, domain.ErrAssetNotAvailable
+// PackAvailableForFactory 把当前可用平台级授权并组包给该厂；已授权的停用条一并补送。
+func (s *Closure) PackAvailableForFactory(ctx context.Context, factoryID uuid.UUID) ([]ClosureSnapshot, error) {
+	fac, err := s.store.FactoryByID(ctx, factoryID)
+	if err != nil {
+		return nil, err
+	}
+	if fac.Status != FactoryActive {
+		return nil, nil
+	}
+	rows, err := s.store.ListAssets(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := []ClosureSnapshot{}
+	for _, a := range rows {
+		switch a.Status {
+		case AssetAvailable:
+			if _, err := s.store.UpsertFactoryGrant(ctx, a.ID, factoryID); err != nil {
+				return nil, err
+			}
+		case AssetDisabled:
+			grant, err := s.store.FactoryGrant(ctx, a.ID, factoryID)
+			if err != nil || !grant.Active {
+				continue
+			}
+		default:
+			continue
 		}
-		return store.AssetWrite{Name: cur.Name, Content: content, Digest: digest.Sum(content), Status: cur.Status, Deps: cur.Deps}, nil
-	})
+		snap, err := s.deliverToFactory(ctx, a.ID, factoryID)
+		if err != nil {
+			_ = s.audit(ctx, nil, nil, &factoryID, "distribute_closure", a.ID.String()+" factory="+factoryID.String(), audit.Deny)
+			continue
+		}
+		if err := s.audit(ctx, nil, nil, &factoryID, "distribute_closure", closureTarget(snap), audit.Allow); err != nil {
+			return nil, err
+		}
+		out = append(out, snap)
+	}
+	return out, nil
 }
 
-// DisablePlatformAsset 可用改为停用。
-func (s *Closure) DisablePlatformAsset(ctx context.Context, token string, assetID uuid.UUID, expected int64) (Asset, error) {
-	return s.mutatePlatform(ctx, token, assetID, expected, "disable_asset", func(cur Asset) (store.AssetWrite, error) {
-		if cur.Status != AssetAvailable {
-			return store.AssetWrite{}, domain.ErrAssetNotAvailable
-		}
-		return store.AssetWrite{Name: cur.Name, Content: cur.Content, Digest: cur.Digest, Status: AssetDisabled, Deps: cur.Deps}, nil
-	})
+// ListRetractions 列出已删除、须补送给厂的平台级身份。
+func (s *Closure) ListRetractions(ctx context.Context) ([]uuid.UUID, error) {
+	return s.store.ListRetractions(ctx)
 }
 
 // SetPlatformProjectDeps 显式改平台级工程依赖并升高修订。
@@ -239,7 +278,7 @@ func (s *Closure) SetPlatformProjectDeps(ctx context.Context, token string, asse
 		}
 		out := make([]AssetDep, len(deps))
 		copy(out, deps)
-		return store.AssetWrite{Name: cur.Name, Content: cur.Content, Digest: cur.Digest, Status: cur.Status, Deps: out}, nil
+		return store.AssetWrite{Name: cur.Name, Content: cur.Content, Digest: cur.Digest, Copyable: cur.Copyable, Status: cur.Status, Deps: out}, nil
 	})
 }
 

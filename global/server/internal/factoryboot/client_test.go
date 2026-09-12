@@ -37,7 +37,7 @@ func TestClientBootstrap(t *testing.T) {
 	if got != person || token != "act-once" {
 		t.Fatalf("got %s %s", got, token)
 	}
-	// 口令不对或厂端不可达都收成同一个业务错误，WAN 不落名录。
+	// 密码不对或厂端不可达都收成同一个业务错误，WAN 不落名录。
 	bad := &factoryboot.Client{BaseURL: srv.URL, Token: "wrong"}
 	if _, _, err := bad.Bootstrap(context.Background(), id.New(), "sa", "超管"); !errors.Is(err, domain.ErrFactoryBootstrap) {
 		t.Fatalf("wrong token: %v", err)

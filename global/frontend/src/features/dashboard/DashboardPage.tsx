@@ -9,7 +9,23 @@ import { useHealth } from "./api";
 
 const recentColumns: TableColumnsType<Factory> = [
   { title: "工厂名称", dataIndex: "name" },
-  { title: "工厂 ID", dataIndex: "id", render: (id: string) => <IdText id={id} /> },
+  {
+    title: "状态",
+    width: 90,
+    render: (_, f) =>
+      f.status === "retired" ? (
+        <Tag>已注销</Tag>
+      ) : f.status === "disabled" ? (
+        <Tag color="orange">已停用</Tag>
+      ) : f.channelOnline ? (
+        <Tag color="green">在线</Tag>
+      ) : f.enrolledAt ? (
+        <Tag color="red">离线</Tag>
+      ) : (
+        <Tag>未认领</Tag>
+      ),
+  },
+  { title: "工厂 ID", dataIndex: "id", width: 280, render: (id: string) => <IdText id={id} /> },
   { title: "创建时间", dataIndex: "createdAt", width: 170, render: (v: string) => formatTime(v) },
 ];
 
@@ -24,7 +40,9 @@ function statusTag(v?: string) {
 export function DashboardPage() {
   const dir = useDirectory();
   const health = useHealth();
-  const recent = (dir.data?.factories ?? []).toSorted((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 5);
+  const factories = dir.data?.factories ?? [];
+  const online = factories.filter((f) => f.channelOnline && (f.status ?? "active") === "active").length;
+  const recent = factories.toSorted((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 5);
 
   return (
     <>
@@ -32,7 +50,12 @@ export function DashboardPage() {
       <Row gutter={[16, 16]}>
         <Col xs={24} sm={12} lg={6}>
           <Card>
-            <Statistic title="工厂数量" value={dir.data?.factories.length ?? 0} loading={dir.isLoading} />
+            <Statistic title="工厂数量" value={factories.length} loading={dir.isLoading} />
+          </Card>
+        </Col>
+        <Col xs={24} sm={12} lg={6}>
+          <Card>
+            <Statistic title="在线工厂" value={online} loading={dir.isLoading} />
           </Card>
         </Col>
         <Col xs={24} sm={12} lg={6}>

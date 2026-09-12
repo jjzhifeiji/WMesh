@@ -39,7 +39,7 @@ export function DashboardPage() {
           </Col>
           <Col xs={24} sm={12} lg={6}>
             <Card>
-              <Statistic title="有效角色授予" value={c?.roleGrants.length ?? 0} loading={catalog.isLoading} />
+              <Statistic title="有效角色" value={c?.roleGrants.length ?? 0} loading={catalog.isLoading} />
             </Card>
           </Col>
           <Col xs={24} sm={12} lg={6}>

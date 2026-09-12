@@ -6,7 +6,19 @@ export function formatTime(iso?: string | null) {
   return dayjs(iso).format("YYYY-MM-DD HH:mm");
 }
 
+// 通道监控要看到秒，心跳才看得出来。
+export function formatDateTime(iso?: string | null) {
+  if (!iso) return "—";
+  return dayjs(iso).format("YYYY-MM-DD HH:mm:ss");
+}
+
 // 稳定身份很长，列表里只露前后各 4 位，完整值靠复制按钮拿。
 export function shortId(id: string) {
   return id.length > 12 ? `${id.slice(0, 8)}…${id.slice(-4)}` : id;
+}
+
+// 正文 SHA-256（接口里是 base64），列表里缩短，完整值靠复制。
+export function shortHash(h?: string | null) {
+  if (!h) return "—";
+  return h.length > 16 ? `${h.slice(0, 10)}…` : h;
 }

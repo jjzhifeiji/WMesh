@@ -1,6 +1,6 @@
 # WMesh
 
-焊接机器人场景的 **WAN + Factory + Client** 分层平台。需求基线见 `docs/平台架构核心需求.md`，推进计划见 `docs/总体计划.md`。
+焊接机器人场景的 **WAN + Factory + Client** 分层平台。需求基线见 `docs/平台架构核心需求.md`（已锁定），推进计划见 `docs/总体计划.md`。
 
 仓库里是两个彼此独立、可单独构建部署的工程：
 
@@ -22,10 +22,10 @@ cd factory && make up
 cd global && make up
 ```
 
-首次 `make up` 会把 `.env.example` 复制成 `.env`；生产环境先改掉里面的口令，并保证两侧 `WMESH_BOOTSTRAP_TOKEN` 一致。
+首次 `make up` 会把 `.env.example` 复制成 `.env`；生产环境先改掉里面的密码，并保证两侧 `WMESH_BOOTSTRAP_TOKEN` 一致。
 
-- WAN 管理端：http://localhost:8080 　厂内管理端：http://localhost:8081
-- 对象存储管理台：WAN http://localhost:9001 　厂内 http://localhost:9003（用 `.env` 里的 OSS 密钥登录）
+- WAN 管理端：http://localhost:52080 　厂内管理端：http://localhost:52081
+- 对象存储管理台：WAN http://localhost:52901 　厂内 http://localhost:52903（用 `.env` 里的 OSS 密钥登录）
 - 探活：`/healthz`（返回版本、库与 OSS 状态）
 - 常用命令：`make help`
 

@@ -51,11 +51,12 @@ type AssetReplica struct {
 	Level      string     `json:"level"`      // 固定 platform
 	Name       string     `json:"name"`       // 显示名
 	Status     string     `json:"status"`     // 送达时状态
-	Copyable   bool       `json:"copyable"`   // 必须为否
+	Copyable   bool       `json:"copyable"`   // 与源相同
 	Content    []byte     `json:"content"`    // 正文
 	Digest     []byte     `json:"digest"`     // SHA-256
 	Deps       []AssetDep `json:"deps"`       // 工艺必须空
 	ReceivedAt time.Time  `json:"receivedAt"` // 本厂收到时间
+	Retracted  bool       `json:"retracted"`  // 云端已删；列表不再展示
 }
 
 // FactorySettings 是本厂一份设置，目前只有 Client 工程缓存上限。
@@ -93,11 +94,12 @@ type replicaRow struct {
 	Level      string    `gorm:"not null"`             // platform
 	Name       string    `gorm:"not null"`             // 显示名
 	Status     string    `gorm:"not null"`             // 送达时状态
-	Copyable   bool      `gorm:"not null"`             // 必须为否
+	Copyable   bool      `gorm:"not null"`             // 与源相同
 	Content    []byte    `gorm:"type:bytea;not null"`  // 正文
 	Digest     []byte    `gorm:"type:bytea;not null"`  // SHA-256
 	Deps       []byte    `gorm:"type:jsonb;not null"`  // 依赖 JSON
 	ReceivedAt time.Time `gorm:"not null"`             // 收到时间
+	Retracted  bool      `gorm:"not null"`             // 云端已删；列表不再展示
 }
 
 func (replicaRow) TableName() string { return "asset_replicas" }
@@ -168,7 +170,7 @@ func (s *Store) InsertReplica(ctx context.Context, in AssetReplica) (AssetReplic
 	}
 	row := replicaRow{
 		ID: in.ID, Revision: in.Revision, Kind: in.Kind, Level: AssetLevelPlatform,
-		Name: in.Name, Status: in.Status, Copyable: false, Content: nonempty(in.Content),
+		Name: in.Name, Status: in.Status, Copyable: in.Copyable, Content: nonempty(in.Content),
 		Digest: in.Digest, Deps: deps, ReceivedAt: time.Now().UTC(),
 	}
 	if err := s.db.WithContext(ctx).Create(&row).Error; err != nil {
@@ -199,10 +201,10 @@ func (s *Store) ReplicaByIDRev(ctx context.Context, assetID uuid.UUID, revision 
 	return replicaFromRow(row), nil
 }
 
-// LatestReplica 读该身份已收到的最高修订副本。
+// LatestReplica 读该身份未撤回的最高修订副本。
 func (s *Store) LatestReplica(ctx context.Context, assetID uuid.UUID) (AssetReplica, error) {
 	var row replicaRow
-	if err := s.db.WithContext(ctx).Where("id = ?", assetID).Order("revision DESC").First(&row).Error; err != nil {
+	if err := s.db.WithContext(ctx).Where("id = ? AND retracted = ?", assetID, false).Order("revision DESC").First(&row).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return AssetReplica{}, domain.ErrNotFound
 		}
@@ -211,10 +213,10 @@ func (s *Store) LatestReplica(ctx context.Context, assetID uuid.UUID) (AssetRepl
 	return replicaFromRow(row), nil
 }
 
-// ListReplicas 列出本厂已收平台级副本，不含正文。
+// ListReplicas 列出本厂未撤回的平台级副本，不含正文。
 func (s *Store) ListReplicas(ctx context.Context) ([]AssetReplica, error) {
 	var rows []replicaRow
-	if err := s.db.WithContext(ctx).Omit("Content").Order("received_at DESC").Find(&rows).Error; err != nil {
+	if err := s.db.WithContext(ctx).Where("retracted = ?", false).Omit("Content").Order("received_at DESC").Find(&rows).Error; err != nil {
 		return nil, err
 	}
 	out := make([]AssetReplica, 0, len(rows))
@@ -222,6 +224,11 @@ func (s *Store) ListReplicas(ctx context.Context) ([]AssetReplica, error) {
 		out = append(out, replicaFromRow(row))
 	}
 	return out, nil
+}
+
+// RetractReplicas 把该身份全部副本标成撤回；没有副本也算成功。
+func (s *Store) RetractReplicas(ctx context.Context, assetID uuid.UUID) error {
+	return s.db.WithContext(ctx).Model(&replicaRow{}).Where("id = ?", assetID).Update("retracted", true).Error
 }
 
 // TamperReplicaContent 只改正文不改摘要，供完整性夹具使用。
@@ -328,7 +335,7 @@ func replicaFromRow(row replicaRow) AssetReplica {
 	return AssetReplica{
 		ID: row.ID, Revision: row.Revision, Kind: row.Kind, Level: row.Level, Name: row.Name,
 		Status: row.Status, Copyable: row.Copyable, Content: row.Content, Digest: row.Digest,
-		Deps: unmarshalAssetDeps(row.Deps), ReceivedAt: row.ReceivedAt,
+		Deps: unmarshalAssetDeps(row.Deps), ReceivedAt: row.ReceivedAt, Retracted: row.Retracted,
 	}
 }
 

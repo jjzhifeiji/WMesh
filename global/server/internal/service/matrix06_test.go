@@ -30,7 +30,7 @@ func testWANAssetPromote(t *testing.T, run func(string, func(*testing.T))) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := []byte("circle6-platform-secret")
+	body := []byte(`{"name":"焊接","current":180}`)
 	d := digest.Sum(body)
 	procSrc := id.New()
 
@@ -58,9 +58,39 @@ func testWANAssetPromote(t *testing.T, run func(string, func(*testing.T))) {
 			t.Fatal(err)
 		}
 		if plat.ID == procSrc || plat.Copyable || plat.Level != global.AssetLevelPlatform ||
-			plat.SourceID == nil || *plat.SourceID != procSrc || plat.Content != nil {
+			plat.Status != global.AssetDraft || plat.SourceID == nil || *plat.SourceID != procSrc || plat.Content != nil {
 			t.Fatalf("%+v", plat)
 		}
+	})
+	run("10.4", func(t *testing.T) {
+		snap := global.AssetSnapshot{
+			SourceID: procSrc, SourceRevision: 1, SourceFactoryID: fac.Factory.ID,
+			Kind: global.KindProcess, Name: "焊接", Content: body, Digest: d,
+			Copyable: true, Status: global.AssetAvailable,
+		}
+		again, err := h.WAN.PromoteFromSnapshot(ctx, tok, snap)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if again.ID != plat.ID || again.Revision != plat.Revision {
+			t.Fatalf("skip %+v want %+v", again, plat)
+		}
+	})
+	run("10.5", func(t *testing.T) {
+		next := []byte(`{"name":"焊接","current":220}`)
+		snap := global.AssetSnapshot{
+			SourceID: procSrc, SourceRevision: 2, SourceFactoryID: fac.Factory.ID,
+			Kind: global.KindProcess, Name: "焊接", Content: next, Digest: digest.Sum(next),
+			Copyable: true, Status: global.AssetAvailable,
+		}
+		got, err := h.WAN.PromoteFromSnapshot(ctx, tok, snap)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.ID != plat.ID || got.Revision != plat.Revision+1 || got.Status != global.AssetDraft || !bytes.Equal(got.Digest, digest.Sum(next)) {
+			t.Fatalf("overwrite %+v", got)
+		}
+		plat = got
 	})
 	run("10.3", func(t *testing.T) {
 		if err := h.WAN.UpdateFactoryAsset(ctx, tok, fac.Factory.ID, procSrc); !errors.Is(err, domain.ErrForbidden) {
@@ -92,6 +122,11 @@ func testWANAssetPromote(t *testing.T, run func(string, func(*testing.T))) {
 		}
 	})
 	run("14.1", func(t *testing.T) {
+		var err error
+		plat, err = h.WAN.PublishPlatformAsset(ctx, tok, plat.ID, plat.Revision)
+		if err != nil {
+			t.Fatal(err)
+		}
 		projSrc := id.New()
 		snap := global.AssetSnapshot{
 			SourceID: projSrc, SourceRevision: 1, SourceFactoryID: fac.Factory.ID,
@@ -103,7 +138,7 @@ func testWANAssetPromote(t *testing.T, run func(string, func(*testing.T))) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got.Kind != global.KindProject || got.ID == projSrc || len(got.Deps) != 1 ||
+		if got.Kind != global.KindProject || got.Status != global.AssetDraft || got.ID == projSrc || len(got.Deps) != 1 ||
 			got.Deps[0].ID != plat.ID || got.Deps[0].ID == procSrc {
 			t.Fatalf("%+v", got)
 		}

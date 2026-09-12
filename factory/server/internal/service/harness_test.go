@@ -9,6 +9,7 @@ import (
 	"gorm.io/gorm"
 
 	"wmesh/factory/internal/platform/id"
+	"wmesh/factory/internal/platform/secret"
 	"wmesh/factory/internal/platform/testpg"
 	"wmesh/factory/internal/service"
 	"wmesh/factory/internal/store"
@@ -17,7 +18,7 @@ import (
 type Seeded struct {
 	ID              uuid.UUID // 本厂稳定身份
 	SuperAdminID    uuid.UUID
-	ActivationToken string // 一次性激活口令，只给夹具
+	ActivationToken string // 一次性 8 位激活码，只给夹具
 }
 
 type Harness struct {
@@ -49,4 +50,28 @@ func (h *Harness) Factory(id uuid.UUID) *service.Service {
 		h.t.Fatalf("factory %s not provisioned", id)
 	}
 	return svc
+}
+
+func personPass(login string) string {
+	return secret.DefaultPersonPassword(login)
+}
+
+// mustAdoptPassword 用厂内默认密码登录后改成测试用密码，返回新会话。
+func mustAdoptPassword(t *testing.T, ctx context.Context, fac *service.Service, login, pass string) string {
+	t.Helper()
+	tok, err := fac.Login(ctx, login, personPass(login))
+	if err != nil {
+		t.Fatalf("login default %s: %v", login, err)
+	}
+	if pass == personPass(login) {
+		return tok
+	}
+	if err := fac.ChangePassword(ctx, tok, pass); err != nil {
+		t.Fatalf("set pass %s: %v", login, err)
+	}
+	tok, err = fac.Login(ctx, login, pass)
+	if err != nil {
+		t.Fatalf("login new %s: %v", login, err)
+	}
+	return tok
 }

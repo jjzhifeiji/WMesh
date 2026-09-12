@@ -46,7 +46,11 @@ func run(ctx context.Context, log *slog.Logger) error {
 	}
 	defer h.Close()
 
-	api := httpapi.New(h, cfg.BootstrapToken)
+	if cfg.WANURL != "" {
+		h.StartChannel(ctx, cfg.WANURL)
+	}
+
+	api := httpapi.New(h, cfg.BootstrapToken, cfg.WANURL)
 	api.Version = version
 	if cfg.OSS.Enabled() {
 		store := oss.New(cfg.OSS.Endpoint, cfg.OSS.Bucket, cfg.OSS.AccessKey, cfg.OSS.SecretKey)

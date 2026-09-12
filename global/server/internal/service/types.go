@@ -9,6 +9,9 @@ const (
 	AssetDraft         = store.AssetDraft
 	AssetAvailable     = store.AssetAvailable
 	AssetDisabled      = store.AssetDisabled
+	FactoryActive      = store.FactoryActive
+	FactoryDisabled    = store.FactoryDisabled
+	FactoryRetired     = store.FactoryRetired
 )
 
 // 与 store 同源的表模型，按域给应用服务和验收当入口类型用。
@@ -24,6 +27,9 @@ type (
 	AssetSnapshot      = store.AssetSnapshot
 	ClosureMember      = store.ClosureMember
 	ClosureSnapshot    = store.ClosureSnapshot
+	ContentTemplate    = store.ContentTemplate
+	TemplateSnapshot   = store.TemplateSnapshot
 	DistributionGrant  = store.DistributionGrant
 	DistributionRecord = store.DistributionRecord
+	EnrollmentOffer    = store.EnrollmentOffer
 )

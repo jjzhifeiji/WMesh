@@ -235,7 +235,7 @@ func (s *Closure) canPack(ctx context.Context, acc Account, root ClosureMember) 
 	if err == nil {
 		unit = a.OrgUnitID
 	}
-	return s.canAuthorFactory(ctx, acc, unit)
+	return s.peCovers(ctx, acc, unit)
 }
 
 func (s *Closure) isFactoryScopePE(ctx context.Context, acc Account) bool {
@@ -359,32 +359,36 @@ func (s *Closure) ActivateProject(ctx context.Context, bag *Bag, clocks Clocks, 
 		_ = s.auditTimed(ctx, personActor(bag), nil, "activate_closure", closureTarget(snap), audit.Deny, node.TimeSource)
 		return domain.ErrForbidden
 	}
-	cred, ok := currentPerson(*bag)
-	now, src := bagNow(*bag, clocks)
-	if !ok || !cred.Active || now.Before(cred.NotBefore) || now.After(cred.NotAfter) || !personCanOperate(cred.RolesSnapshot) {
+	acc, err := s.operatorAccount(ctx, *bag)
+	if err != nil {
 		_ = s.auditTimed(ctx, personActor(bag), nil, "activate_closure", closureTarget(snap), audit.Deny, src)
+		return domain.ErrForbidden
+	}
+	canOp, err := s.canOperateAs(ctx, acc.ID)
+	if err != nil || !canOp {
+		_ = s.auditTimed(ctx, &acc.ID, nil, "activate_closure", closureTarget(snap), audit.Deny, src)
 		return domain.ErrForbidden
 	}
 	root := snap.Members[0]
 	if root.Level == AssetLevelPersonal {
-		if root.CreatorID == nil || *root.CreatorID != cred.PersonID {
-			_ = s.auditTimed(ctx, &cred.PersonID, nil, "activate_closure", closureTarget(snap), audit.Deny, src)
+		if root.CreatorID == nil || *root.CreatorID != acc.ID {
+			_ = s.auditTimed(ctx, &acc.ID, nil, "activate_closure", closureTarget(snap), audit.Deny, src)
 			return domain.ErrForbidden
 		}
 	}
 	if bag.Welding && bag.ActiveID != nil && *bag.ActiveID != projectID {
-		_ = s.auditTimed(ctx, &cred.PersonID, nil, "activate_closure", closureTarget(snap), audit.Deny, src)
+		_ = s.auditTimed(ctx, &acc.ID, nil, "activate_closure", closureTarget(snap), audit.Deny, src)
 		return domain.ErrForbidden
 	}
 	if bag.Connected {
 		if err := s.assertSourceAvailable(ctx, root); err != nil {
-			_ = s.auditTimed(ctx, &cred.PersonID, nil, "activate_closure", closureTarget(snap), audit.Deny, src)
+			_ = s.auditTimed(ctx, &acc.ID, nil, "activate_closure", closureTarget(snap), audit.Deny, src)
 			return err
 		}
 		if root.Level != AssetLevelPersonal {
 			g, err := s.store.ClientGrant(ctx, projectID, bag.ClientID)
 			if err != nil || !g.Active {
-				_ = s.auditTimed(ctx, &cred.PersonID, nil, "activate_closure", closureTarget(snap), audit.Deny, src)
+				_ = s.auditTimed(ctx, &acc.ID, nil, "activate_closure", closureTarget(snap), audit.Deny, src)
 				if err != nil && !errors.Is(err, domain.ErrNotFound) {
 					return err
 				}
@@ -392,13 +396,13 @@ func (s *Closure) ActivateProject(ctx context.Context, bag *Bag, clocks Clocks, 
 			}
 		}
 	} else if root.Status != AssetAvailable {
-		_ = s.auditTimed(ctx, &cred.PersonID, nil, "activate_closure", closureTarget(snap), audit.Deny, src)
+		_ = s.auditTimed(ctx, &acc.ID, nil, "activate_closure", closureTarget(snap), audit.Deny, src)
 		return domain.ErrAssetNotAvailable
 	}
 	id := snap.AssetID
 	bag.ActiveID = &id
 	bag.ActiveRevision = snap.Revision
-	return s.auditTimed(ctx, &cred.PersonID, nil, "activate_closure", closureTarget(snap), audit.Allow, src)
+	return s.auditTimed(ctx, &acc.ID, nil, "activate_closure", closureTarget(snap), audit.Allow, src)
 }
 
 func (s *Closure) assertSourceAvailable(ctx context.Context, root ClosureMember) error {
@@ -427,14 +431,6 @@ func bagTimeSource(bag Bag) string {
 		return audit.Server
 	}
 	return audit.Local
-}
-
-func personActor(bag *Bag) *uuid.UUID {
-	if bag.Person == nil {
-		return nil
-	}
-	id := bag.Person.PersonID
-	return &id
 }
 
 func copyDeps(deps []AssetDep) []AssetDep {

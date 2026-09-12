@@ -43,74 +43,50 @@ func TestAttrCircle(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	none, noneAct, err := fac.CreatePerson(ctx, saTok, "none", "只分配")
+	none, err := fac.CreatePerson(ctx, saTok, "none", "只分配")
 	if err != nil {
-		t.Fatal(err)
-	}
-	if err := fac.Activate(ctx, "none", noneAct, "none-pass"); err != nil {
 		t.Fatal(err)
 	}
 	if err := fac.Assign(ctx, saTok, none.ID, shopA.ID); err != nil {
 		t.Fatal(err)
 	}
-	noneTok, err := fac.Login(ctx, "none", "none-pass")
-	if err != nil {
-		t.Fatal(err)
-	}
+	noneTok := mustAdoptPassword(t, ctx, fac, "none", "none-pass")
 	if _, err := fac.CreateFact(ctx, noneTok, factory.WorkContext{OrgUnitID: &shopA.ID}); !errors.Is(err, domain.ErrForbidden) {
 		t.Fatalf("7.1: %v", err)
 	}
 
-	oa, oaAct, err := fac.CreatePerson(ctx, saTok, "oa", "组织管理员")
+	oa, err := fac.CreatePerson(ctx, saTok, "oa", "组织管理员")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := fac.GrantRole(ctx, saTok, oa.ID, factory.RoleOrgAdmin, factory.ScopeOrgUnit, &shopA.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := fac.Activate(ctx, "oa", oaAct, "oa-pass"); err != nil {
-		t.Fatal(err)
-	}
-	oaTok, err := fac.Login(ctx, "oa", "oa-pass")
-	if err != nil {
-		t.Fatal(err)
-	}
+	oaTok := mustAdoptPassword(t, ctx, fac, "oa", "oa-pass")
 	if _, err := fac.CreateFact(ctx, oaTok, factory.WorkContext{OrgUnitID: &shopA.ID}); !errors.Is(err, domain.ErrWorkContext) {
 		t.Fatalf("8.3: %v", err)
 	}
 
-	eng, engAct, err := fac.CreatePerson(ctx, saTok, "eng", "工程师")
+	eng, err := fac.CreatePerson(ctx, saTok, "eng", "工程师")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := fac.GrantRole(ctx, saTok, eng.ID, factory.RoleProcessEngineer, factory.ScopeOrgUnit, &shopA.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := fac.Activate(ctx, "eng", engAct, "eng-pass"); err != nil {
-		t.Fatal(err)
-	}
-	engTok, err := fac.Login(ctx, "eng", "eng-pass")
-	if err != nil {
-		t.Fatal(err)
-	}
+	engTok := mustAdoptPassword(t, ctx, fac, "eng", "eng-pass")
 	if _, err := fac.CreateFact(ctx, engTok, factory.WorkContext{OrgUnitID: &shopA.ID}); !errors.Is(err, domain.ErrWorkContext) {
 		t.Fatalf("8.4: %v", err)
 	}
 
-	q, qAct, err := fac.CreatePerson(ctx, saTok, "q", "厂级操作员")
+	q, err := fac.CreatePerson(ctx, saTok, "q", "厂级操作员")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := fac.GrantRole(ctx, saTok, q.ID, factory.RoleOperator, factory.ScopeFactory, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := fac.Activate(ctx, "q", qAct, "q-pass"); err != nil {
-		t.Fatal(err)
-	}
-	qTok, err := fac.Login(ctx, "q", "q-pass")
-	if err != nil {
-		t.Fatal(err)
-	}
+	qTok := mustAdoptPassword(t, ctx, fac, "q", "q-pass")
 	direct, err := fac.CreateFact(ctx, qTok, factory.WorkContext{Direct: true})
 	if err != nil {
 		t.Fatalf("16.1: %v", err)
@@ -122,28 +98,19 @@ func TestAttrCircle(t *testing.T) {
 		t.Fatalf("16.3: %v", err)
 	}
 
-	orgOp, orgOpAct, err := fac.CreatePerson(ctx, saTok, "orgop", "节点操作员")
+	orgOp, err := fac.CreatePerson(ctx, saTok, "orgop", "节点操作员")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := fac.GrantRole(ctx, saTok, orgOp.ID, factory.RoleOperator, factory.ScopeOrgUnit, &shopA.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := fac.Activate(ctx, "orgop", orgOpAct, "orgop-pass"); err != nil {
-		t.Fatal(err)
-	}
-	orgOpTok, err := fac.Login(ctx, "orgop", "orgop-pass")
-	if err != nil {
-		t.Fatal(err)
-	}
+	orgOpTok := mustAdoptPassword(t, ctx, fac, "orgop", "orgop-pass")
 	if _, err := fac.CreateFact(ctx, orgOpTok, factory.WorkContext{Direct: true}); !errors.Is(err, domain.ErrForbidden) {
 		t.Fatalf("16.2: %v", err)
 	}
 
 	if err := fac.Assign(ctx, saTok, q.ID, shopA.ID); err != nil {
-		t.Fatal(err)
-	}
-	if err := fac.Assign(ctx, saTok, q.ID, shopB.ID); err != nil {
 		t.Fatal(err)
 	}
 	factA, err := fac.CreateFact(ctx, qTok, factory.WorkContext{OrgUnitID: &shopA.ID})
@@ -169,6 +136,9 @@ func TestAttrCircle(t *testing.T) {
 	if err := fac.Unassign(ctx, saTok, q.ID, shopA.ID); err != nil {
 		t.Fatal(err)
 	}
+	if err := fac.Assign(ctx, saTok, q.ID, shopB.ID); err != nil {
+		t.Fatal(err)
+	}
 	old, err := fac.GetFact(ctx, qTok, factA.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -187,6 +157,9 @@ func TestAttrCircle(t *testing.T) {
 		t.Fatalf("13 after unassign A: %v", err)
 	}
 
+	if err := fac.Unassign(ctx, saTok, q.ID, shopB.ID); err != nil {
+		t.Fatal(err)
+	}
 	if err := fac.Assign(ctx, saTok, q.ID, shopA.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -232,6 +205,9 @@ func TestAttrCircle(t *testing.T) {
 		t.Fatalf("15 creator read: %v %q", err, body)
 	}
 
+	if err := fac.Unassign(ctx, saTok, q.ID, shopA.ID); err != nil {
+		t.Fatal(err)
+	}
 	if err := fac.Assign(ctx, saTok, q.ID, team.ID); err != nil {
 		t.Fatal(err)
 	}

@@ -58,10 +58,12 @@ func statusOf(err error) int {
 	switch {
 	case errors.Is(err, domain.ErrUnauthorized), errors.Is(err, domain.ErrInvalidCredentials),
 		errors.Is(err, domain.ErrAccountPending), errors.Is(err, domain.ErrAccountDisabled),
-		errors.Is(err, domain.ErrInvalidActivation), errors.Is(err, domain.ErrSessionExpired):
+		errors.Is(err, domain.ErrInvalidActivation), errors.Is(err, domain.ErrSessionExpired),
+		errors.Is(err, domain.ErrInvalidEnrollment):
 		return http.StatusUnauthorized
 	case errors.Is(err, domain.ErrForbidden), errors.Is(err, domain.ErrLastAdmin),
-		errors.Is(err, domain.ErrInitialSAExists):
+		errors.Is(err, domain.ErrInitialSAExists), errors.Is(err, domain.ErrFactoryDisabled),
+		errors.Is(err, domain.ErrFactoryRetired):
 		return http.StatusForbidden
 	case errors.Is(err, domain.ErrNotFound):
 		return http.StatusNotFound
@@ -69,11 +71,15 @@ func statusOf(err error) int {
 		errors.Is(err, domain.ErrAlreadyActivated), errors.Is(err, domain.ErrDuplicateAssignment),
 		errors.Is(err, domain.ErrDuplicateRoleGrant), errors.Is(err, domain.ErrDuplicateSession),
 		errors.Is(err, domain.ErrClientBound), errors.Is(err, domain.ErrClientKeyTaken),
-		errors.Is(err, domain.ErrRevisionConflict):
+		errors.Is(err, domain.ErrRevisionConflict), errors.Is(err, domain.ErrFactoryKeyExists),
+		errors.Is(err, domain.ErrReferenced):
 		return http.StatusConflict
 	case errors.Is(err, domain.ErrFactoryBootstrap):
 		return http.StatusBadGateway
+	case errors.Is(err, domain.ErrFactoryOffline):
+		return http.StatusServiceUnavailable
 	case errors.Is(err, domain.ErrInvalidKey), errors.Is(err, domain.ErrUnbound),
+		errors.Is(err, domain.ErrInvalidName),
 		isDomain(err), errors.Is(err, errInvalidID):
 		return http.StatusBadRequest
 	default:
@@ -86,6 +92,7 @@ func isDomain(err error) bool {
 		domain.ErrCycle, domain.ErrWorkContext, domain.ErrMultiParent, domain.ErrInvalidRoleScope,
 		domain.ErrDisabledOrgType, domain.ErrDisabledOrgUnit, domain.ErrHasActiveUnits, domain.ErrHasActiveChildren,
 		domain.ErrIntegrity, domain.ErrAssetNotAvailable, domain.ErrAssetNotCopyable, domain.ErrAssetDependency,
+		domain.ErrTemplateInvalid,
 	} {
 		if errors.Is(err, t) {
 			return true

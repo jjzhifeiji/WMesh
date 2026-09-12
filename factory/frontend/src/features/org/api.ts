@@ -25,7 +25,14 @@ export function useDeleteOrgUnit() {
 
 export type UnitTreeNode = OrgUnit & { children?: UnitTreeNode[] };
 
-// 把平铺的节点按 parentId 拼成树；父节点缺失（不该发生）的挂到根上兜底。
+function sortByCreatedDesc(nodes: UnitTreeNode[]) {
+  nodes.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  for (const n of nodes) {
+    if (n.children) sortByCreatedDesc(n.children);
+  }
+}
+
+// 把平铺的节点按 parentId 拼成树；同级按创建时间从新到旧；父节点缺失挂到根上兜底。
 export function buildUnitTree(units: OrgUnit[]): UnitTreeNode[] {
   const byId = new Map<string, UnitTreeNode>(units.map((u) => [u.id, { ...u }]));
   const roots: UnitTreeNode[] = [];
@@ -37,5 +44,6 @@ export function buildUnitTree(units: OrgUnit[]): UnitTreeNode[] {
       roots.push(node);
     }
   }
+  sortByCreatedDesc(roots);
   return roots;
 }

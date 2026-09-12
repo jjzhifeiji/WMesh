@@ -5,8 +5,8 @@ COMMENT ON COLUMN people.id IS '稳定身份，改名也不变';
 COMMENT ON COLUMN people.login_name IS '本厂内唯一登录名，不是身份';
 COMMENT ON COLUMN people.display_name IS '显示名，可改';
 COMMENT ON COLUMN people.status IS 'pending / active / disabled';
-COMMENT ON COLUMN people.password_hash IS '日常口令哈希，只存在本厂；激活前为空';
-COMMENT ON COLUMN people.activation_token_hash IS '一次性激活口令哈希，激活后清空';
+COMMENT ON COLUMN people.password_hash IS '日常密码哈希，只存在本厂；激活前为空';
+COMMENT ON COLUMN people.activation_token_hash IS '一次性激活密码哈希，激活后清空';
 COMMENT ON COLUMN people.is_initial_super_admin IS '本厂唯一的 WAN 下发初始超管';
 COMMENT ON COLUMN people.created_at IS '账号创建时间';
 

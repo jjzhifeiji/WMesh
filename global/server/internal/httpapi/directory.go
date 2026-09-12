@@ -7,6 +7,9 @@ import (
 func (h *Handler) mountDirectory(mux *http.ServeMux) { // 名录、建厂、拒代管
 	mux.HandleFunc("GET /v1/directory", h.directory)
 	mux.HandleFunc("POST /v1/factories", h.createFactory)
+	mux.HandleFunc("POST /v1/factories/{id}/disable", h.disableFactory)
+	mux.HandleFunc("POST /v1/factories/{id}/enable", h.enableFactory)
+	mux.HandleFunc("DELETE /v1/factories/{id}", h.deleteFactory)
 	mux.HandleFunc("POST /v1/invite-wan-admin", h.inviteWANAdmin)
 	mux.HandleFunc("POST /v1/factories/{id}/people", h.createFactoryPerson)
 	mux.HandleFunc("POST /v1/factories/{id}/orgs", h.createFactoryOrg)
@@ -57,6 +60,57 @@ func (h *Handler) createFactory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, out)
+}
+
+func (h *Handler) disableFactory(w http.ResponseWriter, r *http.Request) {
+	id, err := parsePathID(r)
+	if err != nil {
+		writeBadRequest(w, err)
+		return
+	}
+	out, err := h.svc.Factories.DisableFactory(r.Context(), bearer(r), id)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	h.pushLifecycle(id) // 在线则立刻推给厂端
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (h *Handler) enableFactory(w http.ResponseWriter, r *http.Request) {
+	id, err := parsePathID(r)
+	if err != nil {
+		writeBadRequest(w, err)
+		return
+	}
+	out, err := h.svc.Factories.EnableFactory(r.Context(), bearer(r), id)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	h.pushLifecycle(id) // 在线则立刻推给厂端
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (h *Handler) deleteFactory(w http.ResponseWriter, r *http.Request) {
+	id, err := parsePathID(r)
+	if err != nil {
+		writeBadRequest(w, err)
+		return
+	}
+	out, err := h.svc.Factories.DeleteFactory(r.Context(), bearer(r), id)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	if out == nil {
+		h.live.drop(id) // 名录已拿掉，打断还连着的通道
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	h.pushLifecycle(id) // 注销后通知在线厂端停连
+	h.live.drop(id)
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (h *Handler) inviteWANAdmin(w http.ResponseWriter, r *http.Request) {

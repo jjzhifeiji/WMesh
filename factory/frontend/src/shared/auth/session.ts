@@ -26,8 +26,9 @@ export const session = {
   get factoryId() {
     return snapshot.factoryId;
   },
-  setFactoryId(id: string) {
-    const v = id.trim();
+  setFactoryId(id: string | undefined) {
+    const v = id?.trim() ?? "";
+    if (!v) return;
     localStorage.setItem(FACTORY_KEY, v);
     update({ factoryId: v });
   },

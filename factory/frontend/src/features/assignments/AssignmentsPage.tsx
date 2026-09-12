@@ -16,7 +16,7 @@ function toTreeOptions(nodes: UnitTreeNode[]): TreeOption[] {
     .map((n) => ({ value: n.id, title: n.name, children: n.children ? toTreeOptions(n.children) : undefined }));
 }
 
-// 人员可挂到零个或多个组织节点；挂哪儿不改变归厂，也不自动带权限。
+// 人员至多挂到一个组织节点；挂哪儿不改变归厂，也不自动带权限。
 export function AssignmentsPage() {
   const catalog = useCatalog();
   const assign = useAssign();
@@ -28,6 +28,8 @@ export function AssignmentsPage() {
   const c = catalog.data;
   const tree = useMemo(() => buildUnitTree(c?.orgUnits ?? []), [c?.orgUnits]);
   const people = (c?.people ?? []).filter((p) => p.status !== "disabled");
+  const assigned = new Set((c?.assignments ?? []).map((a) => a.personId));
+  const freePeople = people.filter((p) => !assigned.has(p.id));
   const hasUnits = (c?.orgUnits ?? []).some((u) => u.status === "active");
 
   const columns: TableColumnsType<Assignment> = [
@@ -64,9 +66,9 @@ export function AssignmentsPage() {
     <>
       <PageHeader
         title="组织分配"
-        description="分配决定人员能在哪些节点下产生事实与资产；权限另由角色授予。"
+        description="每人最多挂到一个节点；要换节点先取消再分。权限仍由人员页的角色决定。"
         extra={
-          <Button type="primary" icon={<PlusOutlined />} disabled={!hasUnits} onClick={() => setOpen(true)}>
+          <Button type="primary" icon={<PlusOutlined />} disabled={!hasUnits || freePeople.length === 0} onClick={() => setOpen(true)}>
             新建分配
           </Button>
         }
@@ -109,7 +111,7 @@ export function AssignmentsPage() {
             <Select
               showSearch
               optionFilterProp="label"
-              options={people.map((p) => ({ value: p.id, label: `${p.displayName}（${p.loginName}）` }))}
+              options={freePeople.map((p) => ({ value: p.id, label: `${p.displayName}（${p.loginName}）` }))}
               placeholder="选择人员"
             />
           </Form.Item>

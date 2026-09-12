@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1
 # 厂内服务镜像：前端构建 → Go 静态编译 → 极简运行时。单进程同时提供 API 与管理端静态页。
 # 构建上下文是本目录（factory/）：docker build -t wmesh-factory-app .
 

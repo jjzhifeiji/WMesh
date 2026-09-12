@@ -1,5 +1,5 @@
 // Package httpapi 把厂内应用服务适配成 JSON HTTP。不绕过 Service，不把 SQL 原文抛给前端。
-// 文件按域拆：auth / org / node / asset；本文件只装配路由、探活和建厂引导。
+// 文件按域拆：auth / site / org / node / asset / template；本文件只装配路由、探活和建厂引导。
 package httpapi
 
 import (
@@ -19,14 +19,15 @@ import (
 // Handler 按 URL 里的工厂身份选库，并把会话头交给应用服务。
 type Handler struct {
 	Hub            *hub.Hub
-	BootstrapToken string                      // 建厂引导共享口令，只用于 /internal/bootstrap
+	BootstrapToken string                      // 建厂引导共享密码，只用于 /internal/bootstrap
+	WANURL         string                      // WAN 根地址，厂出站认领用；空则不能认领
 	Version        string                      // 构建版本，随探活返回，便于核对升级是否生效
 	OSSProbe       func(context.Context) error // 探对象存储是否在线；空表示本厂未接 OSS
 }
 
 // New 组装厂内 HTTP 适配器。
-func New(h *hub.Hub, bootstrapToken string) *Handler {
-	return &Handler{Hub: h, BootstrapToken: bootstrapToken, Version: "dev"}
+func New(h *hub.Hub, bootstrapToken, wanURL string) *Handler {
+	return &Handler{Hub: h, BootstrapToken: bootstrapToken, WANURL: wanURL, Version: "dev"}
 }
 
 // Router 只装配探活、建厂引导和各域路由；未知 API 路径统一回 JSON 404。
@@ -36,10 +37,12 @@ func (h *Handler) Router() http.Handler {
 	mux.HandleFunc("/v1/", func(w http.ResponseWriter, _ *http.Request) { writeErr(w, domain.ErrNotFound) })
 	mux.HandleFunc("/internal/", func(w http.ResponseWriter, _ *http.Request) { writeErr(w, domain.ErrNotFound) })
 	mux.HandleFunc("POST /internal/bootstrap", h.bootstrap)
+	h.mountSite(mux)
 	h.mountAuth(mux)
 	h.mountOrg(mux)
 	h.mountNode(mux)
 	h.mountAsset(mux)
+	h.mountTemplate(mux)
 	return mux
 }
 
@@ -51,7 +54,7 @@ type bootReq struct {
 
 type bootResp struct {
 	PersonID        string `json:"personId"`        // 厂库账号身份
-	ActivationToken string `json:"activationToken"` // 一次性激活口令，禁止写入审计
+	ActivationToken string `json:"activationToken"` // 一次性 8 位激活码，禁止写入审计
 }
 
 type healthResp struct {
@@ -82,7 +85,7 @@ func (h *Handler) healthz(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) bootstrap(w http.ResponseWriter, r *http.Request) {
-	// 共享口令恒定时间比对；没配口令时一律拒绝，不给空口令放行。
+	// 共享密码恒定时间比对；没配密码时一律拒绝，不给空密码放行。
 	if h.BootstrapToken == "" || !secret.Equal(bearer(r), h.BootstrapToken) {
 		writeErr(w, domain.ErrUnauthorized)
 		return

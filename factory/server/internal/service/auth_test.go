@@ -17,6 +17,9 @@ func TestAuthCircle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bootstrap: %v", err)
 	}
+	if len(created.ActivationToken) != 8 {
+		t.Fatalf("activation code len %d", len(created.ActivationToken))
+	}
 	if n, _ := facA.Store().PersonCount(ctx); n != 1 {
 		t.Fatalf("2.1 one sa, got %d", n)
 	}
@@ -68,17 +71,11 @@ func TestAuthCircle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("relogin: %v", err)
 	}
-	temp, act, err := facA.CreatePerson(ctx, saTok, "temp", "临时")
+	temp, err := facA.CreatePerson(ctx, saTok, "temp", "临时")
 	if err != nil {
 		t.Fatalf("create temp: %v", err)
 	}
-	if err := facA.Activate(ctx, "temp", act, "temp-pass"); err != nil {
-		t.Fatalf("activate temp: %v", err)
-	}
-	tempTok, err := facA.Login(ctx, "temp", "temp-pass")
-	if err != nil {
-		t.Fatalf("login temp: %v", err)
-	}
+	tempTok := mustAdoptPassword(t, ctx, facA, "temp", "temp-pass")
 	if err := facA.DisableAccount(ctx, saTok, temp.ID); err != nil {
 		t.Fatalf("disable: %v", err)
 	}
@@ -88,18 +85,43 @@ func TestAuthCircle(t *testing.T) {
 	if _, err := facA.Login(ctx, "temp", "temp-pass"); !errors.Is(err, domain.ErrAccountDisabled) {
 		t.Fatalf("10.2 login disabled: %v", err)
 	}
+	if err := facA.EnableAccount(ctx, saTok, temp.ID); err != nil {
+		t.Fatalf("10.9 enable: %v", err)
+	}
+	if _, err := facA.Login(ctx, "temp", "temp-pass"); err != nil {
+		t.Fatalf("10.9 login after enable: %v", err)
+	}
+	if _, err := facA.ResetPassword(ctx, saTok, created.SuperAdminID); !errors.Is(err, domain.ErrForbidden) {
+		t.Fatalf("reset self: %v", err)
+	}
+	resetTok, err := facA.ResetPassword(ctx, saTok, temp.ID)
+	if err != nil {
+		t.Fatalf("10.10 reset: %v", err)
+	}
+	if resetTok.Status != "active" {
+		t.Fatalf("10.10 status %s", resetTok.Status)
+	}
+	if _, err := facA.Login(ctx, "temp", "temp-pass"); !errors.Is(err, domain.ErrInvalidCredentials) {
+		t.Fatalf("10.10 old password: %v", err)
+	}
+	if _, err := facA.Login(ctx, "temp", personPass("temp")); err != nil {
+		t.Fatalf("10.10 default password: %v", err)
+	}
 
 	facAudit, err := facA.ListAudit(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	dump := audit.Dump(facAudit)
-	secrets := []string{"sa-pass", "sa-pass-2", "temp-pass", created.ActivationToken, act, saTok, tempTok}
+	secrets := []string{"sa-pass", "sa-pass-2", "temp-pass", personPass("temp"), created.ActivationToken, saTok, tempTok}
 	if audit.ContainsAny(dump, secrets...) {
 		t.Fatalf("17 secret leaked in audit")
 	}
 	if !audit.HasResult(facAudit, "activate", audit.Allow) || !audit.HasResult(facAudit, "change_password", audit.Allow) {
 		t.Fatalf("17.3 factory audit missing")
+	}
+	if !audit.HasResult(facAudit, "reset_password", audit.Allow) || !audit.HasResult(facAudit, "reset_password", audit.Deny) {
+		t.Fatalf("10.10 reset audit missing")
 	}
 	if !audit.HasResult(facAudit, "logout", audit.Allow) {
 		t.Fatalf("10.3 no logout audit")

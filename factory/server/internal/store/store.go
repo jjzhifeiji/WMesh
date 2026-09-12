@@ -1,6 +1,6 @@
-// Package store 只读写本厂库：人员、组织、角色、会话、归属桩、本厂 Client 凭证、本厂工艺/工程、已收平台级副本和上传记录。
+// Package store 只读写本厂库：人员、组织、角色、会话、归属桩、本厂 Client 凭证、本厂工艺/工程、已收平台级副本、内容模版副本和上传记录。
 // 不判定允许/拒绝，也不回调应用服务。
-// 文件按域拆：account / org / attr / node / asset / closure / sync。
+// 文件按域拆：account / org / attr / node / asset / template / closure / sync / lifecycle。
 package store
 
 import (
@@ -40,9 +40,10 @@ func (s *Store) AppendAudit(ctx context.Context, e audit.Event) error {
 	return s.db.WithContext(ctx).Create(audit.RowFrom(e)).Error
 }
 
+// ListAudit 按发生时间从新到旧列出审计行。
 func (s *Store) ListAudit(ctx context.Context) ([]audit.Row, error) {
 	var rows []audit.Row
-	err := s.db.WithContext(ctx).Order("occurred_at").Find(&rows).Error
+	err := s.db.WithContext(ctx).Order("occurred_at DESC").Find(&rows).Error
 	return rows, err
 }
 

@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"time"
@@ -21,14 +22,15 @@ type FactoryPublicKey struct {
 
 func (FactoryPublicKey) TableName() string { return "factory_public_keys" }
 
-// Client 是一台现场节点：公钥在此登记，同一时刻只属一个工厂。
+// Client 是一台现场设备：固定识别号加名字，公钥可待上线再登记，同一时刻只属一个工厂。
 type Client struct {
-	ID              uuid.UUID  `gorm:"type:uuid;primaryKey" json:"id"`       // Client 稳定身份，不由名称生成
-	PublicKey       []byte     `gorm:"type:bytea;not null" json:"publicKey"` // 本机公钥，绑定时登记；无私钥
-	FactoryID       *uuid.UUID `gorm:"type:uuid" json:"factoryId"`           // 当前所属工厂；空表示未绑定
-	BindingRevision int64      `gorm:"not null" json:"bindingRevision"`      // 绑定修订；未绑定为 0，改绑必须升高
-	BoundAt         *time.Time `json:"boundAt"`                              // 当前这次绑定生效时间；未绑定为空
-	CreatedAt       time.Time  `gorm:"not null" json:"createdAt"`            // 身份登记时间
+	ID              uuid.UUID  `gorm:"type:uuid;primaryKey" json:"id"`  // 固定识别号，全局唯一
+	Name            string     `gorm:"not null" json:"name"`            // 给人看的设备名，可改，不当身份
+	PublicKey       []byte     `gorm:"type:bytea" json:"publicKey"`     // 本机公钥，上线时登记；未上线为空，无私钥
+	FactoryID       *uuid.UUID `gorm:"type:uuid" json:"factoryId"`      // 当前所属工厂；空表示未分配
+	BindingRevision int64      `gorm:"not null" json:"bindingRevision"` // 绑定修订；未分配为 0，改分必须升高
+	BoundAt         *time.Time `json:"boundAt"`                         // 当前这次分配生效时间；未分配为空
+	CreatedAt       time.Time  `gorm:"not null" json:"createdAt"`       // 身份登记时间
 }
 
 func (Client) TableName() string { return "clients" }
@@ -66,14 +68,22 @@ func (s *Store) FactoryPublicKey(ctx context.Context, factoryID uuid.UUID) (Fact
 	return row, nil
 }
 
-// CreateClient 登记一台未绑定 Client 的公钥；身份由调用方给出或现场发号。
-func (s *Store) CreateClient(ctx context.Context, clientID uuid.UUID, publicKey []byte) (Client, error) {
+func normalizePublicKey(publicKey []byte) []byte {
+	if len(publicKey) == 0 {
+		return nil
+	}
+	return publicKey
+}
+
+// CreateClient 登记一台未分配节点；名字必填，公钥可空，身份由调用方给出或现场发号。
+func (s *Store) CreateClient(ctx context.Context, clientID uuid.UUID, name string, publicKey []byte) (Client, error) {
 	if clientID == uuid.Nil {
 		clientID = id.New()
 	}
 	row := Client{
 		ID:              clientID,
-		PublicKey:       publicKey,
+		Name:            name,
+		PublicKey:       normalizePublicKey(publicKey),
 		BindingRevision: 0,
 		CreatedAt:       time.Now().UTC(),
 	}
@@ -82,7 +92,10 @@ func (s *Store) CreateClient(ctx context.Context, clientID uuid.UUID, publicKey 
 			return Client{}, domain.ErrClientKeyTaken
 		}
 		if domain.IsCheckViolation(err) {
-			return Client{}, domain.ErrInvalidKey
+			if len(normalizePublicKey(publicKey)) != 0 && len(normalizePublicKey(publicKey)) != 32 {
+				return Client{}, domain.ErrInvalidKey
+			}
+			return Client{}, domain.ErrInvalidName
 		}
 		return Client{}, err
 	}
@@ -100,7 +113,7 @@ func (s *Store) ClientByID(ctx context.Context, clientID uuid.UUID) (Client, err
 	return row, nil
 }
 
-// ListClients 列出已登记的现场节点，不含私钥。
+// ListClients 列出已登记的现场设备，不含私钥；按创建时间从新到旧。
 func (s *Store) ListClients(ctx context.Context) ([]Client, error) {
 	var rows []Client
 	if err := s.db.WithContext(ctx).Order("created_at DESC").Find(&rows).Error; err != nil {
@@ -110,6 +123,67 @@ func (s *Store) ListClients(ctx context.Context) ([]Client, error) {
 		rows = []Client{}
 	}
 	return rows, nil
+}
+
+// ListClientsByFactory 列出当前分给该厂的节点，供通道补送。
+func (s *Store) ListClientsByFactory(ctx context.Context, factoryID uuid.UUID) ([]Client, error) {
+	var rows []Client
+	if err := s.db.WithContext(ctx).Where("factory_id = ?", factoryID).Order("name").Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	if rows == nil {
+		rows = []Client{}
+	}
+	return rows, nil
+}
+
+// RenameClient 只改给人看的名字，不改稳定身份、不升绑定修订。
+func (s *Store) RenameClient(ctx context.Context, clientID uuid.UUID, name string) (Client, error) {
+	res := s.db.WithContext(ctx).Model(&Client{}).Where("id = ?", clientID).Update("name", name)
+	if res.Error != nil {
+		if domain.IsCheckViolation(res.Error) {
+			return Client{}, domain.ErrInvalidName
+		}
+		return Client{}, res.Error
+	}
+	if res.RowsAffected == 0 {
+		return Client{}, domain.ErrNotFound
+	}
+	return s.ClientByID(ctx, clientID)
+}
+
+// SetClientPublicKey 给尚未登记公钥的节点补上本机公钥。
+func (s *Store) SetClientPublicKey(ctx context.Context, clientID uuid.UUID, publicKey []byte) error {
+	publicKey = normalizePublicKey(publicKey)
+	if len(publicKey) != 32 {
+		return domain.ErrInvalidKey
+	}
+	res := s.db.WithContext(ctx).Model(&Client{}).
+		Where("id = ? AND (public_key IS NULL OR octet_length(public_key) = 0)", clientID).
+		Update("public_key", publicKey)
+	if res.Error != nil {
+		if domain.IsUniqueViolation(res.Error) {
+			return domain.ErrClientKeyTaken
+		}
+		if domain.IsCheckViolation(res.Error) {
+			return domain.ErrInvalidKey
+		}
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		cur, err := s.ClientByID(ctx, clientID)
+		if err != nil {
+			return err
+		}
+		if bytes.Equal(cur.PublicKey, publicKey) {
+			return nil
+		}
+		if len(cur.PublicKey) > 0 {
+			return domain.ErrInvalidKey
+		}
+		return domain.ErrNotFound
+	}
+	return nil
 }
 
 // BindClient 把未绑定 Client 绑到一厂，绑定修订从 0 升到 1。

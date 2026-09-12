@@ -8,6 +8,7 @@ var (
 	ErrInitialSAExists     = errors.New("initial super admin already bound") // 该厂已下发过初始超管
 	ErrLoginNameTaken      = errors.New("login name already taken")          // 登录名只在本厂唯一
 	ErrNotFound            = errors.New("not found")
+	ErrReferenced          = errors.New("still referenced")                     // 已认领工厂不能从名录物理删除
 	ErrCycle               = errors.New("org unit parent would create a cycle") // 挂到自己或后代
 	ErrDisabledOrgType     = errors.New("org type is disabled")
 	ErrDisabledOrgUnit     = errors.New("org unit is disabled") // 不能再分配或当新工作上下文
@@ -27,9 +28,14 @@ var (
 	ErrSessionExpired      = errors.New("session expired")
 	ErrLastAdmin           = errors.New("last factory super admin") // 会把有效厂级超管入口变成零
 	ErrMultiParent         = errors.New("org unit cannot have two parents")
-	ErrWorkContext         = errors.New("invalid work context")     // 没选、选了未分配节点、或直属与节点同时选
-	ErrFactoryBootstrap    = errors.New("factory bootstrap failed") // 厂端引导不可达或拒绝；WAN 不落名录，可重试
-	ErrInvalidKey          = errors.New("invalid key material")     // 公钥/私钥长度不对
+	ErrWorkContext         = errors.New("invalid work context")       // 没选、选了未分配节点、或直属与节点同时选
+	ErrFactoryBootstrap    = errors.New("factory bootstrap failed")   // 厂端引导不可达或拒绝；安装期入口仍可用
+	ErrInvalidEnrollment   = errors.New("invalid enrollment")         // 建厂码不对或已用完
+	ErrFactoryDisabled     = errors.New("factory is disabled")        // 停用后不得认领、登录或新开操作
+	ErrFactoryRetired      = errors.New("factory is retired")         // 已注销，不能再启用
+	ErrFactoryOffline      = errors.New("factory channel is offline") // 厂端通道不在线，不能拉升档
+	ErrInvalidName         = errors.New("invalid name")               // 显示名空了或太长
+	ErrInvalidKey          = errors.New("invalid key material")       // 公钥/私钥长度不对
 	ErrClientKeyTaken      = errors.New("client public key already registered")
 	ErrFactoryKeyExists    = errors.New("factory public key already registered")
 	ErrClientBound         = errors.New("client already bound to a factory")      // 已属一厂，不能再绑到另一厂
@@ -42,4 +48,5 @@ var (
 	ErrClosureIncomplete   = errors.New("closure is incomplete")                  // 组包缺成员或读不到钉死修订
 	ErrClosureMismatch     = errors.New("closure revision mismatch")              // 组包串版：身份或修订被顶替
 	ErrClientCacheFull     = errors.New("client cache is full")                   // 工程份已达缓存上限
+	ErrTemplateInvalid     = errors.New("content template is invalid")            // 字段表不合法
 )

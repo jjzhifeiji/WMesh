@@ -14,7 +14,7 @@ export class ApiError extends Error {
   }
 }
 
-type Method = "GET" | "POST" | "PUT" | "DELETE";
+type Method = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 
 type RequestInitLite = {
   method?: Method;
@@ -54,6 +54,8 @@ export async function request<T>(path: string, init: RequestInitLite = {}): Prom
 export const http = {
   get: <T>(path: string, signal?: AbortSignal) => request<T>(path, { signal }),
   post: <T>(path: string, body?: unknown) => request<T>(path, { method: "POST", body }),
+  patch: <T>(path: string, body?: unknown) => request<T>(path, { method: "PATCH", body }),
+  del: <T>(path: string) => request<T>(path, { method: "DELETE" }),
 };
 
 export function errorMessage(err: unknown) {

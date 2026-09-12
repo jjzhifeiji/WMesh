@@ -11,7 +11,7 @@ export WMESH_BUILD_VERSION := $(VERSION)
 help: ## 列出可用命令
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  %-14s %s\n", $$1, $$2}'
 
-env: ## 没有 .env 时从 .env.example 生成（生产务必改口令）
+env: ## 没有 .env 时从 .env.example 生成（生产务必改密码）
 	@test -f .env || (cp .env.example .env && echo ">> created .env from .env.example; edit secrets before production")
 
 test-db: ## 起 go test 用的一次性测试库（:55433）

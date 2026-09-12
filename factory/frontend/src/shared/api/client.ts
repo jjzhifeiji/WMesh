@@ -1,5 +1,5 @@
 // 所有 HTTP 请求的唯一出口：带令牌、解析 JSON、把错误码翻成 ApiError。
-// 收到 401 且当前持有令牌，说明会话已失效，清掉令牌让路由守卫送回登录页。
+// 收到 401，或本厂被 WAN 停用/注销，清掉令牌让路由守卫送回登录页。
 import { session } from "@/shared/auth/session";
 import { translateError } from "./errors";
 
@@ -14,7 +14,7 @@ export class ApiError extends Error {
   }
 }
 
-type Method = "GET" | "POST" | "PUT" | "DELETE";
+type Method = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 
 type RequestInitLite = {
   method?: Method;
@@ -46,6 +46,7 @@ export async function request<T>(path: string, init: RequestInitLite = {}): Prom
   if (!res.ok) {
     const code = (data as { error?: string } | undefined)?.error ?? res.statusText.toLowerCase();
     if (res.status === 401 && token) session.clear();
+    if (res.status === 403 && token && (code === "factory is disabled" || code === "factory is retired")) session.clear();
     throw new ApiError(res.status, code, translateError(code));
   }
   return data as T;
@@ -54,6 +55,7 @@ export async function request<T>(path: string, init: RequestInitLite = {}): Prom
 export const http = {
   get: <T>(path: string, signal?: AbortSignal) => request<T>(path, { signal }),
   post: <T>(path: string, body?: unknown) => request<T>(path, { method: "POST", body }),
+  patch: <T>(path: string, body?: unknown) => request<T>(path, { method: "PATCH", body }),
   del: <T>(path: string) => request<T>(path, { method: "DELETE" }),
 };
 

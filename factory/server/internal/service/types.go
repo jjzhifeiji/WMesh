@@ -26,6 +26,10 @@ const (
 	ClientStatusBound = store.ClientStatusBound
 	ClientStatusVoid  = store.ClientStatusVoid
 
+	FactoryActive   = store.FactoryActive
+	FactoryDisabled = store.FactoryDisabled
+	FactoryRetired  = store.FactoryRetired
+
 	KindProcess = store.KindProcess
 	KindProject = store.KindProject
 
@@ -50,6 +54,8 @@ type (
 	Person  = store.Person
 	Session = store.Session
 
+	Lifecycle = store.Lifecycle
+
 	OrgUnit    = store.OrgUnit
 	Assignment = store.Assignment
 	RoleGrant  = store.RoleGrant
@@ -59,16 +65,16 @@ type (
 	FactStub      = store.FactStub
 	PersonalAsset = store.PersonalAsset
 
-	Client             = store.Client
-	SigningKey         = store.SigningKey
-	RuntimeGrant       = store.RuntimeGrant
-	OrgOption          = store.OrgOption
-	RoleSnapshot       = store.RoleSnapshot
-	PersonOfflineGrant = store.PersonOfflineGrant
+	Client       = store.Client
+	SigningKey   = store.SigningKey
+	RuntimeGrant = store.RuntimeGrant
 
 	Asset         = store.Asset
 	AssetDep      = store.AssetDep
 	AssetSnapshot = store.AssetSnapshot
+
+	ContentTemplate  = store.ContentTemplate
+	TemplateSnapshot = store.TemplateSnapshot
 
 	AssetReplica    = store.AssetReplica
 	ClosureMember   = store.ClosureMember

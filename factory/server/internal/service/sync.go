@@ -21,25 +21,24 @@ func (s *Sync) EnqueueFact(ctx context.Context, bag *Bag, clocks Clocks, loginNa
 		_ = s.auditTimed(ctx, personActor(bag), &loginName, "enqueue_fact", bag.ClientID.String(), audit.Deny, src)
 		return PendingFact{}, err
 	}
-	ev := EvaluateOffline(*bag, clocks, loginName, password)
-	cred, ok := currentPerson(*bag)
-	if ev.Decision != NodeAllow || !ok {
+	p, ev := s.evalOffline(ctx, *bag, clocks, loginName, password)
+	if ev.Decision != NodeAllow {
 		_ = s.auditTimed(ctx, personActor(bag), &loginName, "enqueue_fact", bag.ClientID.String(), audit.Deny, src)
 		return PendingFact{}, domain.ErrForbidden
 	}
-	unitID, path, err := resolveOfflineContext(cred, wc)
+	unitID, path, err := s.resolveWorkContext(ctx, accountOf(p), wc)
 	if err != nil {
-		_ = s.auditTimed(ctx, &cred.PersonID, &loginName, "enqueue_fact", bag.ClientID.String(), audit.Deny, src)
+		_ = s.auditTimed(ctx, &p.ID, &loginName, "enqueue_fact", bag.ClientID.String(), audit.Deny, src)
 		return PendingFact{}, err
 	}
 	item := PendingFact{
 		ID:        id.New(),
-		CreatorID: cred.PersonID,
+		CreatorID: p.ID,
 		OrgUnitID: unitID,
 		OrgPath:   append([]PathNode(nil), path...),
 	}
 	bag.PendingFacts = append(bag.PendingFacts, item)
-	return item, s.auditTimed(ctx, &cred.PersonID, &loginName, "enqueue_fact", item.ID.String(), audit.Allow, src)
+	return item, s.auditTimed(ctx, &p.ID, &loginName, "enqueue_fact", item.ID.String(), audit.Allow, src)
 }
 
 // EnqueueUpload 把点云或图片放进本机待发，正文不进厂库。
@@ -53,9 +52,8 @@ func (s *Sync) EnqueueUpload(ctx context.Context, bag *Bag, clocks Clocks, login
 		_ = s.auditTimed(ctx, personActor(bag), &loginName, "enqueue_upload", kind, audit.Deny, src)
 		return PendingUpload{}, domain.ErrForbidden
 	}
-	ev := EvaluateOffline(*bag, clocks, loginName, password)
-	cred, ok := currentPerson(*bag)
-	if ev.Decision != NodeAllow || !ok {
+	p, ev := s.evalOffline(ctx, *bag, clocks, loginName, password)
+	if ev.Decision != NodeAllow {
 		_ = s.auditTimed(ctx, personActor(bag), &loginName, "enqueue_upload", bag.ClientID.String(), audit.Deny, src)
 		return PendingUpload{}, domain.ErrForbidden
 	}
@@ -65,14 +63,14 @@ func (s *Sync) EnqueueUpload(ctx context.Context, bag *Bag, clocks Clocks, login
 		Kind:      kind,
 		Content:   body,
 		Digest:    digest.Sum(body),
-		CreatorID: cred.PersonID,
+		CreatorID: p.ID,
 		ClientID:  bag.ClientID,
 	}
 	bag.PendingUploads = append(bag.PendingUploads, item)
-	return item, s.auditTimed(ctx, &cred.PersonID, &loginName, "enqueue_upload", item.ID.String(), audit.Allow, src)
+	return item, s.auditTimed(ctx, &p.ID, &loginName, "enqueue_upload", item.ID.String(), audit.Allow, src)
 }
 
-// ConvergeIntent 已连网拉取本厂最新节点/人员授权，只接受更高修订。
+// ConvergeIntent 已连网拉取本厂最新节点运行凭证，只接受更高修订。
 func (s *Sync) ConvergeIntent(ctx context.Context, bag *Bag) error {
 	src := bagTimeSource(*bag)
 	if err := s.assertOnlineBag(ctx, *bag); err != nil {
@@ -91,21 +89,6 @@ func (s *Sync) ConvergeIntent(ctx context.Context, bag *Bag) error {
 			return domain.ErrInvalidKey
 		}
 		bag.ApplyRuntime(cred)
-	}
-	if bag.Person != nil {
-		pg, err := s.store.LatestPersonOfflineGrant(ctx, bag.Person.PersonID, bag.ClientID)
-		if err != nil && !errors.Is(err, domain.ErrNotFound) {
-			_ = s.auditTimed(ctx, personActor(bag), nil, "converge_intent", bag.ClientID.String(), audit.Deny, src)
-			return err
-		}
-		if err == nil {
-			cred, decErr := personFromRow(pg)
-			if decErr != nil {
-				_ = s.auditTimed(ctx, personActor(bag), nil, "converge_intent", bag.ClientID.String(), audit.Deny, src)
-				return domain.ErrInvalidKey
-			}
-			bag.ApplyPerson(cred)
-		}
 	}
 	return s.auditTimed(ctx, personActor(bag), nil, "converge_intent", bag.ClientID.String(), audit.Allow, src)
 }
@@ -242,15 +225,6 @@ func runtimeFromRow(row RuntimeGrant) (RuntimeCred, error) {
 	cred, err := decodeRuntime(row.Payload)
 	if err != nil {
 		return RuntimeCred{}, err
-	}
-	cred.Signature = row.Signature
-	return cred, nil
-}
-
-func personFromRow(row PersonOfflineGrant) (PersonCred, error) {
-	cred, err := decodePerson(row.Payload)
-	if err != nil {
-		return PersonCred{}, err
 	}
 	cred.Signature = row.Signature
 	return cred, nil

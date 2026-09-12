@@ -51,7 +51,7 @@ func testNodeMatrix(t *testing.T, run func(string, func(*testing.T))) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := facA.AcceptBinding(ctx, cidA, pubA, 1); err != nil {
+	if _, err := facA.AcceptBinding(ctx, cidA, "Client-A1", pubA, 1); err != nil {
 		t.Fatal(err)
 	}
 	facPubA, err := facA.SigningPublicKey(ctx)
@@ -100,7 +100,7 @@ func testNodeMatrix(t *testing.T, run func(string, func(*testing.T))) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := facB.AcceptBinding(ctx, cidB, pubB, 1); err != nil {
+	if _, err := facB.AcceptBinding(ctx, cidB, "Client-B1", pubB, 1); err != nil {
 		t.Fatal(err)
 	}
 	run("2.2", func(t *testing.T) {
@@ -115,7 +115,7 @@ func testNodeMatrix(t *testing.T, run func(string, func(*testing.T))) {
 		if _, err := facA.IssueRuntimeGrant(ctx, saTok, cidA, nb, na); !errors.Is(err, domain.ErrBindingVoid) {
 			t.Fatalf("voided: %v", err)
 		}
-		if _, err := facA.AcceptBinding(ctx, cidA, pubA, 2); err != nil {
+		if _, err := facA.AcceptBinding(ctx, cidA, "Client-A1", pubA, 2); err != nil {
 			t.Fatal(err)
 		}
 		cred1, err = facA.IssueRuntimeGrant(ctx, saTok, cidA, nb, na)

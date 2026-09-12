@@ -33,7 +33,7 @@ type ClosureSnapshot struct {
 	AssetID         uuid.UUID       `json:"assetId"`         // 根资产身份
 	Revision        int64           `json:"revision"`        // 根修订
 	Level           string          `json:"level"`           // 固定 platform
-	Copyable        bool            `json:"copyable"`        // 必须为否
+	Copyable        bool            `json:"copyable"`        // 与源相同
 	Status          string          `json:"status"`          // 组包时状态
 	TargetFactoryID *uuid.UUID      `json:"targetFactoryId"` // 目标工厂
 	TargetClientID  *uuid.UUID      `json:"targetClientId"`  // WAN→厂为空
@@ -202,4 +202,24 @@ func recordFromRow(row distRecordRow) DistributionRecord {
 		Kind: row.Kind, ClosureDigest: row.ClosureDigest, Members: unmarshalAssetDeps(row.Members),
 		CreatedAt: row.CreatedAt,
 	}
+}
+
+type retractionRow struct {
+	AssetID   uuid.UUID `gorm:"type:uuid;primaryKey"` // 已删除身份
+	CreatedAt time.Time `gorm:"not null"`             // 删除时间
+}
+
+func (retractionRow) TableName() string { return "asset_retractions" }
+
+// ListRetractions 列出须补送给厂的已删平台级身份。
+func (s *Store) ListRetractions(ctx context.Context) ([]uuid.UUID, error) {
+	var rows []retractionRow
+	if err := s.db.WithContext(ctx).Order("created_at").Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	out := make([]uuid.UUID, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, row.AssetID)
+	}
+	return out, nil
 }

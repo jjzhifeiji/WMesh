@@ -7,7 +7,7 @@ import { paths } from "@/app/routes";
 import { useLogout } from "@/features/auth/api";
 import { useCatalog, useIsSuperAdmin } from "@/features/catalog/api";
 import { useSession } from "@/shared/auth/session";
-import { shortId } from "@/shared/format";
+import { IdText } from "@/shared/ui/IdText";
 
 // 后台骨架：左侧菜单（按角色裁剪）、顶部当前位置与账号、中间页面内容。
 export function AdminLayout() {
@@ -37,7 +37,7 @@ export function AdminLayout() {
       </Layout.Sider>
       <Layout>
         <Layout.Header className="admin-header">
-          <Breadcrumb items={[{ title: `工厂 ${shortId(factoryId)}` }, ...breadcrumbItems(pathname)]} />
+          <Breadcrumb items={[{ title: <>工厂 <IdText id={factoryId} /></> }, ...breadcrumbItems(pathname)]} />
           <Space size="middle">
             <Typography.Text>{me ? `${me.displayName}（${me.loginName}）` : "…"}</Typography.Text>
             <Dropdown

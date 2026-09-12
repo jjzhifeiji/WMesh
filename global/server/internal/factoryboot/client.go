@@ -1,5 +1,5 @@
 // Package factoryboot 用 HTTP 通知厂端写入初始超管。
-// 只认工厂稳定身份，不 import 厂内包，也不把口令存进 WAN。
+// 只认工厂稳定身份，不 import 厂内包，也不把密码存进 WAN。
 package factoryboot
 
 import (
@@ -20,7 +20,7 @@ import (
 // Client 把建厂引导发到厂端 /internal/bootstrap。
 type Client struct {
 	BaseURL string       // 厂端 HTTP 根地址
-	Token   string       // 建厂引导共享口令
+	Token   string       // 建厂引导共享密码
 	HTTP    *http.Client // 空则用默认 30 秒超时
 }
 
@@ -32,14 +32,14 @@ type bootReq struct {
 
 type bootResp struct {
 	PersonID        string `json:"personId"`        // 厂库里的账号身份
-	ActivationToken string `json:"activationToken"` // 一次性激活口令，禁止写入 WAN
+	ActivationToken string `json:"activationToken"` // 一次性 8 位激活码，禁止写入 WAN
 	Error           string `json:"error"`
 }
 
 // 厂端响应体上限，防止异常网关把整页 HTML 灌进来。
 const maxBody = 64 << 10
 
-// Bootstrap 在目标厂库写入待启用初始超管，激活口令只带回调用方；任何失败都收成 ErrFactoryBootstrap。
+// Bootstrap 在目标厂库写入待启用初始超管，激活码只带回调用方；任何失败都收成 ErrFactoryBootstrap。
 func (c *Client) Bootstrap(ctx context.Context, factoryID uuid.UUID, saLogin, saDisplay string) (uuid.UUID, string, error) {
 	httpClient := c.HTTP
 	if httpClient == nil {

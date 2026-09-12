@@ -27,6 +27,7 @@ var (
 	ErrLastAdmin           = errors.New("last factory super admin") // 会把有效厂级超管入口变成零
 	ErrMultiParent         = errors.New("org unit cannot have two parents")
 	ErrWorkContext         = errors.New("invalid work context") // 没选、选了未分配节点、或直属与节点同时选
+	ErrInvalidName         = errors.New("invalid name")         // 显示名空了或太长
 	ErrInvalidKey          = errors.New("invalid key material") // 公钥/私钥或签名长度不对
 	ErrSigningKeyExists    = errors.New("factory signing key already set")
 	ErrClientKeyMismatch   = errors.New("client public key does not match")
@@ -40,5 +41,10 @@ var (
 	ErrClosureIncomplete   = errors.New("closure is incomplete")                  // 组包缺成员或读不到钉死修订
 	ErrClosureMismatch     = errors.New("closure revision mismatch")              // 组包串版：身份或修订被顶替
 	ErrClientCacheFull     = errors.New("client cache is full")                   // 工程份已达缓存上限
-	ErrSyncRetry           = errors.New("sync retry required")                // 弱网汇聚失败，队列保留可再试
+	ErrSyncRetry           = errors.New("sync retry required")                    // 弱网汇聚失败，队列保留可再试
+	ErrInvalidEnrollment   = errors.New("invalid enrollment")                     // 建厂码不对或已用完
+	ErrWANUnreachable      = errors.New("wan channel unreachable")                // 厂端连不上 WAN 通道
+	ErrFactoryDisabled     = errors.New("factory is disabled")                    // WAN 停用后不得登录或新开操作
+	ErrFactoryRetired      = errors.New("factory is retired")                     // 已注销，通道不再重连
+	ErrTemplateInvalid     = errors.New("content template is invalid")            // 字段表不合法
 )

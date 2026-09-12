@@ -8,10 +8,10 @@ COMMENT ON COLUMN factories.created_at IS '名录入库时间';
 COMMENT ON TABLE wan_admins IS 'WAN 唯一管理员；全表只能有一行';
 COMMENT ON COLUMN wan_admins.id IS 'WAN 管理员稳定身份';
 COMMENT ON COLUMN wan_admins.login_name IS 'WAN 登录名，全库唯一';
-COMMENT ON COLUMN wan_admins.password_hash IS '日常口令哈希，只存在 WAN 库';
+COMMENT ON COLUMN wan_admins.password_hash IS '日常密码哈希，只存在 WAN 库';
 COMMENT ON COLUMN wan_admins.created_at IS '账号创建时间';
 
-COMMENT ON TABLE initial_super_admins IS '交付对账用的初始超管身份，不含日常口令';
+COMMENT ON TABLE initial_super_admins IS '交付对账用的初始超管身份，不含日常密码';
 COMMENT ON COLUMN initial_super_admins.factory_id IS '一厂只能绑一名初始超管';
 COMMENT ON COLUMN initial_super_admins.person_id IS '落在目标厂库里的账号身份';
 COMMENT ON COLUMN initial_super_admins.login_name IS '交付时的登录名，不是秘密';

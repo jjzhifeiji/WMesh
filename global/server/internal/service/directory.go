@@ -2,42 +2,43 @@ package service
 
 import (
 	"context"
+	"errors"
 
 	"github.com/google/uuid"
 
 	"wmesh/global/internal/platform/audit"
 	"wmesh/global/internal/platform/domain"
 	"wmesh/global/internal/platform/id"
+	"wmesh/global/internal/platform/secret"
 )
 
-// CreatedFactory 是创建工厂的交付结果；激活口令只给夹具，不写 WAN 库。
+// CreatedFactory 是创建工厂的交付结果；建厂码只给持有者，不写 WAN 库原文。
 type CreatedFactory struct {
 	Factory         Factory   `json:"factory"`         // 刚写入名录的工厂
-	SuperAdminID    uuid.UUID `json:"superAdminId"`    // 厂库里的初始超管身份
-	ActivationToken string    `json:"activationToken"` // 一次性激活口令原文，禁止写入审计
+	SuperAdminID    uuid.UUID `json:"superAdminId"`    // 约定落在厂库的初始超管身份
+	EnrollmentToken string    `json:"enrollmentToken"` // 一次性建厂码原文，禁止写入审计
 }
 
 type Directory struct {
 	Factories []Factory           `json:"factories"` // WAN 工厂名录
-	Initials  []InitialSuperAdmin `json:"initials"`  // 各厂初始超管身份，不含口令
+	Initials  []InitialSuperAdmin `json:"initials"`  // 各厂初始超管身份，不含密码
 }
 
-// CreateFactory 建厂并只下发一名绑定该厂的初始超管；激活口令不落 WAN。
+// CreateFactory 只在 WAN 名录写下工厂与初始超管身份，发建厂码；不反打厂内网。
 func (s *Factories) CreateFactory(ctx context.Context, token, name, saLogin, saDisplay string) (CreatedFactory, error) {
 	admin, err := s.RequireAdmin(ctx, token)
 	if err != nil {
 		_ = s.audit(ctx, nil, nil, nil, "create_factory", name, audit.Deny)
 		return CreatedFactory{}, err
 	}
-	// 先发身份、先在厂库落初始超管，成功后才进 WAN 名录；厂端失败时名录里不留没有超管的空厂。
-	fid := id.New()
-	personID, actToken, err := s.boot.Bootstrap(ctx, fid, saLogin, saDisplay)
+	code, err := secret.RandomToken()
 	if err != nil {
-		_ = s.audit(ctx, &admin.ID, nil, &fid, "create_factory", name, audit.Deny)
 		return CreatedFactory{}, err
 	}
-	// 名录与初始超管对账同一事务写入，避免只有其一。
-	fac, err := s.store.RegisterFactory(ctx, fid, name, personID, saLogin)
+	fid := id.New()
+	personID := id.New()
+	// 名录与初始超管对账同一事务写入；厂端稍后用建厂码认领。
+	fac, err := s.store.RegisterFactory(ctx, fid, name, personID, saLogin, saDisplay, secret.TokenHash(code))
 	if err != nil {
 		_ = s.audit(ctx, &admin.ID, nil, &fid, "create_factory", name, audit.Deny)
 		return CreatedFactory{}, err
@@ -45,7 +46,7 @@ func (s *Factories) CreateFactory(ctx context.Context, token, name, saLogin, saD
 	if err := s.audit(ctx, &admin.ID, nil, &fac.ID, "create_factory", fac.ID.String()+" "+personID.String(), audit.Allow); err != nil {
 		return CreatedFactory{}, err
 	}
-	return CreatedFactory{Factory: fac, SuperAdminID: personID, ActivationToken: actToken}, nil
+	return CreatedFactory{Factory: fac, SuperAdminID: personID, EnrollmentToken: code}, nil
 }
 
 // IssueInitialSuperAdmin 拒绝再给已有工厂下发第二名初始超管。
@@ -112,6 +113,78 @@ func (s *Factories) Directory(ctx context.Context, token string) (Directory, err
 		return Directory{}, err
 	}
 	return Directory{Factories: facs, Initials: initials}, nil
+}
+
+// DisableFactory 停用工厂；厂端在线则立刻拒绝新登录，离线则回连后收敛。
+func (s *Factories) DisableFactory(ctx context.Context, token string, factoryID uuid.UUID) (Factory, error) {
+	return s.setStatus(ctx, token, factoryID, FactoryDisabled, "disable_factory")
+}
+
+// EnableFactory 重新启用已停用的工厂；已注销的不能启用。
+func (s *Factories) EnableFactory(ctx context.Context, token string, factoryID uuid.UUID) (Factory, error) {
+	return s.setStatus(ctx, token, factoryID, FactoryActive, "enable_factory")
+}
+
+// DeleteFactory 未认领则从名录拿掉；已认领只注销，历史与绑定保留。
+func (s *Factories) DeleteFactory(ctx context.Context, token string, factoryID uuid.UUID) (*Factory, error) {
+	admin, err := s.RequireAdmin(ctx, token)
+	if err != nil {
+		_ = s.audit(ctx, nil, nil, &factoryID, "delete_factory", factoryID.String(), audit.Deny)
+		return nil, err
+	}
+	fac, err := s.store.FactoryByID(ctx, factoryID)
+	if err != nil {
+		_ = s.audit(ctx, &admin.ID, nil, &factoryID, "delete_factory", factoryID.String(), audit.Deny)
+		return nil, err
+	}
+	if fac.EnrolledAt != nil || fac.Status == FactoryRetired {
+		out, err := s.store.SetFactoryStatus(ctx, factoryID, FactoryRetired)
+		if err != nil {
+			_ = s.audit(ctx, &admin.ID, nil, &factoryID, "retire_factory", factoryID.String(), audit.Deny)
+			return nil, err
+		}
+		if err := s.audit(ctx, &admin.ID, nil, &factoryID, "retire_factory", factoryID.String(), audit.Allow); err != nil {
+			return nil, err
+		}
+		return &out, nil
+	}
+	if err := s.store.DeleteUnclaimedFactory(ctx, factoryID); err != nil {
+		if errors.Is(err, domain.ErrReferenced) {
+			out, err := s.store.SetFactoryStatus(ctx, factoryID, FactoryRetired)
+			if err != nil {
+				_ = s.audit(ctx, &admin.ID, nil, &factoryID, "retire_factory", factoryID.String(), audit.Deny)
+				return nil, err
+			}
+			if err := s.audit(ctx, &admin.ID, nil, &factoryID, "retire_factory", factoryID.String(), audit.Allow); err != nil {
+				return nil, err
+			}
+			return &out, nil
+		}
+		_ = s.audit(ctx, &admin.ID, nil, &factoryID, "delete_factory", factoryID.String(), audit.Deny)
+		return nil, err
+	}
+	if err := s.audit(ctx, &admin.ID, nil, &factoryID, "delete_factory", factoryID.String(), audit.Allow); err != nil {
+		return nil, err
+	}
+	return nil, nil
+}
+
+func (s *Factories) setStatus(ctx context.Context, token string, factoryID uuid.UUID, status, action string) (Factory, error) {
+	admin, err := s.RequireAdmin(ctx, token)
+	if err != nil {
+		_ = s.audit(ctx, nil, nil, &factoryID, action, factoryID.String(), audit.Deny)
+		return Factory{}, err
+	}
+	// 写入治理状态并升高修订；厂端只接受更高修订。
+	out, err := s.store.SetFactoryStatus(ctx, factoryID, status)
+	if err != nil {
+		_ = s.audit(ctx, &admin.ID, nil, &factoryID, action, factoryID.String(), audit.Deny)
+		return Factory{}, err
+	}
+	if err := s.audit(ctx, &admin.ID, nil, &factoryID, action, factoryID.String(), audit.Allow); err != nil {
+		return Factory{}, err
+	}
+	return out, nil
 }
 
 // ListFactoryPeople 从 WAN 查厂内人员，一律拒绝。

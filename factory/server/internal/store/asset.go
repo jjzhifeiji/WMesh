@@ -71,12 +71,13 @@ type Asset struct {
 
 // AssetWrite 是一次改名/改内容/改可复制/改状态/改依赖的写入。
 type AssetWrite struct {
-	Name     string     // 显示名
-	Content  []byte     // 正文
-	Digest   []byte     // 与正文对应的摘要
-	Copyable bool       // 可复制
-	Status   string     // 状态
-	Deps     []AssetDep // 工程依赖；工艺必须空
+	Name           string     // 显示名
+	Content        []byte     // 正文
+	Digest         []byte     // 与正文对应的摘要
+	Copyable       bool       // 可复制
+	Status         string     // 状态
+	Deps           []AssetDep // 工程依赖；工艺必须空
+	SourceRevision *int64     // 升档覆盖时更新源修订；空则不改
 }
 
 type governedAssetRow struct {
@@ -172,7 +173,7 @@ func (s *Store) UpdateGovernedAsset(ctx context.Context, assetID uuid.UUID, expe
 		if err != nil {
 			return err
 		}
-		res := tx.Model(&governedAssetRow{}).Where("id = ? AND revision = ?", assetID, expected).Updates(map[string]any{
+		updates := map[string]any{
 			"name":       w.Name,
 			"content":    nonempty(w.Content),
 			"digest":     w.Digest,
@@ -181,7 +182,11 @@ func (s *Store) UpdateGovernedAsset(ctx context.Context, assetID uuid.UUID, expe
 			"deps":       depsJSON,
 			"revision":   expected + 1,
 			"updated_at": now,
-		})
+		}
+		if w.SourceRevision != nil {
+			updates["source_revision"] = *w.SourceRevision
+		}
+		res := tx.Model(&governedAssetRow{}).Where("id = ? AND revision = ?", assetID, expected).Updates(updates)
 		if res.Error != nil {
 			return mapAssetWriteErr(res.Error)
 		}
@@ -197,10 +202,10 @@ func (s *Store) UpdateGovernedAsset(ctx context.Context, assetID uuid.UUID, expe
 	return out, err
 }
 
-// ListGovernedAssets 列出本厂工艺/工程当前行，不含正文。
+// ListGovernedAssets 列出本厂工艺/工程当前行，不含正文；按创建时间从新到旧。
 func (s *Store) ListGovernedAssets(ctx context.Context) ([]Asset, error) {
 	var rows []governedAssetRow
-	if err := s.db.WithContext(ctx).Omit("Content").Order("updated_at DESC").Find(&rows).Error; err != nil {
+	if err := s.db.WithContext(ctx).Omit("Content").Order("created_at DESC").Find(&rows).Error; err != nil {
 		return nil, err
 	}
 	out := make([]Asset, 0, len(rows))
@@ -220,6 +225,43 @@ func (s *Store) GovernedAssetByID(ctx context.Context, assetID uuid.UUID) (Asset
 		return Asset{}, err
 	}
 	return assetFromGoverned(row), nil
+}
+
+// GovernedAssetBySourceID 按升档源身份找本厂已升档条目。
+func (s *Store) GovernedAssetBySourceID(ctx context.Context, sourceID uuid.UUID) (Asset, error) {
+	var row governedAssetRow
+	if err := s.db.WithContext(ctx).Where("source_id = ?", sourceID).Order("updated_at DESC").First(&row).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return Asset{}, domain.ErrNotFound
+		}
+		return Asset{}, err
+	}
+	return assetFromGoverned(row), nil
+}
+
+// AssetIsReferenced 是否仍被某条工程的 deps 引用。
+func (s *Store) AssetIsReferenced(ctx context.Context, assetID uuid.UUID) (bool, error) {
+	raw, err := json.Marshal([]map[string]string{{"id": assetID.String()}})
+	if err != nil {
+		return false, err
+	}
+	var n int64
+	if err := s.db.WithContext(ctx).Model(&governedAssetRow{}).Where("deps @> ?", raw).Count(&n).Error; err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
+// DeleteGovernedAsset 物理删除本厂一条；调用方须先确认未被依赖。
+func (s *Store) DeleteGovernedAsset(ctx context.Context, assetID uuid.UUID) error {
+	res := s.db.WithContext(ctx).Where("id = ?", assetID).Delete(&governedAssetRow{})
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
 }
 
 // ExportAssetSnapshot 导出升平台用快照；不改原件。

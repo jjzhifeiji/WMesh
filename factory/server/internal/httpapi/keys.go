@@ -9,10 +9,10 @@ import (
 	"wmesh/factory/internal/platform/domain"
 )
 
-func decodePublicKey(s string) ([]byte, error) {
+func decodeOptionalPublicKey(s string) ([]byte, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
-		return nil, domain.ErrInvalidKey
+		return nil, nil
 	}
 	if b, err := base64.StdEncoding.DecodeString(s); err == nil && len(b) == 32 {
 		return b, nil

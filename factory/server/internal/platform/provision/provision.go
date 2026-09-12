@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
+	"strings"
 
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
@@ -33,7 +34,7 @@ func stripDash(s string) string {
 	return string(b)
 }
 
-// SwapDB 把维护库 DSN 换成目标厂库，不改账号口令。
+// SwapDB 把维护库 DSN 换成目标厂库，不改账号密码。
 func SwapDB(adminDSN, name string) (string, error) {
 	if !dbNameRe.MatchString(name) {
 		return "", fmt.Errorf("invalid database name")
@@ -54,6 +55,37 @@ func Exists(admin *gorm.DB, name string) (bool, error) {
 	var exists bool
 	err := admin.Raw("SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = ?)", name).Scan(&exists).Error
 	return exists, err
+}
+
+// ListFactoryIDs 扫维护实例上已有的厂库身份，供本机列出已认领工厂。
+func ListFactoryIDs(admin *gorm.DB) ([]uuid.UUID, error) {
+	var names []string
+	if err := admin.Raw("SELECT datname FROM pg_database WHERE datname LIKE 'wmesh_fac_%'").Scan(&names).Error; err != nil {
+		return nil, err
+	}
+	out := make([]uuid.UUID, 0, len(names))
+	for _, name := range names {
+		id, ok := ParseDBName(name)
+		if !ok {
+			continue
+		}
+		out = append(out, id)
+	}
+	return out, nil
+}
+
+// ParseDBName 从厂库名还原工厂稳定身份。
+func ParseDBName(name string) (uuid.UUID, bool) {
+	const prefix = "wmesh_fac_"
+	if !strings.HasPrefix(name, prefix) || len(name) != len(prefix)+32 {
+		return uuid.Nil, false
+	}
+	hex := name[len(prefix):]
+	id, err := uuid.Parse(hex[0:8] + "-" + hex[8:12] + "-" + hex[12:16] + "-" + hex[16:20] + "-" + hex[20:32])
+	if err != nil {
+		return uuid.Nil, false
+	}
+	return id, true
 }
 
 // Ensure 若厂库不存在则新建；CREATE DATABASE 不能放在事务里。

@@ -31,13 +31,17 @@ func TestFactoryHTTP(t *testing.T) {
 		_ = h.Drop(fid)
 		h.Close()
 	})
-	srv := httptest.NewServer(httpapi.New(h, "boot-secret").Router())
+	srv := httptest.NewServer(httpapi.New(h, "boot-secret", "").Router())
 	t.Cleanup(srv.Close)
 	base := "/v1/factories/" + fid.String()
 
 	code, body := do(t, srv, "GET", "/healthz", "", "")
 	if code != http.StatusOK || gjson(t, body, "db") != "ok" || gjson(t, body, "oss") != "off" {
 		t.Fatalf("healthz %d %s", code, body)
+	}
+	code, body = do(t, srv, "GET", "/v1/site", "", "")
+	if code != http.StatusOK || !strings.Contains(body, `"wanConfigured":false`) {
+		t.Fatalf("site %d %s", code, body)
 	}
 	code, body = do(t, srv, "GET", "/v1/nope", "", "")
 	if code != http.StatusNotFound || gjson(t, body, "error") != "not found" {
@@ -56,6 +60,9 @@ func TestFactoryHTTP(t *testing.T) {
 		t.Fatalf("bootstrap %d %s", code, body)
 	}
 	act := gjson(t, body, "activationToken")
+	if len(act) != 8 {
+		t.Fatalf("activation code len %d %s", len(act), act)
+	}
 	code, body = do(t, srv, "POST", base+"/login", "", `{"loginName":"sa","password":"secret"}`)
 	if code != http.StatusUnauthorized {
 		t.Fatalf("pending login %d %s", code, body)
@@ -105,10 +112,25 @@ func TestFactoryHTTP(t *testing.T) {
 	if code != http.StatusCreated {
 		t.Fatalf("person %d %s", code, body)
 	}
-	if gjson(t, body, "activationToken") == "" {
-		t.Fatalf("person activation missing: %s", body)
+	if strings.Contains(body, "activationToken") || gjson(t, body, "account.status") != "active" {
+		t.Fatalf("person default login missing: %s", body)
 	}
 	personID := gjson(t, body, "account.id")
+	code, body = do(t, srv, "POST", base+"/people/"+personID+"/disable", tok, "")
+	if code != http.StatusNoContent {
+		t.Fatalf("disable person %d %s", code, body)
+	}
+	code, body = do(t, srv, "POST", base+"/people/"+personID+"/enable", tok, "")
+	if code != http.StatusNoContent {
+		t.Fatalf("enable person %d %s", code, body)
+	}
+	code, body = do(t, srv, "POST", base+"/people/"+personID+"/reset-password", tok, "")
+	if code != http.StatusOK {
+		t.Fatalf("reset person %d %s", code, body)
+	}
+	if strings.Contains(body, "activationToken") || gjson(t, body, "account.status") != "active" {
+		t.Fatalf("reset default password missing: %s", body)
+	}
 	code, body = do(t, srv, "POST", base+"/grants", tok, `{"personId":"`+personID+`","role":"operator","scopeKind":"org_unit","orgUnitId":"`+unitID+`"}`)
 	if code != http.StatusCreated {
 		t.Fatalf("grant %d %s", code, body)
@@ -133,7 +155,7 @@ func TestFactoryHTTP(t *testing.T) {
 	}
 	pk := base64.StdEncoding.EncodeToString(pub)
 	cid := id.New().String()
-	code, body = do(t, srv, "POST", base+"/clients", tok, `{"id":"`+cid+`","publicKey":"`+pk+`","bindingRevision":1}`)
+	code, body = do(t, srv, "POST", base+"/clients", tok, `{"id":"`+cid+`","name":"焊机-1","publicKey":"`+pk+`","bindingRevision":1}`)
 	if code != http.StatusCreated {
 		t.Fatalf("accept client %d %s", code, body)
 	}
@@ -152,17 +174,6 @@ func TestFactoryHTTP(t *testing.T) {
 		t.Fatalf("me %d %s", code, body)
 	}
 	saID := gjson(t, body, "id")
-	code, body = do(t, srv, "POST", base+"/person-offline-grants", tok, `{"personId":"`+saID+`","clientId":"`+cid+`","notBefore":"`+nb+`","notAfter":"`+na+`"}`)
-	if code != http.StatusCreated {
-		t.Fatalf("issue person %d %s", code, body)
-	}
-	if strings.Contains(body, "passwordHash") || strings.Contains(body, "PasswordHash") {
-		t.Fatalf("person grant leaked hash: %s", body)
-	}
-	code, body = do(t, srv, "GET", base+"/person-offline-grants", tok, "")
-	if code != http.StatusOK || strings.Contains(body, "passwordHash") {
-		t.Fatalf("list person grants %d %s", code, body)
-	}
 	code, body = do(t, srv, "GET", base+"/signing-key", tok, "")
 	if code != http.StatusOK || !strings.Contains(body, "publicKey") {
 		t.Fatalf("signing key %d %s", code, body)
@@ -182,7 +193,7 @@ func TestFactoryHTTP(t *testing.T) {
 	}
 	pid := gjson(t, body, "id")
 	code, body = do(t, srv, "GET", base+"/assets?kind=process", tok, "")
-	if code != http.StatusOK || !strings.Contains(body, pid) || strings.Contains(body, "secret-body") {
+	if code != http.StatusOK || !strings.Contains(body, pid) || strings.Contains(body, "secret-body") || !strings.Contains(body, "creatorLogin") {
 		t.Fatalf("list process %d %s", code, body)
 	}
 	code, body = do(t, srv, "GET", base+"/assets/"+pid+"/content", tok, "")
@@ -223,6 +234,19 @@ func TestFactoryHTTP(t *testing.T) {
 	code, body = do(t, srv, "POST", base+"/assets/"+persID+"/promote", tok, "")
 	if code != http.StatusCreated || strings.Contains(body, "mine") {
 		t.Fatalf("promote %d %s", code, body)
+	}
+	code, body = do(t, srv, "POST", base+"/assets/"+pid+"/delete", tok, "")
+	if code != http.StatusConflict || gjson(t, body, "error") != "still referenced" {
+		t.Fatalf("delete referenced %d %s", code, body)
+	}
+	code, body = do(t, srv, "POST", base+"/assets", tok, `{"kind":"process","level":"factory","name":"可删","content":"gone","direct":true}`)
+	if code != http.StatusCreated {
+		t.Fatalf("create disposable %d %s", code, body)
+	}
+	dropID := gjson(t, body, "id")
+	code, body = do(t, srv, "POST", base+"/assets/"+dropID+"/delete", tok, "")
+	if code != http.StatusOK {
+		t.Fatalf("delete unused %d %s", code, body)
 	}
 	code, body = do(t, srv, "GET", base+"/assets/"+pid+"/snapshot", tok, "")
 	if code != http.StatusOK || gjson(t, body, "sourceId") != pid || !strings.Contains(body, base64.StdEncoding.EncodeToString([]byte("secret-body"))) {

@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient, type UseMutationOptions } from "@tanstack/react-query";
 import { http } from "@/shared/api/client";
 import { fpath } from "@/shared/auth/session";
-import type { Role, ScopeKind } from "@/shared/labels";
+import type { ScopeKind } from "@/shared/labels";
 
 // 名册是厂内管理端的唯一读模型：一次拉全，改动后整体失效重拉。
 
@@ -35,7 +35,7 @@ export type Assignment = {
 export type RoleGrant = {
   id: string; // 授予记录稳定身份
   personId: string; // 被授予的本厂人员
-  role: Role; // 六种固定角色之一
+  role: string; // 固定角色；历史授予可能仍是工艺工程师
   scopeKind: ScopeKind; // factory 或 org_unit
   orgUnitId: string | null; // Factory 作用域必须为空
   status: "active" | "revoked"; // active 或 revoked
@@ -65,11 +65,6 @@ export function useCatalog() {
 export function useIsSuperAdmin() {
   const { data } = useCatalog();
   return data?.myGrants.some((g) => g.role === "factory_super_admin" && g.scopeKind === "factory") ?? false;
-}
-
-export function useIsProcessEngineer() {
-  const { data } = useCatalog();
-  return data?.myGrants.some((g) => g.role === "process_engineer") ?? false;
 }
 
 // 所有改名册的写操作都用它：成功后让名册失效重拉。

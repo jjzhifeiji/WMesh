@@ -16,6 +16,8 @@ func (h *Handler) mountOrg(mux *http.ServeMux) { // 名册、组织、人员、�
 	mux.HandleFunc("DELETE /v1/factories/{id}/org-units/{unitId}", h.deleteOrgUnit)
 	mux.HandleFunc("POST /v1/factories/{id}/people", h.createPerson)
 	mux.HandleFunc("POST /v1/factories/{id}/people/{personId}/disable", h.disablePerson)
+	mux.HandleFunc("POST /v1/factories/{id}/people/{personId}/enable", h.enablePerson)
+	mux.HandleFunc("POST /v1/factories/{id}/people/{personId}/reset-password", h.resetPersonPassword)
 	mux.HandleFunc("POST /v1/factories/{id}/grants", h.grantRole)
 	mux.HandleFunc("POST /v1/factories/{id}/grants/{grantId}/revoke", h.revokeRole)
 	mux.HandleFunc("POST /v1/factories/{id}/assignments", h.assign)
@@ -33,8 +35,7 @@ type createPersonReq struct {
 }
 
 type createdPersonResp struct {
-	Account         service.Account `json:"account"`
-	ActivationToken string          `json:"activationToken"` // 一次性，只给交付方
+	Account service.Account `json:"account"` // 新建/重置后的账号视图，不含密码
 }
 
 type grantReq struct {
@@ -133,12 +134,12 @@ func (h *Handler) createPerson(w http.ResponseWriter, r *http.Request) {
 			writeBadRequest(w, err)
 			return
 		}
-		acc, token, err := svc.Org.CreatePerson(r.Context(), bearer(r), req.LoginName, req.DisplayName)
+		acc, err := svc.Org.CreatePerson(r.Context(), bearer(r), req.LoginName, req.DisplayName)
 		if err != nil {
 			writeErr(w, err)
 			return
 		}
-		writeJSON(w, http.StatusCreated, createdPersonResp{Account: acc, ActivationToken: token})
+		writeJSON(w, http.StatusCreated, createdPersonResp{Account: acc})
 	})
 }
 
@@ -154,6 +155,37 @@ func (h *Handler) disablePerson(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
+	})
+}
+
+func (h *Handler) enablePerson(w http.ResponseWriter, r *http.Request) {
+	h.withFactory(w, r, func(svc *service.Service) {
+		personID, err := uuid.Parse(r.PathValue("personId"))
+		if err != nil {
+			writeBadRequest(w, errInvalidID)
+			return
+		}
+		if err := svc.Auth.EnableAccount(r.Context(), bearer(r), personID); err != nil {
+			writeErr(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+}
+
+func (h *Handler) resetPersonPassword(w http.ResponseWriter, r *http.Request) {
+	h.withFactory(w, r, func(svc *service.Service) {
+		personID, err := uuid.Parse(r.PathValue("personId"))
+		if err != nil {
+			writeBadRequest(w, errInvalidID)
+			return
+		}
+		acc, err := svc.Auth.ResetPassword(r.Context(), bearer(r), personID)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, createdPersonResp{Account: acc})
 	})
 }
 

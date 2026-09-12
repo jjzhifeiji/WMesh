@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -30,14 +30,16 @@ type SigningKey struct {
 
 func (SigningKey) TableName() string { return "signing_keys" }
 
-// Client 是本厂已接受的一台现场节点绑定。
+// Client 是本厂已接受的一台现场设备绑定。
 type Client struct {
-	ID              uuid.UUID  `gorm:"type:uuid;primaryKey" json:"id"`       // 与 WAN 相同的 Client 稳定身份
-	PublicKey       []byte     `gorm:"type:bytea;not null" json:"publicKey"` // 本机公钥；无私钥
-	BindingRevision int64      `gorm:"not null" json:"bindingRevision"`      // 已接受的绑定修订，只向前
-	Status          string     `gorm:"not null" json:"status"`               // bound / void
-	BoundAt         time.Time  `gorm:"not null" json:"boundAt"`              // 最近一次接受为 bound 的时间
-	VoidedAt        *time.Time `json:"voidedAt"`                             // 作废时间；bound 必须为空
+	ID              uuid.UUID  `gorm:"type:uuid;primaryKey" json:"id"`        // 固定识别号，与 WAN 相同的全局身份
+	Name            string     `gorm:"not null" json:"name"`                  // 给人看的设备名，可改，不当身份
+	PublicKey       []byte     `gorm:"type:bytea" json:"publicKey"`           // 本机公钥；未上线为空，无私钥
+	BindingRevision int64      `gorm:"not null" json:"bindingRevision"`       // 已接受的绑定修订，只向前
+	Status          string     `gorm:"not null" json:"status"`                // bound / void
+	BoundAt         time.Time  `gorm:"not null" json:"boundAt"`               // 最近一次接受为 bound 的时间
+	VoidedAt        *time.Time `json:"voidedAt"`                              // 作废时间；bound 必须为空
+	OperatorID      *uuid.UUID `gorm:"type:uuid" json:"operatorId,omitempty"` // 当前在本机登录的本厂账号；无人则为空
 }
 
 func (Client) TableName() string { return "clients" }
@@ -56,56 +58,6 @@ type RuntimeGrant struct {
 }
 
 func (RuntimeGrant) TableName() string { return "client_runtime_grants" }
-
-// OrgOption 是人员离线授权里当时可选的一个组织节点及其祖先路径。
-type OrgOption struct {
-	OrgUnitID uuid.UUID  `json:"orgUnitId"` // 当时可选节点
-	Path      []PathNode `json:"path"`      // 当时从工厂到该节点的祖先快照
-}
-
-// RoleSnapshot 是签发时一条角色与作用域，离线不再查厂库。
-type RoleSnapshot struct {
-	Role      string     `json:"role"`                // 六种固定角色之一
-	ScopeKind string     `json:"scopeKind"`           // factory 或 org_unit
-	OrgUnitID *uuid.UUID `json:"orgUnitId,omitempty"` // Factory 作用域为空
-}
-
-// PersonOfflineGrant 是签给本厂账号、绑定特定 Client 的人员离线授权快照。
-type PersonOfflineGrant struct {
-	ID            uuid.UUID      // 人员离线授权稳定身份
-	PersonID      uuid.UUID      // 本厂账号稳定身份
-	ClientID      uuid.UUID      // 绑定到的本厂 Client
-	Revision      int64          // 该账号在该 Client 上的授权修订，只向前
-	LoginName     string         // 签发时登录名，离线对照用，不是身份
-	PasswordHash  string         // 该人口令验证材料副本；不进 JSON
-	AllowDirect   bool           // 是否允许 Factory 直属
-	OrgSnapshot   []OrgOption    // 当时可选 OrgUnit 及祖先路径
-	RolesSnapshot []RoleSnapshot // 当时固定角色与作用域
-	NotBefore     time.Time      // 生效时间
-	NotAfter      time.Time      // 失效时间
-	Payload       []byte         // 被签名的声明原文
-	Signature     []byte         // Ed25519 签名 64 字节
-	CreatedAt     time.Time      // 写入时间
-}
-
-type personOfflineGrantRow struct {
-	ID            uuid.UUID `gorm:"type:uuid;primaryKey"` // 人员离线授权稳定身份
-	PersonID      uuid.UUID `gorm:"type:uuid;not null"`   // 本厂账号稳定身份
-	ClientID      uuid.UUID `gorm:"type:uuid;not null"`   // 绑定到的本厂 Client
-	Revision      int64     `gorm:"not null"`             // 该账号在该 Client 上的授权修订，只向前
-	LoginName     string    `gorm:"not null"`             // 签发时登录名，离线对照用，不是身份
-	PasswordHash  string    `gorm:"not null"`             // 该人口令验证材料副本，不是全厂账号库
-	AllowDirect   bool      `gorm:"not null"`             // 是否允许 Factory 直属
-	OrgSnapshot   []byte    `gorm:"type:jsonb;not null"`  // 当时可选 OrgUnit 及祖先路径
-	RolesSnapshot []byte    `gorm:"type:jsonb;not null"`  // 当时固定角色与作用域
-	NotBefore     time.Time `gorm:"not null"`             // 生效时间
-	NotAfter      time.Time `gorm:"not null"`             // 失效时间
-	Payload       []byte    `gorm:"type:bytea;not null"`  // 被签名的声明原文
-	Signature     []byte    `gorm:"type:bytea;not null"`  // Ed25519 签名 64 字节
-	CreatedAt     time.Time `gorm:"not null"`             // 写入时间
-}
-
-func (personOfflineGrantRow) TableName() string { return "person_offline_grants" }
 
 // PutSigningKey 写入本厂唯一签发密钥；已有则拒绝。
 func (s *Store) PutSigningKey(ctx context.Context, publicKey, privateKey []byte) (SigningKey, error) {
@@ -138,10 +90,15 @@ func (s *Store) SigningKey(ctx context.Context) (SigningKey, error) {
 	return row, nil
 }
 
-// AcceptBinding 接受 WAN 送达的绑定；修订必须严格更大，公钥必须一致。
-func (s *Store) AcceptBinding(ctx context.Context, clientID uuid.UUID, publicKey []byte, revision int64) (Client, error) {
+// AcceptBinding 接受 WAN 送达的绑定；修订只向前，同修订可补名字或补公钥。
+func (s *Store) AcceptBinding(ctx context.Context, clientID uuid.UUID, name string, publicKey []byte, revision int64) (Client, error) {
 	if revision < 1 {
 		return Client{}, domain.ErrStaleRevision
+	}
+	if len(publicKey) == 0 {
+		publicKey = nil
+	} else if len(publicKey) != 32 {
+		return Client{}, domain.ErrInvalidKey
 	}
 	now := time.Now().UTC()
 	var out Client
@@ -149,8 +106,12 @@ func (s *Store) AcceptBinding(ctx context.Context, clientID uuid.UUID, publicKey
 		var row Client
 		err := tx.First(&row, "id = ?", clientID).Error
 		if errors.Is(err, gorm.ErrRecordNotFound) {
+			if strings.TrimSpace(name) == "" {
+				name = "Client"
+			}
 			row = Client{
 				ID:              clientID,
+				Name:            name,
 				PublicKey:       publicKey,
 				BindingRevision: revision,
 				Status:          ClientStatusBound,
@@ -158,7 +119,10 @@ func (s *Store) AcceptBinding(ctx context.Context, clientID uuid.UUID, publicKey
 			}
 			if err := tx.Create(&row).Error; err != nil {
 				if domain.IsCheckViolation(err) {
-					return domain.ErrInvalidKey
+					if len(publicKey) != 0 && len(publicKey) != 32 {
+						return domain.ErrInvalidKey
+					}
+					return domain.ErrInvalidName
 				}
 				return err
 			}
@@ -168,31 +132,54 @@ func (s *Store) AcceptBinding(ctx context.Context, clientID uuid.UUID, publicKey
 		if err != nil {
 			return err
 		}
-		if revision <= row.BindingRevision {
+		if revision < row.BindingRevision {
 			return domain.ErrStaleRevision
 		}
-		if !bytes.Equal(row.PublicKey, publicKey) {
+		if len(publicKey) > 0 && len(row.PublicKey) > 0 && !bytes.Equal(row.PublicKey, publicKey) {
 			return domain.ErrClientKeyMismatch
 		}
-		if err := tx.Model(&Client{}).Where("id = ?", clientID).Updates(map[string]any{
-			"binding_revision": revision,
-			"status":           ClientStatusBound,
-			"bound_at":         now,
-			"voided_at":        nil,
-		}).Error; err != nil {
+		patch := map[string]any{
+			"status":    ClientStatusBound,
+			"bound_at":  now,
+			"voided_at": nil,
+		}
+		if revision > row.BindingRevision {
+			patch["binding_revision"] = revision
+		}
+		if strings.TrimSpace(name) != "" {
+			patch["name"] = name
+		}
+		if len(row.PublicKey) == 0 && len(publicKey) > 0 {
+			patch["public_key"] = publicKey
+		}
+		if err := tx.Model(&Client{}).Where("id = ?", clientID).Updates(patch).Error; err != nil {
 			if domain.IsCheckViolation(err) {
-				return domain.ErrInvalidKey
+				return domain.ErrInvalidName
 			}
 			return err
 		}
-		row.BindingRevision = revision
-		row.Status = ClientStatusBound
-		row.BoundAt = now
-		row.VoidedAt = nil
+		if err := tx.First(&row, "id = ?", clientID).Error; err != nil {
+			return err
+		}
 		out = row
 		return nil
 	})
 	return out, err
+}
+
+// RenameClient 只改给人看的名字，不改绑定修订。
+func (s *Store) RenameClient(ctx context.Context, clientID uuid.UUID, name string) (Client, error) {
+	res := s.db.WithContext(ctx).Model(&Client{}).Where("id = ?", clientID).Update("name", name)
+	if res.Error != nil {
+		if domain.IsCheckViolation(res.Error) {
+			return Client{}, domain.ErrInvalidName
+		}
+		return Client{}, res.Error
+	}
+	if res.RowsAffected == 0 {
+		return Client{}, domain.ErrNotFound
+	}
+	return s.ClientByID(ctx, clientID)
 }
 
 // VoidBinding 把本厂绑定标作废；之后不得再签发。
@@ -200,7 +187,7 @@ func (s *Store) VoidBinding(ctx context.Context, clientID uuid.UUID) error {
 	now := time.Now().UTC()
 	res := s.db.WithContext(ctx).Model(&Client{}).
 		Where("id = ? AND status = ?", clientID, ClientStatusBound).
-		Updates(map[string]any{"status": ClientStatusVoid, "voided_at": now})
+		Updates(map[string]any{"status": ClientStatusVoid, "voided_at": now, "operator_id": gorm.Expr("NULL")})
 	if res.Error != nil {
 		return res.Error
 	}
@@ -228,7 +215,21 @@ func (s *Store) ClientByID(ctx context.Context, clientID uuid.UUID) (Client, err
 	return row, nil
 }
 
-// ListClients 列出本厂已接受的 Client，按最近接受时间倒序。
+// SetClientOperator 记下谁在这台已绑定设备上登录；设备未落库则忽略。
+func (s *Store) SetClientOperator(ctx context.Context, clientID, personID uuid.UUID) error {
+	res := s.db.WithContext(ctx).Model(&Client{}).
+		Where("id = ? AND status = ?", clientID, ClientStatusBound).
+		Update("operator_id", personID)
+	if res.Error != nil {
+		if domain.IsForeignKeyViolation(res.Error) {
+			return domain.ErrNotFound
+		}
+		return res.Error
+	}
+	return nil
+}
+
+// ListClients 列出本厂已接受的 Client，按接受时间从新到旧。
 func (s *Store) ListClients(ctx context.Context) ([]Client, error) {
 	var rows []Client
 	if err := s.db.WithContext(ctx).Order("bound_at DESC").Find(&rows).Error; err != nil {
@@ -250,19 +251,6 @@ func (s *Store) ListRuntimeGrants(ctx context.Context) ([]RuntimeGrant, error) {
 		rows = []RuntimeGrant{}
 	}
 	return rows, nil
-}
-
-// ListPersonOfflineGrants 列出人员离线授权各修订，按人、Client、修订从新到旧。
-func (s *Store) ListPersonOfflineGrants(ctx context.Context) ([]PersonOfflineGrant, error) {
-	var rows []personOfflineGrantRow
-	if err := s.db.WithContext(ctx).Order("person_id, client_id, revision DESC").Find(&rows).Error; err != nil {
-		return nil, err
-	}
-	out := make([]PersonOfflineGrant, 0, len(rows))
-	for _, r := range rows {
-		out = append(out, personGrantFromRow(r))
-	}
-	return out, nil
 }
 
 func (s *Store) assertClientBound(ctx context.Context, tx *gorm.DB, clientID uuid.UUID) error {
@@ -341,107 +329,3 @@ func (s *Store) LatestRuntimeGrant(ctx context.Context, clientID uuid.UUID) (Run
 	return row, nil
 }
 
-// InsertPersonOfflineGrant 写入一版人员离线授权快照；Client 必须有效绑定，修订必须严格更大。
-func (s *Store) InsertPersonOfflineGrant(ctx context.Context, g PersonOfflineGrant) (PersonOfflineGrant, error) {
-	if g.OrgSnapshot == nil {
-		g.OrgSnapshot = []OrgOption{}
-	}
-	if g.RolesSnapshot == nil {
-		g.RolesSnapshot = []RoleSnapshot{}
-	}
-	orgRaw, err := json.Marshal(g.OrgSnapshot)
-	if err != nil {
-		return PersonOfflineGrant{}, err
-	}
-	rolesRaw, err := json.Marshal(g.RolesSnapshot)
-	if err != nil {
-		return PersonOfflineGrant{}, err
-	}
-	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := s.assertClientBound(ctx, tx, g.ClientID); err != nil {
-			return err
-		}
-		max, err := maxRevision(tx, &personOfflineGrantRow{}, "person_id = ? AND client_id = ?", g.PersonID, g.ClientID)
-		if err != nil {
-			return err
-		}
-		if g.Revision <= max {
-			return domain.ErrStaleRevision
-		}
-		if g.ID == uuid.Nil {
-			g.ID = id.New()
-		}
-		if g.CreatedAt.IsZero() {
-			g.CreatedAt = time.Now().UTC()
-		}
-		row := personOfflineGrantRow{
-			ID:            g.ID,
-			PersonID:      g.PersonID,
-			ClientID:      g.ClientID,
-			Revision:      g.Revision,
-			LoginName:     g.LoginName,
-			PasswordHash:  g.PasswordHash,
-			AllowDirect:   g.AllowDirect,
-			OrgSnapshot:   orgRaw,
-			RolesSnapshot: rolesRaw,
-			NotBefore:     g.NotBefore,
-			NotAfter:      g.NotAfter,
-			Payload:       g.Payload,
-			Signature:     g.Signature,
-			CreatedAt:     g.CreatedAt,
-		}
-		if err := tx.Select("ID", "PersonID", "ClientID", "Revision", "LoginName", "PasswordHash", "AllowDirect", "OrgSnapshot", "RolesSnapshot", "NotBefore", "NotAfter", "Payload", "Signature", "CreatedAt").Create(&row).Error; err != nil {
-			if domain.IsUniqueViolation(err) {
-				return domain.ErrStaleRevision
-			}
-			if domain.IsCheckViolation(err) {
-				return domain.ErrInvalidKey
-			}
-			if domain.IsForeignKeyViolation(err) {
-				return domain.ErrNotFound
-			}
-			return err
-		}
-		return nil
-	})
-	return g, err
-}
-
-func (s *Store) LatestPersonOfflineGrant(ctx context.Context, personID, clientID uuid.UUID) (PersonOfflineGrant, error) {
-	var row personOfflineGrantRow
-	if err := s.db.WithContext(ctx).Where("person_id = ? AND client_id = ?", personID, clientID).
-		Order("revision DESC").First(&row).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return PersonOfflineGrant{}, domain.ErrNotFound
-		}
-		return PersonOfflineGrant{}, err
-	}
-	return personGrantFromRow(row), nil
-}
-
-func personGrantFromRow(row personOfflineGrantRow) PersonOfflineGrant {
-	orgs := []OrgOption{}
-	if len(row.OrgSnapshot) > 0 {
-		_ = json.Unmarshal(row.OrgSnapshot, &orgs)
-	}
-	roles := []RoleSnapshot{}
-	if len(row.RolesSnapshot) > 0 {
-		_ = json.Unmarshal(row.RolesSnapshot, &roles)
-	}
-	return PersonOfflineGrant{
-		ID:            row.ID,
-		PersonID:      row.PersonID,
-		ClientID:      row.ClientID,
-		Revision:      row.Revision,
-		LoginName:     row.LoginName,
-		PasswordHash:  row.PasswordHash,
-		AllowDirect:   row.AllowDirect,
-		OrgSnapshot:   orgs,
-		RolesSnapshot: roles,
-		NotBefore:     row.NotBefore,
-		NotAfter:      row.NotAfter,
-		Payload:       row.Payload,
-		Signature:     row.Signature,
-		CreatedAt:     row.CreatedAt,
-	}
-}

@@ -1,9 +1,12 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 
@@ -12,9 +15,26 @@ import (
 	"wmesh/factory/internal/platform/nodekey"
 )
 
-// AcceptBinding 模拟 WAN 把绑定声明送到本厂；测试夹具调用，不走协议。
-func (s *Node) AcceptBinding(ctx context.Context, clientID uuid.UUID, publicKey []byte, revision int64) (Client, error) {
-	row, err := s.store.AcceptBinding(ctx, clientID, publicKey, revision)
+func normalizeClientName(name string) (string, error) {
+	name = strings.TrimSpace(name)
+	n := utf8.RuneCountInString(name)
+	if n < 1 || n > 64 {
+		return "", domain.ErrInvalidName
+	}
+	return name, nil
+}
+
+// AcceptBinding 把 WAN 送到本厂的节点落到本库；测试夹具与通道共用。
+func (s *Node) AcceptBinding(ctx context.Context, clientID uuid.UUID, name string, publicKey []byte, revision int64) (Client, error) {
+	if strings.TrimSpace(name) != "" {
+		var err error
+		name, err = normalizeClientName(name)
+		if err != nil {
+			_ = s.audit(ctx, nil, nil, "accept_binding", clientID.String(), audit.Deny)
+			return Client{}, err
+		}
+	}
+	row, err := s.store.AcceptBinding(ctx, clientID, name, publicKey, revision)
 	if err != nil {
 		_ = s.audit(ctx, nil, nil, "accept_binding", clientID.String(), audit.Deny)
 		return Client{}, err
@@ -55,6 +75,25 @@ func (s *Node) SigningPublicKey(ctx context.Context) ([]byte, error) {
 	return k.PublicKey, nil
 }
 
+// InstallSigningKey 写入认领时用过的签发钥；已有且公钥相同则通过。
+func (s *Node) InstallSigningKey(ctx context.Context, publicKey, privateKey []byte) error {
+	if !nodekey.Match(privateKey, publicKey) {
+		return domain.ErrInvalidKey
+	}
+	k, err := s.store.SigningKey(ctx)
+	if err == nil {
+		if !bytes.Equal(k.PublicKey, publicKey) {
+			return domain.ErrSigningKeyExists
+		}
+		return nil
+	}
+	if !errors.Is(err, domain.ErrNotFound) {
+		return err
+	}
+	_, err = s.store.PutSigningKey(ctx, publicKey, privateKey)
+	return err
+}
+
 // IssueRuntimeGrant 由本厂有效超管给已绑定 Client 签发可运行凭证。
 func (s *Node) IssueRuntimeGrant(ctx context.Context, token string, clientID uuid.UUID, notBefore, notAfter time.Time) (RuntimeCred, error) {
 	return s.issueRuntime(ctx, token, clientID, notBefore, notAfter, true, "issue_runtime")
@@ -82,6 +121,10 @@ func (s *Node) issueRuntime(ctx context.Context, token string, clientID uuid.UUI
 	if cl.Status != ClientStatusBound {
 		_ = s.audit(ctx, &acc.ID, nil, action, clientID.String(), audit.Deny)
 		return RuntimeCred{}, domain.ErrBindingVoid
+	}
+	if len(cl.PublicKey) != 32 {
+		_ = s.audit(ctx, &acc.ID, nil, action, clientID.String(), audit.Deny)
+		return RuntimeCred{}, domain.ErrInvalidKey
 	}
 	key, err := s.ensureSigningKey(ctx)
 	if err != nil {

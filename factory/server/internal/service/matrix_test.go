@@ -21,7 +21,7 @@ var matrixIDs = []string{
 	"7.1", "7.2",
 	"8.1", "8.2", "8.3", "8.4",
 	"9.1", "9.2", "9.3", "9.4", "9.5", "9.6",
-	"10.1", "10.2", "10.3", "10.4", "10.5", "10.6", "10.7", "10.8",
+	"10.1", "10.2", "10.3", "10.4", "10.5", "10.6", "10.7", "10.8", "10.9", "10.10",
 	"11.2", "11.3", "11.4", "11.5",
 	"12.1",
 	"13.1", "13.2", "13.3",
@@ -179,7 +179,7 @@ func TestMatrix(t *testing.T) {
 		}
 	})
 
-	lone, _, err := facA.CreatePerson(ctx, saA, "lone", "未分配")
+	lone, err := facA.CreatePerson(ctx, saA, "lone", "未分配")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,22 +189,19 @@ func TestMatrix(t *testing.T) {
 			t.Fatalf("assign %d %v", n, err)
 		}
 	})
-	p, pAct, err := facA.CreatePerson(ctx, saA, "p", "人员P")
+	p, err := facA.CreatePerson(ctx, saA, "p", "人员P")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := facA.Activate(ctx, "p", pAct, "p-pass"); err != nil {
-		t.Fatal(err)
-	}
-	pTok := mustLogin(t, ctx, facA, "p", "p-pass")
+	pTok := mustAdoptPassword(t, ctx, facA, "p", "p-pass")
 	run("6.2", func(t *testing.T) {
 		if err := facA.Assign(ctx, saA, p.ID, shop.ID); err != nil {
 			t.Fatal(err)
 		}
 	})
 	run("6.3", func(t *testing.T) {
-		if err := facA.Assign(ctx, saA, p.ID, shopB.ID); err != nil {
-			t.Fatal(err)
+		if err := facA.Assign(ctx, saA, p.ID, shopB.ID); !errors.Is(err, domain.ErrDuplicateAssignment) {
+			t.Fatalf("got %v", err)
 		}
 	})
 	run("6.4", func(t *testing.T) {
@@ -218,7 +215,7 @@ func TestMatrix(t *testing.T) {
 		}
 	})
 	run("6.6", func(t *testing.T) {
-		same, _, err := facB.CreatePerson(ctx, saB, "p", "厂B同名")
+		same, err := facB.CreatePerson(ctx, saB, "p", "厂B同名")
 		if err != nil || same.ID == p.ID {
 			t.Fatalf("%v %+v", err, same)
 		}
@@ -244,6 +241,9 @@ func TestMatrix(t *testing.T) {
 		}
 	})
 	run("9.5", func(t *testing.T) {
+		if err := facA.Unassign(ctx, oa.tok, p.ID, shop.ID); err != nil {
+			t.Fatal(err)
+		}
 		if err := facA.Assign(ctx, oa.tok, p.ID, line.ID); err != nil {
 			t.Fatal(err)
 		}
@@ -278,17 +278,20 @@ func TestMatrix(t *testing.T) {
 		if _, err := facA.CreateOrgUnit(ctx, lead.tok, "x", &shop.ID); !errors.Is(err, domain.ErrForbidden) {
 			t.Fatalf("got %v", err)
 		}
-		if _, _, err := facA.CreatePerson(ctx, lead.tok, "x", "x"); !errors.Is(err, domain.ErrForbidden) {
+		if _, err := facA.CreatePerson(ctx, lead.tok, "x", "x"); !errors.Is(err, domain.ErrForbidden) {
 			t.Fatalf("got %v", err)
 		}
 	})
 	op := mustCreateRole(t, ctx, facA, saA, "op", "op-pass", factory.RoleOperator, factory.ScopeOrgUnit, &shop.ID)
 	run("9.3", func(t *testing.T) {
-		if _, _, err := facA.CreatePerson(ctx, op.tok, "y", "y"); !errors.Is(err, domain.ErrForbidden) {
+		if _, err := facA.CreatePerson(ctx, op.tok, "y", "y"); !errors.Is(err, domain.ErrForbidden) {
 			t.Fatalf("got %v", err)
 		}
 		if _, err := facA.GrantRole(ctx, op.tok, p.ID, factory.RoleOperator, factory.ScopeOrgUnit, &shop.ID); !errors.Is(err, domain.ErrForbidden) {
 			t.Fatalf("got %v", err)
+		}
+		if _, err := facA.ResetPassword(ctx, op.tok, p.ID); !errors.Is(err, domain.ErrForbidden) {
+			t.Fatalf("reset: %v", err)
 		}
 	})
 	run("9.4", func(t *testing.T) {
@@ -335,9 +338,6 @@ func TestMatrix(t *testing.T) {
 	if err := facA.Assign(ctx, saA, q.acc.ID, shop.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := facA.Assign(ctx, saA, q.acc.ID, shopB.ID); err != nil {
-		t.Fatal(err)
-	}
 	var factA factory.FactStub
 	run("16.1", func(t *testing.T) {
 		direct, err := facA.CreateFact(ctx, q.tok, factory.WorkContext{Direct: true})
@@ -374,6 +374,9 @@ func TestMatrix(t *testing.T) {
 		if err := facA.Unassign(ctx, saA, q.acc.ID, shop.ID); err != nil {
 			t.Fatal(err)
 		}
+		if err := facA.Assign(ctx, saA, q.acc.ID, shopB.ID); err != nil {
+			t.Fatal(err)
+		}
 	})
 	run("13.1", func(t *testing.T) {
 		old, err := facA.GetFact(ctx, q.tok, factA.ID)
@@ -387,6 +390,9 @@ func TestMatrix(t *testing.T) {
 			t.Fatalf("%v %+v", err, nb)
 		}
 	})
+	if err := facA.Unassign(ctx, saA, q.acc.ID, shopB.ID); err != nil {
+		t.Fatal(err)
+	}
 	if err := facA.Assign(ctx, saA, q.acc.ID, shop.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -501,6 +507,37 @@ func TestMatrix(t *testing.T) {
 			t.Fatalf("revoke: %v", err)
 		}
 	})
+	run("10.9", func(t *testing.T) {
+		if err := facA.EnableAccount(ctx, saA, q.acc.ID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := facA.Login(ctx, "q", "q-pass"); err != nil {
+			t.Fatal(err)
+		}
+	})
+	run("10.10", func(t *testing.T) {
+		lost, err := facA.CreatePerson(ctx, saA, "lost", "忘密码")
+		if err != nil {
+			t.Fatal(err)
+		}
+		mustAdoptPassword(t, ctx, facA, "lost", "lost-pass")
+		if _, err := facA.ResetPassword(ctx, saA, a.SuperAdminID); !errors.Is(err, domain.ErrForbidden) {
+			t.Fatalf("self: %v", err)
+		}
+		out, err := facA.ResetPassword(ctx, saA, lost.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if out.Status != factory.StatusActive {
+			t.Fatalf("status %s", out.Status)
+		}
+		if _, err := facA.Login(ctx, "lost", "lost-pass"); !errors.Is(err, domain.ErrInvalidCredentials) {
+			t.Fatalf("old pass: %v", err)
+		}
+		if _, err := facA.Login(ctx, "lost", personPass("lost")); err != nil {
+			t.Fatalf("default pass: %v", err)
+		}
+	})
 
 	run("17.2", func(t *testing.T) {
 		if _, err := facA.Login(ctx, "ghost", "bad"); !errors.Is(err, domain.ErrInvalidCredentials) {
@@ -529,7 +566,7 @@ func TestMatrix(t *testing.T) {
 			t.Fatalf("incomplete audit %#v", bad[0])
 		}
 		dump := audit.Dump(all)
-		if audit.ContainsAny(dump, "sa-pass", "sa-pass-2", "p-pass", "q-pass", payload, a.ActivationToken, saA) {
+		if audit.ContainsAny(dump, "sa-pass", "sa-pass-2", "p-pass", "q-pass", "lost-pass", personPass("lost"), payload, a.ActivationToken, saA) {
 			t.Fatalf("secret leaked")
 		}
 	})
@@ -552,7 +589,7 @@ func mustLogin(t *testing.T, ctx context.Context, fac *factory.Service, login, p
 
 func mustCreateRole(t *testing.T, ctx context.Context, fac *factory.Service, saTok, login, pass, role, scope string, unit *uuid.UUID) namedAcc {
 	t.Helper()
-	acc, act, err := fac.CreatePerson(ctx, saTok, login, login)
+	acc, err := fac.CreatePerson(ctx, saTok, login, login)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -560,8 +597,5 @@ func mustCreateRole(t *testing.T, ctx context.Context, fac *factory.Service, saT
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := fac.Activate(ctx, login, act, pass); err != nil {
-		t.Fatal(err)
-	}
-	return namedAcc{acc: acc, tok: mustLogin(t, ctx, fac, login, pass), grant: g.ID}
+	return namedAcc{acc: acc, tok: mustAdoptPassword(t, ctx, fac, login, pass), grant: g.ID}
 }

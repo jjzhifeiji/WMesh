@@ -6,7 +6,7 @@ import (
 	"wmesh/factory/internal/platform/audit"
 )
 
-// Catalog 是厂内名册快照，不含口令或激活口令。
+// Catalog 是厂内名册快照，不含密码或激活码。
 type Catalog struct {
 	Me          Account      `json:"me"`          // 当前会话账号
 	MyGrants    []RoleGrant  `json:"myGrants"`    // 当前账号的有效角色，任何人都能看自己的

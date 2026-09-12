@@ -3,7 +3,7 @@ import { http } from "@/shared/api/client";
 import { fpath } from "@/shared/auth/session";
 
 export type AssetKind = "process" | "project";
-export type AssetLevel = "factory" | "personal";
+export type AssetLevel = "factory" | "personal" | "platform";
 export type AssetStatus = "draft" | "available" | "disabled";
 
 export type AssetDep = {
@@ -22,6 +22,8 @@ export type Asset = {
   revision: number; // 当前修订
   digest: string; // SHA-256
   creatorId: string; // 创建人
+  creatorLogin?: string; // 创建人登录名
+  creatorDisplay?: string; // 创建人显示名
   factoryId: string; // 所属本厂
   orgUnitId: string | null; // 创建时节点；直属为空
   orgPath: { id: string; name: string }[]; // 创建时路径
@@ -32,38 +34,17 @@ export type Asset = {
   updatedAt: string; // 最近升高修订的时间
 };
 
-export type AuthorContext = {
-  allowDirect: boolean; // 整厂作用域可直属工厂
-  orgUnits: { id: string; name: string; status: string }[]; // 可选组织节点
-};
-
 export type CreateAssetInput = {
   kind: AssetKind;
   level: AssetLevel;
   name: string;
   content: string;
-  direct: boolean;
-  orgUnitId?: string | null;
   deps?: AssetDep[];
-};
-
-export type AssetSnapshot = {
-  sourceId: string;
-  sourceRevision: number;
-  sourceFactoryId: string;
-  kind: AssetKind;
-  name: string;
-  content: string;
-  digest: string;
-  copyable: boolean;
-  status: AssetStatus;
-  deps: AssetDep[];
 };
 
 export const assetKeys = {
   all: ["assets"] as const,
   kind: (kind: AssetKind) => ["assets", kind] as const,
-  author: ["asset-author-context"] as const,
 };
 
 export function useAssets(kind: AssetKind) {
@@ -73,25 +54,25 @@ export function useAssets(kind: AssetKind) {
   });
 }
 
-export function useAuthorContext() {
-  return useQuery({
-    queryKey: assetKeys.author,
-    queryFn: ({ signal }) => http.get<AuthorContext>(fpath("/asset-author-context"), signal),
-  });
-}
-
 function useAssetMutation<TData, TVars>(mutationFn: (vars: TVars) => Promise<TData>) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn,
     onSuccess: async () => {
       await qc.invalidateQueries({ queryKey: assetKeys.all });
+      await qc.invalidateQueries({ queryKey: ["asset-content"] });
     },
   });
 }
 
 export function useCreateAsset() {
   return useAssetMutation((input: CreateAssetInput) => http.post<Asset>(fpath("/assets"), input));
+}
+
+export function useCopyAsset() {
+  return useAssetMutation((input: { id: string; name: string }) =>
+    http.post<Asset>(fpath(`/assets/${input.id}/copy`), { name: input.name }),
+  );
 }
 
 export function useRenameAsset() {
@@ -124,6 +105,16 @@ export function useDisableAsset() {
   );
 }
 
+export function useEnableAsset() {
+  return useAssetMutation((input: { id: string; expected: number }) =>
+    http.post<Asset>(fpath(`/assets/${input.id}/enable`), { expected: input.expected }),
+  );
+}
+
+export function useDeleteAsset() {
+  return useAssetMutation((id: string) => http.post(fpath(`/assets/${id}/delete`)));
+}
+
 export function usePromoteAsset() {
   return useAssetMutation((id: string) => http.post<Asset>(fpath(`/assets/${id}/promote`)));
 }
@@ -133,11 +124,5 @@ export function useAssetContent(id: string | null) {
     queryKey: ["asset-content", id],
     queryFn: ({ signal }) => http.get<{ content: string }>(fpath(`/assets/${id}/content`), signal),
     enabled: Boolean(id),
-  });
-}
-
-export function useExportSnapshot() {
-  return useMutation({
-    mutationFn: (id: string) => http.get<AssetSnapshot>(fpath(`/assets/${id}/snapshot`)),
   });
 }

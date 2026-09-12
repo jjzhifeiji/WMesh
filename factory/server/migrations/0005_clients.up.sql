@@ -76,7 +76,7 @@ CREATE TABLE person_offline_grants (
     client_id UUID NOT NULL REFERENCES clients (id), -- 绑定到的本厂 Client
     revision BIGINT NOT NULL, -- 该账号在该 Client 上的授权修订，只向前
     login_name TEXT NOT NULL, -- 签发时登录名，离线对照用，不是身份
-    password_hash TEXT NOT NULL, -- 该人口令验证材料副本，不是全厂账号库
+    password_hash TEXT NOT NULL, -- 该人密码验证材料副本，不是全厂账号库
     allow_direct BOOLEAN NOT NULL, -- 是否允许 Factory 直属
     org_snapshot JSONB NOT NULL, -- 当时可选 OrgUnit 及祖先路径
     roles_snapshot JSONB NOT NULL, -- 当时固定角色与作用域
@@ -98,7 +98,7 @@ COMMENT ON COLUMN person_offline_grants.person_id IS '本厂账号稳定身份';
 COMMENT ON COLUMN person_offline_grants.client_id IS '绑定到的本厂 Client';
 COMMENT ON COLUMN person_offline_grants.revision IS '该账号在该 Client 上的授权修订，只向前';
 COMMENT ON COLUMN person_offline_grants.login_name IS '签发时登录名，离线对照用，不是身份';
-COMMENT ON COLUMN person_offline_grants.password_hash IS '该人口令验证材料副本，不是全厂账号库';
+COMMENT ON COLUMN person_offline_grants.password_hash IS '该人密码验证材料副本，不是全厂账号库';
 COMMENT ON COLUMN person_offline_grants.allow_direct IS '是否允许 Factory 直属';
 COMMENT ON COLUMN person_offline_grants.org_snapshot IS '当时可选 OrgUnit 及祖先路径';
 COMMENT ON COLUMN person_offline_grants.roles_snapshot IS '当时固定角色与作用域';

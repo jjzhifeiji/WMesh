@@ -20,6 +20,9 @@ func (h *Handler) mountAsset(mux *http.ServeMux) { // 本厂工艺/工程
 	mux.HandleFunc("POST /v1/factories/{id}/assets/{assetId}/copyable", h.setAssetCopyable)
 	mux.HandleFunc("POST /v1/factories/{id}/assets/{assetId}/publish", h.publishAsset)
 	mux.HandleFunc("POST /v1/factories/{id}/assets/{assetId}/disable", h.disableAsset)
+	mux.HandleFunc("POST /v1/factories/{id}/assets/{assetId}/enable", h.enableAsset)
+	mux.HandleFunc("POST /v1/factories/{id}/assets/{assetId}/delete", h.deleteAsset)
+	mux.HandleFunc("POST /v1/factories/{id}/assets/{assetId}/copy", h.copyAsset)
 	mux.HandleFunc("POST /v1/factories/{id}/assets/{assetId}/promote", h.promoteAsset)
 }
 
@@ -28,8 +31,8 @@ type createAssetReq struct {
 	Level     string             `json:"level"`     // factory / personal
 	Name      string             `json:"name"`      // 显示名
 	Content   string             `json:"content"`   // UTF-8 正文
-	Direct    bool               `json:"direct"`    // 直属工厂
-	OrgUnitID *string            `json:"orgUnitId"` // 与 Direct 互斥
+	Direct    bool               `json:"direct"`    // 兼容旧客户端；未带节点时按工厂直属
+	OrgUnitID *string            `json:"orgUnitId"` // 未传则记工厂直属
 	Deps      []service.AssetDep `json:"deps"`      // 工程依赖；工艺必须空
 }
 
@@ -50,6 +53,10 @@ type contentReq struct {
 type copyableReq struct {
 	Expected int64 `json:"expected"` // 期望修订
 	Copyable bool  `json:"copyable"` // 可否升档
+}
+
+type copyAssetReq struct {
+	Name string `json:"name"` // 新工艺显示名
 }
 
 type contentResp struct {
@@ -216,6 +223,43 @@ func (h *Handler) disableAsset(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (h *Handler) enableAsset(w http.ResponseWriter, r *http.Request) {
+	h.withExpected(w, r, func(svc *service.Service, assetID uuid.UUID, expected int64) {
+		row, err := svc.Assets.ReenableAsset(r.Context(), bearer(r), assetID, expected)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, row)
+	})
+}
+
+func (h *Handler) deleteAsset(w http.ResponseWriter, r *http.Request) {
+	h.withAsset(w, r, func(svc *service.Service, assetID uuid.UUID) {
+		if err := svc.Assets.DeleteAsset(r.Context(), bearer(r), assetID); err != nil {
+			writeErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"ok": "true"})
+	})
+}
+
+func (h *Handler) copyAsset(w http.ResponseWriter, r *http.Request) {
+	h.withAsset(w, r, func(svc *service.Service, assetID uuid.UUID) {
+		var req copyAssetReq
+		if err := decodeJSON(r, &req); err != nil {
+			writeBadRequest(w, err)
+			return
+		}
+		row, err := svc.Assets.CopyProcess(r.Context(), bearer(r), assetID, req.Name)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusCreated, row)
+	})
+}
+
 func (h *Handler) promoteAsset(w http.ResponseWriter, r *http.Request) {
 	h.withAsset(w, r, func(svc *service.Service, assetID uuid.UUID) {
 		row, err := svc.Assets.PromoteToFactory(r.Context(), bearer(r), assetID)
@@ -253,6 +297,10 @@ func parseWorkContext(direct bool, orgUnitID *string) (service.WorkContext, erro
 	id, err := parseOptUUID(orgUnitID)
 	if err != nil {
 		return service.WorkContext{}, err
+	}
+	// 工艺/工程不再让人选位置；没带节点就记工厂直属。
+	if !direct && id == nil {
+		return service.WorkContext{Direct: true}, nil
 	}
 	return service.WorkContext{Direct: direct, OrgUnitID: id}, nil
 }

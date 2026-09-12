@@ -1,6 +1,6 @@
 # WAN 侧一键部署：app（API + 管理端静态页）+ db + oss（RustFS，S3 兼容对象存储，放平台级资产）。
 # WAN 的 OSS 与各厂 OSS 互不相通；点云/图片原件仍只落厂内。
-# 用法：cp .env.example .env && 改口令 && docker compose up -d --build --wait
+# 用法：cp .env.example .env && 改密码 && docker compose up -d --build --wait
 name: wmesh-global
 
 services:
@@ -12,16 +12,15 @@ services:
         VERSION: ${WMESH_BUILD_VERSION:-${WMESH_VERSION:-dev}}
     environment:
       WMESH_DSN: postgres://wmesh:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/wmesh?sslmode=disable
-      WMESH_BOOTSTRAP_TOKEN: ${WMESH_BOOTSTRAP_TOKEN:?set WMESH_BOOTSTRAP_TOKEN in .env}
-      WMESH_FACTORY_BOOTSTRAP_URL: ${WMESH_FACTORY_BOOTSTRAP_URL:-http://host.docker.internal:8081}
       WMESH_ADMIN_LOGIN: ${WMESH_ADMIN_LOGIN:-wan}
       WMESH_ADMIN_PASSWORD: ${WMESH_ADMIN_PASSWORD:?set WMESH_ADMIN_PASSWORD in .env}
+      WMESH_ADMIN_RESET: ${WMESH_ADMIN_RESET:-}
       WMESH_OSS_ENDPOINT: http://oss:9000
       WMESH_OSS_BUCKET: ${OSS_BUCKET:-wmesh-global}
       WMESH_OSS_ACCESS_KEY: ${OSS_ACCESS_KEY:-wmesh}
       WMESH_OSS_SECRET_KEY: ${OSS_SECRET_KEY:?set OSS_SECRET_KEY in .env}
     ports:
-      - "${HTTP_PORT:-8080}:8080"
+      - "${HTTP_PORT:-52080}:8080"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
@@ -45,7 +44,7 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql
     ports:
-      - "15432:5432"
+      - "${DB_PORT:-52420}:5432"
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U wmesh -d wmesh"]
@@ -70,8 +69,8 @@ services:
       - ossdata:/data
       - osslogs:/logs
     ports:
-      - "${OSS_PORT:-9000}:9000"
-      - "${OSS_CONSOLE_PORT:-9001}:9001"
+      - "${OSS_PORT:-52900}:9000"
+      - "${OSS_CONSOLE_PORT:-52901}:9001"
     security_opt:
       - "no-new-privileges:true"
     restart: unless-stopped

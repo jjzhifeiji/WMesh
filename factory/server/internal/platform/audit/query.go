@@ -44,11 +44,18 @@ func Incomplete(rows []Row) []Row {
 	return bad
 }
 
+// LastLoginDeny 取发生时间最近的一次登录拒绝，不依赖列表先后。
 func LastLoginDeny(rows []Row) (Row, bool) {
-	for i := len(rows) - 1; i >= 0; i-- {
-		if rows[i].Action == "login" && rows[i].Result == Deny {
-			return rows[i], true
+	var best Row
+	ok := false
+	for _, r := range rows {
+		if r.Action != "login" || r.Result != Deny {
+			continue
+		}
+		if !ok || r.OccurredAt.After(best.OccurredAt) {
+			best = r
+			ok = true
 		}
 	}
-	return Row{}, false
+	return best, ok
 }

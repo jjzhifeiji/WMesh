@@ -25,19 +25,28 @@ func (s *Closure) AcceptPlatformDelivery(ctx context.Context, snap ClosureSnapsh
 		return domain.ErrForbidden
 	}
 	for _, m := range snap.Members {
-		if m.Level != AssetLevelPlatform || m.Copyable {
+		if m.Level != AssetLevelPlatform {
 			_ = s.audit(ctx, nil, nil, "accept_closure", closureTarget(snap), audit.Deny)
 			return domain.ErrForbidden
 		}
 		if _, err := s.store.InsertReplica(ctx, AssetReplica{
 			ID: m.ID, Revision: m.Revision, Kind: m.Kind, Level: AssetLevelPlatform,
-			Name: m.Name, Status: m.Status, Content: m.Content, Digest: m.Digest, Deps: m.Deps,
+			Name: m.Name, Status: m.Status, Copyable: m.Copyable, Content: m.Content, Digest: m.Digest, Deps: m.Deps,
 		}); err != nil {
 			_ = s.audit(ctx, nil, nil, "accept_closure", closureTarget(snap), audit.Deny)
 			return err
 		}
 	}
 	return s.audit(ctx, nil, nil, "accept_closure", closureTarget(snap), audit.Allow)
+}
+
+// RetractPlatformDelivery 云端删除后撤回展示；没有副本也算成功，已钉修订仍可读。
+func (s *Closure) RetractPlatformDelivery(ctx context.Context, assetID uuid.UUID) error {
+	if err := s.store.RetractReplicas(ctx, assetID); err != nil {
+		_ = s.audit(ctx, nil, nil, "retract_closure", assetID.String(), audit.Deny)
+		return err
+	}
+	return s.audit(ctx, nil, nil, "retract_closure", assetID.String(), audit.Allow)
 }
 
 // GrantClientProject 由本厂超管授权已绑定 Client 接收某份可用工程。
@@ -214,7 +223,7 @@ func (s *Closure) assertClientRuntime(ctx context.Context, clientID uuid.UUID, c
 	return nil
 }
 
-// CachePersonalProject 创建人把自己的可用个人级工程装进已持人员授权的本机袋。
+// CachePersonalProject 创建人把自己的可用个人级工程装进本厂设备本机袋。
 func (s *Closure) CachePersonalProject(ctx context.Context, token string, projectID, clientID uuid.UUID, bag *Bag, clocks Clocks) error {
 	acc, err := s.RequireActive(ctx, token)
 	if err != nil {
@@ -230,18 +239,9 @@ func (s *Closure) CachePersonalProject(ctx context.Context, token string, projec
 		_ = s.audit(ctx, &acc.ID, nil, "cache_closure", target, audit.Deny)
 		return domain.ErrForbidden
 	}
-	pg, err := s.store.LatestPersonOfflineGrant(ctx, acc.ID, clientID)
-	if err != nil {
+	if err := s.assertClientRuntime(ctx, clientID, clocks); err != nil {
 		_ = s.audit(ctx, &acc.ID, nil, "cache_closure", target, audit.Deny)
 		return err
-	}
-	now := clocks.Server
-	if now.IsZero() {
-		now = time.Now().UTC()
-	}
-	if now.Before(pg.NotBefore) || now.After(pg.NotAfter) {
-		_ = s.audit(ctx, &acc.ID, nil, "cache_closure", target, audit.Deny)
-		return domain.ErrForbidden
 	}
 	if bag.ClientID != clientID {
 		_ = s.audit(ctx, &acc.ID, nil, "cache_closure", target, audit.Deny)
@@ -335,15 +335,7 @@ func (s *Closure) GetReplica(ctx context.Context, token string, assetID uuid.UUI
 }
 
 func (s *Closure) canViewReplica(ctx context.Context, acc Account) error {
-	grants, err := s.grantsOf(ctx, acc.ID)
-	if err != nil {
-		return err
-	}
-	if isFactorySA(grants) || s.isFactoryScopePE(ctx, acc) {
-		return nil
-	}
-	if len(withRoles(grants, RoleProcessEngineer, RoleOperator)) > 0 {
-		return nil
-	}
-	return domain.ErrForbidden
+	_ = ctx
+	_ = acc
+	return nil
 }

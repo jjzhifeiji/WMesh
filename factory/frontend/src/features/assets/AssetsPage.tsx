@@ -1,19 +1,23 @@
 import { PlusOutlined } from "@ant-design/icons";
-import { App, Button, Card, Form, Input, Modal, Popconfirm, Radio, Select, Space, Table, Tag, Typography, type TableColumnsType } from "antd";
-import { useMemo, useState } from "react";
-import { personName, useCatalog, useIsProcessEngineer } from "@/features/catalog/api";
+import { App, Button, Card, Descriptions, Empty, Form, Input, Modal, Radio, Select, Space, Switch, Table, Tag, Typography, type TableColumnsType } from "antd";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { personName, useCatalog, type Catalog } from "@/features/catalog/api";
 import { errorMessage } from "@/shared/api/client";
 import { formatTime } from "@/shared/format";
 import { statusColor, statusLabel } from "@/shared/labels";
-import { IdText } from "@/shared/ui/IdText";
 import { PageHeader } from "@/shared/ui/PageHeader";
+import { ContentEditor } from "@/features/templates/ContentFields";
+import { defaultValue } from "@/features/templates/schema";
+import { useTemplate } from "@/features/templates/api";
+import type { ContentSchema } from "@/features/templates/schema";
 import {
   useAssetContent,
   useAssets,
-  useAuthorContext,
   useCreateAsset,
+  useCopyAsset,
   useDisableAsset,
-  useExportSnapshot,
+  useEnableAsset,
+  useDeleteAsset,
   usePromoteAsset,
   usePublishAsset,
   useRenameAsset,
@@ -27,7 +31,6 @@ import {
 
 type CreateForm = {
   level: AssetLevel;
-  placement: string;
   name: string;
   content: string;
   processIds?: string[];
@@ -36,149 +39,215 @@ type CreateForm = {
 function levelLabel(level: string) {
   if (level === "factory") return "厂级";
   if (level === "personal") return "个人级";
+  if (level === "platform") return "平台级";
   return level;
 }
 
-function pathText(row: Asset) {
-  if (!row.orgPath?.length) return "工厂直属";
-  return row.orgPath.map((n) => n.name).join(" / ");
+function creatorText(row: Asset, catalog: Catalog | undefined) {
+  if (row.level === "platform") return "云端";
+  if (row.creatorDisplay && row.creatorLogin) return `${row.creatorDisplay}（${row.creatorLogin}）`;
+  if (row.creatorDisplay) return row.creatorDisplay;
+  if (row.creatorLogin) return row.creatorLogin;
+  return personName(catalog, row.creatorId);
 }
 
-// 本厂工艺或工程：工艺工程师制作与升档；超管只看元数据，打不开个人正文。
+// canPromote 可用且可复制的个人级可复制为厂级。
+function canPromote(row: Asset) {
+  return row.level === "personal" && row.status === "available" && row.copyable;
+}
+
+function CopyableSwitch({
+  checked,
+  disabled,
+  loading,
+  onToggle,
+}: {
+  checked: boolean;
+  disabled?: boolean;
+  loading?: boolean;
+  onToggle: (next: boolean) => void;
+}) {
+  return (
+    <Switch
+      checked={checked}
+      disabled={disabled}
+      loading={loading}
+      checkedChildren="可复制"
+      unCheckedChildren="不可复制"
+      onChange={onToggle}
+    />
+  );
+}
+
+// 本厂工艺或工程：本厂有效账号都能制作；个人级正文只创建人能打开。
 export function AssetsPage({ kind }: { kind: AssetKind }) {
   const isProcess = kind === "process";
   const title = isProcess ? "工艺" : "工程";
   const catalog = useCatalog();
-  const isPE = useIsProcessEngineer();
   const assets = useAssets(kind);
   const processes = useAssets("process");
-  const author = useAuthorContext();
+  const template = useTemplate(kind);
+  const schema = template.data?.schema ?? null;
   const create = useCreateAsset();
+  const copy = useCopyAsset();
   const rename = useRenameAsset();
   const updateContent = useUpdateAssetContent();
   const setCopyable = useSetAssetCopyable();
   const publish = usePublishAsset();
   const disable = useDisableAsset();
+  const enable = useEnableAsset();
+  const remove = useDeleteAsset();
   const promote = usePromoteAsset();
-  const exportSnap = useExportSnapshot();
-  const { message } = App.useApp();
+  const { message, modal } = App.useApp();
   const meId = catalog.data?.me.id;
   const [levelFilter, setLevelFilter] = useState<"all" | AssetLevel>("all");
+  const [query, setQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");
   const [open, setOpen] = useState(false);
-  const [renameFor, setRenameFor] = useState<Asset | null>(null);
-  const [contentFor, setContentFor] = useState<Asset | null>(null);
-  const [viewFor, setViewFor] = useState<string | null>(null);
-  const [snapText, setSnapText] = useState<string | null>(null);
+  const [copyFor, setCopyFor] = useState<Asset | null>(null);
+  const [detailFor, setDetailFor] = useState<Asset | null>(null);
+  const [editFor, setEditFor] = useState<Asset | null>(null);
   const [form] = Form.useForm<CreateForm>();
-  const [renameForm] = Form.useForm<{ name: string }>();
-  const [contentForm] = Form.useForm<{ content: string }>();
+  const [copyForm] = Form.useForm<{ name: string }>();
   const createLevel = Form.useWatch("level", form) as AssetLevel | undefined;
 
   const rows = useMemo(() => {
-    const all = assets.data ?? [];
-    if (levelFilter === "all") return all;
-    return all.filter((a) => a.level === levelFilter);
-  }, [assets.data, levelFilter]);
+    const needle = query.trim().toLowerCase();
+    return (assets.data ?? []).filter((a) => {
+      if (levelFilter !== "all" && a.level !== levelFilter) return false;
+      if (statusFilter !== "all" && a.status !== statusFilter) return false;
+      if (!needle) return true;
+      const creator = creatorText(a, catalog.data).toLowerCase();
+      return a.name.toLowerCase().includes(needle) || creator.includes(needle);
+    });
+  }, [assets.data, levelFilter, statusFilter, query, catalog.data]);
 
   const availableProcesses = useMemo(() => {
     const all = processes.data ?? [];
     if (createLevel === "personal") {
-      return all.filter((p) => p.status === "available" && (p.level === "factory" || p.creatorId === meId));
+      return all.filter((p) => p.status === "available" && (p.level === "factory" || p.level === "platform" || p.creatorId === meId));
     }
-    return all.filter((p) => p.status === "available" && p.level === "factory");
+    return all.filter((p) => p.status === "available" && (p.level === "factory" || p.level === "platform"));
   }, [processes.data, createLevel, meId]);
 
-  const canMutate = (row: Asset) => isPE && row.status !== "disabled" && (row.level === "factory" || row.creatorId === meId);
-  const canRead = (row: Asset) => row.level === "factory" || row.creatorId === meId;
+  useEffect(() => {
+    if (copyFor) copyForm.setFieldsValue({ name: `${copyFor.name}-副本` });
+  }, [copyFor, copyForm]);
+
+  const covers = (row: Asset) => {
+    if (row.level === "platform") return false;
+    if (row.level === "personal") return row.creatorId === meId;
+    return true;
+  };
+  const canMutate = (row: Asset) => covers(row) && row.status !== "disabled";
+  const canRead = (row: Asset) => row.level !== "personal" || row.creatorId === meId;
+  const canCopy = (row: Asset) => isProcess && row.copyable && row.status !== "disabled" && canRead(row);
   const onErr = (e: unknown) => message.error(errorMessage(e));
+  const toggleCopyable = (row: Asset, copyable: boolean) => {
+    if (row.copyable === copyable) return;
+    setCopyable.mutate(
+      { id: row.id, expected: row.revision, copyable },
+      { onSuccess: () => message.success(copyable ? "已设为可复制" : "已设为不可复制"), onError: onErr },
+    );
+  };
+  const detailing = detailFor ? (assets.data?.find((a) => a.id === detailFor.id) ?? detailFor) : null;
+  const editing = editFor ? (assets.data?.find((a) => a.id === editFor.id) ?? editFor) : null;
 
   const columns: TableColumnsType<Asset> = [
-    { title: "显示名", dataIndex: "name" },
+    { title: isProcess ? "工艺名称" : "工程名称", dataIndex: "name", width: 180, ellipsis: true, render: (name: string) => <Typography.Text strong>{name}</Typography.Text> },
     {
       title: "级别",
       dataIndex: "level",
-      width: 90,
-      render: (l: string) => <Tag color={l === "factory" ? "blue" : "purple"}>{levelLabel(l)}</Tag>,
+      width: 80,
+      render: (l: string) => <Tag color={l === "factory" ? "blue" : l === "platform" ? "cyan" : "purple"}>{levelLabel(l)}</Tag>,
     },
-    { title: "状态", dataIndex: "status", width: 90, render: (s: string) => <Tag color={statusColor(s)}>{statusLabel(s)}</Tag> },
-    { title: "可升档", dataIndex: "copyable", width: 80, render: (ok: boolean) => (ok ? <Tag color="green">可</Tag> : <Tag>否</Tag>) },
-    { title: "修订", dataIndex: "revision", width: 70 },
-    { title: "创建人", dataIndex: "creatorId", render: (id: string) => personName(catalog.data, id) },
-    { title: "工作位置", key: "path", render: (_, row) => pathText(row) },
-    { title: "身份", dataIndex: "id", width: 160, render: (id: string) => <IdText id={id} /> },
-    { title: "更新", dataIndex: "updatedAt", width: 160, render: (v: string) => formatTime(v) },
+    { title: "状态", dataIndex: "status", width: 80, render: (s: string) => <Tag color={statusColor(s)}>{statusLabel(s)}</Tag> },
+    { title: "可复制", dataIndex: "copyable", width: 80, render: (ok: boolean) => (ok ? "是" : "否") },
+    { title: "修订", dataIndex: "revision", width: 60 },
+    { title: "创建人", key: "creator", width: 160, ellipsis: true, render: (_, row) => creatorText(row, catalog.data) },
+    ...(!isProcess
+      ? [
+          {
+            title: "依赖工艺",
+            key: "deps",
+            width: 220,
+            ellipsis: true,
+            render: (_: unknown, row: Asset) => {
+              if (!row.deps?.length) return "—";
+              const all = processes.data ?? [];
+              return row.deps.map((d) => all.find((p) => p.id === d.id)?.name || d.id).join("、");
+            },
+          } satisfies TableColumnsType<Asset>[number],
+        ]
+      : []),
+    { title: "创建时间", dataIndex: "createdAt", width: 160, render: (v: string) => formatTime(v) },
     {
       title: "操作",
       key: "actions",
-      width: 280,
+      width: 320,
+      fixed: "right",
       render: (_, row) => (
         <Space size={4} wrap>
-          {canRead(row) ? (
-            <Button size="small" onClick={() => setViewFor(row.id)}>
-              正文
+          <Button size="small" onClick={() => setDetailFor(row)}>
+            详情
+          </Button>
+          {canCopy(row) ? (
+            <Button size="small" onClick={() => setCopyFor(row)}>
+              复制
             </Button>
           ) : null}
-          {canMutate(row) ? (
-            <Button size="small" onClick={() => setRenameFor(row)}>
-              改名
+          {covers(row) ? (
+            <Button size="small" type="primary" onClick={() => setEditFor(row)}>
+              编辑
             </Button>
-          ) : null}
-          {canMutate(row) ? (
-            <Button size="small" onClick={() => setContentFor(row)}>
-              改正文
-            </Button>
-          ) : null}
-          {canMutate(row) && row.status === "draft" ? (
-            <Popconfirm
-              title={`发布「${row.name}」？`}
-              description="发布后可被依赖和升档；可复制只能再收紧。"
-              onConfirm={() => publish.mutate({ id: row.id, expected: row.revision }, { onSuccess: () => message.success("已发布"), onError: onErr })}
-            >
-              <Button size="small" type="primary">
-                发布
-              </Button>
-            </Popconfirm>
           ) : null}
           {canMutate(row) && row.status === "available" ? (
-            <Popconfirm
-              title={`停用「${row.name}」？`}
-              description="停用后不能再改、不能升档、不能被新工程依赖；不能改回可用。"
-              onConfirm={() => disable.mutate({ id: row.id, expected: row.revision }, { onSuccess: () => message.success("已停用"), onError: onErr })}
-            >
-              <Button size="small" danger>
-                停用
-              </Button>
-            </Popconfirm>
-          ) : null}
-          {canMutate(row) && row.copyable ? (
-            <Popconfirm
-              title="改为不可复制？"
-              description="不可复制后不能升档；可用后不能再改回可复制。"
-              onConfirm={() => setCopyable.mutate({ id: row.id, expected: row.revision, copyable: false }, { onSuccess: () => message.success("已收紧"), onError: onErr })}
-            >
-              <Button size="small">禁止升档</Button>
-            </Popconfirm>
-          ) : null}
-          {isPE && row.level === "personal" && row.status === "available" && row.copyable ? (
-            <Popconfirm
-              title="升档为厂级？"
-              description="复制出新厂级，个人原件不动；升档响应不含个人正文。"
-              onConfirm={() => promote.mutate(row.id, { onSuccess: () => message.success("已升档为厂级"), onError: onErr })}
-            >
-              <Button size="small">升厂级</Button>
-            </Popconfirm>
-          ) : null}
-          {isPE && row.level === "factory" && row.status === "available" && row.copyable ? (
             <Button
               size="small"
+              danger
               onClick={() =>
-                exportSnap.mutate(row.id, {
-                  onSuccess: (snap) => setSnapText(JSON.stringify(snap, null, 2)),
-                  onError: onErr,
+                modal.confirm({
+                  title: `停用「${row.name}」？`,
+                  content: "停用后不能改、不能升档、不能被新工程依赖；可以再启用。",
+                  okButtonProps: { danger: true },
+                  onOk: () =>
+                    disable.mutate(
+                      { id: row.id, expected: row.revision },
+                      { onSuccess: () => message.success("已停用"), onError: onErr },
+                    ),
                 })
               }
             >
-              升平台快照
+              停用
+            </Button>
+          ) : null}
+          {covers(row) && row.status === "disabled" ? (
+            <Button
+              size="small"
+              onClick={() =>
+                enable.mutate(
+                  { id: row.id, expected: row.revision },
+                  { onSuccess: () => message.success("已启用"), onError: onErr },
+                )
+              }
+            >
+              启用
+            </Button>
+          ) : null}
+          {covers(row) ? (
+            <Button
+              size="small"
+              danger
+              onClick={() =>
+                modal.confirm({
+                  title: `删除「${row.name}」？`,
+                  content: "删除后不能恢复。若已被工程依赖会拒绝。",
+                  okButtonProps: { danger: true },
+                  onOk: () => remove.mutate(row.id, { onSuccess: () => message.success("已删除"), onError: onErr }),
+                })
+              }
+            >
+              删除
             </Button>
           ) : null}
         </Space>
@@ -186,12 +255,7 @@ export function AssetsPage({ kind }: { kind: AssetKind }) {
     },
   ];
 
-  const placements = useMemo(() => {
-    const opts: { value: string; label: string }[] = [];
-    if (author.data?.allowDirect) opts.push({ value: "direct", label: "工厂直属" });
-    for (const u of author.data?.orgUnits ?? []) opts.push({ value: u.id, label: u.name });
-    return opts;
-  }, [author.data]);
+  const emptyText = `还没有${title}`;
 
   return (
     <>
@@ -199,33 +263,61 @@ export function AssetsPage({ kind }: { kind: AssetKind }) {
         title={title}
         description={
           isProcess
-            ? "厂级由工艺工程师制作；个人级只有创建人能打开正文。升档复制新条目，不改原件。"
+            ? "本厂账号都能制作；云端发布后会出现平台级只读副本。个人级只有创建人能打开正文。"
             : "工程钉死所依赖工艺的身份和修订；升档工程不会另拆出工艺。"
         }
         extra={
-          isPE ? (
-            <Button type="primary" icon={<PlusOutlined />} onClick={() => setOpen(true)}>
-              新建{title}
-            </Button>
-          ) : null
+            <Button
+              type="primary"
+              icon={<PlusOutlined />}
+              onClick={() => {
+                form.setFieldsValue({ content: schema ? JSON.stringify(defaultValue(schema)) : "" });
+                setOpen(true);
+              }}
+            >
+            新建{title}
+          </Button>
         }
       />
       <Card>
-        <Radio.Group value={levelFilter} onChange={(e) => setLevelFilter(e.target.value)} style={{ marginBottom: 12 }}>
-          <Radio.Button value="all">全部</Radio.Button>
-          <Radio.Button value="factory">厂级</Radio.Button>
-          <Radio.Button value="personal">个人级</Radio.Button>
-        </Radio.Group>
-        <Table<Asset> rowKey="id" columns={columns} dataSource={rows} loading={assets.isLoading} pagination={{ pageSize: 20, hideOnSinglePage: true }} scroll={{ x: 1400 }} />
+        <Space wrap style={{ marginBottom: 12 }}>
+          <Input.Search allowClear placeholder={`搜索${title}名称或创建人`} value={query} onChange={(e) => setQuery(e.target.value)} style={{ width: 280 }} />
+          <Select
+            value={statusFilter}
+            onChange={setStatusFilter}
+            style={{ width: 132 }}
+            options={[
+              { value: "all", label: "全部状态" },
+              { value: "draft", label: "草稿" },
+              { value: "available", label: "可用" },
+              { value: "disabled", label: "已停用" },
+            ]}
+          />
+          <Radio.Group value={levelFilter} onChange={(e) => setLevelFilter(e.target.value)}>
+            <Radio.Button value="all">全部</Radio.Button>
+            <Radio.Button value="factory">厂级</Radio.Button>
+            <Radio.Button value="personal">个人级</Radio.Button>
+            <Radio.Button value="platform">平台级</Radio.Button>
+          </Radio.Group>
+        </Space>
+        <Table<Asset>
+          rowKey="id"
+          columns={columns}
+          dataSource={rows}
+          loading={assets.isLoading}
+          scroll={{ x: 1140 }}
+          pagination={{ pageSize: 20, hideOnSinglePage: true }}
+          locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={emptyText} /> }}
+        />
       </Card>
-      <Modal title={`新建${title}`} open={open} onCancel={() => setOpen(false)} okText="创建" confirmLoading={create.isPending} destroyOnHidden onOk={() => form.submit()}>
+      <Modal title={`新建${title}`} open={open} onCancel={() => setOpen(false)} okText="创建" confirmLoading={create.isPending} destroyOnHidden width={720} styles={{ body: { maxHeight: "50vh", overflow: "auto" } }} onOk={() => form.submit()}>
         <Form<CreateForm>
           form={form}
           layout="vertical"
+          size="small"
           requiredMark={false}
-          initialValues={{ level: "factory", placement: placements[0]?.value, content: "" }}
+          initialValues={{ level: "factory", content: "" }}
           onFinish={(values) => {
-            const direct = values.placement === "direct";
             const deps = isProcess
               ? undefined
               : (values.processIds ?? []).map((id) => {
@@ -238,8 +330,6 @@ export function AssetsPage({ kind }: { kind: AssetKind }) {
               level: values.level,
               name: values.name,
               content: values.content,
-              direct,
-              orgUnitId: direct ? null : values.placement,
               deps,
             };
             create.mutate(input, {
@@ -252,98 +342,268 @@ export function AssetsPage({ kind }: { kind: AssetKind }) {
             });
           }}
         >
-          <Form.Item name="level" label="级别" extra="个人级只有你能打开正文；厂级由本厂工艺工程师维护。">
+          <Form.Item name="level" label="级别" extra="个人级只有你能打开正文；厂级本厂有效账号都能维护。">
             <Radio.Group>
               <Radio value="factory">厂级</Radio>
               <Radio value="personal">个人级</Radio>
             </Radio.Group>
           </Form.Item>
-          <Form.Item name="placement" label="工作位置" extra="须覆盖你的工艺工程师作用域，且直属须整厂作用域。" rules={[{ required: true, message: "请选择工作位置" }]}>
-            <Select options={placements} placeholder={placements.length ? "选择位置" : "没有可写的工作位置，请先授予工艺工程师并分配组织"} />
-          </Form.Item>
           <Form.Item name="name" label="显示名" extra="显示名不是身份，改名也不换编号。" rules={[{ required: true, message: "请输入显示名" }]}>
             <Input autoComplete="off" autoFocus />
           </Form.Item>
           {!isProcess ? (
-            <Form.Item name="processIds" label="依赖工艺" extra="必须是已发布且你有权使用的工艺；会钉死当前修订。" rules={[{ required: true, message: "请选择依赖工艺" }]}>
+            <Form.Item
+              name="processIds"
+              label="依赖工艺"
+              extra={availableProcesses.length ? "必须是已发布且你有权使用的工艺；会钉死当前修订。" : "还没有可依赖的已发布工艺，请先发布工艺。"}
+              rules={[{ required: true, message: "请选择依赖工艺" }]}
+            >
               <Select mode="multiple" optionFilterProp="label" options={availableProcesses.map((p) => ({ value: p.id, label: `${p.name} · ${levelLabel(p.level)} · r${p.revision}` }))} />
             </Form.Item>
           ) : null}
-          <Form.Item name="content" label="正文">
-            <Input.TextArea rows={6} />
+          <Form.Item name="content" label="参数">
+            <ContentEditor schema={schema} />
           </Form.Item>
         </Form>
       </Modal>
-      <Modal title="改显示名" open={renameFor !== null} onCancel={() => setRenameFor(null)} okText="保存" confirmLoading={rename.isPending} destroyOnHidden onOk={() => renameForm.submit()}>
-        <Form<{ name: string }>
-          key={renameFor?.id}
-          form={renameForm}
+      <Modal
+        title="复制工艺"
+        open={copyFor != null}
+        onCancel={() => setCopyFor(null)}
+        okText="确定"
+        confirmLoading={copy.isPending}
+        destroyOnHidden
+        onOk={() => copyForm.submit()}
+      >
+        <Form
+          form={copyForm}
           layout="vertical"
           requiredMark={false}
-          initialValues={{ name: renameFor?.name }}
           onFinish={(values) => {
-            if (!renameFor) return;
-            rename.mutate(
-              { id: renameFor.id, expected: renameFor.revision, name: values.name },
+            if (!copyFor) return;
+            copy.mutate(
+              { id: copyFor.id, name: values.name.trim() },
               {
                 onSuccess: () => {
-                  message.success("已改名");
-                  setRenameFor(null);
+                  message.success("已创建草稿");
+                  copyForm.resetFields();
+                  setCopyFor(null);
                 },
                 onError: onErr,
               },
             );
           }}
         >
-          <Form.Item name="name" label="显示名" rules={[{ required: true, message: "请输入显示名" }]}>
-            <Input autoComplete="off" />
+          <Form.Item name="name" label="新工艺名称" extra="另存为新草稿，原件不动；之后同新建。" rules={[{ required: true, message: "请输入新工艺名称" }]}>
+            <Input autoComplete="off" autoFocus />
           </Form.Item>
         </Form>
       </Modal>
-      <Modal title="改正文" open={contentFor !== null} onCancel={() => setContentFor(null)} okText="保存" confirmLoading={updateContent.isPending} destroyOnHidden onOk={() => contentForm.submit()}>
-        <Form<{ content: string }>
-          form={contentForm}
-          layout="vertical"
-          requiredMark={false}
-          onFinish={(values) => {
-            if (!contentFor) return;
-            updateContent.mutate(
-              { id: contentFor.id, expected: contentFor.revision, content: values.content },
-              {
-                onSuccess: () => {
-                  message.success("已改正文");
-                  setContentFor(null);
-                },
-                onError: onErr,
-              },
-            );
-          }}
-        >
-          <Form.Item name="content" label="正文">
-            <Input.TextArea rows={8} />
-          </Form.Item>
-        </Form>
-      </Modal>
-      <ContentModal id={viewFor} onClose={() => setViewFor(null)} />
-      <Modal title="升平台快照" open={snapText !== null} onCancel={() => setSnapText(null)} footer={null} width={720}>
-        <Typography.Paragraph type="secondary">交给 WAN 管理员粘贴升档；原厂级仍只在本厂。</Typography.Paragraph>
-        <Typography.Paragraph copyable={{ text: snapText ?? "", tooltips: ["复制快照", "已复制"] }}>
-          <pre style={{ maxHeight: 360, overflow: "auto" }}>{snapText}</pre>
-        </Typography.Paragraph>
-      </Modal>
+      <DetailModal
+        row={detailing}
+        processes={processes.data ?? []}
+        catalog={catalog.data}
+        canRead={detailing ? canRead(detailing) : false}
+        schema={schema}
+        onClose={() => setDetailFor(null)}
+      />
+      <EditModal
+        row={editing}
+        schema={schema}
+        saving={rename.isPending || updateContent.isPending}
+        locked={editing ? !canMutate(editing) : true}
+        onClose={() => setEditFor(null)}
+        onSave={async (name, content, originalContent) => {
+          if (!editing) return;
+          try {
+            let expected = editing.revision;
+            if (name !== editing.name) {
+              const next = await rename.mutateAsync({ id: editing.id, expected, name });
+              expected = next.revision;
+            }
+            if (content !== originalContent) {
+              await updateContent.mutateAsync({ id: editing.id, expected, content });
+            }
+            message.success("已保存");
+            setEditFor(null);
+          } catch (e) {
+            onErr(e);
+          }
+        }}
+        extra={
+          editing ? (
+            <Space wrap>
+              {covers(editing) ? (
+                <CopyableSwitch
+                  checked={editing.copyable}
+                  disabled={!canMutate(editing)}
+                  loading={setCopyable.isPending && setCopyable.variables?.id === editing.id}
+                  onToggle={(next) => toggleCopyable(editing, next)}
+                />
+              ) : null}
+              {canMutate(editing) && editing.status === "draft" ? (
+                <Button
+                  type="primary"
+                  onClick={() =>
+                    modal.confirm({
+                      title: `发布「${editing.name}」？`,
+                      content: "发布后可被依赖。可复制仍可改。",
+                      onOk: () =>
+                        publish.mutate(
+                          { id: editing.id, expected: editing.revision },
+                          { onSuccess: () => message.success("已发布"), onError: onErr },
+                        ),
+                    })
+                  }
+                >
+                  发布
+                </Button>
+              ) : null}
+              {canPromote(editing) ? (
+                <Button
+                  onClick={() => {
+                    const dst = (assets.data ?? []).find((a) => a.sourceId === editing.id);
+                    const same = Boolean(dst && dst.digest === editing.digest);
+                    modal.confirm({
+                      title: same ? "正文未变" : dst ? "覆盖已复制的厂级？" : "复制为厂级？",
+                      content: same
+                        ? "正文没变，不会另开一条。"
+                        : dst
+                          ? "会覆盖已复制的厂级，个人原件不动。"
+                          : "复制出新厂级，个人原件不动；响应不含个人正文。",
+                      onOk: () =>
+                        promote.mutate(editing.id, {
+                          onSuccess: () => message.success(same ? "正文未变，未重复复制" : dst ? "已覆盖厂级" : "已复制为厂级"),
+                          onError: onErr,
+                        }),
+                    });
+                  }}
+                >
+                  {(assets.data ?? []).some((a) => a.sourceId === editing.id)
+                    ? (assets.data ?? []).find((a) => a.sourceId === editing.id)?.digest === editing.digest
+                      ? "已复制"
+                      : "覆盖厂级"
+                    : "可复制"}
+                </Button>
+              ) : null}
+            </Space>
+          ) : null
+        }
+      />
     </>
   );
 }
 
-function ContentModal({ id, onClose }: { id: string | null; onClose: () => void }) {
-  const q = useAssetContent(id);
+function depText(row: Asset, processes: Asset[]) {
+  if (!row.deps?.length) return "—";
+  return row.deps.map((d) => processes.find((p) => p.id === d.id)?.name || "未知工艺").join("、");
+}
+
+function DetailModal({
+  row,
+  processes,
+  catalog,
+  canRead,
+  schema,
+  onClose,
+}: {
+  row: Asset | null;
+  processes: Asset[];
+  catalog: Catalog | undefined;
+  canRead: boolean;
+  schema: ContentSchema | null;
+  onClose: () => void;
+}) {
+  const q = useAssetContent(canRead ? (row?.id ?? null) : null);
   return (
-    <Modal title="正文" open={id !== null} onCancel={onClose} footer={null} width={640}>
-      {q.isError ? (
-        <Typography.Text type="danger">{errorMessage(q.error)}</Typography.Text>
-      ) : (
-        <pre style={{ maxHeight: 360, overflow: "auto", whiteSpace: "pre-wrap" }}>{q.data?.content ?? (q.isLoading ? "读取中…" : "")}</pre>
-      )}
+    <Modal title="详情" open={row !== null} onCancel={onClose} footer={null} width={720} styles={{ body: { maxHeight: "50vh", overflow: "auto" } }}>
+      {row ? (
+        <>
+          <Descriptions
+            column={1}
+            size="small"
+            items={[
+              { key: "name", label: row.kind === "process" ? "工艺名称" : "工程名称", children: row.name },
+              { key: "level", label: "级别", children: <Tag color={row.level === "factory" ? "blue" : "purple"}>{levelLabel(row.level)}</Tag> },
+              { key: "status", label: "状态", children: <Tag color={statusColor(row.status)}>{statusLabel(row.status)}</Tag> },
+              { key: "copyable", label: "可复制", children: row.copyable ? "是" : "否" },
+              { key: "revision", label: "修订", children: row.revision },
+              { key: "creator", label: "创建人", children: creatorText(row, catalog) },
+              ...(row.kind === "project" ? [{ key: "deps", label: "依赖工艺", children: depText(row, processes) }] : []),
+              { key: "created", label: "创建时间", children: formatTime(row.createdAt) },
+              { key: "updated", label: "更新", children: formatTime(row.updatedAt) },
+            ]}
+          />
+          <Typography.Paragraph type="secondary" style={{ marginTop: 16, marginBottom: 8 }}>
+            参数
+          </Typography.Paragraph>
+          {!canRead ? (
+            <Typography.Text type="secondary">无权查看正文。</Typography.Text>
+          ) : q.isError ? (
+            <Typography.Text type="danger">{errorMessage(q.error)}</Typography.Text>
+          ) : q.isLoading ? (
+            "读取中…"
+          ) : (
+            <ContentEditor schema={schema} value={q.data?.content ?? ""} disabled />
+          )}
+        </>
+      ) : null}
+    </Modal>
+  );
+}
+
+function EditModal({
+  row,
+  schema,
+  saving,
+  locked,
+  extra,
+  onClose,
+  onSave,
+}: {
+  row: Asset | null;
+  schema: ContentSchema | null;
+  saving: boolean;
+  locked: boolean;
+  extra: ReactNode;
+  onClose: () => void;
+  onSave: (name: string, content: string, originalContent: string) => Promise<void>;
+}) {
+  const q = useAssetContent(row?.id ?? null);
+  const [form] = Form.useForm<{ name: string; content: string }>();
+  useEffect(() => {
+    if (!row) return;
+    form.setFieldsValue({ name: row.name });
+    if (!q.isFetching) form.setFieldsValue({ content: q.data?.content ?? "" });
+  }, [row, q.data, q.isFetching, form]);
+  return (
+    <Modal
+      title="编辑"
+      open={row !== null}
+      onCancel={onClose}
+      okText="保存"
+      okButtonProps={{ disabled: locked }}
+      confirmLoading={saving || q.isLoading}
+      width={720}
+      styles={{ body: { maxHeight: "50vh", overflow: "auto" } }}
+      onOk={() => form.submit()}
+    >
+      {q.isError ? <Typography.Text type="danger">{errorMessage(q.error)}</Typography.Text> : null}
+      {extra ? <div style={{ marginBottom: 8 }}>{extra}</div> : null}
+      <Form<{ name: string; content: string }>
+        form={form}
+        layout="vertical"
+        size="small"
+        requiredMark={false}
+        onFinish={(values) => onSave(values.name, values.content, q.data?.content ?? "").catch(() => undefined)}
+      >
+        <Form.Item name="name" label="显示名" extra="显示名不是身份，改名也不换编号。" rules={[{ required: true, message: "请输入显示名" }]}>
+          <Input autoComplete="off" disabled={locked} />
+        </Form.Item>
+        <Form.Item name="content" label="参数">
+          <ContentEditor schema={schema} disabled={locked} />
+        </Form.Item>
+      </Form>
     </Modal>
   );
 }

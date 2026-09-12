@@ -68,14 +68,17 @@ func testAssetAuthorship(t *testing.T, run func(string, func(*testing.T))) {
 		}
 	})
 	run("5.2", func(t *testing.T) {
-		if _, err := facA.CreateFactoryProcess(ctx, op.tok, direct, "焊接", body); !errors.Is(err, domain.ErrForbidden) {
+		if _, err := facA.CreateFactoryProcess(ctx, op.tok, direct, "焊接", body); err != nil {
 			t.Fatalf("op: %v", err)
 		}
-		if _, err := facA.CreateFactoryProcess(ctx, saA, direct, "焊接", body); !errors.Is(err, domain.ErrForbidden) {
+		if _, err := facA.CreateFactoryProcess(ctx, saA, direct, "焊接", body); err != nil {
 			t.Fatalf("sa: %v", err)
 		}
 		if _, err := facA.CreateFactoryProcess(ctx, peB.tok, direct, "焊接", body); !errors.Is(err, domain.ErrUnauthorized) {
 			t.Fatalf("pe-b: %v", err)
+		}
+		if _, err := facA.ReadAssetContent(ctx, op.tok, facProc.ID); err != nil {
+			t.Fatalf("op draft content: %v", err)
 		}
 	})
 	run("5.3", func(t *testing.T) {
@@ -88,7 +91,7 @@ func testAssetAuthorship(t *testing.T, run func(string, func(*testing.T))) {
 		}
 	})
 	run("5.4", func(t *testing.T) {
-		if _, err := facA.CreateFactoryProcess(ctx, peShop.tok, direct, "直属", body); !errors.Is(err, domain.ErrForbidden) {
+		if _, err := facA.CreateFactoryProcess(ctx, peShop.tok, direct, "直属", body); err != nil {
 			t.Fatalf("direct: %v", err)
 		}
 		if _, err := facA.CreateFactoryProcess(ctx, peShop.tok, factory.WorkContext{OrgUnitID: &shopB.ID}, "他车间", body); !errors.Is(err, domain.ErrWorkContext) && !errors.Is(err, domain.ErrForbidden) {
@@ -110,7 +113,7 @@ func testAssetAuthorship(t *testing.T, run func(string, func(*testing.T))) {
 		}
 	})
 	run("6.2", func(t *testing.T) {
-		if _, err := facA.CreatePersonalProcess(ctx, op.tok, direct, "操作员个人", body); !errors.Is(err, domain.ErrForbidden) {
+		if _, err := facA.CreatePersonalProcess(ctx, op.tok, direct, "操作员个人", body); err != nil {
 			t.Fatalf("got %v", err)
 		}
 	})

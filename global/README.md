@@ -1,6 +1,6 @@
 # WMesh Global（WAN 跨厂总控）
 
-WAN 侧唯一的人员入口。只做三件事：登录唯一 WAN 管理员、维护工厂名录、创建工厂时向厂端下发一名待启用的初始超管。厂内人员、组织、角色和日常口令一律不经过这里——WAN 库里根本没有这些表。WAN 有自己独立的对象存储，放平台级资产，与各厂 OSS 互不相通。
+WAN 侧唯一的人员入口。只做三件事：登录唯一 WAN 管理员、维护工厂名录、发出建厂码供厂端出站认领。厂内人员、组织、角色和日常密码一律不经过这里——WAN 库里根本没有这些表。WAN 有自己独立的对象存储，放平台级资产，与各厂 OSS 互不相通。
 
 ## 目录
 
@@ -16,7 +16,6 @@ global/
     ├── internal/httpapi  JSON HTTP 适配，只转调应用服务
     ├── internal/service  应用服务：允许 / 拒绝 / 审计
     ├── internal/store    WAN 库读写（GORM，仅结构体对齐，禁 AutoMigrate）
-    ├── internal/factoryboot  调厂端 /internal/bootstrap 写初始超管
     ├── internal/web      托管已构建的管理端静态页
     ├── internal/platform 底座：config / oss / id / secret / audit / domain / migrate / testpg
     ├── migrations/       只向前的版本化 SQL，进程启动时自动套用
@@ -40,7 +39,7 @@ src/
 └── features/         每个业务功能一个目录：api.ts（类型 + 查询/变更 hook）+ 页面 + 弹窗
     ├── auth/         登录
     ├── dashboard/    概览（名录规模、服务健康）
-    ├── factories/    工厂名录、创建工厂（一次性激活口令展示）
+    ├── factories/    工厂名录、创建工厂（一次性建厂码）
     ├── clients/      Client 公钥与一机一厂绑定
     └── assets/       平台级工艺与工程、用厂级快照升档
 ```
@@ -50,7 +49,7 @@ src/
 ## 运行
 
 ```bash
-make up        # 首次自动生成 .env，请改口令；构建镜像并等到 app/db/oss 全部健康
+make up        # 首次自动生成 .env，请改密码；构建镜像并等到 app/db/oss 全部健康
 make logs      # 跟随日志（JSON）
 make upgrade   # 拉新基础镜像、重建应用、替换容器；库迁移随启动自动向前
 make bundle    # 导出离线安装包 dist/*.tar（app + postgres + rustfs），目标机 docker load -i 后 make up
@@ -61,12 +60,11 @@ make down      # 停容器，保留数据卷
 
 | 变量 | 作用 |
 | --- | --- |
-| `POSTGRES_PASSWORD` | WAN 库口令 |
+| `POSTGRES_PASSWORD` | WAN 库密码 |
 | `WMESH_ADMIN_LOGIN` / `WMESH_ADMIN_PASSWORD` | 唯一 WAN 管理员，只在库里没有管理员时写入一次 |
-| `WMESH_BOOTSTRAP_TOKEN` | 建厂引导共享口令，必须与厂端一致 |
-| `WMESH_FACTORY_BOOTSTRAP_URL` | 厂端地址，默认 `http://host.docker.internal:8081` |
+| `WMESH_ADMIN_RESET` | 设为 `true` 时启动按上面密码覆盖已有管理员哈希；用完关掉 |
 | `OSS_ACCESS_KEY` / `OSS_SECRET_KEY` / `OSS_BUCKET` | 对象存储密钥与默认桶；桶由 app 启动时自动创建 |
-| `OSS_PORT` / `OSS_CONSOLE_PORT` | S3 端点（默认 9000）与 RustFS 管理台（默认 9001，用同一对密钥登录） |
+| `OSS_PORT` / `OSS_CONSOLE_PORT` | S3 端点（默认 52900）与 RustFS 管理台（默认 52901，用同一对密钥登录） |
 | `WMESH_REGISTRY` / `WMESH_VERSION` | 镜像前缀与标签，供 `make push` |
 
 服务进程直接读 `WMESH_*` 环境变量（见 `server/internal/platform/config`）；`/healthz` 报告版本、库与 OSS 状态。
@@ -76,17 +74,19 @@ make down      # 停容器，保留数据卷
 ```bash
 make test        # 起测试库 → go vet + go test（账号矩阵 WAN 部分 + 节点 0.1～0.4）→ 前端 oxlint + tsc
 make dev-server  # 本地跑 Go（连测试库 :55432）
-make dev-web     # Vite 开发服务器 :5173，/v1 与 /healthz 代理到 :8080
+make dev-web     # Vite 开发服务器 :5173，/v1 与 /healthz 代理到 :52080
 ```
 
 ## HTTP
 
 - `GET /healthz` 版本、库、OSS 状态
 - `POST /v1/login` `POST /v1/logout` `GET /v1/me`
-- `GET /v1/directory` 工厂名录 + 各厂初始超管身份（不含口令）
-- `POST /v1/factories` 建厂并返回一次性激活口令（只出现这一次，不落 WAN 库）
+- `GET /v1/directory` 工厂名录 + 各厂初始超管身份（不含密码）
+- `POST /v1/factories` 建厂并返回一次性建厂码（只出现这一次，不落 WAN 库原文）
+- `GET /v1/channel` 厂出站 WSS：用建厂码认领并登记厂签发公钥
 - `GET /v1/clients` `POST /v1/clients` `POST /v1/clients/{id}/rebind` 节点公钥与一机一厂绑定
 - `GET /v1/assets` `POST /v1/assets` 平台级工艺/工程；`assets/{id}/rename|publish`；`POST /v1/assets/promote` 收厂级快照升档
+- `GET /v1/templates` `POST /v1/templates` 工艺/工程当前字段模版；保存后下发工厂，不改已有正文；仅新建套用
 - 其余 `/v1/factories/{id}/people|orgs|roles|offline-grants|assets`、`/v1/invite-wan-admin` 一律 403 并留审计：WAN 不代管厂内
 
-建厂失败（厂端不可达或引导口令不一致）返回 502，名录里不会留下没有超管的空厂。
+建厂不再要求厂端在线。把建厂码拿到厂内管理端「认领工厂」贴上并设密码即可。

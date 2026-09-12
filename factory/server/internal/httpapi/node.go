@@ -9,32 +9,29 @@ import (
 	"wmesh/factory/internal/service"
 )
 
-func (h *Handler) mountNode(mux *http.ServeMux) { // Client 绑定、运行许可、人员离线授权
+func (h *Handler) mountNode(mux *http.ServeMux) { // Client 绑定、运行许可
 	mux.HandleFunc("GET /v1/factories/{id}/clients", h.listClients)
 	mux.HandleFunc("POST /v1/factories/{id}/clients", h.registerClient)
+	mux.HandleFunc("PATCH /v1/factories/{id}/clients/{clientId}", h.renameClient)
 	mux.HandleFunc("POST /v1/factories/{id}/clients/{clientId}/void", h.voidClient)
 	mux.HandleFunc("POST /v1/factories/{id}/clients/{clientId}/runtime", h.issueRuntime)
 	mux.HandleFunc("POST /v1/factories/{id}/clients/{clientId}/runtime/revoke", h.revokeRuntime)
 	mux.HandleFunc("GET /v1/factories/{id}/runtime-grants", h.listRuntime)
-	mux.HandleFunc("GET /v1/factories/{id}/person-offline-grants", h.listPersonGrants)
-	mux.HandleFunc("POST /v1/factories/{id}/person-offline-grants", h.issuePerson)
 	mux.HandleFunc("GET /v1/factories/{id}/signing-key", h.signingPublicKey)
 }
 
 type acceptClientReq struct {
 	ID              string `json:"id"`              // Client 稳定身份
-	PublicKey       string `json:"publicKey"`       // 本机公钥，base64 或 hex
+	Name            string `json:"name"`            // 给人看的设备名
+	PublicKey       string `json:"publicKey"`       // 本机公钥，可空
 	BindingRevision int64  `json:"bindingRevision"` // 绑定修订，必须向前
 }
 
-type issueWindowReq struct {
-	NotBefore string `json:"notBefore"` // RFC3339
-	NotAfter  string `json:"notAfter"`  // RFC3339
+type renameClientReq struct {
+	Name string `json:"name"` // 给人看的新名字
 }
 
-type issuePersonReq struct {
-	PersonID  string `json:"personId"`  // 本厂账号
-	ClientID  string `json:"clientId"`  // 已绑定 Client
+type issueWindowReq struct {
 	NotBefore string `json:"notBefore"` // RFC3339
 	NotAfter  string `json:"notAfter"`  // RFC3339
 }
@@ -66,17 +63,38 @@ func (h *Handler) registerClient(w http.ResponseWriter, r *http.Request) {
 			writeBadRequest(w, errInvalidID)
 			return
 		}
-		pub, err := decodePublicKey(req.PublicKey)
+		pub, err := decodeOptionalPublicKey(req.PublicKey)
 		if err != nil {
 			writeErr(w, err)
 			return
 		}
-		row, err := svc.Node.RegisterBinding(r.Context(), bearer(r), cid, pub, req.BindingRevision)
+		row, err := svc.Node.RegisterBinding(r.Context(), bearer(r), cid, req.Name, pub, req.BindingRevision)
 		if err != nil {
 			writeErr(w, err)
 			return
 		}
 		writeJSON(w, http.StatusCreated, row)
+	})
+}
+
+func (h *Handler) renameClient(w http.ResponseWriter, r *http.Request) {
+	h.withFactory(w, r, func(svc *service.Service) {
+		clientID, err := uuid.Parse(r.PathValue("clientId"))
+		if err != nil {
+			writeBadRequest(w, errInvalidID)
+			return
+		}
+		var req renameClientReq
+		if err := decodeJSON(r, &req); err != nil {
+			writeBadRequest(w, err)
+			return
+		}
+		row, err := svc.Node.RenameClient(r.Context(), bearer(r), clientID, req.Name)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, row)
 	})
 }
 
@@ -148,48 +166,6 @@ func (h *Handler) listRuntime(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (h *Handler) issuePerson(w http.ResponseWriter, r *http.Request) {
-	h.withFactory(w, r, func(svc *service.Service) {
-		var req issuePersonReq
-		if err := decodeJSON(r, &req); err != nil {
-			writeBadRequest(w, err)
-			return
-		}
-		personID, err := uuid.Parse(req.PersonID)
-		if err != nil {
-			writeBadRequest(w, errInvalidID)
-			return
-		}
-		clientID, err := uuid.Parse(req.ClientID)
-		if err != nil {
-			writeBadRequest(w, errInvalidID)
-			return
-		}
-		nb, na, err := parseWindow(req.NotBefore, req.NotAfter)
-		if err != nil {
-			writeBadRequest(w, err)
-			return
-		}
-		cred, err := svc.Node.IssuePersonOfflineGrant(r.Context(), bearer(r), personID, clientID, nb, na)
-		if err != nil {
-			writeErr(w, err)
-			return
-		}
-		writeJSON(w, http.StatusCreated, personJSON(cred))
-	})
-}
-
-func (h *Handler) listPersonGrants(w http.ResponseWriter, r *http.Request) {
-	h.withFactory(w, r, func(svc *service.Service) {
-		rows, err := svc.Node.ListPersonGrantViews(r.Context(), bearer(r))
-		if err != nil {
-			writeErr(w, err)
-			return
-		}
-		writeJSON(w, http.StatusOK, rows)
-	})
-}
-
 func (h *Handler) signingPublicKey(w http.ResponseWriter, r *http.Request) {
 	h.withFactory(w, r, func(svc *service.Service) {
 		if _, err := svc.Auth.RequireActive(r.Context(), bearer(r)); err != nil {
@@ -215,19 +191,4 @@ func parseWindow(notBefore, notAfter string) (time.Time, time.Time, error) {
 		return time.Time{}, time.Time{}, err
 	}
 	return nb, na, nil
-}
-
-func personJSON(c service.PersonCred) service.PersonGrantView {
-	orgs, roles := c.OrgSnapshot, c.RolesSnapshot
-	if orgs == nil {
-		orgs = []service.OrgOption{}
-	}
-	if roles == nil {
-		roles = []service.RoleSnapshot{}
-	}
-	return service.PersonGrantView{
-		PersonID: c.PersonID, ClientID: c.ClientID, LoginName: c.LoginName,
-		AllowDirect: c.AllowDirect, OrgSnapshot: orgs, RolesSnapshot: roles,
-		Active: c.Active, NotBefore: c.NotBefore, NotAfter: c.NotAfter, Revision: c.Revision,
-	}
 }

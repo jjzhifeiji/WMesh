@@ -1,6 +1,6 @@
-// Package service 是 WAN 侧入口：唯一管理员、工厂名录、Client 绑定和初始化交付。
+// Package service 是 WAN 侧入口：唯一管理员、工厂名录、现场设备分配和初始化交付。
 // 不代建厂内普通账号、组织或角色，也不直连 SQL。
-// 按域分类型：Auth / Factories / Clients / Assets / Closure；本文件只组装。
+// 按域分类型：Auth / Factories / Channel / Clients / Assets / Templates / Closure；本文件只组装。
 package service
 
 import (
@@ -11,28 +11,27 @@ import (
 	"wmesh/global/internal/platform/audit"
 )
 
-// FactoryBootstrap 在目标厂库写入待启用初始超管，并把激活口令只交给交付夹具。
-type FactoryBootstrap interface {
-	Bootstrap(ctx context.Context, factoryID uuid.UUID, saLogin, saDisplay string) (personID uuid.UUID, activationToken string, err error)
-}
-
-// kernel 是各域共用的 WAN 库、建厂引导和审计。
+// kernel 是各域共用的 WAN 库和审计。
 type kernel struct {
 	store *Store
-	boot  FactoryBootstrap
 }
 
-// Auth 管 WAN 管理员登录与会话。
+// Auth 管 WAN 管理员登录、会话和改密码。
 type Auth struct{ *kernel }
 
 // Factories 管工厂名录、建厂和明确拒绝的代管入口。
 type Factories struct{ *kernel }
 
-// Clients 管现场节点绑定。
+// Channel 在 channel.go。
+
+// Clients 管现场设备名录与分厂。
 type Clients struct{ *kernel }
 
 // Assets 管平台级工艺/工程。
 type Assets struct{ *kernel }
+
+// Templates 管工艺/工程字段模版。
+type Templates struct{ *kernel }
 
 // Closure 管平台级组包与下发授权。
 type Closure struct{ *kernel }
@@ -42,20 +41,24 @@ type Service struct {
 	*kernel
 	*Auth
 	*Factories
+	*Channel
 	*Clients
 	*Assets
+	*Templates
 	*Closure
 }
 
-// NewService 组装 WAN 应用服务；boot 只在目标厂库写初始超管。
-func NewService(st *Store, boot FactoryBootstrap) *Service {
-	k := &kernel{store: st, boot: boot}
+// NewService 组装 WAN 应用服务。建厂不再反打厂内网。
+func NewService(st *Store) *Service {
+	k := &kernel{store: st}
 	return &Service{
 		kernel:    k,
 		Auth:      &Auth{k},
 		Factories: &Factories{k},
+		Channel:   &Channel{k},
 		Clients:   &Clients{k},
 		Assets:    &Assets{k},
+		Templates: &Templates{k},
 		Closure:   &Closure{k},
 	}
 }

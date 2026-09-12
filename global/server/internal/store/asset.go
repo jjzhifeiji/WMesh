@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"wmesh/global/internal/platform/domain"
 	"wmesh/global/internal/platform/id"
@@ -47,31 +48,34 @@ type AssetSnapshot struct {
 
 // Asset 是一条平台级工艺或工程的当前行。
 type Asset struct {
-	ID              uuid.UUID  `json:"id"`              // 稳定身份
-	Kind            string     `json:"kind"`            // process / project
-	Level           string     `json:"level"`           // 固定 platform
-	Name            string     `json:"name"`            // 显示名
-	Status          string     `json:"status"`          // draft / available / disabled
-	Copyable        bool       `json:"copyable"`        // 平台级必须为否
-	Revision        int64      `json:"revision"`        // 当前修订
-	Content         []byte     `json:"-"`               // 正文；不进列表/元数据
-	Digest          []byte     `json:"digest"`          // SHA-256 32 字节
-	CreatorID       uuid.UUID  `json:"creatorId"`       // WAN 管理员
-	SourceID        *uuid.UUID `json:"sourceId"`        // 升档源厂级身份
-	SourceRevision  *int64     `json:"sourceRevision"`  // 升档源修订
-	SourceFactoryID *uuid.UUID `json:"sourceFactoryId"` // 升档源厂
-	Deps            []AssetDep `json:"deps"`            // 工艺必须空
-	CreatedAt       time.Time  `json:"createdAt"`       // 创建时间
-	UpdatedAt       time.Time  `json:"updatedAt"`       // 最近升高修订的时间
+	ID                uuid.UUID  `json:"id"`             // 稳定身份
+	Kind              string     `json:"kind"`           // process / project
+	Level             string     `json:"level"`          // 固定 platform
+	Name              string     `json:"name"`           // 显示名
+	Status            string     `json:"status"`         // draft / available / disabled
+	Copyable          bool       `json:"copyable"`       // 可否被上一级复制；新建默认为否
+	Revision          int64      `json:"revision"`       // 当前修订
+	Content           []byte     `json:"-"`              // 正文；不进列表/元数据
+	Digest            []byte     `json:"digest"`         // SHA-256 32 字节
+	CreatorID         uuid.UUID  `json:"creatorId"`      // WAN 管理员
+	SourceID          *uuid.UUID `json:"sourceId"`       // 升档源厂级身份
+	SourceRevision    *int64     `json:"sourceRevision"` // 升档源修订
+	SourceFactoryID   *uuid.UUID `json:"-"`              // 升档源厂；列表不把身份交给前端
+	SourceFactoryName string     `json:"sourceFactory"`  // 来源厂显示名：本端新建 / 厂名 / 未知工厂
+	Deps              []AssetDep `json:"deps"`           // 工艺必须空
+	CreatedAt         time.Time  `json:"createdAt"`      // 创建时间
+	UpdatedAt         time.Time  `json:"updatedAt"`      // 最近升高修订的时间
 }
 
-// AssetWrite 是一次改名/改内容/改状态/改依赖的写入；可复制在 WAN 保持为否。
+// AssetWrite 是一次改名/改内容/改可复制/改状态/改依赖的写入。
 type AssetWrite struct {
-	Name    string     // 显示名
-	Content []byte     // 正文
-	Digest  []byte     // 与正文对应的摘要
-	Status  string     // 状态
-	Deps    []AssetDep // 工程依赖；工艺必须空
+	Name           string     // 显示名
+	Content        []byte     // 正文
+	Digest         []byte     // 与正文对应的摘要
+	Copyable       bool       // 可复制
+	Status         string     // 状态
+	Deps           []AssetDep // 工程依赖；工艺必须空
+	SourceRevision *int64     // 升档覆盖时更新源修订；空则不改
 }
 
 type assetRow struct {
@@ -80,7 +84,7 @@ type assetRow struct {
 	Level           string     `gorm:"not null"`               // 固定 platform
 	Name            string     `gorm:"not null"`               // 显示名
 	Status          string     `gorm:"not null"`               // draft / available / disabled
-	Copyable        bool       `gorm:"not null"`               // 必须为否
+	Copyable        bool       `gorm:"not null"`               // 可复制
 	Revision        int64      `gorm:"not null"`               // 当前修订
 	Content         []byte     `gorm:"type:bytea;not null"`    // 正文
 	Digest          []byte     `gorm:"type:bytea;not null"`    // SHA-256
@@ -95,7 +99,7 @@ type assetRow struct {
 
 func (assetRow) TableName() string { return "assets" }
 
-// InsertAsset 写入一条平台级工艺或工程；可复制强制为否，修订从 1 起。
+// InsertAsset 写入一条平台级工艺或工程；可复制由调用方给定，修订从 1 起。
 func (s *Store) InsertAsset(ctx context.Context, in Asset) (Asset, error) {
 	deps, err := marshalAssetDeps(in.Kind, in.Deps)
 	if err != nil {
@@ -111,7 +115,7 @@ func (s *Store) InsertAsset(ctx context.Context, in Asset) (Asset, error) {
 		Level:           AssetLevelPlatform,
 		Name:            in.Name,
 		Status:          in.Status,
-		Copyable:        false,
+		Copyable:        in.Copyable,
 		Revision:        1,
 		Content:         nonempty(in.Content),
 		Digest:          in.Digest,
@@ -129,7 +133,7 @@ func (s *Store) InsertAsset(ctx context.Context, in Asset) (Asset, error) {
 	return assetFromRow(row), nil
 }
 
-// UpdateAsset 按期望修订改平台级当前行；可复制保持为否。
+// UpdateAsset 按期望修订改平台级当前行。
 func (s *Store) UpdateAsset(ctx context.Context, assetID uuid.UUID, expected int64, w AssetWrite) (Asset, error) {
 	if err := assertAssetDigest(w.Digest); err != nil {
 		return Asset{}, err
@@ -148,16 +152,20 @@ func (s *Store) UpdateAsset(ctx context.Context, assetID uuid.UUID, expected int
 		if err != nil {
 			return err
 		}
-		res := tx.Model(&assetRow{}).Where("id = ? AND revision = ?", assetID, expected).Updates(map[string]any{
+		updates := map[string]any{
 			"name":       w.Name,
 			"content":    nonempty(w.Content),
 			"digest":     w.Digest,
-			"copyable":   false,
+			"copyable":   w.Copyable,
 			"status":     w.Status,
 			"deps":       depsJSON,
 			"revision":   expected + 1,
 			"updated_at": now,
-		})
+		}
+		if w.SourceRevision != nil {
+			updates["source_revision"] = *w.SourceRevision
+		}
+		res := tx.Model(&assetRow{}).Where("id = ? AND revision = ?", assetID, expected).Updates(updates)
 		if res.Error != nil {
 			return mapAssetWriteErr(res.Error)
 		}
@@ -173,10 +181,10 @@ func (s *Store) UpdateAsset(ctx context.Context, assetID uuid.UUID, expected int
 	return out, err
 }
 
-// ListAssets 列出平台级当前行，不含正文。
+// ListAssets 列出平台级当前行，不含正文；按创建时间从新到旧。
 func (s *Store) ListAssets(ctx context.Context) ([]Asset, error) {
 	var rows []assetRow
-	if err := s.db.WithContext(ctx).Omit("Content").Order("updated_at DESC").Find(&rows).Error; err != nil {
+	if err := s.db.WithContext(ctx).Omit("Content").Order("created_at DESC").Find(&rows).Error; err != nil {
 		return nil, err
 	}
 	out := make([]Asset, 0, len(rows))
@@ -198,6 +206,18 @@ func (s *Store) AssetByID(ctx context.Context, assetID uuid.UUID) (Asset, error)
 	return assetFromRow(row), nil
 }
 
+// AssetBySourceID 按升档源身份找当前平台级；同一源只认这一条。
+func (s *Store) AssetBySourceID(ctx context.Context, sourceID uuid.UUID) (Asset, error) {
+	var row assetRow
+	if err := s.db.WithContext(ctx).Where("source_id = ?", sourceID).Order("updated_at DESC").First(&row).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return Asset{}, domain.ErrNotFound
+		}
+		return Asset{}, err
+	}
+	return assetFromRow(row), nil
+}
+
 // AssetBySource 按升档源身份和源修订找平台级当前行。
 func (s *Store) AssetBySource(ctx context.Context, sourceID uuid.UUID, sourceRevision int64) (Asset, error) {
 	var row assetRow
@@ -208,6 +228,53 @@ func (s *Store) AssetBySource(ctx context.Context, sourceID uuid.UUID, sourceRev
 		return Asset{}, err
 	}
 	return assetFromRow(row), nil
+}
+
+// AssetIsReferenced 是否仍被某条工程的 deps 引用。
+func (s *Store) AssetIsReferenced(ctx context.Context, assetID uuid.UUID) (bool, error) {
+	raw, err := json.Marshal([]map[string]string{{"id": assetID.String()}})
+	if err != nil {
+		return false, err
+	}
+	var n int64
+	if err := s.db.WithContext(ctx).Model(&assetRow{}).Where("deps @> ?", raw).Count(&n).Error; err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
+// DeleteAsset 物理删除一条平台级；调用方须先清授权并记撤回。
+func (s *Store) DeleteAsset(ctx context.Context, assetID uuid.UUID) error {
+	res := s.db.WithContext(ctx).Where("id = ?", assetID).Delete(&assetRow{})
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}
+
+// DeleteAssetAndRetract 清下发授权、记下撤回、再删原件。
+func (s *Store) DeleteAssetAndRetract(ctx context.Context, assetID uuid.UUID) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("asset_id = ?", assetID).Delete(&distGrantRow{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&retractionRow{
+			AssetID: assetID, CreatedAt: time.Now().UTC(),
+		}).Error; err != nil {
+			return err
+		}
+		res := tx.Where("id = ?", assetID).Delete(&assetRow{})
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			return domain.ErrNotFound
+		}
+		return nil
+	})
 }
 
 func marshalAssetDeps(kind string, deps []AssetDep) ([]byte, error) {

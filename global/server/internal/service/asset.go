@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"strconv"
+	"strings"
 
 	"github.com/google/uuid"
 
@@ -41,9 +42,57 @@ func (s *Assets) CreatePlatformProcess(ctx context.Context, token, name string, 
 		_ = s.audit(ctx, nil, nil, nil, "create_asset", name, audit.Deny)
 		return Asset{}, err
 	}
+	content, err = s.normalizeContent(ctx, KindProcess, content)
+	if err != nil {
+		_ = s.audit(ctx, &admin.ID, nil, nil, "create_asset", name, audit.Deny)
+		return Asset{}, err
+	}
 	row, err := s.store.InsertAsset(ctx, Asset{
 		Kind: KindProcess, Name: name, Status: AssetDraft,
 		Content: content, Digest: digest.Sum(content), CreatorID: admin.ID,
+	})
+	if err != nil {
+		_ = s.audit(ctx, &admin.ID, nil, nil, "create_asset", name, audit.Deny)
+		return Asset{}, err
+	}
+	if err := s.audit(ctx, &admin.ID, nil, nil, "create_asset", assetTarget(row.ID, row.Revision), audit.Allow); err != nil {
+		return Asset{}, err
+	}
+	return stripContent(row), nil
+}
+
+// CopyPlatformProcess 可复制平台级工艺另存为新草稿，原件正文原样拷贝，不套模版。
+func (s *Assets) CopyPlatformProcess(ctx context.Context, token string, assetID uuid.UUID, name string) (Asset, error) {
+	admin, err := s.RequireAdmin(ctx, token)
+	if err != nil {
+		_ = s.audit(ctx, nil, nil, nil, "create_asset", assetID.String(), audit.Deny)
+		return Asset{}, err
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		_ = s.audit(ctx, &admin.ID, nil, nil, "create_asset", assetID.String(), audit.Deny)
+		return Asset{}, domain.ErrInvalidName
+	}
+	src, err := s.loadChecked(ctx, assetID)
+	if err != nil {
+		_ = s.audit(ctx, &admin.ID, nil, nil, "create_asset", assetID.String(), audit.Deny)
+		return Asset{}, err
+	}
+	if src.Kind != KindProcess {
+		_ = s.audit(ctx, &admin.ID, nil, nil, "create_asset", assetTarget(src.ID, src.Revision), audit.Deny)
+		return Asset{}, domain.ErrForbidden
+	}
+	if src.Status == AssetDisabled {
+		_ = s.audit(ctx, &admin.ID, nil, nil, "create_asset", assetTarget(src.ID, src.Revision), audit.Deny)
+		return Asset{}, domain.ErrAssetNotAvailable
+	}
+	if !src.Copyable {
+		_ = s.audit(ctx, &admin.ID, nil, nil, "create_asset", assetTarget(src.ID, src.Revision), audit.Deny)
+		return Asset{}, domain.ErrAssetNotCopyable
+	}
+	row, err := s.store.InsertAsset(ctx, Asset{
+		Kind: KindProcess, Name: name, Status: AssetDraft,
+		Content: src.Content, Digest: src.Digest, CreatorID: admin.ID,
 	})
 	if err != nil {
 		_ = s.audit(ctx, &admin.ID, nil, nil, "create_asset", name, audit.Deny)
@@ -61,7 +110,7 @@ func (s *Assets) RenamePlatformAsset(ctx context.Context, token string, assetID 
 		if cur.Status == AssetDisabled {
 			return store.AssetWrite{}, domain.ErrAssetNotAvailable
 		}
-		return store.AssetWrite{Name: name, Content: cur.Content, Digest: cur.Digest, Status: cur.Status, Deps: cur.Deps}, nil
+		return store.AssetWrite{Name: name, Content: cur.Content, Digest: cur.Digest, Copyable: cur.Copyable, Status: cur.Status, Deps: cur.Deps}, nil
 	})
 }
 
@@ -71,21 +120,75 @@ func (s *Assets) PublishPlatformAsset(ctx context.Context, token string, assetID
 		if cur.Status != AssetDraft {
 			return store.AssetWrite{}, domain.ErrAssetNotAvailable
 		}
-		return store.AssetWrite{Name: cur.Name, Content: cur.Content, Digest: cur.Digest, Status: AssetAvailable, Deps: cur.Deps}, nil
+		return store.AssetWrite{Name: cur.Name, Content: cur.Content, Digest: cur.Digest, Copyable: cur.Copyable, Status: AssetAvailable, Deps: cur.Deps}, nil
 	})
 }
 
-// SetPlatformCopyable 平台级不得改为可复制。
-func (s *Assets) SetPlatformCopyable(ctx context.Context, token string, assetID uuid.UUID, expected int64, copyable bool) error {
+// UpdatePlatformAssetContent 改正文并重算摘要；停用后拒绝。已有正文不套模版。
+func (s *Assets) UpdatePlatformAssetContent(ctx context.Context, token string, assetID uuid.UUID, expected int64, content []byte) (Asset, error) {
+	return s.mutatePlatform(ctx, token, assetID, expected, "update_asset", func(cur Asset) (store.AssetWrite, error) {
+		if cur.Status == AssetDisabled {
+			return store.AssetWrite{}, domain.ErrAssetNotAvailable
+		}
+		return store.AssetWrite{Name: cur.Name, Content: content, Digest: digest.Sum(content), Copyable: cur.Copyable, Status: cur.Status, Deps: cur.Deps}, nil
+	})
+}
+
+// DisablePlatformAsset 可用改为停用；停用期间不得改正文。
+func (s *Assets) DisablePlatformAsset(ctx context.Context, token string, assetID uuid.UUID, expected int64) (Asset, error) {
+	return s.mutatePlatform(ctx, token, assetID, expected, "disable_asset", func(cur Asset) (store.AssetWrite, error) {
+		if cur.Status != AssetAvailable {
+			return store.AssetWrite{}, domain.ErrAssetNotAvailable
+		}
+		return store.AssetWrite{Name: cur.Name, Content: cur.Content, Digest: cur.Digest, Copyable: cur.Copyable, Status: AssetDisabled, Deps: cur.Deps}, nil
+	})
+}
+
+// ReenablePlatformAsset 停用改回可用。
+func (s *Assets) ReenablePlatformAsset(ctx context.Context, token string, assetID uuid.UUID, expected int64) (Asset, error) {
+	return s.mutatePlatform(ctx, token, assetID, expected, "publish_asset", func(cur Asset) (store.AssetWrite, error) {
+		if cur.Status != AssetDisabled {
+			return store.AssetWrite{}, domain.ErrAssetNotAvailable
+		}
+		return store.AssetWrite{Name: cur.Name, Content: cur.Content, Digest: cur.Digest, Copyable: cur.Copyable, Status: AssetAvailable, Deps: cur.Deps}, nil
+	})
+}
+
+// DeletePlatformAsset 未被工程依赖则可删；仍被引用则拒绝。
+func (s *Assets) DeletePlatformAsset(ctx context.Context, token string, assetID uuid.UUID) error {
 	admin, err := s.RequireAdmin(ctx, token)
+	if err != nil {
+		_ = s.audit(ctx, nil, nil, nil, "delete_asset", assetID.String(), audit.Deny)
+		return err
+	}
+	cur, err := s.loadChecked(ctx, assetID)
+	if err != nil {
+		_ = s.audit(ctx, &admin.ID, nil, nil, "delete_asset", assetID.String(), audit.Deny)
+		return err
+	}
+	used, err := s.store.AssetIsReferenced(ctx, assetID)
 	if err != nil {
 		return err
 	}
-	if copyable {
-		_ = s.audit(ctx, &admin.ID, nil, nil, "update_asset", assetTarget(assetID, expected), audit.Deny)
-		return domain.ErrAssetNotCopyable
+	if used {
+		_ = s.audit(ctx, &admin.ID, nil, nil, "delete_asset", assetTarget(assetID, cur.Revision), audit.Deny)
+		return domain.ErrReferenced
 	}
-	return nil
+	if err := s.store.DeleteAssetAndRetract(ctx, assetID); err != nil {
+		_ = s.audit(ctx, &admin.ID, nil, nil, "delete_asset", assetTarget(assetID, cur.Revision), audit.Deny)
+		return err
+	}
+	return s.audit(ctx, &admin.ID, nil, nil, "delete_asset", assetTarget(assetID, cur.Revision), audit.Allow)
+}
+
+// SetPlatformCopyable 未停用即可改可复制，发布后也能改回是或否。新建默认否。
+func (s *Assets) SetPlatformCopyable(ctx context.Context, token string, assetID uuid.UUID, expected int64, copyable bool) (Asset, error) {
+	return s.mutatePlatform(ctx, token, assetID, expected, "update_asset", func(cur Asset) (store.AssetWrite, error) {
+		if cur.Status == AssetDisabled {
+			return store.AssetWrite{}, domain.ErrAssetNotAvailable
+		}
+		return store.AssetWrite{Name: cur.Name, Content: cur.Content, Digest: cur.Digest, Copyable: copyable, Status: cur.Status, Deps: cur.Deps}, nil
+	})
 }
 
 // GetPlatformAsset 读平台级元数据；摘要不符则拒绝。
@@ -123,7 +226,7 @@ func (s *Assets) ReadPlatformAssetContent(ctx context.Context, token string, ass
 	return a.Content, nil
 }
 
-// PromoteFromSnapshot 用厂级快照复制出新平台级；原件不进 WAN。
+// PromoteFromSnapshot 用厂级快照升平台级：第一次复制新身份为草稿；再升按正文摘要跳过或覆盖为草稿。原件不进 WAN。
 func (s *Assets) PromoteFromSnapshot(ctx context.Context, token string, snap AssetSnapshot) (Asset, error) {
 	admin, err := s.RequireAdmin(ctx, token)
 	if err != nil {
@@ -143,15 +246,41 @@ func (s *Assets) PromoteFromSnapshot(ctx context.Context, token string, snap Ass
 		_ = s.audit(ctx, &admin.ID, nil, &fid, "promote_asset", snap.SourceID.String(), audit.Deny)
 		return Asset{}, domain.ErrAssetNotCopyable
 	}
+	body := snap.Content
+	sum := snap.Digest
 	deps, err := s.rewritePromoteDeps(ctx, snap.Kind, snap.Deps)
 	if err != nil {
 		_ = s.audit(ctx, &admin.ID, nil, &fid, "promote_asset", snap.SourceID.String(), audit.Deny)
 		return Asset{}, err
 	}
 	rev := snap.SourceRevision
+	existing, err := s.store.AssetBySourceID(ctx, snap.SourceID)
+	if err == nil {
+		if bytes.Equal(existing.Digest, sum) {
+			if err := s.audit(ctx, &admin.ID, nil, &fid, "promote_asset", assetTarget(existing.ID, existing.Revision)+" from "+assetTarget(snap.SourceID, snap.SourceRevision), audit.Allow); err != nil {
+				return Asset{}, err
+			}
+			return stripContent(existing), nil
+		}
+		row, err := s.store.UpdateAsset(ctx, existing.ID, existing.Revision, store.AssetWrite{
+			Name: snap.Name, Content: body, Digest: sum, Copyable: existing.Copyable, Status: AssetDraft, Deps: deps, SourceRevision: &rev,
+		})
+		if err != nil {
+			_ = s.audit(ctx, &admin.ID, nil, &fid, "promote_asset", snap.SourceID.String(), audit.Deny)
+			return Asset{}, err
+		}
+		if err := s.audit(ctx, &admin.ID, nil, &fid, "promote_asset", assetTarget(row.ID, row.Revision)+" from "+assetTarget(snap.SourceID, snap.SourceRevision), audit.Allow); err != nil {
+			return Asset{}, err
+		}
+		return stripContent(row), nil
+	}
+	if !errors.Is(err, domain.ErrNotFound) {
+		_ = s.audit(ctx, &admin.ID, nil, &fid, "promote_asset", snap.SourceID.String(), audit.Deny)
+		return Asset{}, err
+	}
 	row, err := s.store.InsertAsset(ctx, Asset{
-		Kind: snap.Kind, Name: snap.Name, Status: AssetAvailable,
-		Content: snap.Content, Digest: snap.Digest, CreatorID: admin.ID,
+		Kind: snap.Kind, Name: snap.Name, Status: AssetDraft,
+		Content: body, Digest: sum, CreatorID: admin.ID,
 		SourceID: &snap.SourceID, SourceRevision: &rev, SourceFactoryID: &snap.SourceFactoryID,
 		Deps: deps,
 	})
@@ -171,7 +300,7 @@ func (s *Assets) rewritePromoteDeps(ctx context.Context, kind string, deps []Ass
 	}
 	out := make([]AssetDep, 0, len(deps))
 	for _, d := range deps {
-		plat, err := s.store.AssetBySource(ctx, d.ID, d.Revision)
+		plat, err := s.store.AssetBySourceID(ctx, d.ID)
 		if err != nil {
 			if errors.Is(err, domain.ErrNotFound) {
 				return nil, domain.ErrAssetDependency
@@ -197,6 +326,11 @@ func (s *Assets) CreatePlatformProject(ctx context.Context, token, name string, 
 		return Asset{}, err
 	}
 	if err := s.assertPlatformProcessDeps(ctx, deps); err != nil {
+		_ = s.audit(ctx, &admin.ID, nil, nil, "create_asset", name, audit.Deny)
+		return Asset{}, err
+	}
+	content, err = s.normalizeContent(ctx, KindProject, content)
+	if err != nil {
 		_ = s.audit(ctx, &admin.ID, nil, nil, "create_asset", name, audit.Deny)
 		return Asset{}, err
 	}
@@ -265,14 +399,36 @@ func (s *Assets) ListPlatformAssets(ctx context.Context, token, kind string) ([]
 	if err != nil {
 		return nil, err
 	}
+	facs, err := s.store.ListFactories(ctx)
+	if err != nil {
+		return nil, err
+	}
+	names := make(map[uuid.UUID]string, len(facs))
+	for _, f := range facs {
+		names[f.ID] = f.Name
+	}
 	out := []Asset{}
 	for _, a := range rows {
 		if kind != "" && a.Kind != kind {
 			continue
 		}
-		out = append(out, stripContent(a))
+		out = append(out, decorateSourceFactory(stripContent(a), names))
 	}
 	return out, nil
+}
+
+// decorateSourceFactory 给列表写来源厂显示名，不把厂身份交给前端。
+func decorateSourceFactory(a Asset, names map[uuid.UUID]string) Asset {
+	if a.SourceFactoryID == nil {
+		a.SourceFactoryName = "本端新建"
+		return a
+	}
+	if n := names[*a.SourceFactoryID]; n != "" {
+		a.SourceFactoryName = n
+		return a
+	}
+	a.SourceFactoryName = "未知工厂"
+	return a
 }
 
 func (s *kernel) mutatePlatform(ctx context.Context, token string, assetID uuid.UUID, expected int64, action string, patch func(Asset) (store.AssetWrite, error)) (Asset, error) {

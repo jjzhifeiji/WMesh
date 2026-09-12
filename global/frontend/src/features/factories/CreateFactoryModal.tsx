@@ -8,7 +8,7 @@ type Props = {
   onClose: () => void;
 };
 
-// 建厂两步走：填表 → 展示一次性激活口令；口令抄走前不让误关。
+// 建厂两步走：填表 → 展示一次性建厂码；抄走前不让误关。
 export function CreateFactoryModal({ open, onClose }: Props) {
   const [form] = Form.useForm<CreateFactoryInput>();
   const create = useCreateFactory();
@@ -31,13 +31,13 @@ export function CreateFactoryModal({ open, onClose }: Props) {
       footer={
         created ? (
           <Button type="primary" onClick={close}>
-            我已抄走口令，关闭
+            我已抄走建厂码，关闭
           </Button>
         ) : (
           <>
             <Button onClick={close}>取消</Button>
             <Button type="primary" loading={create.isPending} onClick={() => form.submit()}>
-              创建并下发激活口令
+              创建并下发建厂码
             </Button>
           </>
         )
@@ -46,14 +46,13 @@ export function CreateFactoryModal({ open, onClose }: Props) {
       {created ? (
         <>
           <Typography.Paragraph>
-            把下面三项交给「{created.factory.name}」的初始超管；对方在厂内管理端用激活口令自设日常口令后即可登录。
+            把建厂码交给「{created.factory.name}」的初始超管；对方在厂内管理端贴上码并自设日常密码即完成激活，不必再填工厂 ID。
           </Typography.Paragraph>
           <SecretOnce
-            title="激活口令只显示这一次，WAN 不保存"
+            title="建厂码只显示这一次，WAN 不保存原文"
             items={[
-              { label: "工厂 ID", value: created.factory.id },
+              { label: "建厂码", value: created.enrollmentToken },
               { label: "初始超管登录名", value: form.getFieldValue("saLogin") as string },
-              { label: "激活口令", value: created.activationToken },
             ]}
           />
         </>

@@ -1,6 +1,6 @@
-// Package store 只碰 WAN 库：管理员、工厂名录、初始超管对账、Client 绑定、平台级资产、下发授权和审计。
-// 不判定允许/拒绝，也不回调应用服务；不见厂内人员、组织或人员离线授权。
-// 文件按域拆：account / directory / client / asset / closure。
+// Package store 只碰 WAN 库：管理员、工厂名录、初始超管对账、现场设备名录、平台级资产、内容模版、下发授权、通道在线和审计。
+// 不判定允许/拒绝，也不回调应用服务；不见厂内人员、组织。
+// 文件按域拆：account / directory / channel / client / asset / template / closure。
 package store
 
 import (
@@ -35,9 +35,10 @@ func (s *Store) AppendAudit(ctx context.Context, e audit.Event) error {
 	return s.db.WithContext(ctx).Create(audit.RowFrom(e)).Error
 }
 
+// ListAudit 按发生时间从新到旧列出审计行。
 func (s *Store) ListAudit(ctx context.Context) ([]audit.Row, error) {
 	var rows []audit.Row
-	err := s.db.WithContext(ctx).Order("occurred_at").Find(&rows).Error
+	err := s.db.WithContext(ctx).Order("occurred_at DESC").Find(&rows).Error
 	return rows, err
 }
 

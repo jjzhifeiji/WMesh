@@ -1,5 +1,5 @@
 -- WAN 库初始结构：只放唯一管理员、工厂名录、初始超管对账和 WAN 审计。
--- 不含厂内人员、组织、角色或日常口令。
+-- 不含厂内人员、组织、角色或日常密码。
 
 CREATE TABLE factories (
     id UUID PRIMARY KEY, -- 工厂稳定身份，也用来选厂库
@@ -10,7 +10,7 @@ CREATE TABLE factories (
 CREATE TABLE wan_admins (
     id UUID PRIMARY KEY, -- WAN 管理员稳定身份
     login_name TEXT NOT NULL UNIQUE, -- WAN 登录名，全库唯一
-    password_hash TEXT NOT NULL, -- 日常口令哈希，只存在 WAN 库
+    password_hash TEXT NOT NULL, -- 日常密码哈希，只存在 WAN 库
     created_at TIMESTAMPTZ NOT NULL DEFAULT now() -- 账号创建时间
 );
 

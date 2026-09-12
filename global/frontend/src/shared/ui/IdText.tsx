@@ -1,11 +1,11 @@
 import { Typography } from "antd";
-import { shortId } from "@/shared/format";
 
-// 稳定身份的统一展示：缩略 + 复制完整值。
+// 能换行就全显示；容器仍溢出才省略，完整值可复制。
 export function IdText({ id }: { id: string }) {
   return (
-    <Typography.Text code copyable={{ text: id, tooltips: ["复制完整 ID", "已复制"] }}>
-      {shortId(id)}
-    </Typography.Text>
+    <span className="id-text" title={id}>
+      <code>{id}</code>
+      <Typography.Text copyable={{ text: id, tooltips: ["复制完整 ID", "已复制"] }} />
+    </span>
   );
 }

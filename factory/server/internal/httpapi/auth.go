@@ -16,7 +16,7 @@ func (h *Handler) mountAuth(mux *http.ServeMux) { // 本厂登录、激活、会
 
 type loginReq struct {
 	LoginName string `json:"loginName"` // 本厂登录名
-	Password  string `json:"password"`  // 日常口令，不进审计
+	Password  string `json:"password"`  // 日常密码，不进审计
 }
 
 type tokenResp struct {
@@ -25,12 +25,12 @@ type tokenResp struct {
 
 type activateReq struct {
 	LoginName       string `json:"loginName"`       // 待启用登录名
-	ActivationToken string `json:"activationToken"` // 一次性激活口令
-	Password        string `json:"password"`        // 持有者自设日常口令
+	ActivationToken string `json:"activationToken"` // 一次性 8 位激活码
+	Password        string `json:"password"`        // 持有者自设日常密码
 }
 
 type passwordReq struct {
-	Password string `json:"password"` // 新日常口令，不进审计
+	Password string `json:"password"` // 新日常密码，不进审计
 }
 
 func (h *Handler) login(w http.ResponseWriter, r *http.Request) {

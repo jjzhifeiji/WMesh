@@ -15,27 +15,18 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/google/uuid"
-
 	"wmesh/global/internal/httpapi"
+	"wmesh/global/internal/platform/contenttpl"
 	"wmesh/global/internal/platform/id"
 	"wmesh/global/internal/platform/testpg"
 	"wmesh/global/internal/service"
 	"wmesh/global/internal/store"
 )
 
-type stubBoot struct {
-	token string
-}
-
-func (s stubBoot) Bootstrap(_ context.Context, _ uuid.UUID, _, _ string) (uuid.UUID, string, error) {
-	return id.New(), s.token, nil
-}
-
 func TestWANHTTP(t *testing.T) {
 	admin := testpg.Open(t)
 	_, dsn := testpg.CreateDB(t, admin, "wmesh_wan")
-	svc := service.NewService(store.Open(testpg.OpenMigrated(t, dsn)), stubBoot{token: "act-once"})
+	svc := service.NewService(store.Open(testpg.OpenMigrated(t, dsn)))
 	if err := svc.BootstrapAdmin(context.Background(), "w", "wan-secret"); err != nil {
 		t.Fatalf("bootstrap: %v", err)
 	}
@@ -59,6 +50,10 @@ func TestWANHTTP(t *testing.T) {
 		t.Fatalf("login %d %s", code, body)
 	}
 	tok := gjson(t, body, "token")
+	code, body = do(t, srv, "POST", "/v1/me/password", tok, `{"password":"wan-secret-2"}`)
+	if code != http.StatusNoContent {
+		t.Fatalf("change password %d %s", code, body)
+	}
 	code, body = do(t, srv, "GET", "/v1/directory", tok, "")
 	if code != http.StatusOK {
 		t.Fatalf("directory %d %s", code, body)
@@ -67,17 +62,37 @@ func TestWANHTTP(t *testing.T) {
 	if code != http.StatusCreated {
 		t.Fatalf("create factory %d %s", code, body)
 	}
-	if gjson(t, body, "activationToken") != "act-once" {
-		t.Fatalf("activation token missing: %s", body)
+	if gjson(t, body, "enrollmentToken") == "" {
+		t.Fatalf("enrollment token missing: %s", body)
 	}
 	fid := gjson(t, body, "factory.id")
+	if gjson(t, body, "factory.status") != "active" {
+		t.Fatalf("new factory status %s", body)
+	}
+	code, body = do(t, srv, "POST", "/v1/factories", tok, `{"name":"厂B","saLogin":"sa-b","saDisplay":"超管B"}`)
+	if code != http.StatusCreated {
+		t.Fatalf("create factory B %d %s", code, body)
+	}
+	fidB := gjson(t, body, "factory.id")
+	code, body = do(t, srv, "POST", "/v1/factories/"+fidB+"/disable", tok, "")
+	if code != http.StatusOK || gjson(t, body, "status") != "disabled" {
+		t.Fatalf("disable %d %s", code, body)
+	}
+	code, body = do(t, srv, "POST", "/v1/factories/"+fidB+"/enable", tok, "")
+	if code != http.StatusOK || gjson(t, body, "status") != "active" {
+		t.Fatalf("enable %d %s", code, body)
+	}
+	code, body = do(t, srv, "DELETE", "/v1/factories/"+fidB, tok, "")
+	if code != http.StatusNoContent {
+		t.Fatalf("delete unclaimed %d %s", code, body)
+	}
 	pub, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
 	pk := base64.StdEncoding.EncodeToString(pub)
 	cid := id.New().String()
-	code, body = do(t, srv, "POST", "/v1/clients", tok, `{"id":"`+cid+`","factoryId":"`+fid+`","publicKey":"`+pk+`"}`)
+	code, body = do(t, srv, "POST", "/v1/clients", tok, `{"name":"焊机-1","id":"`+cid+`","factoryId":"`+fid+`","publicKey":"`+pk+`"}`)
 	if code != http.StatusCreated {
 		t.Fatalf("bind client %d %s", code, body)
 	}
@@ -111,10 +126,14 @@ func TestWANHTTP(t *testing.T) {
 		t.Fatalf("list platform %d %s", code, body)
 	}
 	code, body = do(t, srv, "GET", "/v1/assets/"+pid+"/content", tok, "")
-	if code != http.StatusOK || gjson(t, body, "content") != "wan-body" {
+	if code != http.StatusOK || gjson(t, body, "content") != appliedProcess("wan-body") {
 		t.Fatalf("read platform content %d %s", code, body)
 	}
-	code, body = do(t, srv, "POST", "/v1/assets/"+pid+"/publish", tok, `{"expected":1}`)
+	code, body = do(t, srv, "POST", "/v1/assets/"+pid+"/content", tok, `{"expected":1,"content":"wan-body-2"}`)
+	if code != http.StatusOK {
+		t.Fatalf("update platform content %d %s", code, body)
+	}
+	code, body = do(t, srv, "POST", "/v1/assets/"+pid+"/publish", tok, `{"expected":2}`)
 	if code != http.StatusOK {
 		t.Fatalf("publish platform %d %s", code, body)
 	}
@@ -128,10 +147,40 @@ func TestWANHTTP(t *testing.T) {
 	if code != http.StatusCreated {
 		t.Fatalf("create platform project %d %s", code, body)
 	}
+	code, body = do(t, srv, "POST", "/v1/assets/"+pid+"/disable", tok, `{"expected":`+rev+`}`)
+	if code != http.StatusOK || gjson(t, body, "status") != "disabled" {
+		t.Fatalf("disable platform %d %s", code, body)
+	}
+	disRev := gjson(t, body, "revision")
+	code, body = do(t, srv, "POST", "/v1/assets/"+pid+"/enable", tok, `{"expected":`+disRev+`}`)
+	if code != http.StatusOK || gjson(t, body, "status") != "available" {
+		t.Fatalf("enable platform %d %s", code, body)
+	}
+	code, body = do(t, srv, "POST", "/v1/assets/"+pid+"/delete", tok, "")
+	if code != http.StatusConflict || gjson(t, body, "error") != "still referenced" {
+		t.Fatalf("delete referenced %d %s", code, body)
+	}
+	code, body = do(t, srv, "POST", "/v1/assets", tok, `{"kind":"process","name":"可删","content":"gone"}`)
+	if code != http.StatusCreated {
+		t.Fatalf("create disposable %d %s", code, body)
+	}
+	dropID := gjson(t, body, "id")
+	code, body = do(t, srv, "POST", "/v1/assets/"+dropID+"/copyable", tok, `{"expected":1,"copyable":true}`)
+	if code != http.StatusOK || !strings.Contains(body, `"copyable":true`) {
+		t.Fatalf("set copyable %d %s", code, body)
+	}
+	code, body = do(t, srv, "POST", "/v1/assets/"+dropID+"/delete", tok, "")
+	if code != http.StatusOK {
+		t.Fatalf("delete unused %d %s", code, body)
+	}
+	code, body = do(t, srv, "GET", "/v1/factories/"+fid+"/promotable-assets?kind=process", tok, "")
+	if code != http.StatusServiceUnavailable || gjson(t, body, "error") != "factory channel is offline" {
+		t.Fatalf("promotable offline %d %s", code, body)
+	}
 	sum := sha256.Sum256([]byte("from-fac"))
 	snap := `{"sourceId":"` + id.New().String() + `","sourceRevision":1,"sourceFactoryId":"` + fid + `","kind":"process","name":"收厂级","content":"` + base64.StdEncoding.EncodeToString([]byte("from-fac")) + `","digest":"` + base64.StdEncoding.EncodeToString(sum[:]) + `","copyable":true,"status":"available","deps":[]}`
 	code, body = do(t, srv, "POST", "/v1/assets/promote", tok, snap)
-	if code != http.StatusCreated {
+	if code != http.StatusCreated || gjson(t, body, "status") != "draft" {
 		t.Fatalf("promote snapshot %d %s", code, body)
 	}
 	aid := id.New().String()
@@ -200,4 +249,16 @@ func gjson(t *testing.T, body, path string) string {
 	}
 	t.Fatalf("%s not string in %s", path, body)
 	return ""
+}
+
+func appliedProcess(raw string) string {
+	schema, err := contenttpl.Marshal(contenttpl.Default(contenttpl.KindProcess))
+	if err != nil {
+		panic(err)
+	}
+	out, err := contenttpl.Apply(schema, []byte(raw))
+	if err != nil {
+		panic(err)
+	}
+	return string(out)
 }

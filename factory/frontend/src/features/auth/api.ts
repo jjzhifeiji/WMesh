@@ -1,4 +1,4 @@
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback } from "react";
 import { useNavigate } from "react-router";
 import { paths } from "@/app/routes";
@@ -7,6 +7,17 @@ import { fpath, session } from "@/shared/auth/session";
 
 export type LoginInput = { factoryId: string; loginName: string; password: string };
 export type ActivateInput = { factoryId: string; loginName: string; activationToken: string; password: string };
+export type SiteFactory = { id: string; saLogin: string; status?: string };
+export type Site = { wanConfigured: boolean; factories: SiteFactory[] };
+export type ClaimInput = { enrollmentCode: string; password: string };
+export type Claimed = { factoryId: string; saLogin: string };
+
+export function useSite() {
+  return useQuery({
+    queryKey: ["site"],
+    queryFn: ({ signal }) => http.get<Site>("/v1/site", signal),
+  });
+}
 
 // 登录前先把工厂 ID 记下来，路径才拼得出来；成功即持有令牌。
 export function useLogin() {
@@ -19,7 +30,19 @@ export function useLogin() {
   });
 }
 
-// 激活：持有者用一次性激活口令自设日常口令，账号转为有效；WAN 不参与。
+// 认领：贴上 WAN 建厂码并当场设密码，工厂 ID 由通道带回。
+export function useClaim() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: ClaimInput) => http.post<Claimed>("/v1/site/claim", input),
+    onSuccess: (out) => {
+      session.setFactoryId(out.factoryId);
+      void qc.invalidateQueries({ queryKey: ["site"] });
+    },
+  });
+}
+
+// 激活：持有者用 8 位激活码自设日常密码，账号转为有效；WAN 不参与。
 export function useActivate() {
   return useMutation({
     mutationFn: ({ factoryId, ...body }: ActivateInput) => {

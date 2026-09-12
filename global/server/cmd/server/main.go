@@ -16,7 +16,6 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 
-	"wmesh/global/internal/factoryboot"
 	"wmesh/global/internal/httpapi"
 	"wmesh/global/internal/platform/config"
 	"wmesh/global/internal/platform/migrate"
@@ -61,7 +60,10 @@ func run(ctx context.Context, log *slog.Logger) error {
 		return fmt.Errorf("migrate: %w", err)
 	}
 
-	svc := service.NewService(store.Open(db), &factoryboot.Client{BaseURL: cfg.FactoryBootstrapURL, Token: cfg.BootstrapToken})
+	svc := service.NewService(store.Open(db))
+	if err := svc.ResetChannelPresence(ctx); err != nil {
+		return fmt.Errorf("reset channel presence: %w", err)
+	}
 	if err := bootstrapAdmin(ctx, log, svc, cfg); err != nil {
 		return err
 	}
@@ -91,7 +93,7 @@ func run(ctx context.Context, log *slog.Logger) error {
 		Handler:           httpapi.Wrap(log, mux),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      60 * time.Second,
+		WriteTimeout:      0,
 		IdleTimeout:       120 * time.Second,
 	}
 	errCh := make(chan error, 1)
@@ -112,7 +114,7 @@ func run(ctx context.Context, log *slog.Logger) error {
 	return srv.Shutdown(shutdownCtx)
 }
 
-// bootstrapAdmin 只在库里还没有管理员时写入；已有则跳过，不给每次重启都留拒绝审计。
+// bootstrapAdmin 库里没有管理员时写入；已有则跳过。显式打开覆盖开关时按环境变量重写密码。
 func bootstrapAdmin(ctx context.Context, log *slog.Logger, svc *service.Service, cfg config.Config) error {
 	if cfg.AdminLogin == "" {
 		return nil
@@ -122,6 +124,13 @@ func bootstrapAdmin(ctx context.Context, log *slog.Logger, svc *service.Service,
 		return fmt.Errorf("check wan admin: %w", err)
 	}
 	if exists {
+		if !cfg.AdminReset {
+			return nil
+		}
+		if err := svc.ResetAdminPassword(ctx, cfg.AdminLogin, cfg.AdminPassword); err != nil {
+			return fmt.Errorf("reset wan admin: %w", err)
+		}
+		log.Info("wan admin password reset from config", "login", cfg.AdminLogin)
 		return nil
 	}
 	if err := svc.BootstrapAdmin(ctx, cfg.AdminLogin, cfg.AdminPassword); err != nil {

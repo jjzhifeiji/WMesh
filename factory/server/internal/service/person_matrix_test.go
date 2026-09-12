@@ -1,14 +1,12 @@
-// 阶段2第5圈：人员离线授权 11.1～13.4。
+// 阶段2：本厂有效账号在本厂设备上登录与操作 11.1～13.4；不签发人员授权。
 package service_test
 
 import (
 	"context"
-	"errors"
 	"testing"
 	"time"
 
 	"wmesh/factory/internal/platform/audit"
-	"wmesh/factory/internal/platform/domain"
 	"wmesh/factory/internal/platform/id"
 	"wmesh/factory/internal/platform/nodekey"
 	factory "wmesh/factory/internal/service"
@@ -47,7 +45,7 @@ func testPersonMatrix(t *testing.T, run func(string, func(*testing.T))) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := facA.AcceptBinding(ctx, cidA, pubA, 1); err != nil {
+	if _, err := facA.AcceptBinding(ctx, cidA, "Client-A1", pubA, 1); err != nil {
 		t.Fatal(err)
 	}
 	facPubA, err := facA.SigningPublicKey(ctx)
@@ -59,18 +57,12 @@ func testPersonMatrix(t *testing.T, run func(string, func(*testing.T))) {
 		t.Fatal(err)
 	}
 
-	op, act, err := facA.CreatePerson(ctx, saTok, "op-a", "操作员A")
+	op, err := facA.CreatePerson(ctx, saTok, "op-a", "操作员A")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := facA.Activate(ctx, "op-a", act, "op-pass"); err != nil {
-		t.Fatal(err)
-	}
+	mustAdoptPassword(t, ctx, facA, "op-a", "op-pass")
 	if _, err := facA.GrantRole(ctx, saTok, op.ID, factory.RoleOperator, factory.ScopeFactory, nil); err != nil {
-		t.Fatal(err)
-	}
-	personCred, err := facA.IssuePersonOfflineGrant(ctx, saTok, op.ID, cidA, nb, na)
-	if err != nil {
 		t.Fatal(err)
 	}
 
@@ -78,7 +70,6 @@ func testPersonMatrix(t *testing.T, run func(string, func(*testing.T))) {
 		b := bagOf(seedA.ID, cidA, pubA, privA, facPubA)
 		b.AssetAllowed = true
 		b.ApplyRuntime(runtime)
-		b.ApplyPerson(personCred)
 		return b
 	}
 
@@ -88,6 +79,22 @@ func testPersonMatrix(t *testing.T, run func(string, func(*testing.T))) {
 		if err != nil || login.Decision != factory.NodeAllow {
 			t.Fatalf("login %+v %v", login, err)
 		}
+		listed, err := facA.ListClients(ctx, saTok)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var saw bool
+		for _, row := range listed {
+			if row.ID == cidA {
+				if row.OperatorLogin != "op-a" || row.OperatorDisplay != "操作员A" {
+					t.Fatalf("11.1 operator %+v", row)
+				}
+				saw = true
+			}
+		}
+		if !saw {
+			t.Fatal("11.1 missing client")
+		}
 		ev, err := facA.EvaluateOfflineOp(ctx, b, valid, "op-a", "op-pass")
 		if err != nil || ev.Decision != factory.NodeAllow {
 			t.Fatalf("op %+v %v", ev, err)
@@ -96,7 +103,7 @@ func testPersonMatrix(t *testing.T, run func(string, func(*testing.T))) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if audit.ContainsAny(audit.Dump(rows), "op-pass", personCred.PasswordHash) {
+		if audit.ContainsAny(audit.Dump(rows), "op-pass") {
 			t.Fatal("secret leaked")
 		}
 	})
@@ -104,7 +111,7 @@ func testPersonMatrix(t *testing.T, run func(string, func(*testing.T))) {
 		b := bagA()
 		ev, err := facA.LoginOffline(ctx, b, valid, "op-a", "")
 		if err != nil || ev.Decision != factory.NodeDeny {
-			t.Fatalf("copied grant without password %+v %v", ev, err)
+			t.Fatalf("no password %+v %v", ev, err)
 		}
 	})
 	cidB := id.New()
@@ -112,29 +119,33 @@ func testPersonMatrix(t *testing.T, run func(string, func(*testing.T))) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := facB.AcceptBinding(ctx, cidB, pubB, 1); err != nil {
+	if _, err := facB.AcceptBinding(ctx, cidB, "Client-B1", pubB, 1); err != nil {
 		t.Fatal(err)
 	}
 	facPubB, err := facB.SigningPublicKey(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	run("12.2", func(t *testing.T) {
-		b := bagOf(seedA.ID, cidB, pubB, privB, facPubA)
-		b.ApplyPerson(personCred)
-		ev, err := facA.LoginOffline(ctx, b, valid, "op-a", "op-pass")
-		if err != nil || ev.Decision != factory.NodeDeny {
-			t.Fatalf("other client %+v %v", ev, err)
-		}
-	})
-	other, otherAct, err := facA.CreatePerson(ctx, saTok, "op-c", "操作员C")
+	cidA2 := id.New()
+	pubA2, privA2, err := nodekey.Generate()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := facA.Activate(ctx, "op-c", otherAct, "c-pass"); err != nil {
+	if _, err := facA.AcceptBinding(ctx, cidA2, "Client-A2", pubA2, 1); err != nil {
 		t.Fatal(err)
 	}
-	_ = other
+	run("12.2", func(t *testing.T) {
+		b := bagOf(seedA.ID, cidA2, pubA2, privA2, facPubA)
+		ev, err := facA.LoginOffline(ctx, b, valid, "op-a", "op-pass")
+		if err != nil || ev.Decision != factory.NodeAllow {
+			t.Fatalf("same factory other device %+v %v", ev, err)
+		}
+	})
+	_, err = facA.CreatePerson(ctx, saTok, "op-c", "操作员C")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustAdoptPassword(t, ctx, facA, "op-c", "c-pass")
 	run("12.3", func(t *testing.T) {
 		b := bagA()
 		ev, err := facA.LoginOffline(ctx, b, valid, "op-a", "c-pass")
@@ -144,7 +155,6 @@ func testPersonMatrix(t *testing.T, run func(string, func(*testing.T))) {
 	})
 	run("12.4", func(t *testing.T) {
 		b := bagOf(seedB.ID, cidB, pubB, privB, facPubB)
-		b.ApplyPerson(personCred)
 		ev, err := facB.LoginOffline(ctx, b, valid, "op-a", "op-pass")
 		if err != nil || ev.Decision != factory.NodeDeny {
 			t.Fatalf("other factory %+v %v", ev, err)
@@ -163,25 +173,18 @@ func testPersonMatrix(t *testing.T, run func(string, func(*testing.T))) {
 			t.Fatalf("node missing %+v %v", ev, err)
 		}
 	})
-	aud, audAct, err := facA.CreatePerson(ctx, saTok, "aud-a", "审计员")
+	aud, err := facA.CreatePerson(ctx, saTok, "aud-a", "审计员")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := facA.Activate(ctx, "aud-a", audAct, "aud-pass"); err != nil {
-		t.Fatal(err)
-	}
+	mustAdoptPassword(t, ctx, facA, "aud-a", "aud-pass")
 	if _, err := facA.GrantRole(ctx, saTok, aud.ID, factory.RoleAuditor, factory.ScopeFactory, nil); err != nil {
-		t.Fatal(err)
-	}
-	audCred, err := facA.IssuePersonOfflineGrant(ctx, saTok, aud.ID, cidA, nb, na)
-	if err != nil {
 		t.Fatal(err)
 	}
 	run("13.2", func(t *testing.T) {
 		b := bagOf(seedA.ID, cidA, pubA, privA, facPubA)
 		b.AssetAllowed = true
 		b.ApplyRuntime(runtime)
-		b.ApplyPerson(audCred)
 		login, err := facA.LoginOffline(ctx, b, valid, "aud-a", "aud-pass")
 		if err != nil || login.Decision != factory.NodeAllow {
 			t.Fatalf("auditor login %+v %v", login, err)
@@ -206,31 +209,4 @@ func testPersonMatrix(t *testing.T, run func(string, func(*testing.T))) {
 			t.Fatalf("asset deny %+v %v", ev, err)
 		}
 	})
-}
-
-func TestIssuePersonOfflineRejectsUnbound(t *testing.T) {
-	ctx := context.Background()
-	h := New(t)
-	seed, fac, err := h.Provision(ctx, "sa", "超管")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := fac.Activate(ctx, "sa", seed.ActivationToken, "sa-pass"); err != nil {
-		t.Fatal(err)
-	}
-	tok, err := fac.Login(ctx, "sa", "sa-pass")
-	if err != nil {
-		t.Fatal(err)
-	}
-	p, act, err := fac.CreatePerson(ctx, tok, "op", "操作员")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := fac.Activate(ctx, "op", act, "op-pass"); err != nil {
-		t.Fatal(err)
-	}
-	now := time.Now().UTC()
-	if _, err := fac.IssuePersonOfflineGrant(ctx, tok, p.ID, id.New(), now, now.Add(time.Hour)); !errors.Is(err, domain.ErrNotFound) {
-		t.Fatalf("unbound: %v", err)
-	}
 }

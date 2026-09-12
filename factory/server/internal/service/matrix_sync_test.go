@@ -85,7 +85,7 @@ func testSyncMatrix(t *testing.T, run func(string, func(*testing.T))) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := e.facB.AcceptBinding(e.ctx, cidB, pub, 1); err != nil {
+		if _, err := e.facB.AcceptBinding(e.ctx, cidB, "焊机-B", pub, 1); err != nil {
 			t.Fatal(err)
 		}
 		facPub, err := e.facB.SigningPublicKey(e.ctx)
@@ -96,15 +96,12 @@ func testSyncMatrix(t *testing.T, run func(string, func(*testing.T))) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		pc, err := e.facB.IssuePersonOfflineGrant(e.ctx, e.saB, e.peB.acc.ID, cidB, e.nb, e.na)
-		if err != nil {
-			t.Fatal(err)
-		}
 		bagB := bagOf(e.seedB.ID, cidB, pub, priv, facPub)
 		bagB.Connected = false
 		bagB.AssetAllowed = true
 		bagB.ApplyRuntime(rt)
-		bagB.ApplyPerson(pc)
+		oid := e.peB.acc.ID
+		bagB.OperatorID = &oid
 		if _, err := e.fac.EnqueueFact(e.ctx, &bagB, e.clocks, "pe-b", "pe-b-pass", direct); !errors.Is(err, domain.ErrForbidden) {
 			t.Fatalf("cross factory: %v", err)
 		}
@@ -228,7 +225,6 @@ func testSyncMatrix(t *testing.T, run func(string, func(*testing.T))) {
 		bag.Connected = true
 	})
 
-	credV1 := *bag.Person
 	_, bagOff := e.bound(t, e.op.acc.ID)
 	bagOff.AssetAllowed = true
 	bagOff.Connected = false
@@ -239,7 +235,7 @@ func testSyncMatrix(t *testing.T, run func(string, func(*testing.T))) {
 		}
 		login, err := e.fac.LoginOffline(e.ctx, bagOff, e.clocks, "op-a", "op-pass")
 		if err != nil || login.Decision != factory.NodeAllow {
-			t.Fatalf("old grant %+v %v", login, err)
+			t.Fatalf("still active %+v %v", login, err)
 		}
 	})
 
@@ -247,18 +243,8 @@ func testSyncMatrix(t *testing.T, run func(string, func(*testing.T))) {
 		if err := e.fac.DisableAccount(e.ctx, e.sa, e.op.acc.ID); err != nil {
 			t.Fatal(err)
 		}
-		v2, err := e.fac.IssuePersonOfflineGrant(e.ctx, e.sa, e.op.acc.ID, cid, e.nb, e.na)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if v2.Revision <= credV1.Revision || v2.Active {
-			t.Fatalf("v2 %+v", v2)
-		}
 		if err := e.fac.ConvergeIntent(e.ctx, &bag); err != nil {
 			t.Fatal(err)
-		}
-		if bag.AcceptedPersonRevision != v2.Revision {
-			t.Fatalf("rev %d", bag.AcceptedPersonRevision)
 		}
 		ev, err := e.fac.EvaluateOfflineOp(e.ctx, bag, e.clocks, "op-a", "op-pass")
 		if err != nil || ev.Decision != factory.NodeDeny {
@@ -267,14 +253,9 @@ func testSyncMatrix(t *testing.T, run func(string, func(*testing.T))) {
 	})
 
 	run("4.3", func(t *testing.T) {
-		before := bag.AcceptedPersonRevision
-		bag.ApplyPerson(credV1)
-		if bag.AcceptedPersonRevision != before {
-			t.Fatalf("rolled back to %d", bag.AcceptedPersonRevision)
-		}
 		login, err := e.fac.LoginOffline(e.ctx, bag, e.clocks, "op-a", "op-pass")
 		if err != nil || login.Decision != factory.NodeDeny {
-			t.Fatalf("stale grant %+v %v", login, err)
+			t.Fatalf("still disabled %+v %v", login, err)
 		}
 	})
 

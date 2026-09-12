@@ -168,7 +168,7 @@ func (e *env04) bound(t *testing.T, personID uuid.UUID) (uuid.UUID, factory.Bag)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.fac.AcceptBinding(e.ctx, cid, pub, 1); err != nil {
+	if _, err := e.fac.AcceptBinding(e.ctx, cid, "焊机-1", pub, 1); err != nil {
 		t.Fatal(err)
 	}
 	facPub, err := e.fac.SigningPublicKey(e.ctx)
@@ -179,14 +179,11 @@ func (e *env04) bound(t *testing.T, personID uuid.UUID) (uuid.UUID, factory.Bag)
 	if err != nil {
 		t.Fatal(err)
 	}
-	pc, err := e.fac.IssuePersonOfflineGrant(e.ctx, e.sa, personID, cid, e.nb, e.na)
-	if err != nil {
-		t.Fatal(err)
-	}
 	bag := bagOf(e.seed.ID, cid, pub, priv, facPub)
 	bag.Connected = true
 	bag.ApplyRuntime(rt)
-	bag.ApplyPerson(pc)
+	oid := personID
+	bag.OperatorID = &oid
 	return cid, bag
 }
 
@@ -397,6 +394,20 @@ func testClosureDistribute(t *testing.T, run func(string, func(*testing.T))) {
 		if err != nil || got.Copyable || got.Level != factory.AssetLevelPlatform || got.Content != nil {
 			t.Fatalf("%+v %v", got, err)
 		}
+		listed, err := e.fac.ListAssets(e.ctx, e.pe.tok, factory.KindProcess)
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, a := range listed {
+			if a.ID == platProc.ID && a.Level == factory.AssetLevelPlatform {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatal("platform replica missing from list")
+		}
 	})
 	platProjBody := []byte("plat-proj")
 	platProj := factory.ClosureMember{
@@ -434,6 +445,21 @@ func testClosureDistribute(t *testing.T, run func(string, func(*testing.T))) {
 		}
 		if err := e.fac.PromoteReplica(e.ctx, e.pe.tok, platProj.ID); !errors.Is(err, domain.ErrForbidden) {
 			t.Fatalf("promote: %v", err)
+		}
+		body := []byte("plat-copyable")
+		m := factory.ClosureMember{
+			ID: id.New(), Kind: factory.KindProcess, Level: factory.AssetLevelPlatform, Name: "可复制平台工艺",
+			Status: factory.AssetAvailable, Copyable: true, Revision: 1, Content: body, Digest: digest.Sum(body),
+		}
+		if err := e.fac.AcceptPlatformDelivery(e.ctx, sealSnap(factory.KindProcess, m, nil, &fid, nil)); err != nil {
+			t.Fatal(err)
+		}
+		got, err := e.fac.GetReplica(e.ctx, e.pe.tok, m.ID, 1)
+		if err != nil || !got.Copyable {
+			t.Fatalf("%+v %v", got, err)
+		}
+		if err := e.fac.SetReplicaCopyable(e.ctx, e.pe.tok, m.ID, false); !errors.Is(err, domain.ErrForbidden) {
+			t.Fatalf("tighten replica: %v", err)
 		}
 	})
 	run("9.2", func(t *testing.T) {
@@ -535,7 +561,7 @@ func testClosureDistribute(t *testing.T, run func(string, func(*testing.T))) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := e.facB.AcceptBinding(e.ctx, cidB, pub, 1); err != nil {
+		if _, err := e.facB.AcceptBinding(e.ctx, cidB, "焊机-B", pub, 1); err != nil {
 			t.Fatal(err)
 		}
 		facPub, err := e.facB.SigningPublicKey(e.ctx)

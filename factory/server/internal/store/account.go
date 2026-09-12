@@ -22,7 +22,7 @@ const (
 	RoleFactorySuperAdmin = "factory_super_admin" // 工厂超级管理员，只能挂 Factory 作用域
 	RoleOrgAdmin          = "org_admin"           // 组织管理员，只管本节点及当前子树
 	RoleOrgLead           = "org_lead"            // 组织负责人，子树只读
-	RoleProcessEngineer   = "process_engineer"    // 工艺工程师，可 Factory 或节点作用域
+	RoleProcessEngineer   = "process_engineer"    // 历史角色，新授予不再提供；制作不依赖它
 	RoleOperator          = "operator"            // 操作员，可产生运行事实
 	RoleAuditor           = "auditor"             // 审计员，只读，不能改业务
 
@@ -36,8 +36,8 @@ type Person struct {
 	LoginName           string    `gorm:"not null" json:"loginName"`           // 本厂内唯一登录名，不是身份
 	DisplayName         string    `gorm:"not null" json:"displayName"`         // 显示名，可改
 	Status              string    `gorm:"not null" json:"status"`              // pending / active / disabled
-	PasswordHash        *string   `json:"-"`                                   // 日常口令哈希，只存在本厂；激活前为空
-	ActivationTokenHash *string   `json:"-"`                                   // 一次性激活口令哈希，激活后清空
+	PasswordHash        *string   `json:"-"`                                   // 日常密码哈希，只存在本厂；激活前为空
+	ActivationTokenHash *string   `json:"-"`                                   // 一次性 8 位激活码哈希，激活后清空
 	IsInitialSuperAdmin bool      `gorm:"not null" json:"isInitialSuperAdmin"` // 本厂唯一的 WAN 下发初始超管
 	CreatedAt           time.Time `gorm:"not null" json:"createdAt"`           // 账号创建时间
 }
@@ -67,6 +67,32 @@ func (s *Store) CreatePerson(ctx context.Context, loginName, displayName string,
 	}
 	if err := s.db.WithContext(ctx).Create(&row).Error; err != nil {
 		if domain.IsUniqueViolation(err) {
+			if initial {
+				return Person{}, domain.ErrInitialSAExists
+			}
+			return Person{}, domain.ErrLoginNameTaken
+		}
+		return Person{}, err
+	}
+	return row, nil
+}
+
+// CreatePersonAt 用 WAN 约定的身份写入待启用账号；身份冲突且已是同一初始超管则返回已有行。
+func (s *Store) CreatePersonAt(ctx context.Context, personID uuid.UUID, loginName, displayName string, initial bool) (Person, error) {
+	row := Person{
+		ID:                  personID,
+		LoginName:           loginName,
+		DisplayName:         displayName,
+		Status:              StatusPending,
+		IsInitialSuperAdmin: initial,
+		CreatedAt:           time.Now().UTC(),
+	}
+	if err := s.db.WithContext(ctx).Create(&row).Error; err != nil {
+		if domain.IsUniqueViolation(err) {
+			existing, getErr := s.PersonByID(ctx, personID)
+			if getErr == nil && existing.IsInitialSuperAdmin && existing.LoginName == loginName {
+				return existing, nil
+			}
 			if initial {
 				return Person{}, domain.ErrInitialSAExists
 			}
@@ -125,6 +151,22 @@ func (s *Store) PersonByLogin(ctx context.Context, loginName string) (Person, er
 	return row, nil
 }
 
+// PeopleByIDs 按稳定身份批量取本厂账号，给列表拼显示名。
+func (s *Store) PeopleByIDs(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]Person, error) {
+	out := map[uuid.UUID]Person{}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	var rows []Person
+	if err := s.db.WithContext(ctx).Where("id IN ?", ids).Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	for _, p := range rows {
+		out[p.ID] = p
+	}
+	return out, nil
+}
+
 func (s *Store) PersonByID(ctx context.Context, personID uuid.UUID) (Person, error) {
 	var row Person
 	if err := s.db.WithContext(ctx).First(&row, "id = ?", personID).Error; err != nil {
@@ -175,6 +217,31 @@ func (s *Store) SetPasswordHash(ctx context.Context, personID uuid.UUID, passwor
 	return nil
 }
 
+// ApplyPersonPassword 写入日常密码哈希并清激活码；status 空则不改状态。
+func (s *Store) ApplyPersonPassword(ctx context.Context, personID uuid.UUID, passwordHash, status string) error {
+	updates := map[string]any{
+		"password_hash":         passwordHash,
+		"activation_token_hash": nil,
+	}
+	if status != "" {
+		updates["status"] = status
+	}
+	q := s.db.WithContext(ctx).Model(&Person{}).Where("id = ?", personID)
+	if status != "" {
+		q = q.Select("password_hash", "activation_token_hash", "status")
+	} else {
+		q = q.Select("password_hash", "activation_token_hash")
+	}
+	res := q.Updates(updates)
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}
+
 func (s *Store) SetPersonStatus(ctx context.Context, personID uuid.UUID, status string) error {
 	res := s.db.WithContext(ctx).Model(&Person{}).Where("id = ?", personID).Update("status", status)
 	if res.Error != nil {
@@ -211,15 +278,32 @@ func (s *Store) DeleteSessionByTokenHash(ctx context.Context, tokenHash string) 
 	return nil
 }
 
+// DeleteSessionsForPerson 作废该人全部在线会话；没有会话不算错。
+func (s *Store) DeleteSessionsForPerson(ctx context.Context, personID uuid.UUID) error {
+	return s.db.WithContext(ctx).Where("person_id = ?", personID).Delete(&Session{}).Error
+}
+
 func (s *Store) PersonCount(ctx context.Context) (int64, error) {
 	var n int64
 	err := s.db.WithContext(ctx).Model(&Person{}).Count(&n).Error
 	return n, err
 }
 
-// ListPeople 列出本厂全部人员行；调用方不得把口令哈希交给前端。
+// ListPeople 列出本厂全部人员行，按创建时间从新到旧；调用方不得把密码哈希交给前端。
 func (s *Store) ListPeople(ctx context.Context) ([]Person, error) {
 	var rows []Person
-	err := s.db.WithContext(ctx).Order("created_at").Find(&rows).Error
+	err := s.db.WithContext(ctx).Order("created_at DESC").Find(&rows).Error
 	return rows, err
+}
+
+// InitialPerson 本厂唯一的 WAN 下发初始超管；没有则当未认领。
+func (s *Store) InitialPerson(ctx context.Context) (Person, error) {
+	var row Person
+	if err := s.db.WithContext(ctx).First(&row, "is_initial_super_admin = ?", true).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return Person{}, domain.ErrNotFound
+		}
+		return Person{}, err
+	}
+	return row, nil
 }
