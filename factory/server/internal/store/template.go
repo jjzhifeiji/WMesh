@@ -109,7 +109,11 @@ func (s *Store) GovernedAssetsByKind(ctx context.Context, kind string) ([]Asset,
 	}
 	out := make([]Asset, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, assetFromGoverned(row))
+		a, err := s.decodeGoverned(row)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, a)
 	}
 	return out, nil
 }

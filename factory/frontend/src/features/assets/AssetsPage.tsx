@@ -2,7 +2,7 @@ import { PlusOutlined } from "@ant-design/icons";
 import { App, Button, Card, Descriptions, Empty, Form, Input, Modal, Radio, Select, Space, Switch, Table, Tag, Typography, type TableColumnsType } from "antd";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { personName, useCatalog, type Catalog } from "@/features/catalog/api";
-import { errorMessage } from "@/shared/api/client";
+import { errorMessage, ApiError } from "@/shared/api/client";
 import { formatTime } from "@/shared/format";
 import { statusColor, statusLabel } from "@/shared/labels";
 import { PageHeader } from "@/shared/ui/PageHeader";
@@ -140,7 +140,11 @@ export function AssetsPage({ kind }: { kind: AssetKind }) {
     return true;
   };
   const canMutate = (row: Asset) => covers(row) && row.status !== "disabled";
-  const canRead = (row: Asset) => row.level !== "personal" || row.creatorId === meId;
+  // 不可复制的平台级是保密件，厂端不打开正文。
+  const canRead = (row: Asset) => {
+    if (row.level === "platform" && !row.copyable) return false;
+    return row.level !== "personal" || row.creatorId === meId;
+  };
   const canCopy = (row: Asset) => isProcess && row.copyable && row.status !== "disabled" && canRead(row);
   const onErr = (e: unknown) => message.error(errorMessage(e));
   const toggleCopyable = (row: Asset, copyable: boolean) => {
@@ -263,7 +267,7 @@ export function AssetsPage({ kind }: { kind: AssetKind }) {
         title={title}
         description={
           isProcess
-            ? "本厂账号都能制作；云端发布后会出现平台级只读副本。个人级只有创建人能打开正文。"
+            ? "本厂账号都能制作；云端不可复制的不显示参数。个人级只有创建人能打开正文。"
             : "工程钉死所依赖工艺的身份和修订；升档工程不会另拆出工艺。"
         }
         extra={
@@ -409,6 +413,7 @@ export function AssetsPage({ kind }: { kind: AssetKind }) {
       />
       <EditModal
         row={editing}
+        canRead={editing ? canRead(editing) : false}
         schema={schema}
         saving={rename.isPending || updateContent.isPending}
         locked={editing ? !canMutate(editing) : true}
@@ -494,6 +499,10 @@ export function AssetsPage({ kind }: { kind: AssetKind }) {
   );
 }
 
+function isLeaseError(e: unknown) {
+  return e instanceof ApiError && e.code === "content lease expired";
+}
+
 function depText(row: Asset, processes: Asset[]) {
   if (!row.deps?.length) return "—";
   return row.deps.map((d) => processes.find((p) => p.id === d.id)?.name || "未知工艺").join("、");
@@ -538,7 +547,11 @@ function DetailModal({
             参数
           </Typography.Paragraph>
           {!canRead ? (
-            <Typography.Text type="secondary">无权查看正文。</Typography.Text>
+            <Typography.Text type="secondary">
+              {row.level === "platform" && !row.copyable ? "不可复制，不显示工艺参数。" : "无权查看正文。"}
+            </Typography.Text>
+          ) : q.isError && isLeaseError(q.error) ? (
+            <Typography.Text type="secondary">租约未就绪，暂时不能显示工艺参数。</Typography.Text>
           ) : q.isError ? (
             <Typography.Text type="danger">{errorMessage(q.error)}</Typography.Text>
           ) : q.isLoading ? (
@@ -554,6 +567,7 @@ function DetailModal({
 
 function EditModal({
   row,
+  canRead,
   schema,
   saving,
   locked,
@@ -562,6 +576,7 @@ function EditModal({
   onSave,
 }: {
   row: Asset | null;
+  canRead: boolean;
   schema: ContentSchema | null;
   saving: boolean;
   locked: boolean;
@@ -569,7 +584,7 @@ function EditModal({
   onClose: () => void;
   onSave: (name: string, content: string, originalContent: string) => Promise<void>;
 }) {
-  const q = useAssetContent(row?.id ?? null);
+  const q = useAssetContent(canRead && row ? row.id : null);
   const [form] = Form.useForm<{ name: string; content: string }>();
   useEffect(() => {
     if (!row) return;
@@ -588,7 +603,11 @@ function EditModal({
       styles={{ body: { maxHeight: "50vh", overflow: "auto" } }}
       onOk={() => form.submit()}
     >
-      {q.isError ? <Typography.Text type="danger">{errorMessage(q.error)}</Typography.Text> : null}
+      {q.isError && isLeaseError(q.error) ? (
+        <Typography.Text type="secondary">租约未就绪，暂时不能改正文。</Typography.Text>
+      ) : q.isError ? (
+        <Typography.Text type="danger">{errorMessage(q.error)}</Typography.Text>
+      ) : null}
       {extra ? <div style={{ marginBottom: 8 }}>{extra}</div> : null}
       <Form<{ name: string; content: string }>
         form={form}

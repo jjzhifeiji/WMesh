@@ -145,3 +145,17 @@ func channelHelloPayload(factoryID uuid.UUID, nonce []byte) []byte {
 	b = append(b, nonce...)
 	return b
 }
+
+// IssueContentLease 给该厂签发或续期内容租约；同一把 L，窗口最多 24 小时。
+func (s *Channel) IssueContentLease(ctx context.Context, factoryID uuid.UUID) (ContentLease, error) {
+	// 同一把 L 续期，窗口重新算 24 小时。
+	lease, err := s.store.IssueContentLease(ctx, factoryID)
+	if err != nil {
+		_ = s.audit(ctx, nil, nil, &factoryID, "content_lease", factoryID.String(), audit.Deny)
+		return ContentLease{}, err
+	}
+	if err := s.audit(ctx, nil, nil, &factoryID, "content_lease", factoryID.String(), audit.Allow); err != nil {
+		return ContentLease{}, err
+	}
+	return lease, nil
+}

@@ -234,10 +234,6 @@ func (s *Assets) PromoteFromSnapshot(ctx context.Context, token string, snap Ass
 		return Asset{}, err
 	}
 	fid := snap.SourceFactoryID
-	if !digest.Match(snap.Content, snap.Digest) || len(snap.Digest) != 32 {
-		_ = s.audit(ctx, &admin.ID, nil, &fid, "promote_asset", snap.SourceID.String(), audit.Deny)
-		return Asset{}, domain.ErrIntegrity
-	}
 	if snap.Status != AssetAvailable {
 		_ = s.audit(ctx, &admin.ID, nil, &fid, "promote_asset", snap.SourceID.String(), audit.Deny)
 		return Asset{}, domain.ErrAssetNotAvailable
@@ -246,7 +242,16 @@ func (s *Assets) PromoteFromSnapshot(ctx context.Context, token string, snap Ass
 		_ = s.audit(ctx, &admin.ID, nil, &fid, "promote_asset", snap.SourceID.String(), audit.Deny)
 		return Asset{}, domain.ErrAssetNotCopyable
 	}
-	body := snap.Content
+	// 过站解开后再验摘要；WAN 入库仍是明文。
+	body, err := s.OpenSnapshotTransit(ctx, snap)
+	if err != nil {
+		_ = s.audit(ctx, &admin.ID, nil, &fid, "promote_asset", snap.SourceID.String(), audit.Deny)
+		return Asset{}, err
+	}
+	if !digest.Match(body, snap.Digest) || len(snap.Digest) != 32 {
+		_ = s.audit(ctx, &admin.ID, nil, &fid, "promote_asset", snap.SourceID.String(), audit.Deny)
+		return Asset{}, domain.ErrIntegrity
+	}
 	sum := snap.Digest
 	deps, err := s.rewritePromoteDeps(ctx, snap.Kind, snap.Deps)
 	if err != nil {

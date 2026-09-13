@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"wmesh/global/internal/platform/audit"
+	"wmesh/global/internal/platform/contentcrypt"
 	"wmesh/global/internal/platform/digest"
 	"wmesh/global/internal/platform/domain"
 	"wmesh/global/internal/platform/id"
@@ -186,7 +187,7 @@ func TestWANPlatformAssets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("insert: %v", err)
 	}
-	if a.Level != store.AssetLevelPlatform || !a.Copyable || a.Revision != 1 {
+	if a.Level != store.AssetLevelPlatform || !a.Copyable || a.Revision != 1 || contentcrypt.IsEnvelope(a.Content) {
 		t.Fatalf("platform copyable: %+v", a)
 	}
 	src := id.New()

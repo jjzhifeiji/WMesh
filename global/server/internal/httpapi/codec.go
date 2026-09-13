@@ -63,7 +63,7 @@ func statusOf(err error) int {
 		return http.StatusUnauthorized
 	case errors.Is(err, domain.ErrForbidden), errors.Is(err, domain.ErrLastAdmin),
 		errors.Is(err, domain.ErrInitialSAExists), errors.Is(err, domain.ErrFactoryDisabled),
-		errors.Is(err, domain.ErrFactoryRetired):
+		errors.Is(err, domain.ErrFactoryRetired), errors.Is(err, domain.ErrContentLeaseExpired):
 		return http.StatusForbidden
 	case errors.Is(err, domain.ErrNotFound):
 		return http.StatusNotFound

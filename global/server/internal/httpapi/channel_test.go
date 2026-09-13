@@ -14,6 +14,7 @@ import (
 	"github.com/coder/websocket/wsjson"
 
 	"wmesh/global/internal/httpapi"
+	"wmesh/global/internal/platform/contentcrypt"
 	"wmesh/global/internal/platform/nodekey"
 	"wmesh/global/internal/platform/testpg"
 	"wmesh/global/internal/service"
@@ -225,9 +226,14 @@ func TestChannelPlatformClosure(t *testing.T) {
 		t.Fatalf("publish %d %s", code, body)
 	}
 	if !waitChannel(t, ctx, c, func(msg channelWire) bool {
-		return msg.Typ == "platform_closure" && msg.Closure != nil && msg.Closure.AssetID == pid
+		return msg.Typ == "platform_closure" && msg.Closure != nil && msg.Closure.AssetID == pid && len(msg.Closure.Members) > 0 && len(msg.Closure.Members[0].Content) == 0
 	}) {
 		t.Fatal("no platform_closure")
+	}
+	if !waitChannel(t, ctx, c, func(msg channelWire) bool {
+		return msg.Typ == "platform_closure_body" && msg.Closure != nil && msg.Closure.AssetID == pid && len(msg.Closure.Members) > 0 && contentcrypt.IsEnvelope(msg.Closure.Members[0].Content)
+	}) {
+		t.Fatal("no platform_closure_body")
 	}
 
 	rev := gjson(t, body, "revision")
@@ -249,6 +255,96 @@ func TestChannelPlatformClosure(t *testing.T) {
 		return msg.Typ == "platform_retract" && msg.AssetID == pid
 	}) {
 		t.Fatal("no platform_retract")
+	}
+}
+
+func TestChannelLeaseBeforeReplay(t *testing.T) {
+	admin := testpg.Open(t)
+	_, dsn := testpg.CreateDB(t, admin, "wmesh_wan")
+	svc := service.NewService(store.Open(testpg.OpenMigrated(t, dsn)))
+	if err := svc.BootstrapAdmin(context.Background(), "w", "wan-secret"); err != nil {
+		t.Fatal(err)
+	}
+	tok, err := svc.Login(context.Background(), "w", "wan-secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := svc.CreateFactory(context.Background(), tok, "厂A", "sa-a", "超管A")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(httpapi.New(svc, "test").Router())
+	t.Cleanup(srv.Close)
+	code, body := do(t, srv, "POST", "/v1/assets", tok, `{"kind":"process","name":"握手焊","content":"plat-body"}`)
+	if code != http.StatusCreated {
+		t.Fatalf("create %d %s", code, body)
+	}
+	pid := gjson(t, body, "id")
+	code, body = do(t, srv, "POST", "/v1/assets/"+pid+"/publish", tok, `{"expected":1}`)
+	if code != http.StatusOK {
+		t.Fatalf("publish %d %s", code, body)
+	}
+
+	wsURL := "ws" + srv.URL[len("http"):] + "/v1/channel"
+	ctx := context.Background()
+	pub, _, err := nodekey.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.CloseNow()
+	if err := wsjson.Write(ctx, c, map[string]any{"typ": "enroll", "enrollmentCode": created.EnrollmentToken}); err != nil {
+		t.Fatal(err)
+	}
+	var enrolled struct {
+		Typ string `json:"typ"`
+	}
+	if err := wsjson.Read(ctx, c, &enrolled); err != nil || enrolled.Typ != "enrolled" {
+		t.Fatalf("enrolled: %+v %v", enrolled, err)
+	}
+	if err := wsjson.Write(ctx, c, map[string]any{"typ": "claimed", "factoryPublicKey": pub}); err != nil {
+		t.Fatal(err)
+	}
+	var welcome struct {
+		Typ string `json:"typ"`
+	}
+	if err := wsjson.Read(ctx, c, &welcome); err != nil || welcome.Typ != "welcome" {
+		t.Fatalf("welcome: %+v %v", welcome, err)
+	}
+
+	readCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	var first channelWire
+	err = wsjson.Read(readCtx, c, &first)
+	cancel()
+	if err != nil || first.Typ != "content_lease" {
+		t.Fatalf("first after welcome: %+v %v", first, err)
+	}
+	bodies := 0
+	sawMeta := false
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && bodies < 2 {
+		readCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+		var msg channelWire
+		err := wsjson.Read(readCtx, c, &msg)
+		cancel()
+		if err != nil {
+			continue
+		}
+		if msg.Typ == "platform_closure" && msg.Closure != nil && msg.Closure.AssetID == pid && len(msg.Closure.Members) > 0 {
+			if len(msg.Closure.Members[0].Content) != 0 {
+				t.Fatal("control plane carried body")
+			}
+			sawMeta = true
+		}
+		if msg.Typ == "platform_closure_body" && msg.Closure != nil && msg.Closure.AssetID == pid && len(msg.Closure.Members) > 0 && contentcrypt.IsEnvelope(msg.Closure.Members[0].Content) {
+			bodies++
+		}
+	}
+	if !sawMeta || bodies < 2 {
+		t.Fatalf("lease-then-replay meta=%v bodies=%d", sawMeta, bodies)
 	}
 }
 
@@ -522,7 +618,16 @@ func TestPromoteViaChannel(t *testing.T) {
 	}
 	assertOnline(t, srv, tok, true)
 
-	code, resp := do(t, srv, "GET", "/v1/factories/"+created.Factory.ID.String()+"/promotable-assets?kind=process", tok, "")
+	deadline := time.Now().Add(3 * time.Second)
+	var code int
+	var resp string
+	for time.Now().Before(deadline) {
+		code, resp = do(t, srv, "GET", "/v1/factories/"+created.Factory.ID.String()+"/promotable-assets?kind=process", tok, "")
+		if code == http.StatusOK && strings.Contains(resp, "厂级焊") {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 	if code != http.StatusOK || !strings.Contains(resp, "厂级焊") {
 		t.Fatalf("list %d %s", code, resp)
 	}
@@ -580,6 +685,9 @@ type channelWire struct {
 	Closure *struct {
 		AssetID string `json:"assetId"`
 		Status  string `json:"status"`
+		Members []struct {
+			Content []byte `json:"content"`
+		} `json:"members"`
 	} `json:"closure"`
 }
 

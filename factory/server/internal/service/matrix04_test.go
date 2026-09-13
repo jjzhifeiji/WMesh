@@ -394,6 +394,9 @@ func testClosureDistribute(t *testing.T, run func(string, func(*testing.T))) {
 		if err != nil || got.Copyable || got.Level != factory.AssetLevelPlatform || got.Content != nil {
 			t.Fatalf("%+v %v", got, err)
 		}
+		if _, err := e.fac.ReadAssetContent(e.ctx, e.pe.tok, platProc.ID); !errors.Is(err, domain.ErrForbidden) {
+			t.Fatalf("secret replica content: %v", err)
+		}
 		listed, err := e.fac.ListAssets(e.ctx, e.pe.tok, factory.KindProcess)
 		if err != nil {
 			t.Fatal(err)

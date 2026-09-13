@@ -46,6 +46,14 @@ func (s *Assets) loadReplica(ctx context.Context, id uuid.UUID) (Asset, error) {
 	return replicaAsAsset(r), nil
 }
 
+func (s *Assets) loadReplicaMeta(ctx context.Context, id uuid.UUID) (Asset, error) {
+	r, err := s.store.LatestReplicaMeta(ctx, id)
+	if err != nil {
+		return Asset{}, err
+	}
+	return replicaAsAsset(r), nil
+}
+
 func (s *Assets) loadAny(ctx context.Context, id uuid.UUID) (Asset, error) {
 	a, err := s.loadChecked(ctx, id)
 	if err == nil {
@@ -57,6 +65,17 @@ func (s *Assets) loadAny(ctx context.Context, id uuid.UUID) (Asset, error) {
 	return s.loadReplica(ctx, id)
 }
 
+func (s *Assets) loadAnyMeta(ctx context.Context, id uuid.UUID) (Asset, error) {
+	a, err := s.store.GovernedAssetMetaByID(ctx, id)
+	if err == nil {
+		return a, nil
+	}
+	if !errors.Is(err, domain.ErrNotFound) {
+		return Asset{}, err
+	}
+	return s.loadReplicaMeta(ctx, id)
+}
+
 func (s *kernel) loadChecked(ctx context.Context, id uuid.UUID) (Asset, error) {
 	a, err := s.store.GovernedAssetByID(ctx, id)
 	if err != nil {
@@ -66,6 +85,10 @@ func (s *kernel) loadChecked(ctx context.Context, id uuid.UUID) (Asset, error) {
 		return Asset{}, domain.ErrIntegrity
 	}
 	return a, nil
+}
+
+func (s *kernel) loadCheckedMeta(ctx context.Context, id uuid.UUID) (Asset, error) {
+	return s.store.GovernedAssetMetaByID(ctx, id)
 }
 
 // canAuthorFactory 本厂有效账号都能制作、改厂级；个人级正文仍只创建人。
@@ -243,7 +266,7 @@ func (s *Assets) CreatePersonalProject(ctx context.Context, token string, wc Wor
 
 func (s *kernel) assertPersonalProjectDeps(ctx context.Context, acc Account, deps []AssetDep) error {
 	for _, d := range deps {
-		p, err := s.loadChecked(ctx, d.ID)
+		p, err := s.loadCheckedMeta(ctx, d.ID)
 		if err != nil {
 			return err
 		}
@@ -281,11 +304,8 @@ func (s *Assets) CreateFactoryProject(ctx context.Context, token string, wc Work
 
 func (s *kernel) assertFactoryProcessDeps(ctx context.Context, deps []AssetDep) error {
 	for _, d := range deps {
-		p, err := s.store.GovernedAssetByID(ctx, d.ID)
+		p, err := s.store.GovernedAssetMetaByID(ctx, d.ID)
 		if err == nil {
-			if !digest.Match(p.Content, p.Digest) {
-				return domain.ErrIntegrity
-			}
 			if p.Kind != KindProcess || p.Level != AssetLevelFactory || p.Revision != d.Revision || !bytes.Equal(p.Digest, d.Digest) {
 				return domain.ErrAssetDependency
 			}
@@ -297,15 +317,12 @@ func (s *kernel) assertFactoryProcessDeps(ctx context.Context, deps []AssetDep) 
 		if !errors.Is(err, domain.ErrNotFound) {
 			return err
 		}
-		r, err := s.store.ReplicaByIDRev(ctx, d.ID, d.Revision)
+		r, err := s.store.ReplicaMetaByIDRev(ctx, d.ID, d.Revision)
 		if err != nil {
 			if errors.Is(err, domain.ErrNotFound) {
 				return domain.ErrAssetDependency
 			}
 			return err
-		}
-		if !digest.Match(r.Content, r.Digest) {
-			return domain.ErrIntegrity
 		}
 		if r.Kind != KindProcess || r.Level != AssetLevelPlatform || r.Revision != d.Revision || !bytes.Equal(r.Digest, d.Digest) {
 			return domain.ErrAssetDependency
@@ -417,7 +434,7 @@ func (s *Assets) DeleteAsset(ctx context.Context, token string, assetID uuid.UUI
 	if err != nil {
 		return err
 	}
-	cur, err := s.loadChecked(ctx, assetID)
+	cur, err := s.loadCheckedMeta(ctx, assetID)
 	if err != nil {
 		_ = s.audit(ctx, &acc.ID, nil, "delete_asset", assetID.String(), audit.Deny)
 		return err
@@ -483,13 +500,13 @@ func (s *Assets) canViewAssetMeta(ctx context.Context, acc Account, a Asset) err
 	return nil
 }
 
-// GetAsset 读元数据；无许可或摘要不符则拒绝，不回正文。
+// GetAsset 读元数据，不解包正文。
 func (s *Assets) GetAsset(ctx context.Context, token string, assetID uuid.UUID) (Asset, error) {
 	acc, err := s.RequireActive(ctx, token)
 	if err != nil {
 		return Asset{}, err
 	}
-	a, err := s.loadAny(ctx, assetID)
+	a, err := s.loadAnyMeta(ctx, assetID)
 	if err != nil {
 		_ = s.audit(ctx, &acc.ID, nil, "get_asset", assetID.String(), audit.Deny)
 		return Asset{}, err
@@ -504,23 +521,33 @@ func (s *Assets) GetAsset(ctx context.Context, token string, assetID uuid.UUID) 
 	return stripContent(a), nil
 }
 
-// ReadAssetContent 读正文并核对摘要；个人级仅创建人，厂级须能看这条元数据。
+// ReadAssetContent 读正文并核对摘要；个人级仅创建人；不可复制的平台级不给人看。
 func (s *Assets) ReadAssetContent(ctx context.Context, token string, assetID uuid.UUID) ([]byte, error) {
 	acc, err := s.RequireActive(ctx, token)
 	if err != nil {
 		return nil, err
 	}
-	a, err := s.loadAny(ctx, assetID)
+	meta, err := s.loadAnyMeta(ctx, assetID)
 	if err != nil {
 		_ = s.audit(ctx, &acc.ID, nil, "read_asset_content", assetID.String(), audit.Deny)
 		return nil, err
 	}
-	if a.Level == AssetLevelPersonal && acc.ID != a.CreatorID {
-		_ = s.audit(ctx, &acc.ID, nil, "read_asset_content", assetTarget(a.ID, a.Revision), audit.Deny)
+	// 不可复制的平台级是严格保密件，厂端人员不得看参数，连解包都不做。
+	if meta.Level == AssetLevelPlatform && !meta.Copyable {
+		_ = s.audit(ctx, &acc.ID, nil, "read_asset_content", assetTarget(meta.ID, meta.Revision), audit.Deny)
 		return nil, domain.ErrForbidden
 	}
-	if err := s.canViewAssetMeta(ctx, acc, a); err != nil {
-		_ = s.audit(ctx, &acc.ID, nil, "read_asset_content", assetTarget(a.ID, a.Revision), audit.Deny)
+	if meta.Level == AssetLevelPersonal && acc.ID != meta.CreatorID {
+		_ = s.audit(ctx, &acc.ID, nil, "read_asset_content", assetTarget(meta.ID, meta.Revision), audit.Deny)
+		return nil, domain.ErrForbidden
+	}
+	if err := s.canViewAssetMeta(ctx, acc, meta); err != nil {
+		_ = s.audit(ctx, &acc.ID, nil, "read_asset_content", assetTarget(meta.ID, meta.Revision), audit.Deny)
+		return nil, err
+	}
+	a, err := s.loadAny(ctx, assetID)
+	if err != nil {
+		_ = s.audit(ctx, &acc.ID, nil, "read_asset_content", assetID.String(), audit.Deny)
 		return nil, err
 	}
 	if err := s.audit(ctx, &acc.ID, nil, "read_asset_content", assetTarget(a.ID, a.Revision), audit.Allow); err != nil {
@@ -606,7 +633,7 @@ func (s *Assets) assertPromoteToFactoryDeps(ctx context.Context, src Asset) erro
 		return nil
 	}
 	for _, d := range src.Deps {
-		p, err := s.loadChecked(ctx, d.ID)
+		p, err := s.loadCheckedMeta(ctx, d.ID)
 		if err != nil {
 			return err
 		}
@@ -705,10 +732,17 @@ func (s *Assets) SnapshotForChannel(ctx context.Context, assetID uuid.UUID) (Ass
 		_ = s.audit(ctx, nil, nil, "export_asset", assetTarget(src.ID, src.Revision), audit.Deny)
 		return AssetSnapshot{}, domain.ErrAssetNotCopyable
 	}
+	// 先解厂库信封拿到明文，再另封过站。
 	snap, err := s.store.ExportAssetSnapshot(ctx, assetID)
 	if err != nil {
 		return AssetSnapshot{}, err
 	}
+	// 通道上仍是过站密文，不把厂库信封送出。
+	sealed, err := s.sealTransitContent(snap.SourceID, snap.SourceRevision, snap.Content)
+	if err != nil {
+		return AssetSnapshot{}, err
+	}
+	snap.Content = sealed
 	return snap, s.audit(ctx, nil, nil, "export_asset", assetTarget(src.ID, src.Revision), audit.Allow)
 }
 

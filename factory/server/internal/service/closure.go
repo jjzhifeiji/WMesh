@@ -231,7 +231,7 @@ func (s *Closure) canPack(ctx context.Context, acc Account, root ClosureMember) 
 		return nil
 	}
 	var unit *uuid.UUID
-	a, err := s.store.GovernedAssetByID(ctx, root.ID)
+	a, err := s.store.GovernedAssetMetaByID(ctx, root.ID)
 	if err == nil {
 		unit = a.OrgUnitID
 	}

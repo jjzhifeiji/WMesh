@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"crypto/rand"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -19,7 +20,7 @@ func (h *Handler) mountChannel(mux *http.ServeMux) { // 厂出站 WSS：认领�
 }
 
 type channelMsg struct {
-	Typ              string                   `json:"typ"`                        // enroll / enrolled / claimed / welcome / hello / challenge / hello_ack / ready / ping / pong / factory_state / client_bind / client_void / platform_closure / platform_retract / content_template / asset_list / asset_snapshot / asset_list_ok / asset_snapshot_ok / error
+	Typ              string                   `json:"typ"`                        // enroll / enrolled / claimed / welcome / hello / challenge / hello_ack / ready / ping / pong / content_lease / content_lease_renew / factory_state / client_bind / client_void / platform_closure / platform_closure_body / platform_retract / content_template / asset_list / asset_snapshot / asset_list_ok / asset_snapshot_ok / error
 	EnrollmentCode   string                   `json:"enrollmentCode,omitempty"`   // 一次性建厂码，仅 enroll
 	FactoryPublicKey []byte                   `json:"factoryPublicKey,omitempty"` // 本厂签发公钥，仅 claimed
 	FactoryID        string                   `json:"factoryId,omitempty"`        // 工厂稳定身份
@@ -30,11 +31,11 @@ type channelMsg struct {
 	Nonce            []byte                   `json:"nonce,omitempty"`            // hello 挑战随机数
 	Signature        []byte                   `json:"signature,omitempty"`        // 厂钥对 nonce 的签名
 	Status           string                   `json:"status,omitempty"`           // 工厂治理状态
-	Revision         int64                    `json:"revision,omitempty"`         // 治理修订，厂端只向前
+	Revision         int64                   `json:"revision,omitempty"`         // 治理修订，厂端只向前
 	ClientID         string                   `json:"clientId,omitempty"`         // 现场设备固定识别号
 	ClientName       string                   `json:"clientName,omitempty"`       // 给人看的设备名
 	ClientPublicKey  []byte                   `json:"clientPublicKey,omitempty"`  // 本机公钥，可空
-	BindingRevision  int64                    `json:"bindingRevision,omitempty"`  // 绑定修订，厂端只向前
+	BindingRevision  int64                   `json:"bindingRevision,omitempty"`  // 绑定修订，厂端只向前
 	ReqID            string                   `json:"reqId,omitempty"`            // 问询与回执配对
 	Kind             string                   `json:"kind,omitempty"`             // process / project，仅 asset_list
 	AssetID          string                   `json:"assetId,omitempty"`          // 升档快照身份，或撤回的平台级身份
@@ -42,6 +43,8 @@ type channelMsg struct {
 	Snapshot         *service.AssetSnapshot   `json:"snapshot,omitempty"`         // 升档快照，含正文
 	Closure          *service.ClosureSnapshot  `json:"closure,omitempty"`          // 平台级闭包（可用或停用修订）
 	Template         *service.TemplateSnapshot `json:"template,omitempty"`         // 当前内容模版
+	Lease            []byte                   `json:"lease,omitempty"`            // 内容租约钥 L，仅 content_lease
+	NotAfter         string                   `json:"notAfter,omitempty"`         // 租约到期 RFC3339，WAN 钟
 	Error            string                    `json:"error,omitempty"`            // 英文业务错误
 }
 
@@ -172,8 +175,17 @@ func (h *Handler) helloThenServe(ctx context.Context, c *websocket.Conn, factory
 
 func (h *Handler) pinFactory(ctx context.Context, c *websocket.Conn, factoryID uuid.UUID) {
 	gen := h.live.acquire(factoryID)
-	h.live.attach(factoryID, gen, c)
+	defer func() {
+		if h.live.release(factoryID, gen) {
+			_ = h.svc.MarkChannelOffline(context.Background(), factoryID)
+		}
+	}()
 	if err := h.svc.MarkChannelOnline(ctx, factoryID); err != nil {
+		_ = wsjson.Write(ctx, c, channelMsg{Typ: "error", Error: err.Error()})
+		return
+	}
+	// 租约先于任何闭包；回放写完再 attach，避免 fanout 抢在租约前写套接字。
+	if err := h.pushContentLease(ctx, c, factoryID); err != nil {
 		_ = wsjson.Write(ctx, c, channelMsg{Typ: "error", Error: err.Error()})
 		return
 	}
@@ -181,11 +193,9 @@ func (h *Handler) pinFactory(ctx context.Context, c *websocket.Conn, factoryID u
 	h.replayClosures(ctx, c, factoryID)
 	h.replayTemplates(ctx, c, factoryID)
 	h.replayRetractions(ctx, c)
-	defer func() {
-		if h.live.release(factoryID, gen) {
-			_ = h.svc.MarkChannelOffline(context.Background(), factoryID)
-		}
-	}()
+	h.live.attach(factoryID, gen, c)
+	// 补上握手窗口里 HTTP 发布丢掉的修订。
+	h.replayClosures(ctx, c, factoryID)
 	for {
 		readCtx, cancel := context.WithTimeout(ctx, channelIdle)
 		var msg channelMsg
@@ -200,10 +210,27 @@ func (h *Handler) pinFactory(ctx context.Context, c *websocket.Conn, factoryID u
 			if err := wsjson.Write(ctx, c, channelMsg{Typ: "pong"}); err != nil {
 				return
 			}
+		case "content_lease_renew":
+			if err := h.pushContentLease(ctx, c, factoryID); err != nil {
+				return
+			}
 		case "asset_list_ok", "asset_snapshot_ok", "error":
 			h.live.deliver(factoryID, msg)
 		}
 	}
+}
+
+func (h *Handler) pushContentLease(ctx context.Context, c *websocket.Conn, factoryID uuid.UUID) error {
+	// 同一把 L 续发给已钉死身份的厂。
+	lease, err := h.svc.IssueContentLease(ctx, factoryID)
+	if err != nil {
+		return err
+	}
+	return wsjson.Write(ctx, c, channelMsg{
+		Typ:      "content_lease",
+		Lease:    lease.Key,
+		NotAfter: lease.NotAfter.UTC().Format(time.RFC3339Nano),
+	})
 }
 
 func (h *Handler) replayClosures(ctx context.Context, c *websocket.Conn, factoryID uuid.UUID) {
@@ -212,7 +239,7 @@ func (h *Handler) replayClosures(ctx context.Context, c *websocket.Conn, factory
 		return
 	}
 	for i := range snaps {
-		if err := wsjson.Write(ctx, c, channelMsg{Typ: "platform_closure", Closure: &snaps[i]}); err != nil {
+		if err := h.writeSealedClosure(ctx, c, factoryID, snaps[i]); err != nil {
 			return
 		}
 	}
@@ -232,9 +259,53 @@ func (h *Handler) fanoutAvailable(ctx context.Context) {
 			continue
 		}
 		for i := range snaps {
-			_ = h.live.push(ctx, fac.ID, channelMsg{Typ: "platform_closure", Closure: &snaps[i]})
+			h.pushSealedClosure(ctx, fac.ID, snaps[i])
 		}
 	}
+}
+
+func (h *Handler) sealForFactory(ctx context.Context, factoryID uuid.UUID, snap service.ClosureSnapshot) (service.ClosureSnapshot, error) {
+	sealed, err := h.svc.SealClosureTransit(ctx, factoryID, snap)
+	if err != nil {
+		if _, lerr := h.svc.IssueContentLease(ctx, factoryID); lerr == nil {
+			sealed, err = h.svc.SealClosureTransit(ctx, factoryID, snap)
+		}
+	}
+	if err != nil {
+		slog.Error("seal closure transit", "factory", factoryID, "err", err)
+	}
+	return sealed, err
+}
+
+func closureControl(snap service.ClosureSnapshot) service.ClosureSnapshot {
+	out := snap
+	out.Members = append([]service.ClosureMember(nil), snap.Members...)
+	for i := range out.Members {
+		out.Members[i].Content = nil
+	}
+	return out
+}
+
+func (h *Handler) writeSealedClosure(ctx context.Context, c *websocket.Conn, factoryID uuid.UUID, snap service.ClosureSnapshot) error {
+	sealed, err := h.sealForFactory(ctx, factoryID, snap)
+	if err != nil {
+		return err
+	}
+	meta := closureControl(sealed)
+	if err := wsjson.Write(ctx, c, channelMsg{Typ: "platform_closure", Closure: &meta}); err != nil {
+		return err
+	}
+	return wsjson.Write(ctx, c, channelMsg{Typ: "platform_closure_body", Closure: &sealed})
+}
+
+func (h *Handler) pushSealedClosure(ctx context.Context, factoryID uuid.UUID, snap service.ClosureSnapshot) {
+	sealed, err := h.sealForFactory(ctx, factoryID, snap)
+	if err != nil {
+		return
+	}
+	meta := closureControl(sealed)
+	_ = h.live.push(ctx, factoryID, channelMsg{Typ: "platform_closure", Closure: &meta})
+	_ = h.live.push(ctx, factoryID, channelMsg{Typ: "platform_closure_body", Closure: &sealed})
 }
 
 func (h *Handler) replayTemplates(ctx context.Context, c *websocket.Conn, factoryID uuid.UUID) {

@@ -35,6 +35,7 @@ var (
 	ErrBindingVoid         = errors.New("client binding is void")                 // 作废后不得再签发
 	ErrRevisionConflict    = errors.New("revision does not match")                // 资产期望修订对不上
 	ErrIntegrity           = errors.New("asset integrity check failed")           // 正文与摘要不一致或摘要长度不对
+	ErrContentLeaseExpired = errors.New("content lease expired")                    // 厂侧解包租约到期或尚未签发
 	ErrAssetNotAvailable   = errors.New("asset is not available")                 // 草稿或停用，不能当可用资产
 	ErrAssetNotCopyable    = errors.New("asset is not copyable")                  // 不可复制不得升档
 	ErrAssetDependency     = errors.New("asset dependency missing or mismatched") // 工程依赖缺失或错配
@@ -45,6 +46,6 @@ var (
 	ErrInvalidEnrollment   = errors.New("invalid enrollment")                     // 建厂码不对或已用完
 	ErrWANUnreachable      = errors.New("wan channel unreachable")                // 厂端连不上 WAN 通道
 	ErrFactoryDisabled     = errors.New("factory is disabled")                    // WAN 停用后不得登录或新开操作
-	ErrFactoryRetired      = errors.New("factory is retired")                     // 已注销，通道不再重连
-	ErrTemplateInvalid     = errors.New("content template is invalid")            // 字段表不合法
+	ErrFactoryRetired  = errors.New("factory is retired")          // 已注销，通道不再重连
+	ErrTemplateInvalid = errors.New("content template is invalid") // 字段表不合法
 )

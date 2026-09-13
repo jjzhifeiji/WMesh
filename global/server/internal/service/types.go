@@ -32,4 +32,5 @@ type (
 	DistributionGrant  = store.DistributionGrant
 	DistributionRecord = store.DistributionRecord
 	EnrollmentOffer    = store.EnrollmentOffer
+	ContentLease       = store.ContentLease
 )

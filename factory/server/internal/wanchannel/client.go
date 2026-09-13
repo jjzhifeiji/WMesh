@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/url"
 	"strings"
 	"time"
@@ -41,6 +42,8 @@ type envelope struct {
 	Snapshot         json.RawMessage `json:"snapshot,omitempty"`
 	Closure          json.RawMessage `json:"closure,omitempty"`
 	Template         json.RawMessage `json:"template,omitempty"`
+	Lease            []byte          `json:"lease,omitempty"`
+	NotAfter         string          `json:"notAfter,omitempty"`
 	Error            string          `json:"error,omitempty"`
 }
 
@@ -58,7 +61,8 @@ type Session struct {
 	conn *websocket.Conn
 }
 
-var pingEvery = 15 * time.Second // 心跳间隔；测试可改短
+var pingEvery = 15 * time.Second  // 心跳间隔；测试可改短
+var leaseEvery = time.Hour      // 内容租约续期间隔
 
 // Enroll 用建厂码向 WAN 要身份；确认前建厂码仍可重试。
 func Enroll(ctx context.Context, wanURL, enrollmentCode string) (*Session, Offer, error) {
@@ -143,11 +147,20 @@ type RequestHandler func(typ, reqID, kind, assetID string) (assets, snapshot jso
 // ClosureHandler 落地 WAN 推来的平台级闭包（可用或停用修订）；失败不拆连接。
 type ClosureHandler func(raw json.RawMessage) error
 
+// Lease 是 WAN 下发的内容解包钥，只进内存。
+type Lease struct {
+	Key      []byte
+	NotAfter time.Time
+}
+
+// LeaseHandler 把租约交给本厂进程；失败不拆连接。
+type LeaseHandler func(Lease) error
+
 // RetractHandler 落地 WAN 推来的平台级删除撤回；失败不拆连接。
 type RetractHandler func(assetID uuid.UUID) error
 
-// Hold 验签连上后发心跳，并落地 WAN 推来的停用/启用/注销、设备分配、平台级闭包/撤回、内容模版和升档问询。
-func Hold(ctx context.Context, wanURL string, factoryID uuid.UUID, privateKey []byte, apply func(State) error, applyClient func(ClientIntent) error, applyClosure ClosureHandler, applyTemplate ClosureHandler, applyRetract RetractHandler, onRequest RequestHandler) error {
+// Hold 验签连上后发心跳，并落地 WAN 推来的停用/启用/注销、设备分配、平台级闭包/撤回、内容模版、内容租约和升档问询。
+func Hold(ctx context.Context, wanURL string, factoryID uuid.UUID, privateKey []byte, apply func(State) error, applyClient func(ClientIntent) error, applyClosure ClosureHandler, applyTemplate ClosureHandler, applyRetract RetractHandler, applyLease LeaseHandler, onRequest RequestHandler) error {
 	u, err := channelURL(wanURL)
 	if err != nil {
 		return err
@@ -191,12 +204,14 @@ func Hold(ctx context.Context, wanURL string, factoryID uuid.UUID, privateKey []
 			return err
 		}
 	}
-	return holdPings(ctx, c, apply, applyClient, applyClosure, applyTemplate, applyRetract, onRequest)
+	return holdPings(ctx, c, apply, applyClient, applyClosure, applyTemplate, applyRetract, applyLease, onRequest)
 }
 
-func holdPings(ctx context.Context, c *websocket.Conn, apply func(State) error, applyClient func(ClientIntent) error, applyClosure ClosureHandler, applyTemplate ClosureHandler, applyRetract RetractHandler, onRequest RequestHandler) error {
+func holdPings(ctx context.Context, c *websocket.Conn, apply func(State) error, applyClient func(ClientIntent) error, applyClosure ClosureHandler, applyTemplate ClosureHandler, applyRetract RetractHandler, applyLease LeaseHandler, onRequest RequestHandler) error {
 	ticker := time.NewTicker(pingEvery)
 	defer ticker.Stop()
+	renew := time.NewTicker(leaseEvery)
+	defer renew.Stop()
 	errCh := make(chan error, 1)
 	go func() {
 		for {
@@ -204,6 +219,20 @@ func holdPings(ctx context.Context, c *websocket.Conn, apply func(State) error, 
 			if err := wsjson.Read(ctx, c, &msg); err != nil {
 				errCh <- err
 				return
+			}
+			if msg.Typ == "content_lease" && applyLease != nil && len(msg.Lease) > 0 {
+				na, err := time.Parse(time.RFC3339Nano, msg.NotAfter)
+				if err != nil {
+					na, err = time.Parse(time.RFC3339, msg.NotAfter)
+				}
+				if err != nil {
+					continue
+				}
+				if err := applyLease(Lease{Key: msg.Lease, NotAfter: na}); err != nil {
+					// 失败不拆连接：错钥或厂钟快时通道仍要心跳。
+					slog.Warn("apply content lease", "err", err)
+					continue
+				}
 			}
 			if msg.Typ == "factory_state" && apply != nil {
 				if err := apply(State{Status: msg.Status, Revision: msg.Revision}); err != nil {
@@ -222,7 +251,7 @@ func holdPings(ctx context.Context, c *websocket.Conn, apply func(State) error, 
 					return
 				}
 			}
-			if msg.Typ == "platform_closure" && applyClosure != nil && len(msg.Closure) > 0 {
+			if (msg.Typ == "platform_closure" || msg.Typ == "platform_closure_body") && applyClosure != nil && len(msg.Closure) > 0 {
 				if err := applyClosure(msg.Closure); err != nil {
 					errCh <- err
 					return
@@ -264,6 +293,12 @@ func holdPings(ctx context.Context, c *websocket.Conn, apply func(State) error, 
 		case <-ticker.C:
 			if err := wsjson.Write(ctx, c, envelope{Typ: "ping"}); err != nil {
 				return err
+			}
+		case <-renew.C:
+			if applyLease != nil {
+				if err := wsjson.Write(ctx, c, envelope{Typ: "content_lease_renew"}); err != nil {
+					return err
+				}
 			}
 		}
 	}

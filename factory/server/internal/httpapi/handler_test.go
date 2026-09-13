@@ -2,6 +2,7 @@
 package httpapi_test
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -58,6 +59,14 @@ func TestFactoryHTTP(t *testing.T) {
 	code, body = do(t, srv, "POST", "/internal/bootstrap", "boot-secret", `{"factoryId":"`+fid.String()+`","saLogin":"sa","saDisplay":"超管"}`)
 	if code != http.StatusCreated {
 		t.Fatalf("bootstrap %d %s", code, body)
+	}
+	svc, err := h.Service(context.Background(), fid)
+	if err != nil {
+		t.Fatalf("service: %v", err)
+	}
+	// HTTP 测不连 WAN，自签租约才能写资产。
+	if err := svc.Store().GrantLocalLease(context.Background()); err != nil {
+		t.Fatalf("lease: %v", err)
 	}
 	act := gjson(t, body, "activationToken")
 	if len(act) != 8 {
@@ -199,6 +208,22 @@ func TestFactoryHTTP(t *testing.T) {
 	code, body = do(t, srv, "GET", base+"/assets/"+pid+"/content", tok, "")
 	if code != http.StatusOK || gjson(t, body, "content") != "secret-body" {
 		t.Fatalf("read content %d %s", code, body)
+	}
+	lease, err := svc.Store().TransitKey()
+	if err != nil {
+		t.Fatalf("lease key: %v", err)
+	}
+	svc.Store().ClearContentLease()
+	code, body = do(t, srv, "GET", base+"/assets/"+pid, tok, "")
+	if code != http.StatusOK || gjson(t, body, "name") != "焊A" {
+		t.Fatalf("get without lease %d %s", code, body)
+	}
+	code, body = do(t, srv, "GET", base+"/assets/"+pid+"/content", tok, "")
+	if code != http.StatusForbidden || gjson(t, body, "error") != "content lease expired" {
+		t.Fatalf("content without lease %d %s", code, body)
+	}
+	if err := svc.Store().ApplyContentLease(context.Background(), lease, time.Now().Add(24*time.Hour)); err != nil {
+		t.Fatalf("restore lease: %v", err)
 	}
 	code, body = do(t, srv, "POST", base+"/assets/"+pid+"/rename", tok, `{"expected":1,"name":"焊A2"}`)
 	if code != http.StatusOK || gjson(t, body, "name") != "焊A2" {

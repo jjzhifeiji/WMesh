@@ -259,8 +259,8 @@ func testAssetIdentity(t *testing.T, run func(string, func(*testing.T))) {
 		if err := facA.Store().TamperAssetContent(ctx, a.ID, []byte("tampered")); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := facA.GetAsset(ctx, pe.tok, a.ID); !errors.Is(err, domain.ErrIntegrity) {
-			t.Fatalf("get: %v", err)
+		if _, err := facA.GetAsset(ctx, pe.tok, a.ID); err != nil {
+			t.Fatalf("get meta: %v", err)
 		}
 		if _, err := facA.ReadAssetContent(ctx, pe.tok, a.ID); !errors.Is(err, domain.ErrIntegrity) {
 			t.Fatalf("read: %v", err)

@@ -159,7 +159,7 @@ func (s *Store) SetCacheLimit(ctx context.Context, n int) error {
 	return nil
 }
 
-// InsertReplica 写入一条平台级副本；同身份修订且摘要相同则原样返回。
+// InsertReplica 写入一条平台级副本；同身份修订且摘要相同则原样返回。正文封成 WM2。
 func (s *Store) InsertReplica(ctx context.Context, in AssetReplica) (AssetReplica, error) {
 	if err := assertAssetDigest(in.Digest); err != nil {
 		return AssetReplica{}, err
@@ -168,14 +168,19 @@ func (s *Store) InsertReplica(ctx context.Context, in AssetReplica) (AssetReplic
 	if err != nil {
 		return AssetReplica{}, err
 	}
+	// 到站明文用本厂 MK 重封。
+	env, err := s.sealAsset(in.ID, in.Revision, tableReplicas, nonempty(in.Content))
+	if err != nil {
+		return AssetReplica{}, err
+	}
 	row := replicaRow{
 		ID: in.ID, Revision: in.Revision, Kind: in.Kind, Level: AssetLevelPlatform,
-		Name: in.Name, Status: in.Status, Copyable: in.Copyable, Content: nonempty(in.Content),
+		Name: in.Name, Status: in.Status, Copyable: in.Copyable, Content: env,
 		Digest: in.Digest, Deps: deps, ReceivedAt: time.Now().UTC(),
 	}
 	if err := s.db.WithContext(ctx).Create(&row).Error; err != nil {
 		if domain.IsUniqueViolation(err) {
-			got, getErr := s.ReplicaByIDRev(ctx, in.ID, in.Revision)
+			got, getErr := s.ReplicaMetaByIDRev(ctx, in.ID, in.Revision)
 			if getErr != nil {
 				return AssetReplica{}, getErr
 			}
@@ -186,13 +191,25 @@ func (s *Store) InsertReplica(ctx context.Context, in AssetReplica) (AssetReplic
 		}
 		return AssetReplica{}, mapAssetWriteErr(err)
 	}
-	return replicaFromRow(row), nil
+	return s.decodeReplica(row)
 }
 
 // ReplicaByIDRev 按身份和修订读平台级副本，含正文。
 func (s *Store) ReplicaByIDRev(ctx context.Context, assetID uuid.UUID, revision int64) (AssetReplica, error) {
 	var row replicaRow
 	if err := s.db.WithContext(ctx).First(&row, "id = ? AND revision = ?", assetID, revision).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return AssetReplica{}, domain.ErrNotFound
+		}
+		return AssetReplica{}, err
+	}
+	return s.decodeReplica(row)
+}
+
+// ReplicaMetaByIDRev 按身份和修订读副本元数据，不解包。
+func (s *Store) ReplicaMetaByIDRev(ctx context.Context, assetID uuid.UUID, revision int64) (AssetReplica, error) {
+	var row replicaRow
+	if err := s.db.WithContext(ctx).Omit("Content").First(&row, "id = ? AND revision = ?", assetID, revision).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return AssetReplica{}, domain.ErrNotFound
 		}
@@ -205,6 +222,18 @@ func (s *Store) ReplicaByIDRev(ctx context.Context, assetID uuid.UUID, revision 
 func (s *Store) LatestReplica(ctx context.Context, assetID uuid.UUID) (AssetReplica, error) {
 	var row replicaRow
 	if err := s.db.WithContext(ctx).Where("id = ? AND retracted = ?", assetID, false).Order("revision DESC").First(&row).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return AssetReplica{}, domain.ErrNotFound
+		}
+		return AssetReplica{}, err
+	}
+	return s.decodeReplica(row)
+}
+
+// LatestReplicaMeta 读未撤回最高修订副本的元数据，不解包。
+func (s *Store) LatestReplicaMeta(ctx context.Context, assetID uuid.UUID) (AssetReplica, error) {
+	var row replicaRow
+	if err := s.db.WithContext(ctx).Where("id = ? AND retracted = ?", assetID, false).Omit("Content").Order("revision DESC").First(&row).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return AssetReplica{}, domain.ErrNotFound
 		}

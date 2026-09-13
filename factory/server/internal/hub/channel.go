@@ -112,6 +112,8 @@ func (h *Hub) dialHold(ctx context.Context, factoryID uuid.UUID) error {
 	h.presenceMu.Lock()
 	wanURL := h.wanURL
 	h.presenceMu.Unlock()
+	svc.Store().SetContentChannelOnline(true)
+	defer svc.Store().SetContentChannelOnline(false)
 	err = wanchannel.Hold(ctx, wanURL, factoryID, priv, func(st wanchannel.State) error {
 		// 把 WAN 推来的停用/启用/注销落到本厂库。
 		out, err := svc.Auth.ApplyLifecycle(ctx, st.Status, st.Revision)
@@ -140,6 +142,9 @@ func (h *Hub) dialHold(ctx context.Context, factoryID uuid.UUID) error {
 			slog.Warn("platform closure json", "factory", factoryID, "err", err)
 			return nil
 		}
+		if !closureHasBody(snap) {
+			return nil
+		}
 		if err := svc.Closure.AcceptPlatformDelivery(ctx, snap); err != nil {
 			slog.Warn("accept platform closure", "factory", factoryID, "err", err)
 		}
@@ -161,6 +166,9 @@ func (h *Hub) dialHold(ctx context.Context, factoryID uuid.UUID) error {
 			slog.Warn("retract platform replica", "factory", factoryID, "err", err)
 		}
 		return nil
+	}, func(lease wanchannel.Lease) error {
+		// 把 WAN 发来的解包钥放进内存，解开本厂 MK。
+		return svc.ApplyContentLease(ctx, lease.Key, lease.NotAfter)
 	}, func(typ, _, kind, assetID string) (json.RawMessage, json.RawMessage, error) {
 		return h.answerAsset(ctx, svc, typ, kind, assetID)
 	})
@@ -196,4 +204,13 @@ func (h *Hub) answerAsset(ctx context.Context, svc *service.Service, typ, kind, 
 	default:
 		return nil, nil, domain.ErrNotFound
 	}
+}
+
+func closureHasBody(snap service.ClosureSnapshot) bool {
+	for _, m := range snap.Members {
+		if len(m.Content) > 0 {
+			return true
+		}
+	}
+	return false
 }

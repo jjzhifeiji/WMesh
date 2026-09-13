@@ -2,15 +2,18 @@
 package store_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 
 	"wmesh/factory/internal/platform/audit"
+	"wmesh/factory/internal/platform/contentcrypt"
 	"wmesh/factory/internal/platform/digest"
 	"wmesh/factory/internal/platform/domain"
 	"wmesh/factory/internal/platform/id"
@@ -357,6 +360,10 @@ func TestFactoryAssets(t *testing.T) {
 	ctx := context.Background()
 	facDB, facID := testpg.Fresh(t)
 	s := store.Open(facDB, facID)
+	// 夹具自签租约，才能把正文封进厂库。
+	if err := s.GrantLocalLease(ctx); err != nil {
+		t.Fatal(err)
+	}
 	p, err := s.CreatePerson(ctx, "pe", "工艺师", false)
 	if err != nil {
 		t.Fatal(err)
@@ -379,8 +386,12 @@ func TestFactoryAssets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("insert: %v", err)
 	}
-	if a.ID == uuid.Nil || a.Revision != 1 || a.FactoryID != facID || a.Name != "焊接" {
+	if a.ID == uuid.Nil || a.Revision != 1 || a.FactoryID != facID || a.Name != "焊接" || !bytes.Equal(a.Content, body) {
 		t.Fatalf("asset: %+v", a)
+	}
+	raw, err := s.RawGovernedContent(ctx, a.ID)
+	if err != nil || !contentcrypt.IsEnvelope(raw) || bytes.Contains(raw, body) {
+		t.Fatalf("want WM2 got %q %v", raw, err)
 	}
 	oldID := a.ID
 	renamed, err := s.UpdateGovernedAsset(ctx, a.ID, 1, store.AssetWrite{
@@ -388,6 +399,10 @@ func TestFactoryAssets(t *testing.T) {
 	})
 	if err != nil || renamed.ID != oldID || renamed.Revision != 2 || renamed.Name != "焊接-2" {
 		t.Fatalf("rename: %+v %v", renamed, err)
+	}
+	raw2, err := s.RawGovernedContent(ctx, a.ID)
+	if err != nil || !contentcrypt.IsEnvelope(raw2) || bytes.Contains(raw2, body) {
+		t.Fatalf("rename must stay WM2 got %q %v", raw2, err)
 	}
 	if _, err := s.UpdateGovernedAsset(ctx, a.ID, 1, store.AssetWrite{
 		Name: "旧修订", Content: body, Digest: sum, Copyable: true, Status: store.AssetDraft,
@@ -458,4 +473,55 @@ func mustEd25519(t *testing.T) ([]byte, []byte) {
 		t.Fatal(err)
 	}
 	return pub, priv
+}
+
+func TestContentMasterRestore(t *testing.T) {
+	ctx := context.Background()
+	facDB, facID := testpg.Fresh(t)
+	s := store.Open(facDB, facID)
+	l, err := contentcrypt.RandomKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ApplyContentLease(ctx, l, time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	p, err := s.CreatePerson(ctx, "pe", "工艺师", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := []byte(`{"current":200}`)
+	sum := digest.Sum(body)
+	a, err := s.InsertGovernedAsset(ctx, store.Asset{
+		Kind: store.KindProcess, Level: store.AssetLevelFactory, Name: "焊接",
+		Status: store.AssetDraft, Copyable: true, Content: body, Digest: sum, CreatorID: p.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.ClearContentLease()
+	if _, err := s.GovernedAssetMetaByID(ctx, a.ID); err != nil {
+		t.Fatalf("meta %v", err)
+	}
+	if _, err := s.GovernedAssetByID(ctx, a.ID); !errors.Is(err, domain.ErrContentLeaseExpired) {
+		t.Fatalf("open without lease %v", err)
+	}
+	if err := s.ApplyContentLease(ctx, l, time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GovernedAssetByID(ctx, a.ID)
+	if err != nil || !bytes.Equal(got.Content, body) {
+		t.Fatalf("restore %q %v", got.Content, err)
+	}
+	s.SetContentChannelOnline(true)
+	if err := s.ApplyContentLease(ctx, l, time.Now().Add(-time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.GovernedAssetByID(ctx, a.ID); err != nil {
+		t.Fatalf("online past notAfter %v", err)
+	}
+	s.SetContentChannelOnline(false)
+	if _, err := s.GovernedAssetByID(ctx, a.ID); !errors.Is(err, domain.ErrContentLeaseExpired) {
+		t.Fatalf("offline past notAfter %v", err)
+	}
 }

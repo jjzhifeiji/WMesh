@@ -35,6 +35,7 @@ const zh: Record<string, string> = {
   "asset dependency missing or mismatched": "依赖的工艺不存在、未发布或修订对不上",
   "client binding is void": "本厂绑定已作废，不能再签发",
 	"client public key does not match": "公钥与已登记的不一致",
+  "content lease expired": "解包租约已过期或尚未从云端领到，请确认厂端已连上云端后再试",
   "content template is invalid": "内容模版字段不合法",
   "internal error": "服务异常，请稍后再试",
 };

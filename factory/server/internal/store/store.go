@@ -1,6 +1,6 @@
-// Package store 只读写本厂库：人员、组织、角色、会话、归属桩、本厂 Client 凭证、本厂工艺/工程、已收平台级副本、内容模版副本和上传记录。
+// Package store 只读写本厂库：人员、组织、角色、会话、归属桩、本厂 Client 凭证、本厂工艺/工程、已收平台级副本、内容模版副本、内容主钥包装和上传记录。
 // 不判定允许/拒绝，也不回调应用服务。
-// 文件按域拆：account / org / attr / node / asset / template / closure / sync / lifecycle。
+// 文件按域拆：account / org / attr / node / asset / template / closure / sync / lifecycle / crypt。
 package store
 
 import (
@@ -20,6 +20,7 @@ import (
 type Store struct {
 	db        *gorm.DB
 	factoryID uuid.UUID // 本厂稳定身份，写入事实时带上
+	crypt     cryptBox  // 内容租约与 MK，只在内存
 }
 
 // Open 打开这一家工厂的库；factoryID 是选库用的稳定身份，不从名称推导。

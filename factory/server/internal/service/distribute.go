@@ -8,13 +8,19 @@ import (
 	"github.com/google/uuid"
 
 	"wmesh/factory/internal/platform/audit"
-	"wmesh/factory/internal/platform/digest"
 	"wmesh/factory/internal/platform/domain"
 	"wmesh/factory/internal/store"
 )
 
-// AcceptPlatformDelivery 夹具把 WAN 送达的平台级闭包写入只读副本。
+// AcceptPlatformDelivery 先解开过站信封再验收；无 WM2 前缀的夹具明文也能收。
 func (s *Closure) AcceptPlatformDelivery(ctx context.Context, snap ClosureSnapshot) error {
+	// 先解开过站信封再验收。
+	opened, err := s.openTransitMembers(snap)
+	if err != nil {
+		_ = s.audit(ctx, nil, nil, "accept_closure", closureTarget(snap), audit.Deny)
+		return err
+	}
+	snap = opened
 	if err := validateClosure(snap); err != nil {
 		_ = s.audit(ctx, nil, nil, "accept_closure", closureTarget(snap), audit.Deny)
 		return err
@@ -99,7 +105,7 @@ func (s *Closure) RevokeClientProject(ctx context.Context, token string, project
 }
 
 func (s *Closure) assertGrantableProject(ctx context.Context, projectID uuid.UUID) error {
-	a, err := s.store.GovernedAssetByID(ctx, projectID)
+	a, err := s.store.GovernedAssetMetaByID(ctx, projectID)
 	if err == nil {
 		if a.Kind != KindProject {
 			return domain.ErrForbidden
@@ -115,7 +121,7 @@ func (s *Closure) assertGrantableProject(ctx context.Context, projectID uuid.UUI
 	if !errors.Is(err, domain.ErrNotFound) {
 		return err
 	}
-	r, err := s.store.LatestReplica(ctx, projectID)
+	r, err := s.store.LatestReplicaMeta(ctx, projectID)
 	if err != nil {
 		return err
 	}
@@ -308,13 +314,13 @@ func (s *Closure) ListReplicas(ctx context.Context, token string) ([]AssetReplic
 	return out, nil
 }
 
-// GetReplica 读一条已收副本元数据；摘要不符则拒绝。
+// GetReplica 读一条已收副本元数据，不解包。
 func (s *Closure) GetReplica(ctx context.Context, token string, assetID uuid.UUID, revision int64) (AssetReplica, error) {
 	acc, err := s.RequireActive(ctx, token)
 	if err != nil {
 		return AssetReplica{}, err
 	}
-	r, err := s.store.ReplicaByIDRev(ctx, assetID, revision)
+	r, err := s.store.ReplicaMetaByIDRev(ctx, assetID, revision)
 	if err != nil {
 		_ = s.audit(ctx, &acc.ID, nil, "get_replica", assetTarget(assetID, revision), audit.Deny)
 		return AssetReplica{}, err
@@ -322,10 +328,6 @@ func (s *Closure) GetReplica(ctx context.Context, token string, assetID uuid.UUI
 	if err := s.canViewReplica(ctx, acc); err != nil {
 		_ = s.audit(ctx, &acc.ID, nil, "get_replica", assetTarget(assetID, revision), audit.Deny)
 		return AssetReplica{}, err
-	}
-	if !digest.Match(r.Content, r.Digest) {
-		_ = s.audit(ctx, &acc.ID, nil, "get_replica", assetTarget(assetID, revision), audit.Deny)
-		return AssetReplica{}, domain.ErrIntegrity
 	}
 	r.Content = nil
 	if err := s.audit(ctx, &acc.ID, nil, "get_replica", assetTarget(assetID, revision), audit.Allow); err != nil {

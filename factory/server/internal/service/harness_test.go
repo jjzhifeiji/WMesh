@@ -36,6 +36,10 @@ func (h *Harness) Provision(ctx context.Context, saLogin, saDisplay string) (See
 	facID := id.New()
 	_, dsn := testpg.CreateDB(h.t, h.admin, "wmesh_fac")
 	svc := service.NewService(store.Open(testpg.OpenMigrated(h.t, dsn), facID))
+	// 夹具不连 WAN，自签一把租约才能写厂库正文。
+	if err := svc.Store().GrantLocalLease(ctx); err != nil {
+		return Seeded{}, nil, err
+	}
 	acc, token, err := svc.BootstrapInitial(ctx, saLogin, saDisplay)
 	if err != nil {
 		return Seeded{}, nil, err

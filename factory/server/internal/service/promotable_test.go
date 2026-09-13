@@ -2,11 +2,11 @@
 package service_test
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"testing"
 
+	"wmesh/factory/internal/platform/contentcrypt"
 	"wmesh/factory/internal/platform/domain"
 	factory "wmesh/factory/internal/service"
 )
@@ -57,7 +57,7 @@ func TestPromotableForChannel(t *testing.T) {
 		t.Fatalf("personal: %v", err)
 	}
 	snap, err := fac.SnapshotForChannel(ctx, avail.ID)
-	if err != nil || snap.SourceID != avail.ID || !bytes.Equal(snap.Content, body) {
+	if err != nil || snap.SourceID != avail.ID || !contentcrypt.IsEnvelope(snap.Content) {
 		t.Fatalf("%+v %v", snap, err)
 	}
 }

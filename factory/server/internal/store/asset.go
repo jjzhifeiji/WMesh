@@ -103,7 +103,7 @@ type governedAssetRow struct {
 
 func (governedAssetRow) TableName() string { return "assets" }
 
-// InsertGovernedAsset 写入本厂一条工艺或工程，修订从 1 起；摘要原样存。
+// InsertGovernedAsset 写入本厂一条工艺或工程，修订从 1 起；正文封成 WM2，摘要仍是明文哈希。
 func (s *Store) InsertGovernedAsset(ctx context.Context, in Asset) (Asset, error) {
 	if err := s.assertPersonExists(ctx, in.CreatorID); err != nil {
 		return Asset{}, err
@@ -124,16 +124,22 @@ func (s *Store) InsertGovernedAsset(ctx context.Context, in Asset) (Asset, error
 	if err := assertAssetDigest(in.Digest); err != nil {
 		return Asset{}, err
 	}
+	id := valueOrNew(in.ID)
+	// 落库前封成 WM2，摘要仍用明文。
+	env, err := s.sealAsset(id, 1, tableAssets, nonempty(in.Content))
+	if err != nil {
+		return Asset{}, err
+	}
 	now := time.Now().UTC()
 	row := governedAssetRow{
-		ID:             valueOrNew(in.ID),
+		ID:             id,
 		Kind:           in.Kind,
 		Level:          in.Level,
 		Name:           in.Name,
 		Status:         in.Status,
 		Copyable:       in.Copyable,
 		Revision:       1,
-		Content:        in.Content,
+		Content:        env,
 		Digest:         in.Digest,
 		CreatorID:      in.CreatorID,
 		FactoryID:      s.factoryID,
@@ -145,13 +151,10 @@ func (s *Store) InsertGovernedAsset(ctx context.Context, in Asset) (Asset, error
 		CreatedAt:      now,
 		UpdatedAt:      now,
 	}
-	if row.Content == nil {
-		row.Content = []byte{}
-	}
 	if err := s.db.WithContext(ctx).Create(&row).Error; err != nil {
 		return Asset{}, mapAssetWriteErr(err)
 	}
-	return assetFromGoverned(row), nil
+	return s.decodeGoverned(row)
 }
 
 // UpdateGovernedAsset 按期望修订改当前行；对不上则原件不变。
@@ -173,9 +176,14 @@ func (s *Store) UpdateGovernedAsset(ctx context.Context, assetID uuid.UUID, expe
 		if err != nil {
 			return err
 		}
+		// 升高修订换一把 DEK。
+		env, err := s.sealAsset(assetID, expected+1, tableAssets, nonempty(w.Content))
+		if err != nil {
+			return err
+		}
 		updates := map[string]any{
 			"name":       w.Name,
-			"content":    nonempty(w.Content),
+			"content":    env,
 			"digest":     w.Digest,
 			"copyable":   w.Copyable,
 			"status":     w.Status,
@@ -196,8 +204,8 @@ func (s *Store) UpdateGovernedAsset(ctx context.Context, assetID uuid.UUID, expe
 		if err := tx.First(&row, "id = ?", assetID).Error; err != nil {
 			return err
 		}
-		out = assetFromGoverned(row)
-		return nil
+		out, err = s.decodeGoverned(row)
+		return err
 	})
 	return out, err
 }
@@ -224,6 +232,18 @@ func (s *Store) GovernedAssetByID(ctx context.Context, assetID uuid.UUID) (Asset
 		}
 		return Asset{}, err
 	}
+	return s.decodeGoverned(row)
+}
+
+// GovernedAssetMetaByID 读本厂当前行元数据，不解包正文。
+func (s *Store) GovernedAssetMetaByID(ctx context.Context, assetID uuid.UUID) (Asset, error) {
+	var row governedAssetRow
+	if err := s.db.WithContext(ctx).Omit("Content").First(&row, "id = ?", assetID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return Asset{}, domain.ErrNotFound
+		}
+		return Asset{}, err
+	}
 	return assetFromGoverned(row), nil
 }
 
@@ -236,7 +256,7 @@ func (s *Store) GovernedAssetBySourceID(ctx context.Context, sourceID uuid.UUID)
 		}
 		return Asset{}, err
 	}
-	return assetFromGoverned(row), nil
+	return s.decodeGoverned(row)
 }
 
 // AssetIsReferenced 是否仍被某条工程的 deps 引用。
