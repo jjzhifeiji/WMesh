@@ -5,6 +5,7 @@ import { personName, useCatalog, type Catalog } from "@/features/catalog/api";
 import { errorMessage, ApiError } from "@/shared/api/client";
 import { formatTime } from "@/shared/format";
 import { statusColor, statusLabel } from "@/shared/labels";
+import { IdText } from "@/shared/ui/IdText";
 import { PageHeader } from "@/shared/ui/PageHeader";
 import { ContentEditor } from "@/features/templates/ContentFields";
 import { defaultValue } from "@/features/templates/schema";
@@ -188,7 +189,7 @@ export function AssetsPage({ kind }: { kind: AssetKind }) {
     {
       title: "操作",
       key: "actions",
-      width: 320,
+      width: 360,
       fixed: "right",
       render: (_, row) => (
         <Space size={4} wrap>
@@ -203,6 +204,24 @@ export function AssetsPage({ kind }: { kind: AssetKind }) {
           {covers(row) ? (
             <Button size="small" type="primary" onClick={() => setEditFor(row)}>
               编辑
+            </Button>
+          ) : null}
+          {isProcess && canMutate(row) && row.status === "draft" ? (
+            <Button
+              size="small"
+              onClick={() =>
+                modal.confirm({
+                  title: `发布「${row.name}」？`,
+                  content: "发布后可被依赖。可复制仍可改。",
+                  onOk: () =>
+                    publish.mutate(
+                      { id: row.id, expected: row.revision },
+                      { onSuccess: () => message.success("已发布"), onError: onErr },
+                    ),
+                })
+              }
+            >
+              发布
             </Button>
           ) : null}
           {canMutate(row) && row.status === "available" ? (
@@ -446,7 +465,7 @@ export function AssetsPage({ kind }: { kind: AssetKind }) {
                   onToggle={(next) => toggleCopyable(editing, next)}
                 />
               ) : null}
-              {canMutate(editing) && editing.status === "draft" ? (
+              {!isProcess && canMutate(editing) && editing.status === "draft" ? (
                 <Button
                   type="primary"
                   onClick={() =>
@@ -533,6 +552,7 @@ function DetailModal({
             size="small"
             items={[
               { key: "name", label: row.kind === "process" ? "工艺名称" : "工程名称", children: row.name },
+              ...(row.kind === "process" ? [{ key: "id", label: "工艺ID", children: <IdText id={row.id} /> }] : []),
               { key: "level", label: "级别", children: <Tag color={row.level === "factory" ? "blue" : "purple"}>{levelLabel(row.level)}</Tag> },
               { key: "status", label: "状态", children: <Tag color={statusColor(row.status)}>{statusLabel(row.status)}</Tag> },
               { key: "copyable", label: "可复制", children: row.copyable ? "是" : "否" },
@@ -616,6 +636,11 @@ function EditModal({
         requiredMark={false}
         onFinish={(values) => onSave(values.name, values.content, q.data?.content ?? "").catch(() => undefined)}
       >
+        {row?.kind === "process" ? (
+          <Form.Item label="工艺ID">
+            <IdText id={row.id} />
+          </Form.Item>
+        ) : null}
         <Form.Item name="name" label="显示名" extra="显示名不是身份，改名也不换编号。" rules={[{ required: true, message: "请输入显示名" }]}>
           <Input autoComplete="off" disabled={locked} />
         </Form.Item>

@@ -72,12 +72,13 @@ type Asset struct {
 // AssetWrite 是一次改名/改内容/改可复制/改状态/改依赖的写入。
 type AssetWrite struct {
 	Name           string     // 显示名
-	Content        []byte     // 正文
+	Content        []byte     // 新正文；KeepContent 时忽略
 	Digest         []byte     // 与正文对应的摘要
 	Copyable       bool       // 可复制
 	Status         string     // 状态
 	Deps           []AssetDep // 工程依赖；工艺必须空
 	SourceRevision *int64     // 升档覆盖时更新源修订；空则不改
+	KeepContent    bool       // 只改元数据，保留库内原文
 }
 
 type governedAssetRow struct {
@@ -103,7 +104,7 @@ type governedAssetRow struct {
 
 func (governedAssetRow) TableName() string { return "assets" }
 
-// InsertGovernedAsset 写入本厂一条工艺或工程，修订从 1 起；正文封成 WM2，摘要仍是明文哈希。
+// InsertGovernedAsset 写入本厂一条工艺或工程，修订从 1 起；正文必须封成 WM2。
 func (s *Store) InsertGovernedAsset(ctx context.Context, in Asset) (Asset, error) {
 	if err := s.assertPersonExists(ctx, in.CreatorID); err != nil {
 		return Asset{}, err
@@ -125,8 +126,7 @@ func (s *Store) InsertGovernedAsset(ctx context.Context, in Asset) (Asset, error
 		return Asset{}, err
 	}
 	id := valueOrNew(in.ID)
-	// 落库前封成 WM2，摘要仍用明文。
-	env, err := s.sealAsset(id, 1, tableAssets, nonempty(in.Content))
+	env, err := s.persistBody(id, 1, tableAssets, nonempty(in.Content))
 	if err != nil {
 		return Asset{}, err
 	}
@@ -172,24 +172,33 @@ func (s *Store) UpdateGovernedAsset(ctx context.Context, assetID uuid.UUID, expe
 			}
 			return err
 		}
-		depsJSON, err := marshalAssetDeps(row.Kind, w.Deps)
-		if err != nil {
-			return err
+		if row.Revision != expected {
+			return domain.ErrRevisionConflict
 		}
-		// 升高修订换一把 DEK。
-		env, err := s.sealAsset(assetID, expected+1, tableAssets, nonempty(w.Content))
+		depsJSON, err := marshalAssetDeps(row.Kind, w.Deps)
 		if err != nil {
 			return err
 		}
 		updates := map[string]any{
 			"name":       w.Name,
-			"content":    env,
 			"digest":     w.Digest,
 			"copyable":   w.Copyable,
 			"status":     w.Status,
 			"deps":       depsJSON,
 			"revision":   expected + 1,
 			"updated_at": now,
+		}
+		if !w.KeepContent {
+			// 改正文必须封 WM2。
+			env, err := s.persistBody(assetID, expected+1, tableAssets, nonempty(w.Content))
+			if err != nil {
+				return err
+			}
+			updates["content"] = env
+		} else if env, changed, err := s.rewrapIfSealed(assetID, expected, expected+1, tableAssets, row.Content); err != nil {
+			return err
+		} else if changed {
+			updates["content"] = env
 		}
 		if w.SourceRevision != nil {
 			updates["source_revision"] = *w.SourceRevision
@@ -203,6 +212,11 @@ func (s *Store) UpdateGovernedAsset(ctx context.Context, assetID uuid.UUID, expe
 		}
 		if err := tx.First(&row, "id = ?", assetID).Error; err != nil {
 			return err
+		}
+		if w.KeepContent {
+			out = assetFromGoverned(row)
+			out.Content = nil
+			return nil
 		}
 		out, err = s.decodeGoverned(row)
 		return err

@@ -200,7 +200,7 @@ func (s *Assets) CopyProcess(ctx context.Context, token string, assetID uuid.UUI
 		_ = s.audit(ctx, &acc.ID, nil, "create_asset", assetID.String(), audit.Deny)
 		return Asset{}, domain.ErrInvalidName
 	}
-	src, err := s.loadAny(ctx, assetID)
+	src, err := s.loadAnyMeta(ctx, assetID)
 	if err != nil {
 		_ = s.audit(ctx, &acc.ID, nil, "create_asset", assetID.String(), audit.Deny)
 		return Asset{}, err
@@ -220,6 +220,11 @@ func (s *Assets) CopyProcess(ctx context.Context, token string, assetID uuid.UUI
 	if src.Level == AssetLevelPersonal && acc.ID != src.CreatorID {
 		_ = s.audit(ctx, &acc.ID, nil, "create_asset", assetTarget(src.ID, src.Revision), audit.Deny)
 		return Asset{}, domain.ErrForbidden
+	}
+	src, err = s.loadAny(ctx, assetID)
+	if err != nil {
+		_ = s.audit(ctx, &acc.ID, nil, "create_asset", assetID.String(), audit.Deny)
+		return Asset{}, err
 	}
 	level := AssetLevelFactory
 	if src.Level == AssetLevelPersonal {
@@ -354,7 +359,7 @@ func (s *Assets) RenameAsset(ctx context.Context, token string, assetID uuid.UUI
 		if cur.Status == AssetDisabled {
 			return store.AssetWrite{}, domain.ErrAssetNotAvailable
 		}
-		return store.AssetWrite{Name: name, Content: cur.Content, Digest: cur.Digest, Copyable: cur.Copyable, Status: cur.Status, Deps: cur.Deps}, nil
+		return store.AssetWrite{Name: name, Digest: cur.Digest, Copyable: cur.Copyable, Status: cur.Status, Deps: cur.Deps, KeepContent: true}, nil
 	})
 }
 
@@ -382,7 +387,7 @@ func (s *Assets) SetAssetCopyable(ctx context.Context, token string, assetID uui
 		if cur.Status == AssetDisabled {
 			return store.AssetWrite{}, domain.ErrAssetNotAvailable
 		}
-		return store.AssetWrite{Name: cur.Name, Content: cur.Content, Digest: cur.Digest, Copyable: copyable, Status: cur.Status, Deps: cur.Deps}, nil
+		return store.AssetWrite{Name: cur.Name, Digest: cur.Digest, Copyable: copyable, Status: cur.Status, Deps: cur.Deps, KeepContent: true}, nil
 	})
 }
 
@@ -396,7 +401,7 @@ func (s *Assets) PublishAsset(ctx context.Context, token string, assetID uuid.UU
 		if cur.Status != AssetDraft {
 			return store.AssetWrite{}, domain.ErrAssetNotAvailable
 		}
-		return store.AssetWrite{Name: cur.Name, Content: cur.Content, Digest: cur.Digest, Copyable: cur.Copyable, Status: AssetAvailable, Deps: cur.Deps}, nil
+		return store.AssetWrite{Name: cur.Name, Digest: cur.Digest, Copyable: cur.Copyable, Status: AssetAvailable, Deps: cur.Deps, KeepContent: true}, nil
 	})
 }
 
@@ -410,7 +415,7 @@ func (s *Assets) DisableAsset(ctx context.Context, token string, assetID uuid.UU
 		if cur.Status != AssetAvailable {
 			return store.AssetWrite{}, domain.ErrAssetNotAvailable
 		}
-		return store.AssetWrite{Name: cur.Name, Content: cur.Content, Digest: cur.Digest, Copyable: cur.Copyable, Status: AssetDisabled, Deps: cur.Deps}, nil
+		return store.AssetWrite{Name: cur.Name, Digest: cur.Digest, Copyable: cur.Copyable, Status: AssetDisabled, Deps: cur.Deps, KeepContent: true}, nil
 	})
 }
 
@@ -424,7 +429,7 @@ func (s *Assets) ReenableAsset(ctx context.Context, token string, assetID uuid.U
 		if cur.Status != AssetDisabled {
 			return store.AssetWrite{}, domain.ErrAssetNotAvailable
 		}
-		return store.AssetWrite{Name: cur.Name, Content: cur.Content, Digest: cur.Digest, Copyable: cur.Copyable, Status: AssetAvailable, Deps: cur.Deps}, nil
+		return store.AssetWrite{Name: cur.Name, Digest: cur.Digest, Copyable: cur.Copyable, Status: AssetAvailable, Deps: cur.Deps, KeepContent: true}, nil
 	})
 }
 
@@ -463,7 +468,7 @@ func (s *Assets) DeleteAsset(ctx context.Context, token string, assetID uuid.UUI
 }
 
 func (s *kernel) mutateAsset(ctx context.Context, acc Account, assetID uuid.UUID, expected int64, action string, patch func(Asset) (store.AssetWrite, error)) (Asset, error) {
-	cur, err := s.loadChecked(ctx, assetID)
+	cur, err := s.loadCheckedMeta(ctx, assetID)
 	if err != nil {
 		_ = s.audit(ctx, &acc.ID, nil, action, assetTarget(assetID, expected), audit.Deny)
 		return Asset{}, err
@@ -674,18 +679,26 @@ func (s *Assets) ExportAssetSnapshot(ctx context.Context, token string, assetID 
 	return snap, s.audit(ctx, &acc.ID, nil, "export_asset", assetTarget(src.ID, src.Revision), audit.Allow)
 }
 
-// PromotableAsset 是给 WAN 升档看的厂级元数据，不含正文。
+// PromotableAsset 是给 WAN 升档看的本厂资产元数据，不含正文。
 type PromotableAsset struct {
-	ID       uuid.UUID `json:"id"`       // 厂级稳定身份
+	ID       uuid.UUID `json:"id"`       // 稳定身份
 	Kind     string    `json:"kind"`     // process / project
+	Level    string    `json:"level"`    // factory / personal / platform
 	Name     string    `json:"name"`     // 显示名
 	Revision int64     `json:"revision"` // 当前修订
 	Digest   []byte    `json:"digest"`   // 内容摘要
-	Status   string    `json:"status"`   // 须为 available
-	Copyable bool      `json:"copyable"` // 须为可复制
+	Status   string    `json:"status"`   // draft / available / disabled
+	Copyable bool      `json:"copyable"` // 原样带回，升档时仍按可复制判定
 }
 
-// ListPromotable 列出可升平台的厂级：可用且可复制；不含个人级和正文。
+func toPromotable(a Asset) PromotableAsset {
+	return PromotableAsset{
+		ID: a.ID, Kind: a.Kind, Level: a.Level, Name: a.Name, Revision: a.Revision,
+		Digest: a.Digest, Status: a.Status, Copyable: a.Copyable,
+	}
+}
+
+// ListPromotable 列给 WAN 升档看的本厂全部工艺/工程：厂级、个人级、已下发平台级，不分状态，不含正文。
 func (s *Assets) ListPromotable(ctx context.Context, kind string) ([]PromotableAsset, error) {
 	if kind != "" && kind != KindProcess && kind != KindProject {
 		return nil, domain.ErrNotFound
@@ -695,17 +708,33 @@ func (s *Assets) ListPromotable(ctx context.Context, kind string) ([]PromotableA
 		return nil, err
 	}
 	out := []PromotableAsset{}
+	seen := map[uuid.UUID]struct{}{}
 	for _, a := range rows {
 		if kind != "" && a.Kind != kind {
 			continue
 		}
-		if a.Level != AssetLevelFactory || a.Status != AssetAvailable || !a.Copyable {
+		out = append(out, toPromotable(a))
+		seen[a.ID] = struct{}{}
+	}
+	replicas, err := s.store.ListReplicas(ctx)
+	if err != nil {
+		return nil, err
+	}
+	latest := map[uuid.UUID]AssetReplica{}
+	for _, r := range replicas {
+		if kind != "" && r.Kind != kind {
 			continue
 		}
-		out = append(out, PromotableAsset{
-			ID: a.ID, Kind: a.Kind, Name: a.Name, Revision: a.Revision,
-			Digest: a.Digest, Status: a.Status, Copyable: a.Copyable,
-		})
+		prev, ok := latest[r.ID]
+		if !ok || r.Revision > prev.Revision {
+			latest[r.ID] = r
+		}
+	}
+	for _, r := range latest {
+		if _, ok := seen[r.ID]; ok {
+			continue
+		}
+		out = append(out, toPromotable(replicaAsAsset(r)))
 	}
 	if err := s.audit(ctx, nil, nil, "list_promotable", kind, audit.Allow); err != nil {
 		return nil, err
@@ -713,20 +742,18 @@ func (s *Assets) ListPromotable(ctx context.Context, kind string) ([]PromotableA
 	return out, nil
 }
 
-// SnapshotForChannel 通道升档用：只出厂级可用且可复制的快照，不经人员会话。
+// SnapshotForChannel 通道升档用：本厂厂级和个人级可复制即可出快照，不分状态；平台级副本已在云端，不再从厂升。
 func (s *Assets) SnapshotForChannel(ctx context.Context, assetID uuid.UUID) (AssetSnapshot, error) {
 	src, err := s.loadChecked(ctx, assetID)
 	if err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			if _, rerr := s.loadReplicaMeta(ctx, assetID); rerr == nil {
+				_ = s.audit(ctx, nil, nil, "export_asset", assetID.String(), audit.Deny)
+				return AssetSnapshot{}, domain.ErrForbidden
+			}
+		}
 		_ = s.audit(ctx, nil, nil, "export_asset", assetID.String(), audit.Deny)
 		return AssetSnapshot{}, err
-	}
-	if src.Level != AssetLevelFactory {
-		_ = s.audit(ctx, nil, nil, "export_asset", assetTarget(src.ID, src.Revision), audit.Deny)
-		return AssetSnapshot{}, domain.ErrForbidden
-	}
-	if src.Status != AssetAvailable {
-		_ = s.audit(ctx, nil, nil, "export_asset", assetTarget(src.ID, src.Revision), audit.Deny)
-		return AssetSnapshot{}, domain.ErrAssetNotAvailable
 	}
 	if !src.Copyable {
 		_ = s.audit(ctx, nil, nil, "export_asset", assetTarget(src.ID, src.Revision), audit.Deny)

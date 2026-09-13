@@ -3,6 +3,7 @@ import { App, Button, Card, Descriptions, Empty, Form, Input, Modal, Select, Spa
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { errorMessage } from "@/shared/api/client";
 import { formatTime } from "@/shared/format";
+import { IdText } from "@/shared/ui/IdText";
 import { PageHeader } from "@/shared/ui/PageHeader";
 import { useDirectory } from "@/features/factories/api";
 import { ContentEditor } from "@/features/templates/ContentFields";
@@ -42,6 +43,13 @@ function statusColor(status: string) {
   if (status === "draft") return "gold";
   if (status === "available") return "green";
   return "default";
+}
+
+function levelLabel(level: string) {
+  if (level === "factory") return "厂级";
+  if (level === "personal") return "个人级";
+  if (level === "platform") return "平台级";
+  return level;
 }
 
 function CopyableSwitch({
@@ -179,7 +187,7 @@ export function AssetsPage({ kind }: { kind: AssetKind }) {
     {
       title: "操作",
       key: "actions",
-      width: 300,
+      width: 340,
       fixed: "right",
       render: (_, row) => (
         <Space size={4} wrap>
@@ -194,6 +202,24 @@ export function AssetsPage({ kind }: { kind: AssetKind }) {
           <Button size="small" type="primary" onClick={() => setEditFor(row)}>
             编辑
           </Button>
+          {isProcess && row.status === "draft" ? (
+            <Button
+              size="small"
+              onClick={() =>
+                modal.confirm({
+                  title: `发布「${row.name}」？`,
+                  content: "发布后可被平台级工程依赖，并下到在线工厂。可复制仍可改。",
+                  onOk: () =>
+                    publish.mutate(
+                      { id: row.id, expected: row.revision },
+                      { onSuccess: () => message.success("已发布"), onError: onErr },
+                    ),
+                })
+              }
+            >
+              发布
+            </Button>
+          ) : null}
           {row.status === "available" ? (
             <Button
               size="small"
@@ -375,7 +401,9 @@ export function AssetsPage({ kind }: { kind: AssetKind }) {
         </Form>
       </Modal>
       <Modal title="从工厂升档" open={promoteOpen} onCancel={closePromote} footer={null} width={720} destroyOnHidden>
-        <Typography.Paragraph type="secondary">向在线工厂要可升档的厂级清单。正文没变则跳过；有变更则覆盖已升档的那条，不另开身份。</Typography.Paragraph>
+        <Typography.Paragraph type="secondary">
+          列出该厂全部{isProcess ? "工艺" : "工程"}：厂级、个人级、已下发的平台级，不分状态。正文没变则跳过；有变更则覆盖已升档的那条，不另开身份。
+        </Typography.Paragraph>
         <Select
           style={{ width: "100%", marginBottom: 12 }}
           placeholder="选择工厂"
@@ -397,20 +425,39 @@ export function AssetsPage({ kind }: { kind: AssetKind }) {
             emptyText: (
               <Empty
                 image={Empty.PRESENTED_IMAGE_SIMPLE}
-                description={promotable.isError ? errorMessage(promotable.error) : "该厂没有可升档的已发布厂级，或厂端不在线。"}
+                description={promotable.isError ? errorMessage(promotable.error) : `该厂没有${isProcess ? "工艺" : "工程"}，或厂端不在线。`}
               />
             ),
           }}
           columns={[
             { title: isProcess ? "工艺名称" : "工程名称", dataIndex: "name", ellipsis: true },
+            {
+              title: "级别",
+              dataIndex: "level",
+              width: 80,
+              render: (l: string) => <Tag color={l === "factory" ? "blue" : l === "platform" ? "cyan" : "purple"}>{levelLabel(l)}</Tag>,
+            },
+            {
+              title: "状态",
+              dataIndex: "status",
+              width: 90,
+              render: (s: string) => <Tag color={statusColor(s)}>{statusLabel(s)}</Tag>,
+            },
             { title: "修订", dataIndex: "revision", width: 70 },
             {
               title: "",
               key: "go",
               width: 110,
               render: (_, row) => {
-                const plat = (assets.data ?? []).find((a) => a.sourceId === row.id);
+                const plat = (assets.data ?? []).find((a) => a.id === row.id || a.sourceId === row.id);
                 const same = Boolean(plat && plat.digest === row.digest);
+                if (row.level === "platform") {
+                  return (
+                    <Button size="small" disabled>
+                      {plat ? (same ? "已是最新" : "已在云端") : "已在云端"}
+                    </Button>
+                  );
+                }
                 return (
                   <Button
                     size="small"
@@ -472,7 +519,7 @@ export function AssetsPage({ kind }: { kind: AssetKind }) {
                 loading={setCopyable.isPending && setCopyable.variables?.id === editing.id}
                 onToggle={(next) => toggleCopyable(editing, next)}
               />
-              {editing.status === "draft" ? (
+              {!isProcess && editing.status === "draft" ? (
                 <Button
                   onClick={() =>
                     modal.confirm({
@@ -513,6 +560,7 @@ function DetailModal({ row, processes, schema, onClose }: { row: Asset | null; p
             size="small"
             items={[
               { key: "name", label: row.kind === "process" ? "工艺名称" : "工程名称", children: row.name },
+              ...(row.kind === "process" ? [{ key: "id", label: "工艺ID", children: <IdText id={row.id} /> }] : []),
               { key: "status", label: "状态", children: <Tag color={statusColor(row.status)}>{statusLabel(row.status)}</Tag> },
               { key: "copyable", label: "可复制", children: row.copyable ? "是" : "否" },
               { key: "revision", label: "修订", children: row.revision },
@@ -584,6 +632,11 @@ function EditModal({
           onSave(values.name, values.content, q.data?.content ?? "").catch(() => undefined)
         }
       >
+        {row?.kind === "process" ? (
+          <Form.Item label="工艺ID">
+            <IdText id={row.id} />
+          </Form.Item>
+        ) : null}
         <Form.Item name="name" label="显示名" extra="显示名不是身份。" rules={[{ required: true, message: "请输入显示名" }]}>
           <Input autoComplete="off" disabled={locked} />
         </Form.Item>

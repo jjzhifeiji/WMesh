@@ -98,7 +98,7 @@ func TestContentLeaseMetaAndRestore(t *testing.T) {
 		t.Fatal(err)
 	}
 	fac.Store().ClearContentLease()
-	if _, err := fac.GetAsset(ctx, tok, row.ID); err != nil {
+	if _, err := fac.GetAsset(ctx, tok, row.ID); !errors.Is(err, domain.ErrContentLeaseExpired) {
 		t.Fatalf("get after expire %v", err)
 	}
 	if _, err := fac.ReadAssetContent(ctx, tok, row.ID); !errors.Is(err, domain.ErrContentLeaseExpired) {
@@ -122,15 +122,27 @@ func TestContentLeaseMetaAndRestore(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := fac.Store().ApplyContentLease(ctx, wrong, time.Now().Add(time.Hour)); err != nil {
-		t.Fatalf("wrong L must keep old mk: %v", err)
+		t.Fatalf("wrong L must rewrap live mk: %v", err)
+	}
+	gotL, err := fac.Store().TransitKey()
+	if err != nil || !bytes.Equal(gotL, wrong) {
+		t.Fatalf("rotated L %v", err)
 	}
 	body, err = fac.ReadAssetContent(ctx, tok, row.ID)
 	if err != nil || !bytes.Equal(body, []byte(`{"a":1}`)) {
 		t.Fatalf("kept mk %q %v", body, err)
 	}
+	fac.Store().ClearContentLease()
+	if err := fac.Store().ApplyContentLease(ctx, wrong, time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("restore rotated L %v", err)
+	}
+	body, err = fac.ReadAssetContent(ctx, tok, row.ID)
+	if err != nil || !bytes.Equal(body, []byte(`{"a":1}`)) {
+		t.Fatalf("after rotate restore %q %v", body, err)
+	}
 }
 
-func TestOldPlainReadableWithoutLease(t *testing.T) {
+func TestLegacyPlainSealedOnLease(t *testing.T) {
 	ctx := context.Background()
 	h := New(t)
 	seed, fac, err := h.Provision(ctx, "sa", "超管")
@@ -149,14 +161,20 @@ func TestOldPlainReadableWithoutLease(t *testing.T) {
 	if err := fac.Store().TamperAssetContent(ctx, row.ID, plain); err != nil {
 		t.Fatal(err)
 	}
-	fac.Store().ClearContentLease()
-	got, err := fac.GetAsset(ctx, tok, row.ID)
-	if err != nil || got.Name != "旧明文" {
-		t.Fatalf("get legacy %v %+v", err, got)
+	l, err := fac.Store().TransitKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fac.Store().ApplyContentLease(ctx, l, time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := fac.Store().RawGovernedContent(ctx, row.ID)
+	if err != nil || !contentcrypt.IsEnvelope(raw) || bytes.Contains(raw, plain) {
+		t.Fatalf("want sealed got %q %v", raw, err)
 	}
 	body, err := fac.ReadAssetContent(ctx, tok, row.ID)
 	if err != nil || !bytes.Equal(body, plain) {
-		t.Fatalf("legacy read %q %v", body, err)
+		t.Fatalf("read after seal %q %v", body, err)
 	}
 }
 
@@ -194,6 +212,66 @@ func TestAcceptLegacyPlainClosure(t *testing.T) {
 	}
 }
 
+func TestAcceptMixedTransitClosure(t *testing.T) {
+	ctx := context.Background()
+	h := New(t)
+	seed, fac, err := h.Provision(ctx, "sa", "超管")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fac.Activate(ctx, "sa", seed.ActivationToken, "sa-pass"); err != nil {
+		t.Fatal(err)
+	}
+	tok := mustLogin(t, ctx, fac, "sa", "sa-pass")
+	fid := seed.ID
+	plain := []byte(`{"plain":1}`)
+	envBody := []byte(`{"env":1}`)
+	projBody := []byte(`{"proj":1}`)
+	l, err := fac.Store().TransitKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	plainM := factory.ClosureMember{
+		ID: uuid.MustParse("44444444-4444-4444-4444-444444444444"), Kind: factory.KindProcess, Level: factory.AssetLevelPlatform,
+		Name: "明文成员", Status: factory.AssetAvailable, Copyable: true, Revision: 1, Content: plain, Digest: digest.Sum(plain),
+	}
+	envM := factory.ClosureMember{
+		ID: uuid.MustParse("33333333-3333-3333-3333-333333333333"), Kind: factory.KindProcess, Level: factory.AssetLevelPlatform,
+		Name: "密文成员", Status: factory.AssetAvailable, Copyable: true, Revision: 1, Content: envBody, Digest: digest.Sum(envBody),
+	}
+	proj := factory.ClosureMember{
+		ID: uuid.MustParse("55555555-5555-5555-5555-555555555555"), Kind: factory.KindProject, Level: factory.AssetLevelPlatform,
+		Name: "混合闭包", Status: factory.AssetAvailable, Copyable: true, Revision: 1, Content: projBody, Digest: digest.Sum(projBody),
+		Deps: []factory.AssetDep{
+			{ID: plainM.ID, Revision: 1, Digest: plainM.Digest},
+			{ID: envM.ID, Revision: 1, Digest: envM.Digest},
+		},
+	}
+	snap := sealSnap(factory.KindProject, proj, []factory.ClosureMember{plainM, envM}, &fid, nil)
+	env, err := contentcrypt.Seal(l, envBody, contentcrypt.TransitAAD(fid, envM.ID, 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap.Members[2].Content = env
+	if err := fac.AcceptPlatformDelivery(ctx, snap); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []uuid.UUID{plainM.ID, envM.ID, proj.ID} {
+		raw, err := fac.Store().RawReplicaContent(ctx, id, 1)
+		if err != nil || !contentcrypt.IsEnvelope(raw) {
+			t.Fatalf("disk %s %q %v", id, raw, err)
+		}
+	}
+	gotPlain, err := fac.ReadAssetContent(ctx, tok, plainM.ID)
+	if err != nil || !bytes.Equal(gotPlain, plain) {
+		t.Fatalf("plain member %q %v", gotPlain, err)
+	}
+	gotEnv, err := fac.ReadAssetContent(ctx, tok, envM.ID)
+	if err != nil || !bytes.Equal(gotEnv, envBody) {
+		t.Fatalf("env member %q %v", gotEnv, err)
+	}
+}
+
 func TestInsertReplicaSealsAndNeedsLease(t *testing.T) {
 	ctx := context.Background()
 	h := New(t)
@@ -224,6 +302,9 @@ func TestInsertReplicaSealsAndNeedsLease(t *testing.T) {
 	fac.Store().ClearContentLease()
 	if _, err := fac.Store().LatestReplica(ctx, id); !errors.Is(err, domain.ErrContentLeaseExpired) {
 		t.Fatalf("sealed replica readable without lease: %v", err)
+	}
+	if _, err := fac.Store().InsertReplica(ctx, in); err != nil {
+		t.Fatalf("same revision replay without lease %v", err)
 	}
 	if _, err := fac.Store().InsertReplica(ctx, store.AssetReplica{
 		ID: id, Revision: 2, Kind: store.KindProcess, Level: store.AssetLevelPlatform,

@@ -348,6 +348,180 @@ func TestChannelLeaseBeforeReplay(t *testing.T) {
 	}
 }
 
+func TestChannelRenewReplaysClosures(t *testing.T) {
+	admin := testpg.Open(t)
+	_, dsn := testpg.CreateDB(t, admin, "wmesh_wan")
+	svc := service.NewService(store.Open(testpg.OpenMigrated(t, dsn)))
+	if err := svc.BootstrapAdmin(context.Background(), "w", "wan-secret"); err != nil {
+		t.Fatal(err)
+	}
+	tok, err := svc.Login(context.Background(), "w", "wan-secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := svc.CreateFactory(context.Background(), tok, "厂A", "sa-a", "超管A")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(httpapi.New(svc, "test").Router())
+	t.Cleanup(srv.Close)
+	code, body := do(t, srv, "POST", "/v1/assets", tok, `{"kind":"process","name":"续期焊","content":"plat-body"}`)
+	if code != http.StatusCreated {
+		t.Fatalf("create %d %s", code, body)
+	}
+	pid := gjson(t, body, "id")
+	code, body = do(t, srv, "POST", "/v1/assets/"+pid+"/publish", tok, `{"expected":1}`)
+	if code != http.StatusOK {
+		t.Fatalf("publish %d %s", code, body)
+	}
+
+	wsURL := "ws" + srv.URL[len("http"):] + "/v1/channel"
+	ctx := context.Background()
+	pub, _, err := nodekey.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.CloseNow()
+	if err := wsjson.Write(ctx, c, map[string]any{"typ": "enroll", "enrollmentCode": created.EnrollmentToken}); err != nil {
+		t.Fatal(err)
+	}
+	var enrolled struct {
+		Typ string `json:"typ"`
+	}
+	if err := wsjson.Read(ctx, c, &enrolled); err != nil || enrolled.Typ != "enrolled" {
+		t.Fatalf("enrolled: %+v %v", enrolled, err)
+	}
+	if err := wsjson.Write(ctx, c, map[string]any{"typ": "claimed", "factoryPublicKey": pub}); err != nil {
+		t.Fatal(err)
+	}
+	var welcome struct {
+		Typ string `json:"typ"`
+	}
+	if err := wsjson.Read(ctx, c, &welcome); err != nil || welcome.Typ != "welcome" {
+		t.Fatalf("welcome: %+v %v", welcome, err)
+	}
+	if !waitChannel(t, ctx, c, func(msg channelWire) bool { return msg.Typ == "content_lease" }) {
+		t.Fatal("no initial content_lease")
+	}
+	if !waitChannel(t, ctx, c, func(msg channelWire) bool {
+		return msg.Typ == "platform_closure_body" && msg.Closure != nil && msg.Closure.AssetID == pid
+	}) {
+		t.Fatal("no initial closure body")
+	}
+	if err := wsjson.Write(ctx, c, map[string]any{"typ": "content_lease_renew"}); err != nil {
+		t.Fatal(err)
+	}
+	if !waitChannel(t, ctx, c, func(msg channelWire) bool { return msg.Typ == "content_lease" }) {
+		t.Fatal("no renewed content_lease")
+	}
+	if !waitChannel(t, ctx, c, func(msg channelWire) bool {
+		return msg.Typ == "platform_closure_body" && msg.Closure != nil && msg.Closure.AssetID == pid
+	}) {
+		t.Fatal("renew did not replay closure body")
+	}
+}
+
+func TestChannelOfflineThenReplay(t *testing.T) {
+	admin := testpg.Open(t)
+	_, dsn := testpg.CreateDB(t, admin, "wmesh_wan")
+	svc := service.NewService(store.Open(testpg.OpenMigrated(t, dsn)))
+	if err := svc.BootstrapAdmin(context.Background(), "w", "wan-secret"); err != nil {
+		t.Fatal(err)
+	}
+	tok, err := svc.Login(context.Background(), "w", "wan-secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := svc.CreateFactory(context.Background(), tok, "厂A", "sa-a", "超管A")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(httpapi.New(svc, "test").Router())
+	t.Cleanup(srv.Close)
+	wsURL := "ws" + srv.URL[len("http"):] + "/v1/channel"
+	ctx := context.Background()
+	pub, priv, err := nodekey.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := wsjson.Write(ctx, c, map[string]any{"typ": "enroll", "enrollmentCode": created.EnrollmentToken}); err != nil {
+		t.Fatal(err)
+	}
+	var enrolled struct {
+		Typ string `json:"typ"`
+	}
+	if err := wsjson.Read(ctx, c, &enrolled); err != nil || enrolled.Typ != "enrolled" {
+		t.Fatalf("enrolled: %+v %v", enrolled, err)
+	}
+	if err := wsjson.Write(ctx, c, map[string]any{"typ": "claimed", "factoryPublicKey": pub}); err != nil {
+		t.Fatal(err)
+	}
+	var welcome struct {
+		Typ string `json:"typ"`
+	}
+	if err := wsjson.Read(ctx, c, &welcome); err != nil || welcome.Typ != "welcome" {
+		t.Fatalf("welcome: %+v %v", welcome, err)
+	}
+	writePingWaitPong(t, ctx, c)
+	c.CloseNow()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if !channelOnline(t, srv, tok) {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if channelOnline(t, srv, tok) {
+		t.Fatal("still online")
+	}
+
+	code, body := do(t, srv, "POST", "/v1/assets", tok, `{"kind":"process","name":"离线焊","content":"plat-body"}`)
+	if code != http.StatusCreated {
+		t.Fatalf("create %d %s", code, body)
+	}
+	pid := gjson(t, body, "id")
+	code, body = do(t, srv, "POST", "/v1/assets/"+pid+"/publish", tok, `{"expected":1}`)
+	if code != http.StatusOK {
+		t.Fatalf("publish %d %s", code, body)
+	}
+
+	c2, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c2.CloseNow()
+	if err := wsjson.Write(ctx, c2, map[string]any{"typ": "hello", "factoryId": created.Factory.ID.String()}); err != nil {
+		t.Fatal(err)
+	}
+	var challenge struct {
+		Typ   string `json:"typ"`
+		Nonce []byte `json:"nonce"`
+	}
+	if err := wsjson.Read(ctx, c2, &challenge); err != nil || challenge.Typ != "challenge" {
+		t.Fatalf("challenge: %+v %v", challenge, err)
+	}
+	sig := nodekey.Sign(priv, helloBytes(created.Factory.ID, challenge.Nonce))
+	if err := wsjson.Write(ctx, c2, map[string]any{"typ": "hello_ack", "signature": sig}); err != nil {
+		t.Fatal(err)
+	}
+	if !waitChannel(t, ctx, c2, func(msg channelWire) bool { return msg.Typ == "ready" }) {
+		t.Fatal("no ready")
+	}
+	if !waitChannel(t, ctx, c2, func(msg channelWire) bool {
+		return msg.Typ == "platform_closure_body" && msg.Closure != nil && msg.Closure.AssetID == pid && len(msg.Closure.Members) > 0 && contentcrypt.IsEnvelope(msg.Closure.Members[0].Content)
+	}) {
+		t.Fatal("offline factory did not get closure on reconnect")
+	}
+}
+
 func TestChannelLifecycle(t *testing.T) {
 	admin := testpg.Open(t)
 	_, dsn := testpg.CreateDB(t, admin, "wmesh_wan")

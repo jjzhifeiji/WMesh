@@ -215,7 +215,7 @@ func TestFactoryHTTP(t *testing.T) {
 	}
 	svc.Store().ClearContentLease()
 	code, body = do(t, srv, "GET", base+"/assets/"+pid, tok, "")
-	if code != http.StatusOK || gjson(t, body, "name") != "焊A" {
+	if code != http.StatusForbidden || gjson(t, body, "error") != "content lease expired" {
 		t.Fatalf("get without lease %d %s", code, body)
 	}
 	code, body = do(t, srv, "GET", base+"/assets/"+pid+"/content", tok, "")

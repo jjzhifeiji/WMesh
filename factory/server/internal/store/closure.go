@@ -159,7 +159,7 @@ func (s *Store) SetCacheLimit(ctx context.Context, n int) error {
 	return nil
 }
 
-// InsertReplica 写入一条平台级副本；同身份修订且摘要相同则原样返回。正文封成 WM2。
+// InsertReplica 写入一条平台级副本；同身份修订且摘要相同则原样返回，不重封。
 func (s *Store) InsertReplica(ctx context.Context, in AssetReplica) (AssetReplica, error) {
 	if err := assertAssetDigest(in.Digest); err != nil {
 		return AssetReplica{}, err
@@ -168,8 +168,18 @@ func (s *Store) InsertReplica(ctx context.Context, in AssetReplica) (AssetReplic
 	if err != nil {
 		return AssetReplica{}, err
 	}
-	// 到站明文用本厂 MK 重封。
-	env, err := s.sealAsset(in.ID, in.Revision, tableReplicas, nonempty(in.Content))
+	got, err := s.ReplicaMetaByIDRev(ctx, in.ID, in.Revision)
+	if err == nil {
+		if !bytes.Equal(got.Digest, in.Digest) {
+			return AssetReplica{}, domain.ErrIntegrity
+		}
+		return got, nil
+	}
+	if !errors.Is(err, domain.ErrNotFound) {
+		return AssetReplica{}, err
+	}
+	// 有租约用 MK 重封；无租约拒绝新修订，厂库不落明文。
+	env, err := s.persistBody(in.ID, in.Revision, tableReplicas, nonempty(in.Content))
 	if err != nil {
 		return AssetReplica{}, err
 	}

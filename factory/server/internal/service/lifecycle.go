@@ -47,7 +47,7 @@ func (s *Auth) CloseFromWAN(ctx context.Context) error {
 	return err
 }
 
-// requireFactoryOpen 本厂被 WAN 停用或注销后，拒绝登录和新操作。
+// requireFactoryOpen 停用、注销或解包租约到期后，拒绝登录和新操作。
 func (k *kernel) requireFactoryOpen(ctx context.Context) error {
 	lc, err := k.store.Lifecycle(ctx)
 	if err != nil {
@@ -58,7 +58,7 @@ func (k *kernel) requireFactoryOpen(ctx context.Context) error {
 		return domain.ErrFactoryDisabled
 	case store.FactoryRetired:
 		return domain.ErrFactoryRetired
-	default:
-		return nil
 	}
+	// 超时整厂业务不可用；探活和 WAN 通道仍可把钥匙领回来。
+	return k.store.RequireContentLease()
 }

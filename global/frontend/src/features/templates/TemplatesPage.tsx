@@ -1,4 +1,4 @@
-import { App, Button, Card, Input, Modal, Radio, Space, Spin, Typography, Upload } from "antd";
+import { App, Button, Card, Input, Modal, Space, Spin, Typography, Upload } from "antd";
 import { useState } from "react";
 import { errorMessage } from "@/shared/api/client";
 import { PageHeader } from "@/shared/ui/PageHeader";
@@ -7,9 +7,8 @@ import { useTemplate, useUpdateTemplate } from "./api";
 import { SchemaEditor } from "./SchemaEditor";
 import { contentFromSchema, schemaFromJSON, adoptSchema, type ContentSchema } from "./schema";
 
-export function TemplatesPage() {
+export function TemplatesPage({ kind }: { kind: AssetKind }) {
   const { message, modal } = App.useApp();
-  const [kind, setKind] = useState<AssetKind>("process");
   const q = useTemplate(kind);
   const save = useUpdateTemplate();
   const [local, setLocal] = useState<{ kind: AssetKind; revision: number; schema: ContentSchema } | null>(null);
@@ -24,9 +23,11 @@ export function TemplatesPage() {
   };
 
   const onErr = (e: unknown) => message.error(errorMessage(e));
-  const title = kind === "process" ? "工艺模版" : "工程模版";
+  const isProcess = kind === "process";
+  const title = isProcess ? "工艺模版" : "工程模版";
+  const noun = isProcess ? "工艺" : "工程";
   const exportJSON = draft ? JSON.stringify(contentFromSchema(draft), null, 4) : "";
-  const fileName = kind === "process" ? "工艺.json" : "工程.json";
+  const fileName = isProcess ? "工艺.json" : "工程.json";
 
   const applyImport = (raw: string) => {
     try {
@@ -57,14 +58,10 @@ export function TemplatesPage() {
   return (
     <>
       <PageHeader
-        title="内容模版"
-        description="全平台每种类型一份。保存后下发给在线工厂，不改已有正文；只有新建才按模版套字段。"
+        title={title}
+        description={`全平台一份。保存后下发给在线工厂，不改已有${noun}正文；只有新建才按模版套字段。`}
         extra={
           <Space wrap>
-            <Radio.Group size="small" value={kind} onChange={(e) => setKind(e.target.value)} style={{ flexWrap: "nowrap" }}>
-              <Radio.Button value="process">工艺</Radio.Button>
-              <Radio.Button value="project">工程</Radio.Button>
-            </Radio.Group>
             <Button disabled={!draft} onClick={() => setExportOpen(true)}>
               导出 JSON
             </Button>
@@ -84,7 +81,7 @@ export function TemplatesPage() {
                 if (!draft || !q.data) return;
                 modal.confirm({
                   title: `保存${title}？`,
-                  content: "已有工艺/工程正文不变。此后新建才按新字段。",
+                  content: `已有${noun}正文不变。此后新建才按新字段。`,
                   onOk: () =>
                     save.mutate(
                       { kind, expected: q.data.revision, schema: draft },
@@ -124,7 +121,7 @@ export function TemplatesPage() {
         width={720}
       >
         <Typography.Text type="secondary" style={{ display: "block", marginBottom: 8 }}>
-          贴工艺或工程正文，和设备里的 JSON 一样。
+          贴{noun}正文，和设备里的 JSON 一样。
         </Typography.Text>
         <Upload
           accept="application/json,.json"

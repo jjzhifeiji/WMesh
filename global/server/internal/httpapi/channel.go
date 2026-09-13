@@ -39,7 +39,7 @@ type channelMsg struct {
 	ReqID            string                   `json:"reqId,omitempty"`            // 问询与回执配对
 	Kind             string                   `json:"kind,omitempty"`             // process / project，仅 asset_list
 	AssetID          string                   `json:"assetId,omitempty"`          // 升档快照身份，或撤回的平台级身份
-	Assets           []promotableAsset        `json:"assets,omitempty"`           // 可升档厂级元数据，不含正文
+	Assets           []promotableAsset        `json:"assets,omitempty"`           // 厂端升档清单元数据，不含正文
 	Snapshot         *service.AssetSnapshot   `json:"snapshot,omitempty"`         // 升档快照，含正文
 	Closure          *service.ClosureSnapshot  `json:"closure,omitempty"`          // 平台级闭包（可用或停用修订）
 	Template         *service.TemplateSnapshot `json:"template,omitempty"`         // 当前内容模版
@@ -49,13 +49,14 @@ type channelMsg struct {
 }
 
 type promotableAsset struct {
-	ID       string `json:"id"`       // 厂级稳定身份
+	ID       string `json:"id"`       // 稳定身份
 	Kind     string `json:"kind"`     // process / project
+	Level    string `json:"level"`    // factory / personal / platform
 	Name     string `json:"name"`     // 显示名
 	Revision int64  `json:"revision"` // 当前修订
 	Digest   []byte `json:"digest"`   // 内容摘要
-	Status   string `json:"status"`   // 须为 available
-	Copyable bool   `json:"copyable"` // 须为可复制
+	Status   string `json:"status"`   // draft / available / disabled
+	Copyable bool   `json:"copyable"` // 原样带回
 }
 
 const channelIdle = 45 * time.Second // 超过这个时间没收心跳就当断线
@@ -214,6 +215,8 @@ func (h *Handler) pinFactory(ctx context.Context, c *websocket.Conn, factoryID u
 			if err := h.pushContentLease(ctx, c, factoryID); err != nil {
 				return
 			}
+			// 续期成功后再补闭包，补上通道还在时验收失败的修订。
+			h.replayClosures(ctx, c, factoryID)
 		case "asset_list_ok", "asset_snapshot_ok", "error":
 			h.live.deliver(factoryID, msg)
 		}
@@ -254,6 +257,7 @@ func (h *Handler) fanoutAvailable(ctx context.Context) {
 		if fac.Status != service.FactoryActive {
 			continue
 		}
+		// 离线厂也先记下授权和下发记录；通道不在时 push 会丢掉，上线 replayClosures 再补密文。
 		snaps, err := h.svc.PackAvailableForFactory(ctx, fac.ID)
 		if err != nil {
 			continue

@@ -234,10 +234,7 @@ func (s *Assets) PromoteFromSnapshot(ctx context.Context, token string, snap Ass
 		return Asset{}, err
 	}
 	fid := snap.SourceFactoryID
-	if snap.Status != AssetAvailable {
-		_ = s.audit(ctx, &admin.ID, nil, &fid, "promote_asset", snap.SourceID.String(), audit.Deny)
-		return Asset{}, domain.ErrAssetNotAvailable
-	}
+	// 厂级不分草稿/停用都可升平台；不可复制仍拒绝。
 	if !snap.Copyable {
 		_ = s.audit(ctx, &admin.ID, nil, &fid, "promote_asset", snap.SourceID.String(), audit.Deny)
 		return Asset{}, domain.ErrAssetNotCopyable

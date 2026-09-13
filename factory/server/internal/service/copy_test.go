@@ -102,4 +102,16 @@ func TestCopyProcess(t *testing.T) {
 	if err != nil || !bytes.Equal(gotPlat, platBody) {
 		t.Fatalf("%q %v", gotPlat, err)
 	}
+
+	secretBody := []byte("plat-secret")
+	secret := factory.ClosureMember{
+		ID: id.New(), Kind: factory.KindProcess, Level: factory.AssetLevelPlatform, Name: "平台保密",
+		Status: factory.AssetAvailable, Copyable: false, Revision: 1, Content: secretBody, Digest: digest.Sum(secretBody),
+	}
+	if err := fac.AcceptPlatformDelivery(ctx, sealSnap(factory.KindProcess, secret, nil, &fid, nil)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fac.CopyProcess(ctx, pe.tok, secret.ID, "偷看"); !errors.Is(err, domain.ErrAssetNotCopyable) {
+		t.Fatalf("secret copy %v", err)
+	}
 }

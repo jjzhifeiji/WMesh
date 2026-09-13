@@ -218,7 +218,7 @@ func (s *Closure) deliverToFactory(ctx context.Context, assetID, factoryID uuid.
 	return snap, nil
 }
 
-// PackAvailableForFactory 把当前可用平台级授权并组包给该厂；已授权的停用条一并补送。
+// PackAvailableForFactory 把当前可用平台级授权并组包给该厂；离线厂上线回放也走这里。已授权的停用条一并补送。
 func (s *Closure) PackAvailableForFactory(ctx context.Context, factoryID uuid.UUID) ([]ClosureSnapshot, error) {
 	fac, err := s.store.FactoryByID(ctx, factoryID)
 	if err != nil {

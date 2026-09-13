@@ -7,6 +7,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -521,7 +522,119 @@ func TestContentMasterRestore(t *testing.T) {
 		t.Fatalf("online past notAfter %v", err)
 	}
 	s.SetContentChannelOnline(false)
+	if _, err := s.GovernedAssetByID(ctx, a.ID); err != nil {
+		t.Fatalf("offline must keep monotonic window %v", err)
+	}
+}
+
+func TestLeaseClockWindows(t *testing.T) {
+	ctx := context.Background()
+	facDB, facID := testpg.Fresh(t)
+	s := store.Open(facDB, facID)
+	base := time.Date(2026, 9, 13, 6, 0, 0, 0, time.UTC)
+	var mu sync.Mutex
+	offset := time.Duration(0)
+	s.SetContentClock(func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		return base.Add(offset)
+	})
+	advance := func(d time.Duration) {
+		mu.Lock()
+		offset = d
+		mu.Unlock()
+	}
+	l, err := contentcrypt.RandomKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ApplyContentLease(ctx, l, base.Add(24*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	p, err := s.CreatePerson(ctx, "pe", "工艺师", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := []byte(`{"current":200}`)
+	a, err := s.InsertGovernedAsset(ctx, store.Asset{
+		Kind: store.KindProcess, Level: store.AssetLevelFactory, Name: "焊接",
+		Status: store.AssetDraft, Copyable: true, Content: body, Digest: digest.Sum(body), CreatorID: p.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.SetContentChannelOnline(false)
+	advance(23 * time.Hour)
+	got, err := s.GovernedAssetByID(ctx, a.ID)
+	if err != nil || !bytes.Equal(got.Content, body) {
+		t.Fatalf("23h %q %v", got.Content, err)
+	}
+	s.ClearContentLease()
 	if _, err := s.GovernedAssetByID(ctx, a.ID); !errors.Is(err, domain.ErrContentLeaseExpired) {
-		t.Fatalf("offline past notAfter %v", err)
+		t.Fatalf("cleared %v", err)
+	}
+	if err := s.ApplyContentLease(ctx, l, base.Add(24*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	got, err = s.GovernedAssetByID(ctx, a.ID)
+	if err != nil || !bytes.Equal(got.Content, body) {
+		t.Fatalf("same L at 23h %q %v", got.Content, err)
+	}
+	advance(0)
+	if _, err := s.GovernedAssetByID(ctx, a.ID); err != nil {
+		t.Fatalf("rewind %v", err)
+	}
+	advance(25 * time.Hour)
+	if _, err := s.GovernedAssetByID(ctx, a.ID); !errors.Is(err, domain.ErrContentLeaseExpired) {
+		t.Fatalf("25h %v", err)
+	}
+	if err := s.ApplyContentLease(ctx, l, base.Add(24*time.Hour)); !errors.Is(err, domain.ErrContentLeaseExpired) {
+		t.Fatalf("offline cannot extend %v", err)
+	}
+	advance(0)
+	if _, err := s.GovernedAssetByID(ctx, a.ID); !errors.Is(err, domain.ErrContentLeaseExpired) {
+		t.Fatalf("rewind after expiry %v", err)
+	}
+	advance(25 * time.Hour)
+	s.SetContentChannelOnline(true)
+	if err := s.ApplyContentLease(ctx, l, base.Add(49*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	got, err = s.GovernedAssetByID(ctx, a.ID)
+	if err != nil || !bytes.Equal(got.Content, body) {
+		t.Fatalf("online renew %q %v", got.Content, err)
+	}
+}
+
+func TestChannelFlapKeepsLease(t *testing.T) {
+	ctx := context.Background()
+	facDB, facID := testpg.Fresh(t)
+	s := store.Open(facDB, facID)
+	l, err := contentcrypt.RandomKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ApplyContentLease(ctx, l, time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	p, err := s.CreatePerson(ctx, "pe", "工艺师", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := []byte(`{"current":200}`)
+	a, err := s.InsertGovernedAsset(ctx, store.Asset{
+		Kind: store.KindProcess, Level: store.AssetLevelFactory, Name: "焊接",
+		Status: store.AssetDraft, Copyable: true, Content: body, Digest: digest.Sum(body), CreatorID: p.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		s.SetContentChannelOnline(false)
+		s.SetContentChannelOnline(true)
+	}
+	got, err := s.GovernedAssetByID(ctx, a.ID)
+	if err != nil || !bytes.Equal(got.Content, body) {
+		t.Fatalf("after flap %q %v", got.Content, err)
 	}
 }

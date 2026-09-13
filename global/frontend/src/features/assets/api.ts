@@ -109,8 +109,9 @@ export function useDeleteAsset() {
 }
 
 export type PromotableAsset = {
-  id: string; // 厂级稳定身份
+  id: string; // 稳定身份
   kind: AssetKind;
+  level: "factory" | "personal" | "platform"; // 厂内级别
   name: string; // 显示名
   revision: number;
   digest: string; // 摘要

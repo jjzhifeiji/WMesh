@@ -1,7 +1,6 @@
 import {
   AppstoreOutlined,
   AuditOutlined,
-  CloudSyncOutlined,
   ClusterOutlined,
   DashboardOutlined,
   ShopOutlined,
@@ -48,15 +47,8 @@ export const navTree: NavEntry[] = [
     children: [
       { key: paths.processes, label: "平台工艺", description: "平台级工艺的制作、维护与升档。" },
       { key: paths.projects, label: "平台工程", description: "平台级工程及其依赖工艺的治理。" },
-      { key: paths.templates, label: "内容模版", description: "工艺、工程各一份当前字段表。" },
-    ],
-  },
-  {
-    key: "delivery",
-    label: "下发",
-    icon: <CloudSyncOutlined />,
-    children: [
-      { key: paths.distribute, label: "下发到工厂", placeholder: true, description: "把可用平台级授权并下发到已授权工厂。" },
+      { key: paths.templates, label: "工艺模版", description: "平台工艺当前字段表。" },
+      { key: paths.projectTemplates, label: "工程模版", description: "平台工程当前字段表。" },
     ],
   },
   {

@@ -467,6 +467,6 @@ func (s *Closure) SetProjectDeps(ctx context.Context, token string, assetID uuid
 		} else if err := s.assertFactoryProcessDeps(ctx, deps); err != nil {
 			return store.AssetWrite{}, err
 		}
-		return store.AssetWrite{Name: cur.Name, Content: cur.Content, Digest: cur.Digest, Copyable: cur.Copyable, Status: cur.Status, Deps: copyDeps(deps)}, nil
+		return store.AssetWrite{Name: cur.Name, Digest: cur.Digest, Copyable: cur.Copyable, Status: cur.Status, Deps: copyDeps(deps), KeepContent: true}, nil
 	})
 }
