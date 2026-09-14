@@ -22,9 +22,12 @@ const zh: Record<string, string> = {
   "asset integrity check failed": "内容与摘要对不上，不能当有效资产用",
   "asset is not available": "草稿或已停用，不能这样用",
   "asset is not copyable": "不可复制，不能升档或放宽",
-  "asset dependency missing or mismatched": "依赖的工艺不存在、未发布或修订对不上",
+  "asset dependency missing or mismatched": "依赖的工艺不存在、未发布、修订对不上，或焊道引用了未声明的工艺",
 	"factory channel is offline": "厂端通道不在线，连不上不能拉升档",
   "content template is invalid": "内容模版字段不合法",
+  "asset origin code is not assigned": "还没有本端编号短码，不能新建",
+  "asset code already exists": "编号已占用或与身份不一致",
+  "origin code exhausted": "短码或编号已用尽",
 };
 
 export function translateError(code: string) {

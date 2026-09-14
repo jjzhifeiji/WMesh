@@ -62,6 +62,7 @@ func Load() (Config, error) {
 	return c, c.validate()
 }
 
+// validate 半配置直接拒绝，避免带空密码上线。
 func (c Config) validate() error {
 	var errs []error
 	if c.AdminLogin != "" && c.AdminPassword == "" {
@@ -82,6 +83,7 @@ func (c Config) validate() error {
 	return errors.Join(errs...)
 }
 
+// envOr 空则用开发默认。
 func envOr(key, def string) string {
 	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
 		return v
@@ -89,6 +91,7 @@ func envOr(key, def string) string {
 	return def
 }
 
+// envBool 把常见真值收成布尔。
 func envBool(key string) bool {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
 	case "1", "true", "yes":

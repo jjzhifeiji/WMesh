@@ -7,7 +7,7 @@ import { IdText } from "@/shared/ui/IdText";
 import { PageHeader } from "@/shared/ui/PageHeader";
 import { useDirectory } from "@/features/factories/api";
 import { ContentEditor } from "@/features/templates/ContentFields";
-import { defaultValue } from "@/features/templates/schema";
+import { collectProcessIds, defaultValue } from "@/features/templates/schema";
 import { useTemplate } from "@/features/templates/api";
 import type { ContentSchema } from "@/features/templates/schema";
 import {
@@ -23,8 +23,10 @@ import {
   usePublishAsset,
   useRenameAsset,
   useSetAssetCopyable,
+  useSetAssetDeps,
   useUpdateAssetContent,
   type Asset,
+  type AssetDep,
   type AssetKind,
   type CreateAssetInput,
   type PromotableAsset,
@@ -92,6 +94,7 @@ export function AssetsPage({ kind }: { kind: AssetKind }) {
   const enable = useEnableAsset();
   const remove = useDeleteAsset();
   const setCopyable = useSetAssetCopyable();
+  const setAssetDeps = useSetAssetDeps();
   const promote = usePromoteFromFactory();
   const directory = useDirectory();
   const { message, modal } = App.useApp();
@@ -128,6 +131,7 @@ export function AssetsPage({ kind }: { kind: AssetKind }) {
       if (statusFilter !== "all" && a.status !== statusFilter) return false;
       if (sourceFilter !== "all" && (a.sourceFactory || "本端新建") !== sourceFilter) return false;
       if (!needle) return true;
+      if (a.code === query.trim() || a.code === query.trim().toUpperCase()) return true;
       const source = (a.sourceFactory || "本端新建").toLowerCase();
       return a.name.toLowerCase().includes(needle) || source.includes(needle);
     });
@@ -164,6 +168,7 @@ export function AssetsPage({ kind }: { kind: AssetKind }) {
       ellipsis: true,
       render: (name: string) => <Typography.Text strong>{name}</Typography.Text>,
     },
+    { title: "编号", dataIndex: "code", width: 150, render: (code: string) => <Typography.Text copyable={{ text: code }}>{code}</Typography.Text> },
     { title: "状态", dataIndex: "status", width: 90, render: (s: string) => <Tag color={statusColor(s)}>{statusLabel(s)}</Tag> },
     { title: "可复制", dataIndex: "copyable", width: 80, render: (ok: boolean) => (ok ? "是" : "否") },
     { title: "修订", dataIndex: "revision", width: 70 },
@@ -295,7 +300,7 @@ export function AssetsPage({ kind }: { kind: AssetKind }) {
       />
       <Card>
         <Space wrap style={{ marginBottom: 12 }}>
-          <Input.Search allowClear placeholder={`搜索${isProcess ? "工艺" : "工程"}名称或来源厂`} value={query} onChange={(e) => setQuery(e.target.value)} style={{ width: 280 }} />
+          <Input.Search allowClear placeholder={`搜索${isProcess ? "工艺" : "工程"}名称、编号或来源厂`} value={query} onChange={(e) => setQuery(e.target.value)} style={{ width: 280 }} />
           <Select
             value={statusFilter}
             onChange={setStatusFilter}
@@ -327,17 +332,14 @@ export function AssetsPage({ kind }: { kind: AssetKind }) {
           requiredMark={false}
           initialValues={{ content: "" }}
           onFinish={(values) => {
+            const deps = isProcess
+              ? undefined
+              : depsFromSelection(values.processIds, values.content, availableProcesses);
             const input: CreateAssetInput = {
               kind,
               name: values.name,
               content: values.content,
-              deps: isProcess
-                ? undefined
-                : (values.processIds ?? []).map((id) => {
-                    const p = availableProcesses.find((x) => x.id === id);
-                    if (!p) return { id, revision: 0, digest: "" };
-                    return { id: p.id, revision: p.revision, digest: p.digest };
-                  }),
+              deps,
             };
             create.mutate(input, {
               onSuccess: () => {
@@ -356,14 +358,13 @@ export function AssetsPage({ kind }: { kind: AssetKind }) {
             <Form.Item
               name="processIds"
               label="依赖工艺"
-              extra={availableProcesses.length ? "必须已是平台级可用工艺。" : "还没有已发布的平台工艺，请先发布工艺。"}
-              rules={[{ required: true, message: "请选择依赖工艺" }]}
+              extra={availableProcesses.length ? "焊道里按名称选工艺即可；这里可多带组包要用、焊道未引用的。" : "还没有已发布的平台工艺，请先发布工艺。"}
             >
               <Select mode="multiple" optionFilterProp="label" options={availableProcesses.map((p) => ({ value: p.id, label: `${p.name} · r${p.revision}` }))} />
             </Form.Item>
           ) : null}
           <Form.Item name="content" label="参数">
-            <ContentEditor schema={schema} />
+            <ContentEditor schema={schema} processOptions={isProcess ? undefined : processSelectOptions(undefined, availableProcesses)} />
           </Form.Item>
         </Form>
       </Modal>
@@ -431,6 +432,7 @@ export function AssetsPage({ kind }: { kind: AssetKind }) {
           }}
           columns={[
             { title: isProcess ? "工艺名称" : "工程名称", dataIndex: "name", ellipsis: true },
+            { title: "编号", dataIndex: "code", width: 150 },
             {
               title: "级别",
               dataIndex: "level",
@@ -491,9 +493,11 @@ export function AssetsPage({ kind }: { kind: AssetKind }) {
       <EditModal
         row={editing}
         schema={schema}
-        saving={rename.isPending || updateContent.isPending}
+        processes={processes.data ?? []}
+        availableProcesses={availableProcesses}
+        saving={rename.isPending || updateContent.isPending || setAssetDeps.isPending}
         onClose={() => setEditFor(null)}
-        onSave={async (name, content, originalContent) => {
+        onSave={async (name, content, originalContent, processIds) => {
           if (!editing) return;
           try {
             let expected = editing.revision;
@@ -501,7 +505,33 @@ export function AssetsPage({ kind }: { kind: AssetKind }) {
               const next = await rename.mutateAsync({ id: editing.id, expected, name });
               expected = next.revision;
             }
-            if (content !== originalContent) {
+            if (editing.kind === "project") {
+              const oldIds = (editing.deps ?? []).map((d) => d.id);
+              const nextIds = uniqueIds([...(processIds ?? []), ...processIdsFromContent(content)]);
+              const added = nextIds.filter((id) => !oldIds.includes(id));
+              const toDep = (id: string): AssetDep => {
+                const pinned = (editing.deps ?? []).find((d) => d.id === id);
+                if (pinned) return pinned;
+                const p = availableProcesses.find((x) => x.id === id);
+                if (!p) return { id, revision: 0, digest: "" };
+                return { id: p.id, revision: p.revision, digest: p.digest };
+              };
+              if (added.length) {
+                const next = await setAssetDeps.mutateAsync({
+                  id: editing.id,
+                  expected,
+                  deps: [...oldIds, ...added].map(toDep),
+                });
+                expected = next.revision;
+              }
+              if (content !== originalContent) {
+                const next = await updateContent.mutateAsync({ id: editing.id, expected, content });
+                expected = next.revision;
+              }
+              if (nextIds.join("\0") !== oldIds.join("\0") || added.length) {
+                await setAssetDeps.mutateAsync({ id: editing.id, expected, deps: nextIds.map(toDep) });
+              }
+            } else if (content !== originalContent) {
               await updateContent.mutateAsync({ id: editing.id, expected, content });
             }
             message.success("已保存");
@@ -560,6 +590,7 @@ function DetailModal({ row, processes, schema, onClose }: { row: Asset | null; p
             size="small"
             items={[
               { key: "name", label: row.kind === "process" ? "工艺名称" : "工程名称", children: row.name },
+              { key: "code", label: "编号", children: <Typography.Text copyable={{ text: row.code }}>{row.code}</Typography.Text> },
               ...(row.kind === "process" ? [{ key: "id", label: "工艺ID", children: <IdText id={row.id} /> }] : []),
               { key: "status", label: "状态", children: <Tag color={statusColor(row.status)}>{statusLabel(row.status)}</Tag> },
               { key: "copyable", label: "可复制", children: row.copyable ? "是" : "否" },
@@ -578,7 +609,7 @@ function DetailModal({ row, processes, schema, onClose }: { row: Asset | null; p
           ) : q.isLoading ? (
             "读取中…"
           ) : (
-            <ContentEditor schema={schema} value={q.data?.content ?? ""} disabled />
+            <ContentEditor schema={schema} value={q.data?.content ?? ""} disabled processOptions={row.kind === "project" ? processSelectOptions((row.deps ?? []).map((d) => d.id), processes) : undefined} />
           )}
         </>
       ) : null}
@@ -586,9 +617,52 @@ function DetailModal({ row, processes, schema, onClose }: { row: Asset | null; p
   );
 }
 
+function uniqueIds(ids: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const id of ids) {
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    out.push(id);
+  }
+  return out;
+}
+
+function processIdsFromContent(content: string | undefined): string[] {
+  try {
+    return collectProcessIds(JSON.parse(content || "[]"));
+  } catch {
+    return [];
+  }
+}
+
+function depsFromSelection(selected: string[] | undefined, content: string | undefined, available: Asset[]): AssetDep[] {
+  const ids = uniqueIds([...(selected ?? []), ...processIdsFromContent(content)]);
+  return ids.map((id) => {
+    const p = available.find((x) => x.id === id);
+    if (!p) return { id, revision: 0, digest: "" };
+    return { id: p.id, revision: p.revision, digest: p.digest };
+  });
+}
+
+function processSelectOptions(selected: string[] | undefined, pickable: Asset[], catalog: Asset[] = pickable) {
+  const byId = new Map(catalog.map((p) => [p.id, p]));
+  const opts = pickable.map((p) => ({ value: p.id, label: `${p.name} · r${p.revision}` }));
+  const seen = new Set(pickable.map((p) => p.id));
+  for (const id of selected ?? []) {
+    if (seen.has(id)) continue;
+    const p = byId.get(id);
+    opts.push({ value: id, label: p ? `${p.name} · r${p.revision}` : id });
+    seen.add(id);
+  }
+  return opts;
+}
+
 function EditModal({
   row,
   schema,
+  processes,
+  availableProcesses,
   saving,
   extra,
   onClose,
@@ -596,17 +670,19 @@ function EditModal({
 }: {
   row: Asset | null;
   schema: ContentSchema | null;
+  processes: Asset[];
+  availableProcesses: Asset[];
   saving: boolean;
   extra: ReactNode;
   onClose: () => void;
-  onSave: (name: string, content: string, originalContent: string) => Promise<void>;
+  onSave: (name: string, content: string, originalContent: string, processIds?: string[]) => Promise<void>;
 }) {
   const q = useAssetContent(row?.id ?? null);
-  const [form] = Form.useForm<{ name: string; content: string }>();
+  const [form] = Form.useForm<{ name: string; content: string; processIds?: string[] }>();
   const locked = row?.status === "disabled";
   useEffect(() => {
     if (!row) return;
-    form.setFieldsValue({ name: row.name });
+    form.setFieldsValue({ name: row.name, processIds: (row.deps ?? []).map((d) => d.id) });
     if (!q.isFetching) form.setFieldsValue({ content: q.data?.content ?? "" });
   }, [row, q.data, q.isFetching, form]);
   return (
@@ -623,13 +699,13 @@ function EditModal({
     >
       {q.isError ? <Typography.Text type="danger">{errorMessage(q.error)}</Typography.Text> : null}
       {extra ? <div style={{ marginBottom: 8 }}>{extra}</div> : null}
-      <Form<{ name: string; content: string }>
+      <Form<{ name: string; content: string; processIds?: string[] }>
         form={form}
         layout="vertical"
         size="small"
         requiredMark={false}
         onFinish={(values) =>
-          onSave(values.name, values.content, q.data?.content ?? "").catch(() => undefined)
+          onSave(values.name, values.content, q.data?.content ?? "", values.processIds).catch(() => undefined)
         }
       >
         {row?.kind === "process" ? (
@@ -640,8 +716,17 @@ function EditModal({
         <Form.Item name="name" label="显示名" extra="显示名不是身份。" rules={[{ required: true, message: "请输入显示名" }]}>
           <Input autoComplete="off" disabled={locked} />
         </Form.Item>
+        {row?.kind === "project" ? (
+          <Form.Item name="processIds" label="依赖工艺" extra="焊道里按名称选工艺即可；这里可多带组包要用、焊道未引用的。">
+            <Select mode="multiple" optionFilterProp="label" disabled={locked} options={availableProcesses.map((p) => ({ value: p.id, label: `${p.name} · r${p.revision}` }))} />
+          </Form.Item>
+        ) : null}
         <Form.Item name="content" label="参数">
-          <ContentEditor schema={schema} disabled={locked} />
+          <ContentEditor
+            schema={schema}
+            disabled={locked}
+            processOptions={row?.kind === "project" ? processSelectOptions((row.deps ?? []).map((d) => d.id), availableProcesses, processes) : undefined}
+          />
         </Form.Item>
       </Form>
     </Modal>

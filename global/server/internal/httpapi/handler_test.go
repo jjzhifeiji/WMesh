@@ -143,9 +143,18 @@ func TestWANHTTP(t *testing.T) {
 	}
 	digest := gjson(t, body, "digest")
 	rev := gjson(t, body, "revision")
+	code, body = do(t, srv, "GET", "/v1/templates/builtin?kind=project", tok, "")
+	if code != http.StatusOK || !strings.Contains(body, `"processId"`) || strings.Contains(body, "processPath") {
+		t.Fatalf("builtin template %d %s", code, body)
+	}
 	code, body = do(t, srv, "POST", "/v1/assets", tok, `{"kind":"project","name":"平台工程","content":"job","deps":[{"id":"`+pid+`","revision":`+rev+`,"digest":"`+digest+`"}]}`)
 	if code != http.StatusCreated {
 		t.Fatalf("create platform project %d %s", code, body)
+	}
+	projID := gjson(t, body, "id")
+	code, body = do(t, srv, "POST", "/v1/assets/"+projID+"/deps", tok, `{"expected":1,"deps":[{"id":"`+pid+`","revision":`+rev+`,"digest":"`+digest+`"}]}`)
+	if code != http.StatusOK {
+		t.Fatalf("set project deps %d %s", code, body)
 	}
 	code, body = do(t, srv, "POST", "/v1/assets/"+pid+"/disable", tok, `{"expected":`+rev+`}`)
 	if code != http.StatusOK || gjson(t, body, "status") != "disabled" {

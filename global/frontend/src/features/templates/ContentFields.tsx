@@ -2,14 +2,17 @@ import { Button, Collapse, Input, Select, Space } from "antd";
 import type { ContentSchema, TemplateField } from "./schema";
 import { defaultField, defaultValue, encodeContent, enumOptions, enumValue, kindOf, parseContent, parseText, textOf } from "./schema";
 
+export type ProcessOption = { value: string; label: string }; // 已声明依赖，给焊道选工艺
+
 type FieldsProps = {
   schema: ContentSchema;
   value?: unknown;
   onChange?: (v: unknown) => void;
   disabled?: boolean;
+  processOptions?: ProcessOption[];
 };
 
-export function ContentFields({ schema, value, onChange, disabled }: FieldsProps) {
+export function ContentFields({ schema, value, onChange, disabled, processOptions }: FieldsProps) {
   const current = value === undefined ? defaultValue(schema) : value;
   if (schema.root === "array") {
     return (
@@ -19,13 +22,14 @@ export function ContentFields({ schema, value, onChange, disabled }: FieldsProps
           value={asArr(current)}
           onChange={(v) => onChange?.(v)}
           disabled={disabled}
+          processOptions={processOptions}
         />
       </div>
     );
   }
   return (
     <div className="content-fields-scroll">
-      <ObjectFields fields={schema.fields ?? []} value={asObj(current)} onChange={(v) => onChange?.(v)} disabled={disabled} />
+      <ObjectFields fields={schema.fields ?? []} value={asObj(current)} onChange={(v) => onChange?.(v)} disabled={disabled} processOptions={processOptions} />
     </div>
   );
 }
@@ -35,9 +39,10 @@ type EditorProps = {
   value?: string;
   onChange?: (raw: string) => void;
   disabled?: boolean;
+  processOptions?: ProcessOption[];
 };
 
-export function ContentEditor({ schema, value, onChange, disabled }: EditorProps) {
+export function ContentEditor({ schema, value, onChange, disabled, processOptions }: EditorProps) {
   if (!schema) {
     return <Input.TextArea rows={8} value={value} onChange={(e) => onChange?.(e.target.value)} disabled={disabled} />;
   }
@@ -47,6 +52,7 @@ export function ContentEditor({ schema, value, onChange, disabled }: EditorProps
       value={parseContent(value, schema)}
       onChange={(v) => onChange?.(encodeContent(v, schema, value ?? ""))}
       disabled={disabled}
+      processOptions={processOptions}
     />
   );
 }
@@ -56,21 +62,24 @@ function ObjectFields({
   value,
   onChange,
   disabled,
+  processOptions,
 }: {
   fields: TemplateField[];
   value: Record<string, unknown>;
   onChange: (v: Record<string, unknown>) => void;
   disabled?: boolean;
+  processOptions?: ProcessOption[];
 }) {
   return (
     <div className="content-fields">
-      {fields.map((f) => (
+      {fields.filter((f) => !isIdentityField(f)).map((f) => (
         <FieldInput
           key={f.key || f.label}
           field={f}
           value={value[f.key]}
           onChange={(v) => onChange({ ...value, [f.key]: v })}
           disabled={disabled}
+          processOptions={processOptions}
         />
       ))}
     </div>
@@ -82,11 +91,13 @@ function ArrayFields({
   value,
   onChange,
   disabled,
+  processOptions,
 }: {
   item: TemplateField;
   value: unknown[];
   onChange: (v: unknown[]) => void;
   disabled?: boolean;
+  processOptions?: ProcessOption[];
 }) {
   const primitive = item.type !== "object" && item.type !== "array";
   if (primitive) {
@@ -103,6 +114,7 @@ function ArrayFields({
                 onChange(next);
               }}
               disabled={disabled}
+              processOptions={processOptions}
               bare
             />
             {disabled ? null : (
@@ -150,6 +162,7 @@ function ArrayFields({
                 onChange(next);
               }}
               disabled={disabled}
+              processOptions={processOptions}
               bare
             />
           ),
@@ -170,16 +183,35 @@ function FieldInput({
   onChange,
   disabled,
   bare,
+  processOptions,
 }: {
   field: TemplateField;
   value: unknown;
   onChange: (v: unknown) => void;
   disabled?: boolean;
   bare?: boolean;
+  processOptions?: ProcessOption[];
 }) {
   const kind = kindOf(field);
   const label = field.unit ? `${field.label}（${field.unit}）` : field.label;
   const control = (() => {
+    if (isProcessRef(field)) {
+      const cur = typeof value === "string" && value ? value : undefined;
+      return (
+        <Select
+          size="small"
+          allowClear
+          showSearch
+          optionFilterProp="label"
+          value={cur}
+          options={processOptions ?? []}
+          onChange={(v: string | undefined) => onChange(v ?? "")}
+          disabled={disabled}
+          placeholder="未选工艺"
+          className="content-ctrl-text"
+        />
+      );
+    }
     switch (kind) {
       case "enum": {
         const opts = enumOptions(field);
@@ -209,7 +241,7 @@ function FieldInput({
         return (
           <div className="content-field-group">
             {bare ? null : <div className="content-field-group-title">{label}</div>}
-            <ObjectFields fields={field.fields ?? []} value={asObj(value)} onChange={onChange} disabled={disabled} />
+            <ObjectFields fields={field.fields ?? []} value={asObj(value)} onChange={onChange} disabled={disabled} processOptions={processOptions} />
           </div>
         );
       case "array":
@@ -221,6 +253,7 @@ function FieldInput({
               value={asArr(value)}
               onChange={onChange}
               disabled={disabled}
+              processOptions={processOptions}
             />
           </div>
         );
@@ -238,6 +271,16 @@ function FieldInput({
       {control}
     </div>
   );
+}
+
+// 工艺引用：按已发布工艺下拉，不填路径或身份。
+function isProcessRef(field: TemplateField): boolean {
+  return (field.key === "processId" || field.key === "processPath") && kindOf(field) === "string";
+}
+
+// 焊道/点/路径自己的身份，添加时已生成，不用填。
+function isIdentityField(field: TemplateField): boolean {
+  return field.key === "id" && kindOf(field) === "string";
 }
 
 function asObj(v: unknown): Record<string, unknown> {

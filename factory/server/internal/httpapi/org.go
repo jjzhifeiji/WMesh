@@ -8,7 +8,8 @@ import (
 	"wmesh/factory/internal/service"
 )
 
-func (h *Handler) mountOrg(mux *http.ServeMux) { // 名册、组织、人员、角色、分配
+// 名册、组织、人员、角色、分配。
+func (h *Handler) mountOrg(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/factories/{id}/catalog", h.catalog)
 	mux.HandleFunc("POST /v1/factories/{id}/org-units", h.createOrgUnit)
 	mux.HandleFunc("POST /v1/factories/{id}/org-units/{unitId}/disable", h.disableOrgUnit)
@@ -50,6 +51,7 @@ type assignReq struct {
 	OrgUnitID string `json:"orgUnitId"` // 本厂有效节点
 }
 
+// 超管看全厂名册，其他人只看自己。
 func (h *Handler) catalog(w http.ResponseWriter, r *http.Request) {
 	h.withFactory(w, r, func(svc *service.Service) {
 		cat, err := svc.Org.Catalog(r.Context(), bearer(r))
@@ -61,6 +63,7 @@ func (h *Handler) catalog(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// 挂本厂组织节点；无父则直挂工厂。
 func (h *Handler) createOrgUnit(w http.ResponseWriter, r *http.Request) {
 	h.withFactory(w, r, func(svc *service.Service) {
 		var req createUnitReq
@@ -82,6 +85,7 @@ func (h *Handler) createOrgUnit(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// 停用组织节点；有有效子节点则拒绝。
 func (h *Handler) disableOrgUnit(w http.ResponseWriter, r *http.Request) {
 	h.withFactory(w, r, func(svc *service.Service) {
 		unitID, err := uuid.Parse(r.PathValue("unitId"))
@@ -97,6 +101,7 @@ func (h *Handler) disableOrgUnit(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// 重新启用组织节点。
 func (h *Handler) enableOrgUnit(w http.ResponseWriter, r *http.Request) {
 	h.withFactory(w, r, func(svc *service.Service) {
 		unitID, err := uuid.Parse(r.PathValue("unitId"))
@@ -112,6 +117,7 @@ func (h *Handler) enableOrgUnit(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// 无引用才删组织节点。
 func (h *Handler) deleteOrgUnit(w http.ResponseWriter, r *http.Request) {
 	h.withFactory(w, r, func(svc *service.Service) {
 		unitID, err := uuid.Parse(r.PathValue("unitId"))
@@ -127,6 +133,7 @@ func (h *Handler) deleteOrgUnit(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// 超管建本厂账号，默认密码直接有效。
 func (h *Handler) createPerson(w http.ResponseWriter, r *http.Request) {
 	h.withFactory(w, r, func(svc *service.Service) {
 		var req createPersonReq
@@ -143,6 +150,7 @@ func (h *Handler) createPerson(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// 停用人员；最后一名有效超管不可停。
 func (h *Handler) disablePerson(w http.ResponseWriter, r *http.Request) {
 	h.withFactory(w, r, func(svc *service.Service) {
 		personID, err := uuid.Parse(r.PathValue("personId"))
@@ -158,6 +166,7 @@ func (h *Handler) disablePerson(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// 恢复已停用人员。
 func (h *Handler) enablePerson(w http.ResponseWriter, r *http.Request) {
 	h.withFactory(w, r, func(svc *service.Service) {
 		personID, err := uuid.Parse(r.PathValue("personId"))
@@ -173,6 +182,7 @@ func (h *Handler) enablePerson(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// 把他人密码改回默认，旧会话立刻作废。
 func (h *Handler) resetPersonPassword(w http.ResponseWriter, r *http.Request) {
 	h.withFactory(w, r, func(svc *service.Service) {
 		personID, err := uuid.Parse(r.PathValue("personId"))
@@ -189,6 +199,7 @@ func (h *Handler) resetPersonPassword(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// 在作用域内授固定角色。
 func (h *Handler) grantRole(w http.ResponseWriter, r *http.Request) {
 	h.withFactory(w, r, func(svc *service.Service) {
 		var req grantReq
@@ -215,6 +226,7 @@ func (h *Handler) grantRole(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// 收回角色；最后一名厂级超管不能收。
 func (h *Handler) revokeRole(w http.ResponseWriter, r *http.Request) {
 	h.withFactory(w, r, func(svc *service.Service) {
 		grantID, err := uuid.Parse(r.PathValue("grantId"))
@@ -230,6 +242,7 @@ func (h *Handler) revokeRole(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// 把人员放到恰好一个有效节点。
 func (h *Handler) assign(w http.ResponseWriter, r *http.Request) {
 	h.withFactory(w, r, func(svc *service.Service) {
 		var req assignReq
@@ -255,6 +268,7 @@ func (h *Handler) assign(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// 取消当前分配，不改历史事实。
 func (h *Handler) unassign(w http.ResponseWriter, r *http.Request) {
 	h.withFactory(w, r, func(svc *service.Service) {
 		var req assignReq

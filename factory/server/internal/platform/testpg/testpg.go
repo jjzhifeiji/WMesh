@@ -19,6 +19,7 @@ import (
 	"wmesh/factory/migrations"
 )
 
+// AdminDSN 测试库维护连接串，可被环境变量覆盖。
 func AdminDSN() string {
 	if v := os.Getenv("WMESH_TEST_PG"); v != "" {
 		return v
@@ -26,6 +27,7 @@ func AdminDSN() string {
 	return "postgres://wmesh:wmesh@127.0.0.1:55433/postgres?sslmode=disable"
 }
 
+// Open 连上维护库，通不了就失败。
 func Open(t *testing.T) *gorm.DB {
 	t.Helper()
 	db, err := gorm.Open(postgres.Open(AdminDSN()), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
@@ -44,6 +46,7 @@ func Open(t *testing.T) *gorm.DB {
 	return db
 }
 
+// CreateDB 建临时库，测试结束强制删掉。
 func CreateDB(t *testing.T, admin *gorm.DB, prefix string) (name, dsn string) {
 	t.Helper()
 	name = prefix + "_" + strings.ReplaceAll(id.New().String(), "-", "")
@@ -57,6 +60,7 @@ func CreateDB(t *testing.T, admin *gorm.DB, prefix string) (name, dsn string) {
 	return name, dsn
 }
 
+// OpenMigrated 打开目标库并套向前迁移。
 func OpenMigrated(t *testing.T, dsn string) *gorm.DB {
 	t.Helper()
 	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
@@ -69,6 +73,7 @@ func OpenMigrated(t *testing.T, dsn string) *gorm.DB {
 	return db
 }
 
+// Fresh 建全新已迁移厂库，并给出测试用工厂身份。
 func Fresh(t *testing.T) (db *gorm.DB, factoryID uuid.UUID) {
 	t.Helper()
 	admin := Open(t)
@@ -76,6 +81,7 @@ func Fresh(t *testing.T) (db *gorm.DB, factoryID uuid.UUID) {
 	return OpenMigrated(t, dsn), id.New()
 }
 
+// quoteIdent 库名当标识符引用，避免被拆开。
 func quoteIdent(name string) string {
 	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
 }

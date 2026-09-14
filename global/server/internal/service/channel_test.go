@@ -1,3 +1,4 @@
+// 建厂码认领、厂钥验签、通道在线与离线。
 package service_test
 
 import (

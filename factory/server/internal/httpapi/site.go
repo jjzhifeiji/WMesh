@@ -6,7 +6,8 @@ import (
 	"wmesh/factory/internal/hub"
 )
 
-func (h *Handler) mountSite(mux *http.ServeMux) { // 本机认领与已认领工厂清单
+// 本机认领与已认领工厂清单。
+func (h *Handler) mountSite(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/site", h.site)
 	mux.HandleFunc("POST /v1/site/claim", h.claim)
 }
@@ -26,6 +27,7 @@ type claimResp struct {
 	SALogin   string `json:"saLogin"`   // 初始超管登录名
 }
 
+// 本机已认领工厂清单。
 func (h *Handler) site(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.Hub.ListSite(r.Context())
 	if err != nil {
@@ -35,6 +37,7 @@ func (h *Handler) site(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, siteResp{WANConfigured: h.WANURL != "", Factories: rows})
 }
 
+// 用建厂码认领并自设密码。
 func (h *Handler) claim(w http.ResponseWriter, r *http.Request) {
 	var req claimReq
 	if err := decodeJSON(r, &req); err != nil {

@@ -70,6 +70,7 @@ type assetRow struct {
 
 func (assetRow) TableName() string { return "personal_asset_stubs" }
 
+// HasActiveAssignment 此人当前是否分在该节点。
 func (s *Store) HasActiveAssignment(ctx context.Context, personID, unitID uuid.UUID) (bool, error) {
 	var n int64
 	err := s.db.WithContext(ctx).Model(&Assignment{}).
@@ -104,6 +105,7 @@ func (s *Store) PathSnapshot(ctx context.Context, unitID uuid.UUID) ([]PathNode,
 	return chain, nil
 }
 
+// InsertFact 写入运行事实并钉死当时路径。
 func (s *Store) InsertFact(ctx context.Context, creatorID uuid.UUID, unitID *uuid.UUID, path []PathNode) (FactStub, error) {
 	raw, err := marshalPath(path)
 	if err != nil {
@@ -130,6 +132,7 @@ func (s *Store) MergeFact(ctx context.Context, in FactStub) (FactStub, error) {
 	}
 	got, err := s.FactByID(ctx, in.ID)
 	if err == nil {
+		// 已有行字段不同不能覆盖。
 		if got.CreatorID != in.CreatorID || !sameOptUUID(got.OrgUnitID, in.OrgUnitID) || !pathEqual(got.OrgPath, in.OrgPath) {
 			return FactStub{}, domain.ErrIntegrity
 		}
@@ -162,6 +165,7 @@ func (s *Store) MergeFact(ctx context.Context, in FactStub) (FactStub, error) {
 	return factFromRow(row), nil
 }
 
+// 两边可空身份是否指向同一条。
 func sameOptUUID(a, b *uuid.UUID) bool {
 	if a == nil && b == nil {
 		return true
@@ -172,6 +176,7 @@ func sameOptUUID(a, b *uuid.UUID) bool {
 	return *a == *b
 }
 
+// pathEqual 两条路径快照是否同一原文。
 func pathEqual(a, b []PathNode) bool {
 	ra, errA := marshalPath(a)
 	rb, errB := marshalPath(b)
@@ -181,6 +186,7 @@ func pathEqual(a, b []PathNode) bool {
 	return bytes.Equal(ra, rb)
 }
 
+// InsertAsset 写入个人资产桩并钉死当时路径。
 func (s *Store) InsertAsset(ctx context.Context, creatorID uuid.UUID, unitID *uuid.UUID, path []PathNode, content string) (PersonalAsset, error) {
 	raw, err := marshalPath(path)
 	if err != nil {
@@ -201,6 +207,7 @@ func (s *Store) InsertAsset(ctx context.Context, creatorID uuid.UUID, unitID *uu
 	return assetFromRow(row), nil
 }
 
+// FactByID 按身份取事实桩。
 func (s *Store) FactByID(ctx context.Context, factID uuid.UUID) (FactStub, error) {
 	var row factRow
 	if err := s.db.WithContext(ctx).First(&row, "id = ?", factID).Error; err != nil {
@@ -236,6 +243,7 @@ func (s *Store) AssetContent(ctx context.Context, assetID uuid.UUID) (creatorID 
 	return row.CreatorID, row.Content, nil
 }
 
+// FactsByCreator 列出某人产生的事实桩。
 func (s *Store) FactsByCreator(ctx context.Context, creatorID uuid.UUID) ([]FactStub, error) {
 	var rows []factRow
 	if err := s.db.WithContext(ctx).Where("creator_id = ?", creatorID).Order("created_at DESC").Find(&rows).Error; err != nil {
@@ -248,6 +256,7 @@ func (s *Store) FactsByCreator(ctx context.Context, creatorID uuid.UUID) ([]Fact
 	return out, nil
 }
 
+// marshalPath 路径收成 JSON；空当空数组。
 func marshalPath(path []PathNode) ([]byte, error) {
 	if path == nil {
 		path = []PathNode{}
@@ -255,6 +264,7 @@ func marshalPath(path []PathNode) ([]byte, error) {
 	return json.Marshal(path)
 }
 
+// 库行收成事实桩视图。
 func factFromRow(row factRow) FactStub {
 	return FactStub{
 		ID:        row.ID,
@@ -266,6 +276,7 @@ func factFromRow(row factRow) FactStub {
 	}
 }
 
+// 库行收成个人资产桩元数据。
 func assetFromRow(row assetRow) PersonalAsset {
 	return PersonalAsset{
 		ID:        row.ID,
@@ -277,6 +288,7 @@ func assetFromRow(row assetRow) PersonalAsset {
 	}
 }
 
+// unmarshalPath 坏 JSON 当空路径，不当损坏。
 func unmarshalPath(raw []byte) []PathNode {
 	if len(raw) == 0 {
 		return []PathNode{}

@@ -69,6 +69,7 @@ export function defaultField(field: TemplateField): unknown {
     case "enum":
       return enumDefault(field);
     case "string":
+      if (field.key === "id") return crypto.randomUUID(); // 设备侧身份不必手填
       if (typeof field.default === "number") return field.default;
       return typeof field.default === "string" ? field.default : "";
     case "object":
@@ -84,6 +85,32 @@ function objectFromFields(fields: TemplateField[]): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const f of fields) out[f.key] = defaultField(f);
   return out;
+}
+
+// collectProcessIds 从正文抽出工艺引用（processId，兼容未改模版的 processPath）。
+export function collectProcessIds(value: unknown): string[] {
+  const ids: string[] = [];
+  const seen = new Set<string>();
+  const walk = (v: unknown) => {
+    if (Array.isArray(v)) {
+      v.forEach(walk);
+      return;
+    }
+    if (!v || typeof v !== "object") return;
+    for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
+      if ((k === "processId" || k === "processPath") && typeof val === "string") {
+        const id = val.trim();
+        if (id && !seen.has(id)) {
+          seen.add(id);
+          ids.push(id);
+        }
+        continue;
+      }
+      walk(val);
+    }
+  };
+  walk(value);
+  return ids;
 }
 
 export function parseContent(raw: string | undefined, schema: ContentSchema | null): unknown {

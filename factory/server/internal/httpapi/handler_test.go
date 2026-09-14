@@ -68,6 +68,9 @@ func TestFactoryHTTP(t *testing.T) {
 	if err := svc.Store().GrantLocalLease(context.Background()); err != nil {
 		t.Fatalf("lease: %v", err)
 	}
+	if err := svc.Store().PutFactoryShortCode(context.Background(), "F01"); err != nil {
+		t.Fatalf("short code: %v", err)
+	}
 	act := gjson(t, body, "activationToken")
 	if len(act) != 8 {
 		t.Fatalf("activation code len %d %s", len(act), act)
@@ -246,6 +249,11 @@ func TestFactoryHTTP(t *testing.T) {
 	code, body = do(t, srv, "POST", base+"/assets", tok, `{"kind":"project","level":"factory","name":"工程A","content":"job","direct":true,"deps":[{"id":"`+pid+`","revision":`+rev+`,"digest":"`+digest+`"}]}`)
 	if code != http.StatusCreated {
 		t.Fatalf("create project %d %s", code, body)
+	}
+	projID := gjson(t, body, "id")
+	code, body = do(t, srv, "POST", base+"/assets/"+projID+"/deps", tok, `{"expected":1,"deps":[{"id":"`+pid+`","revision":`+rev+`,"digest":"`+digest+`"}]}`)
+	if code != http.StatusOK {
+		t.Fatalf("set deps %d %s", code, body)
 	}
 	code, body = do(t, srv, "POST", base+"/assets", tok, `{"kind":"process","level":"personal","name":"个人焊","content":"mine","direct":true}`)
 	if code != http.StatusCreated {

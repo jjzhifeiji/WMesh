@@ -16,6 +16,7 @@ func (s *Org) CreatePerson(ctx context.Context, token, loginName, displayName st
 	if err != nil {
 		return Account{}, err
 	}
+	// 只有工厂超管能建本厂账号。失败一律记拒绝。
 	if err := s.can(ctx, acc, permManageAccount, nil); err != nil {
 		_ = s.audit(ctx, &acc.ID, &loginName, "create_person", loginName, audit.Deny)
 		return Account{}, err
@@ -25,6 +26,7 @@ func (s *Org) CreatePerson(ctx context.Context, token, loginName, displayName st
 		_ = s.audit(ctx, &acc.ID, &loginName, "create_person", loginName, audit.Deny)
 		return Account{}, err
 	}
+	// 默认日常密码只存哈希，当场转有效。
 	hash, err := secret.HashPassword(secret.DefaultPersonPassword(loginName))
 	if err != nil {
 		return Account{}, err
@@ -48,10 +50,12 @@ func (s *Org) CreateOrgUnit(ctx context.Context, token, name string, parentID *u
 	if err != nil {
 		return OrgUnit{}, err
 	}
+	// 挂到父节点须对该父有组织管理权；无父则仅超管。失败一律记拒绝。
 	if err := s.can(ctx, acc, permManageOrg, parentID); err != nil {
 		_ = s.audit(ctx, &acc.ID, nil, "create_org_unit", name, audit.Deny)
 		return OrgUnit{}, err
 	}
+	// 无父表示直挂工厂；成环由库拒绝。
 	row, err := s.store.CreateOrgUnit(ctx, name, parentID)
 	if err != nil {
 		_ = s.audit(ctx, &acc.ID, nil, "create_org_unit", name, audit.Deny)
@@ -66,6 +70,7 @@ func (s *Org) ReparentOrgUnit(ctx context.Context, token string, unitID uuid.UUI
 	if err != nil {
 		return err
 	}
+	// 原节点和新父都要在作用域内。失败一律记拒绝。
 	if err := s.can(ctx, acc, permManageOrg, &unitID); err != nil {
 		_ = s.audit(ctx, &acc.ID, nil, "reparent", unitID.String(), audit.Deny)
 		return err
@@ -74,6 +79,7 @@ func (s *Org) ReparentOrgUnit(ctx context.Context, token string, unitID uuid.UUI
 		_ = s.audit(ctx, &acc.ID, nil, "reparent", unitID.String(), audit.Deny)
 		return err
 	}
+	// 改挂父节点；成环由库拒绝。
 	if err := s.store.ReparentOrgUnit(ctx, unitID, parentID); err != nil {
 		_ = s.audit(ctx, &acc.ID, nil, "reparent", unitID.String(), audit.Deny)
 		return err
@@ -97,10 +103,12 @@ func (s *Org) Assign(ctx context.Context, token string, personID, unitID uuid.UU
 	if err != nil {
 		return err
 	}
+	// 对该节点有分配权才能放人。失败一律记拒绝。
 	if err := s.can(ctx, acc, permAssign, &unitID); err != nil {
 		_ = s.audit(ctx, &acc.ID, nil, "assign", personID.String()+" "+unitID.String(), audit.Deny)
 		return err
 	}
+	// 恰好一个有效分配；再分则拒绝。分配不等于授权。
 	if _, err := s.store.Assign(ctx, personID, unitID); err != nil {
 		_ = s.audit(ctx, &acc.ID, nil, "assign", personID.String()+" "+unitID.String(), audit.Deny)
 		return err
@@ -118,6 +126,7 @@ func (s *Org) Unassign(ctx context.Context, token string, personID, unitID uuid.
 		_ = s.audit(ctx, &acc.ID, nil, "unassign", personID.String(), audit.Deny)
 		return err
 	}
+	// 取消当前分配，不改历史事实。
 	if err := s.store.Unassign(ctx, personID, unitID); err != nil {
 		_ = s.audit(ctx, &acc.ID, nil, "unassign", personID.String(), audit.Deny)
 		return err
@@ -131,6 +140,7 @@ func (s *Org) GrantRole(ctx context.Context, token string, personID uuid.UUID, r
 	if err != nil {
 		return RoleGrant{}, err
 	}
+	// 授角色须覆盖目标作用域。失败一律记拒绝。
 	if err := s.canGrant(ctx, acc, role, scopeKind, orgUnitID); err != nil {
 		_ = s.audit(ctx, &acc.ID, nil, "grant_role", role, audit.Deny)
 		return RoleGrant{}, err
@@ -161,6 +171,7 @@ func (s *Org) RevokeRole(ctx context.Context, token string, grantID uuid.UUID) e
 		_ = s.audit(ctx, &acc.ID, nil, "revoke_role", grantID.String(), audit.Deny)
 		return err
 	}
+	// 收回后新操作立刻按新角色判定。
 	if err := s.store.RevokeRole(ctx, grantID); err != nil {
 		_ = s.audit(ctx, &acc.ID, nil, "revoke_role", grantID.String(), audit.Deny)
 		return err
@@ -204,6 +215,7 @@ func (s *Org) DeleteOrgUnit(ctx context.Context, token string, unitID uuid.UUID)
 		_ = s.audit(ctx, &acc.ID, nil, "delete_org_unit", unitID.String(), audit.Deny)
 		return err
 	}
+	// 无引用才删；有下级或历史事实就拒绝。
 	if err := s.store.DeleteOrgUnit(ctx, unitID); err != nil {
 		_ = s.audit(ctx, &acc.ID, nil, "delete_org_unit", unitID.String(), audit.Deny)
 		return err
@@ -221,6 +233,7 @@ func (s *Org) DisableOrgUnit(ctx context.Context, token string, unitID uuid.UUID
 		_ = s.audit(ctx, &acc.ID, nil, "disable_org_unit", unitID.String(), audit.Deny)
 		return err
 	}
+	// 有有效子节点时拒绝；旧分配留下，但不能再当新上下文。
 	if err := s.store.DisableOrgUnit(ctx, unitID); err != nil {
 		_ = s.audit(ctx, &acc.ID, nil, "disable_org_unit", unitID.String(), audit.Deny)
 		return err
@@ -238,6 +251,7 @@ func (s *Org) EnableOrgUnit(ctx context.Context, token string, unitID uuid.UUID)
 		_ = s.audit(ctx, &acc.ID, nil, "enable_org_unit", unitID.String(), audit.Deny)
 		return err
 	}
+	// 上级仍停用时拒绝。
 	if err := s.store.EnableOrgUnit(ctx, unitID); err != nil {
 		_ = s.audit(ctx, &acc.ID, nil, "enable_org_unit", unitID.String(), audit.Deny)
 		return err
@@ -255,6 +269,7 @@ func (s *Org) RenameOrgUnit(ctx context.Context, token string, unitID uuid.UUID,
 		_ = s.audit(ctx, &acc.ID, nil, "rename_org_unit", unitID.String(), audit.Deny)
 		return err
 	}
+	// 只改显示名，不改已落历史路径。
 	if err := s.store.RenameOrgUnit(ctx, unitID, name); err != nil {
 		_ = s.audit(ctx, &acc.ID, nil, "rename_org_unit", unitID.String(), audit.Deny)
 		return err

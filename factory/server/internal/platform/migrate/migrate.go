@@ -50,6 +50,7 @@ func Up(db *gorm.DB, fsys fs.FS, dir string) error {
 	return nil
 }
 
+// listSQL 列出待套用的 .sql，按文件名排序。
 func listSQL(fsys fs.FS, dir string) ([]string, error) {
 	entries, err := fs.ReadDir(fsys, dir)
 	if err != nil {

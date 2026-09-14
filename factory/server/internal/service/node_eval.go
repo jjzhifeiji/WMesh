@@ -103,6 +103,7 @@ type runtimeBody struct {
 	Revision     int64  `json:"revision"`
 }
 
+// encodeRuntime 把声明收成稳定 JSON，供签名。
 func encodeRuntime(c RuntimeCred) ([]byte, error) {
 	return json.Marshal(runtimeBody{
 		FactoryID:    c.FactoryID.String(),
@@ -115,6 +116,7 @@ func encodeRuntime(c RuntimeCred) ([]byte, error) {
 	})
 }
 
+// decodeRuntime 从声明原文还原凭证字段。
 func decodeRuntime(payload []byte) (RuntimeCred, error) {
 	var body runtimeBody
 	if err := json.Unmarshal(payload, &body); err != nil {
@@ -152,6 +154,7 @@ func decodeRuntime(payload []byte) (RuntimeCred, error) {
 	}, nil
 }
 
+// credHolds 本机钥、身份和厂钥签名都对才算持有。
 func credHolds(bag Bag, cred RuntimeCred) bool {
 	if !nodekey.Match(bag.PrivateKey, bag.PublicKey) {
 		return false
@@ -186,6 +189,7 @@ func EvaluateRuntime(bag Bag, clocks Clocks, action NodeAction) NodeEval {
 		src = audit.Server
 		now = clocks.Server
 	}
+	// 默认拒绝；无有效持有则直接返回。
 	ev := NodeEval{Decision: NodeDeny, TimeSource: src}
 	if bag.Runtime == nil || !credHolds(bag, *bag.Runtime) {
 		return ev
@@ -200,6 +204,7 @@ func EvaluateRuntime(bag Bag, clocks Clocks, action NodeAction) NodeEval {
 	}
 	blocked := now.Before(cred.NotBefore) || now.After(cred.NotAfter) || !cred.CanRun
 	if blocked {
+		// 过期或撤销时，进行中焊接继续。
 		if action == NodeContinue && bag.Welding {
 			ev.Decision = NodeContinueWeld
 		}
@@ -209,6 +214,7 @@ func EvaluateRuntime(bag Bag, clocks Clocks, action NodeAction) NodeEval {
 	return ev
 }
 
+// bagNow 连网跟服务器钟，断网用本机钟。
 func bagNow(bag Bag, clocks Clocks) (time.Time, string) {
 	if bag.Connected {
 		return clocks.Server, audit.Server

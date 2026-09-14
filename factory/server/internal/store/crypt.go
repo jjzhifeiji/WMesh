@@ -14,9 +14,9 @@ import (
 )
 
 const (
-	tableAssets   = "assets"
-	tableReplicas = "asset_replicas"
-	mkAAD         = "content-mk"
+	tableAssets   = "assets"         // 本厂工艺/工程正文
+	tableReplicas = "asset_replicas" // 已收平台级副本正文
+	mkAAD         = "content-mk"     // 包装 MK 用的附加数据
 )
 
 type contentMasterRow struct {
@@ -61,6 +61,7 @@ func (s *Store) liveMKLocked() ([]byte, error) {
 	return s.crypt.mk, nil
 }
 
+// clearLocked 清内存钥，盘上包装件不动。
 func (s *Store) clearLocked() {
 	contentcrypt.Zero(s.crypt.l)
 	contentcrypt.Zero(s.crypt.mk)
@@ -163,6 +164,7 @@ func (s *Store) SetContentClock(now func() time.Time) {
 	s.crypt.now = now
 }
 
+// nowLocked 夹具钟优先，否则用系统钟。
 func (s *Store) nowLocked() time.Time {
 	if s.crypt.now != nil {
 		return s.crypt.now()
@@ -238,6 +240,7 @@ func (s *Store) persistBody(id uuid.UUID, rev int64, table string, plain []byte)
 	return contentcrypt.Seal(mk, nonempty(plain), contentcrypt.AssetAAD(id, rev, table))
 }
 
+// openAsset 解 WM2；遗留明文只在租约有效时可读。
 func (s *Store) openAsset(id uuid.UUID, rev int64, table string, blob []byte) ([]byte, error) {
 	if len(blob) == 0 || !contentcrypt.IsEnvelope(blob) {
 		// 遗留明文只在租约有效时可读，随后由 sealPlainRows 封掉。
@@ -284,6 +287,7 @@ func (s *Store) rewrapIfSealed(id uuid.UUID, oldRev, newRev int64, table string,
 	return env, true, nil
 }
 
+// decodeGoverned 解包当前行正文。
 func (s *Store) decodeGoverned(row governedAssetRow) (Asset, error) {
 	a := assetFromGoverned(row)
 	body, err := s.openAsset(row.ID, row.Revision, tableAssets, row.Content)
@@ -294,6 +298,7 @@ func (s *Store) decodeGoverned(row governedAssetRow) (Asset, error) {
 	return a, nil
 }
 
+// decodeReplica 解包副本正文。
 func (s *Store) decodeReplica(row replicaRow) (AssetReplica, error) {
 	a := replicaFromRow(row)
 	body, err := s.openAsset(row.ID, row.Revision, tableReplicas, row.Content)

@@ -12,12 +12,13 @@ import (
 	"wmesh/factory/internal/platform/domain"
 )
 
-var errInvalidID = errors.New("invalid id")
+var errInvalidID = errors.New("invalid id") // 路径或 JSON 里的 UUID 无法解析
 
 type errorBody struct {
 	Error string `json:"error"` // 英文业务错误，前端再译
 }
 
+// 拒绝未知字段。
 func decodeJSON(r *http.Request, dst any) error {
 	defer r.Body.Close()
 	dec := json.NewDecoder(r.Body)
@@ -25,16 +26,19 @@ func decodeJSON(r *http.Request, dst any) error {
 	return dec.Decode(dst)
 }
 
+// 取出会话令牌，不校验。
 func bearer(r *http.Request) string {
 	return strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 }
 
+// 写出 JSON 响应。
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(v)
 }
 
+// 400 把解析错误回给前端。
 func writeBadRequest(w http.ResponseWriter, err error) {
 	writeJSON(w, http.StatusBadRequest, errorBody{Error: err.Error()})
 }
@@ -50,6 +54,7 @@ func writeErr(w http.ResponseWriter, err error) {
 	writeJSON(w, code, errorBody{Error: msg})
 }
 
+// 把本侧业务错误映成 HTTP 状态；对不上的一律 500。
 func statusOf(err error) int {
 	switch {
 	case errors.Is(err, domain.ErrUnauthorized), errors.Is(err, domain.ErrInvalidCredentials),
@@ -81,12 +86,13 @@ func statusOf(err error) int {
 	}
 }
 
+// 校验类业务错误一律当 400，避免把约束原文当 500。
 func isDomain(err error) bool {
 	for _, t := range []error{
 		domain.ErrCycle, domain.ErrWorkContext, domain.ErrMultiParent, domain.ErrInvalidRoleScope,
 		domain.ErrDisabledOrgUnit, domain.ErrHasActiveChildren,
 		domain.ErrIntegrity, domain.ErrAssetNotAvailable, domain.ErrAssetNotCopyable, domain.ErrAssetDependency,
-		domain.ErrTemplateInvalid,
+		domain.ErrTemplateInvalid, domain.ErrAssetCodeMissing, domain.ErrAssetCodeConflict, domain.ErrOriginCodeExhausted,
 	} {
 		if errors.Is(err, t) {
 			return true
@@ -95,6 +101,7 @@ func isDomain(err error) bool {
 	return false
 }
 
+// 空字符串当没传；非法 UUID 拒绝。
 func parseOptUUID(p *string) (*uuid.UUID, error) {
 	if p == nil || *p == "" {
 		return nil, nil

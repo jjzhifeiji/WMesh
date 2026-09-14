@@ -34,17 +34,18 @@ type TemplateSnapshot struct {
 }
 
 type contentTemplateRow struct {
-	ID        uuid.UUID       `gorm:"type:uuid;primaryKey"`
-	Kind      string          `gorm:"not null"`
-	Revision  int64           `gorm:"not null"`
-	Schema    json.RawMessage `gorm:"type:jsonb;not null"`
-	Digest    []byte          `gorm:"type:bytea;not null"`
-	CreatedAt time.Time       `gorm:"not null"`
-	UpdatedAt time.Time       `gorm:"not null"`
+	ID        uuid.UUID       `gorm:"type:uuid;primaryKey"` // 稳定身份
+	Kind      string          `gorm:"not null"`             // process / project
+	Revision  int64           `gorm:"not null"`             // 当前修订
+	Schema    json.RawMessage `gorm:"type:jsonb;not null"`  // 字段表 JSON
+	Digest    []byte          `gorm:"type:bytea;not null"`  // SHA-256
+	CreatedAt time.Time       `gorm:"not null"`             // 首次写入
+	UpdatedAt time.Time       `gorm:"not null"`             // 最近升高修订
 }
 
 func (contentTemplateRow) TableName() string { return "content_templates" }
 
+// 库行收成当前模版视图。
 func templateFromRow(row contentTemplateRow) ContentTemplate {
 	return ContentTemplate{
 		ID: row.ID, Kind: row.Kind, Revision: row.Revision,
@@ -90,6 +91,7 @@ func (s *Store) InsertTemplate(ctx context.Context, in ContentTemplate) (Content
 		CreatedAt: now, UpdatedAt: now,
 	}
 	if err := s.db.WithContext(ctx).Create(&row).Error; err != nil {
+		// 同类型已有则返回当前行，不另开一份。
 		if domain.IsUniqueViolation(err) {
 			return s.TemplateByKind(ctx, in.Kind)
 		}

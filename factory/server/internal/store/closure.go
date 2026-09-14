@@ -20,6 +20,7 @@ type ClosureMember struct {
 	Kind      string     `json:"kind"`      // process / project
 	Level     string     `json:"level"`     // platform / factory / personal
 	Name      string     `json:"name"`      // 显示名
+	Code      string     `json:"code,omitempty"` // 只读编号，跟身份走
 	Status    string     `json:"status"`    // 送达时状态
 	Copyable  bool       `json:"copyable"`  // 与源相同
 	Revision  int64      `json:"revision"`  // 钉死修订
@@ -50,6 +51,7 @@ type AssetReplica struct {
 	Kind       string     `json:"kind"`       // process / project
 	Level      string     `json:"level"`      // 固定 platform
 	Name       string     `json:"name"`       // 显示名
+	Code       string     `json:"code"`      // 只读编号，跟身份走
 	Status     string     `json:"status"`     // 送达时状态
 	Copyable   bool       `json:"copyable"`   // 与源相同
 	Content    []byte     `json:"content"`    // 正文
@@ -93,6 +95,7 @@ type replicaRow struct {
 	Kind       string    `gorm:"not null"`             // process / project
 	Level      string    `gorm:"not null"`             // platform
 	Name       string    `gorm:"not null"`             // 显示名
+	Code       *string   `gorm:"column:code"`          // 与云端原件相同；旧副本可空
 	Status     string    `gorm:"not null"`             // 送达时状态
 	Copyable   bool      `gorm:"not null"`             // 与源相同
 	Content    []byte    `gorm:"type:bytea;not null"`  // 正文
@@ -188,7 +191,18 @@ func (s *Store) InsertReplica(ctx context.Context, in AssetReplica) (AssetReplic
 		Name: in.Name, Status: in.Status, Copyable: in.Copyable, Content: env,
 		Digest: in.Digest, Deps: deps, ReceivedAt: time.Now().UTC(),
 	}
-	if err := s.db.WithContext(ctx).Create(&row).Error; err != nil {
+	if in.Code != "" {
+		row.Code = &in.Code
+	}
+	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if in.Code != "" {
+			if err := bindAssetCode(tx, in.ID, in.Code); err != nil {
+				return err
+			}
+		}
+		return tx.Create(&row).Error
+	})
+	if err != nil {
 		if domain.IsUniqueViolation(err) {
 			got, getErr := s.ReplicaMetaByIDRev(ctx, in.ID, in.Revision)
 			if getErr != nil {
@@ -288,6 +302,7 @@ func (s *Store) UpsertClientGrant(ctx context.Context, projectID, clientID, gran
 	var existing clientGrantRow
 	err := s.db.WithContext(ctx).First(&existing, "project_id = ? AND client_id = ?", projectID, clientID).Error
 	if err == nil {
+		// 已有授权则重新激活，不另开一行。
 		existing.Active = true
 		existing.GrantedBy = grantedBy
 		existing.UpdatedAt = now
@@ -350,6 +365,7 @@ func (s *Store) InsertClientRecord(ctx context.Context, rec ClientDistributionRe
 		ClosureDigest: rec.ClosureDigest, Members: members, CreatedAt: time.Now().UTC(),
 	}
 	if err := s.db.WithContext(ctx).Create(&row).Error; err != nil {
+		// 同一工程修订对同一 Client 只记一次。
 		if domain.IsUniqueViolation(err) {
 			return s.ClientRecord(ctx, rec.ProjectID, rec.Revision, rec.ClientID)
 		}
@@ -370,14 +386,20 @@ func (s *Store) ClientRecord(ctx context.Context, projectID uuid.UUID, revision 
 	return clientRecordFromRow(row), nil
 }
 
+// 库行收成平台级副本视图。
 func replicaFromRow(row replicaRow) AssetReplica {
-	return AssetReplica{
+	out := AssetReplica{
 		ID: row.ID, Revision: row.Revision, Kind: row.Kind, Level: row.Level, Name: row.Name,
 		Status: row.Status, Copyable: row.Copyable, Content: row.Content, Digest: row.Digest,
 		Deps: unmarshalAssetDeps(row.Deps), ReceivedAt: row.ReceivedAt, Retracted: row.Retracted,
 	}
+	if row.Code != nil {
+		out.Code = *row.Code
+	}
+	return out
 }
 
+// 库行收成 Client 下发授权。
 func clientGrantFromRow(row clientGrantRow) ClientDistributionGrant {
 	return ClientDistributionGrant{
 		ID: row.ID, ProjectID: row.ProjectID, ClientID: row.ClientID, Active: row.Active,
@@ -385,6 +407,7 @@ func clientGrantFromRow(row clientGrantRow) ClientDistributionGrant {
 	}
 }
 
+// 库行收成 Client 下发记录。
 func clientRecordFromRow(row clientRecordRow) ClientDistributionRecord {
 	return ClientDistributionRecord{
 		ID: row.ID, ProjectID: row.ProjectID, Revision: row.Revision, ClientID: row.ClientID,

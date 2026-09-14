@@ -19,6 +19,7 @@ type ClosureMember struct {
 	Kind     string     `json:"kind"`     // process / project
 	Level    string     `json:"level"`    // 固定 platform
 	Name     string     `json:"name"`     // 显示名
+	Code     string     `json:"code,omitempty"` // 只读编号，跟身份走
 	Status   string     `json:"status"`   // 组包时状态
 	Copyable bool       `json:"copyable"` // 与源相同
 	Revision int64      `json:"revision"` // 钉死修订
@@ -93,6 +94,7 @@ func (s *Store) UpsertFactoryGrant(ctx context.Context, assetID, factoryID uuid.
 	var existing distGrantRow
 	err := s.db.WithContext(ctx).First(&existing, "asset_id = ? AND factory_id = ?", assetID, factoryID).Error
 	if err == nil {
+		// 已有授权则重新激活，不另开一行。
 		existing.Active = true
 		existing.UpdatedAt = now
 		if err := s.db.WithContext(ctx).Save(&existing).Error; err != nil {
@@ -157,6 +159,7 @@ func (s *Store) InsertDistributionRecord(ctx context.Context, rec DistributionRe
 		Kind: rec.Kind, ClosureDigest: rec.ClosureDigest, Members: members, CreatedAt: time.Now().UTC(),
 	}
 	if err := s.db.WithContext(ctx).Create(&row).Error; err != nil {
+		// 同一资产修订对同一厂只记一次。
 		if domain.IsUniqueViolation(err) {
 			return s.DistributionRecord(ctx, rec.AssetID, rec.Revision, rec.FactoryID)
 		}
@@ -189,6 +192,7 @@ func (s *Store) HasDistributionTo(ctx context.Context, assetID, factoryID uuid.U
 	return n > 0, nil
 }
 
+// 库行收成下发授权视图。
 func grantFromRow(row distGrantRow) DistributionGrant {
 	return DistributionGrant{
 		ID: row.ID, AssetID: row.AssetID, FactoryID: row.FactoryID, Active: row.Active,
@@ -196,6 +200,7 @@ func grantFromRow(row distGrantRow) DistributionGrant {
 	}
 }
 
+// 库行收成下发记录视图。
 func recordFromRow(row distRecordRow) DistributionRecord {
 	return DistributionRecord{
 		ID: row.ID, AssetID: row.AssetID, Revision: row.Revision, FactoryID: row.FactoryID,

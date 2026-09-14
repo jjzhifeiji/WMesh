@@ -8,7 +8,8 @@ import (
 	"wmesh/global/internal/platform/id"
 )
 
-func (h *Handler) mountClient(mux *http.ServeMux) { // 现场设备名录与分配；离线授权查询一律拒绝
+// 挂现场设备名录与分配；离线授权查询一律拒绝。
+func (h *Handler) mountClient(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/clients", h.listClients)
 	mux.HandleFunc("POST /v1/clients", h.registerClient)
 	mux.HandleFunc("PATCH /v1/clients/{id}", h.renameClient)
@@ -32,6 +33,7 @@ type assignClientReq struct {
 	FactoryID string `json:"factoryId"` // 分到的工厂
 }
 
+// 列出已登记现场设备。
 func (h *Handler) listClients(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.svc.Clients.ListClients(r.Context(), bearer(r))
 	if err != nil {
@@ -41,6 +43,7 @@ func (h *Handler) listClients(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, rows)
 }
 
+// 解析可选公钥后登记，并立刻推给已分配的厂。
 func (h *Handler) registerClient(w http.ResponseWriter, r *http.Request) {
 	var req registerClientReq
 	if err := decodeJSON(r, &req); err != nil {
@@ -77,10 +80,11 @@ func (h *Handler) registerClient(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	h.pushClientToFactory(row, nil)
+	h.pushClientToFactory(row, nil) // 登记后立刻推给已分配的厂
 	writeJSON(w, http.StatusCreated, row)
 }
 
+// 改名后把新名字推给所在厂。
 func (h *Handler) renameClient(w http.ResponseWriter, r *http.Request) {
 	cid, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
@@ -101,6 +105,7 @@ func (h *Handler) renameClient(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, row)
 }
 
+// 分配后立刻推绑定给目标厂。
 func (h *Handler) assignClient(w http.ResponseWriter, r *http.Request) {
 	cid, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
@@ -126,6 +131,7 @@ func (h *Handler) assignClient(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, row)
 }
 
+// 改分后先通知旧厂作废，再通知新厂绑定。
 func (h *Handler) rebindClient(w http.ResponseWriter, r *http.Request) {
 	cid, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
@@ -142,7 +148,7 @@ func (h *Handler) rebindClient(w http.ResponseWriter, r *http.Request) {
 		writeBadRequest(w, errInvalidID)
 		return
 	}
-	prev, _ := h.svc.Clients.ClientByID(r.Context(), cid)
+	prev, _ := h.svc.Clients.ClientByID(r.Context(), cid) // 记下旧厂，改分后通知作废
 	row, err := h.svc.Clients.RebindClient(r.Context(), bearer(r), cid, fid)
 	if err != nil {
 		writeErr(w, err)
@@ -156,6 +162,7 @@ func (h *Handler) rebindClient(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, row)
 }
 
+// 从 WAN 查厂内人员离线授权，一律拒绝。
 func (h *Handler) listFactoryOfflineGrants(w http.ResponseWriter, r *http.Request) {
 	fid, err := parsePathID(r)
 	if err != nil {

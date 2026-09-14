@@ -15,6 +15,7 @@ import (
 	"wmesh/factory/internal/platform/nodekey"
 )
 
+// normalizeClientName 去掉首尾空白后须 1～64 字。
 func normalizeClientName(name string) (string, error) {
 	name = strings.TrimSpace(name)
 	n := utf8.RuneCountInString(name)
@@ -34,6 +35,7 @@ func (s *Node) AcceptBinding(ctx context.Context, clientID uuid.UUID, name strin
 			return Client{}, err
 		}
 	}
+	// 把 WAN 送到本厂的绑定落到本库；修订只向前。
 	row, err := s.store.AcceptBinding(ctx, clientID, name, publicKey, revision)
 	if err != nil {
 		_ = s.audit(ctx, nil, nil, "accept_binding", clientID.String(), audit.Deny)
@@ -44,6 +46,7 @@ func (s *Node) AcceptBinding(ctx context.Context, clientID uuid.UUID, name strin
 
 // VoidBinding 模拟 WAN 改绑后旧厂作废；此后本厂不得再签发。
 func (s *Node) VoidBinding(ctx context.Context, clientID uuid.UUID) error {
+	// 作废后本厂不得再签发。
 	if err := s.store.VoidBinding(ctx, clientID); err != nil {
 		_ = s.audit(ctx, nil, nil, "void_binding", clientID.String(), audit.Deny)
 		return err
@@ -51,6 +54,7 @@ func (s *Node) VoidBinding(ctx context.Context, clientID uuid.UUID) error {
 	return s.audit(ctx, nil, nil, "void_binding", clientID.String(), audit.Allow)
 }
 
+// ensureSigningKey 没有签发钥则当场生成一对，私钥不外送。
 func (s *Node) ensureSigningKey(ctx context.Context) (SigningKey, error) {
 	k, err := s.store.SigningKey(ctx)
 	if err == nil {
@@ -90,6 +94,7 @@ func (s *Node) InstallSigningKey(ctx context.Context, publicKey, privateKey []by
 	if !errors.Is(err, domain.ErrNotFound) {
 		return err
 	}
+	// 尚无钥才写入认领时用过的那对。
 	_, err = s.store.PutSigningKey(ctx, publicKey, privateKey)
 	return err
 }
@@ -104,11 +109,13 @@ func (s *Node) RevokeRuntimeGrant(ctx context.Context, token string, clientID uu
 	return s.issueRuntime(ctx, token, clientID, notBefore, notAfter, false, "revoke_runtime")
 }
 
+// issueRuntime 签发更高修订的运行凭证；can_run=false 表示撤销。
 func (s *Node) issueRuntime(ctx context.Context, token string, clientID uuid.UUID, notBefore, notAfter time.Time, canRun bool, action string) (RuntimeCred, error) {
 	acc, err := s.RequireActive(ctx, token)
 	if err != nil {
 		return RuntimeCred{}, err
 	}
+	// 只有工厂超管能签发或撤销运行凭证。失败一律记拒绝。
 	if err := s.can(ctx, acc, permManageAccount, nil); err != nil {
 		_ = s.audit(ctx, &acc.ID, nil, action, clientID.String(), audit.Deny)
 		return RuntimeCred{}, err
@@ -130,6 +137,7 @@ func (s *Node) issueRuntime(ctx context.Context, token string, clientID uuid.UUI
 	if err != nil {
 		return RuntimeCred{}, err
 	}
+	// 修订只向前加一。
 	rev := int64(1)
 	if latest, err := s.store.LatestRuntimeGrant(ctx, clientID); err == nil {
 		rev = latest.Revision + 1
@@ -150,6 +158,7 @@ func (s *Node) issueRuntime(ctx context.Context, token string, clientID uuid.UUI
 		return RuntimeCred{}, err
 	}
 	cred.Payload = payload
+	// 用本厂私钥签声明，并落一版凭证。
 	cred.Signature = nodekey.Sign(key.PrivateKey, payload)
 	if _, err := s.store.InsertRuntimeGrant(ctx, RuntimeGrant{
 		ClientID:  clientID,
@@ -196,6 +205,7 @@ func (s *Node) RecordAnomaly(ctx context.Context, clientID uuid.UUID, kind strin
 	return s.audit(ctx, nil, nil, "node_anomaly", clientID.String()+" "+kind, audit.Allow)
 }
 
+// auditTimed 记下带时间来源的允许或拒绝。
 func (s *kernel) auditTimed(ctx context.Context, actor *uuid.UUID, claimed *string, action, target, result, timeSource string) error {
 	fid := s.store.FactoryID()
 	return s.store.AppendAudit(ctx, audit.Event{

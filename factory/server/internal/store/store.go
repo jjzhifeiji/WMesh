@@ -28,8 +28,10 @@ func Open(db *gorm.DB, factoryID uuid.UUID) *Store {
 	return &Store{db: db, factoryID: factoryID}
 }
 
+// FactoryID 返回本厂选库用的稳定身份。
 func (s *Store) FactoryID() uuid.UUID { return s.factoryID }
 
+// AppendAudit 写入本厂审计；缺身份则现场发号，并带上本厂。
 func (s *Store) AppendAudit(ctx context.Context, e audit.Event) error {
 	if e.ID == uuid.Nil {
 		e.ID = id.New()
@@ -48,6 +50,7 @@ func (s *Store) ListAudit(ctx context.Context) ([]audit.Row, error) {
 	return rows, err
 }
 
+// hasRows 判断是否还有匹配行，用来挡物理删除。
 func hasRows(db *gorm.DB, model any, query string, args ...any) (bool, error) {
 	var n int64
 	err := db.Model(model).Where(query, args...).Count(&n).Error
@@ -82,6 +85,7 @@ func (s *Store) setStatus(ctx context.Context, model any, id uuid.UUID, status s
 	return nil
 }
 
+// getUnit 按身份取组织节点；没有则当不存在。
 func (s *Store) getUnit(ctx context.Context, unitID uuid.UUID) (OrgUnit, error) {
 	var u OrgUnit
 	if err := s.db.WithContext(ctx).First(&u, "id = ?", unitID).Error; err != nil {
@@ -93,6 +97,7 @@ func (s *Store) getUnit(ctx context.Context, unitID uuid.UUID) (OrgUnit, error) 
 	return u, nil
 }
 
+// assertUnitActive 停用节点不能再当父节点或工作上下文。
 func (s *Store) assertUnitActive(ctx context.Context, unitID uuid.UUID) error {
 	u, err := s.getUnit(ctx, unitID)
 	if err != nil {
@@ -104,6 +109,7 @@ func (s *Store) assertUnitActive(ctx context.Context, unitID uuid.UUID) error {
 	return nil
 }
 
+// assertPersonExists 确认本厂还有这个人，外键前先挡。
 func (s *Store) assertPersonExists(ctx context.Context, personID uuid.UUID) error {
 	var n int64
 	if err := s.db.WithContext(ctx).Model(&Person{}).Where("id = ?", personID).Count(&n).Error; err != nil {

@@ -8,7 +8,8 @@ import (
 	"wmesh/factory/internal/service"
 )
 
-func (h *Handler) mountAsset(mux *http.ServeMux) { // 本厂工艺/工程
+// 本厂工艺/工程。
+func (h *Handler) mountAsset(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/factories/{id}/asset-author-context", h.assetAuthorContext)
 	mux.HandleFunc("GET /v1/factories/{id}/assets", h.listAssets)
 	mux.HandleFunc("POST /v1/factories/{id}/assets", h.createAsset)
@@ -24,6 +25,7 @@ func (h *Handler) mountAsset(mux *http.ServeMux) { // 本厂工艺/工程
 	mux.HandleFunc("POST /v1/factories/{id}/assets/{assetId}/delete", h.deleteAsset)
 	mux.HandleFunc("POST /v1/factories/{id}/assets/{assetId}/copy", h.copyAsset)
 	mux.HandleFunc("POST /v1/factories/{id}/assets/{assetId}/promote", h.promoteAsset)
+	mux.HandleFunc("POST /v1/factories/{id}/assets/{assetId}/deps", h.setAssetDeps)
 }
 
 type createAssetReq struct {
@@ -59,10 +61,16 @@ type copyAssetReq struct {
 	Name string `json:"name"` // 新工艺显示名
 }
 
+type setDepsReq struct {
+	Expected int64              `json:"expected"` // 期望修订
+	Deps     []service.AssetDep `json:"deps"`     // 工程依赖
+}
+
 type contentResp struct {
 	Content string `json:"content"` // UTF-8 正文
 }
 
+// 给出当前账号可用来创建资产的工作位置。
 func (h *Handler) assetAuthorContext(w http.ResponseWriter, r *http.Request) {
 	h.withFactory(w, r, func(svc *service.Service) {
 		out, err := svc.Assets.AuthorContext(r.Context(), bearer(r))
@@ -74,6 +82,7 @@ func (h *Handler) assetAuthorContext(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// 按许可列本厂工艺/工程元数据，不含正文。
 func (h *Handler) listAssets(w http.ResponseWriter, r *http.Request) {
 	h.withFactory(w, r, func(svc *service.Service) {
 		rows, err := svc.Assets.ListAssets(r.Context(), bearer(r), r.URL.Query().Get("kind"))
@@ -85,6 +94,7 @@ func (h *Handler) listAssets(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// 按级别分流创建；没带节点就记工厂直属。
 func (h *Handler) createAsset(w http.ResponseWriter, r *http.Request) {
 	h.withFactory(w, r, func(svc *service.Service) {
 		var req createAssetReq
@@ -120,6 +130,7 @@ func (h *Handler) createAsset(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// 读元数据，不解包正文。
 func (h *Handler) getAsset(w http.ResponseWriter, r *http.Request) {
 	h.withAsset(w, r, func(svc *service.Service, assetID uuid.UUID) {
 		row, err := svc.Assets.GetAsset(r.Context(), bearer(r), assetID)
@@ -131,6 +142,7 @@ func (h *Handler) getAsset(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// 读正文并核对摘要；不可复制的平台级不给人看。
 func (h *Handler) readAssetContent(w http.ResponseWriter, r *http.Request) {
 	h.withAsset(w, r, func(svc *service.Service, assetID uuid.UUID) {
 		body, err := svc.Assets.ReadAssetContent(r.Context(), bearer(r), assetID)
@@ -142,6 +154,7 @@ func (h *Handler) readAssetContent(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// 导出厂级快照给 WAN 升档。
 func (h *Handler) exportAsset(w http.ResponseWriter, r *http.Request) {
 	h.withAsset(w, r, func(svc *service.Service, assetID uuid.UUID) {
 		snap, err := svc.Assets.ExportAssetSnapshot(r.Context(), bearer(r), assetID)
@@ -153,6 +166,7 @@ func (h *Handler) exportAsset(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// 改显示名，身份不变，修订升高。
 func (h *Handler) renameAsset(w http.ResponseWriter, r *http.Request) {
 	h.withAsset(w, r, func(svc *service.Service, assetID uuid.UUID) {
 		var req renameAssetReq
@@ -169,6 +183,7 @@ func (h *Handler) renameAsset(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// 改正文并重算摘要；停用后拒绝。
 func (h *Handler) updateAssetContent(w http.ResponseWriter, r *http.Request) {
 	h.withAsset(w, r, func(svc *service.Service, assetID uuid.UUID) {
 		var req contentReq
@@ -185,6 +200,7 @@ func (h *Handler) updateAssetContent(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// 未停用即可改可复制，发布后也能改回。
 func (h *Handler) setAssetCopyable(w http.ResponseWriter, r *http.Request) {
 	h.withAsset(w, r, func(svc *service.Service, assetID uuid.UUID) {
 		var req copyableReq
@@ -201,6 +217,7 @@ func (h *Handler) setAssetCopyable(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// 草稿改为可用。
 func (h *Handler) publishAsset(w http.ResponseWriter, r *http.Request) {
 	h.withExpected(w, r, func(svc *service.Service, assetID uuid.UUID, expected int64) {
 		row, err := svc.Assets.PublishAsset(r.Context(), bearer(r), assetID, expected)
@@ -212,6 +229,7 @@ func (h *Handler) publishAsset(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// 可用改为停用；停用期间不得改正文或升档。
 func (h *Handler) disableAsset(w http.ResponseWriter, r *http.Request) {
 	h.withExpected(w, r, func(svc *service.Service, assetID uuid.UUID, expected int64) {
 		row, err := svc.Assets.DisableAsset(r.Context(), bearer(r), assetID, expected)
@@ -223,6 +241,7 @@ func (h *Handler) disableAsset(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// 停用改回可用。
 func (h *Handler) enableAsset(w http.ResponseWriter, r *http.Request) {
 	h.withExpected(w, r, func(svc *service.Service, assetID uuid.UUID, expected int64) {
 		row, err := svc.Assets.ReenableAsset(r.Context(), bearer(r), assetID, expected)
@@ -234,6 +253,7 @@ func (h *Handler) enableAsset(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// 未被工程依赖则可删。
 func (h *Handler) deleteAsset(w http.ResponseWriter, r *http.Request) {
 	h.withAsset(w, r, func(svc *service.Service, assetID uuid.UUID) {
 		if err := svc.Assets.DeleteAsset(r.Context(), bearer(r), assetID); err != nil {
@@ -244,6 +264,7 @@ func (h *Handler) deleteAsset(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// 可复制工艺另存为新草稿。
 func (h *Handler) copyAsset(w http.ResponseWriter, r *http.Request) {
 	h.withAsset(w, r, func(svc *service.Service, assetID uuid.UUID) {
 		var req copyAssetReq
@@ -260,6 +281,7 @@ func (h *Handler) copyAsset(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// 把可复制且可用的个人级升为厂级。
 func (h *Handler) promoteAsset(w http.ResponseWriter, r *http.Request) {
 	h.withAsset(w, r, func(svc *service.Service, assetID uuid.UUID) {
 		row, err := svc.Assets.PromoteToFactory(r.Context(), bearer(r), assetID)
@@ -271,6 +293,24 @@ func (h *Handler) promoteAsset(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// 显式改本厂工程依赖。
+func (h *Handler) setAssetDeps(w http.ResponseWriter, r *http.Request) {
+	h.withAsset(w, r, func(svc *service.Service, assetID uuid.UUID) {
+		var req setDepsReq
+		if err := decodeJSON(r, &req); err != nil {
+			writeBadRequest(w, err)
+			return
+		}
+		row, err := svc.Closure.SetProjectDeps(r.Context(), bearer(r), assetID, req.Expected, req.Deps)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, row)
+	})
+}
+
+// 解析资产身份后转给业务。
 func (h *Handler) withAsset(w http.ResponseWriter, r *http.Request, fn func(*service.Service, uuid.UUID)) {
 	h.withFactory(w, r, func(svc *service.Service) {
 		assetID, err := uuid.Parse(r.PathValue("assetId"))
@@ -282,6 +322,7 @@ func (h *Handler) withAsset(w http.ResponseWriter, r *http.Request, fn func(*ser
 	})
 }
 
+// 先解析资产身份和期望修订再调业务。
 func (h *Handler) withExpected(w http.ResponseWriter, r *http.Request, fn func(*service.Service, uuid.UUID, int64)) {
 	h.withAsset(w, r, func(svc *service.Service, assetID uuid.UUID) {
 		var req expectedReq
@@ -293,6 +334,7 @@ func (h *Handler) withExpected(w http.ResponseWriter, r *http.Request, fn func(*
 	})
 }
 
+// 把直属或节点收成工作上下文。
 func parseWorkContext(direct bool, orgUnitID *string) (service.WorkContext, error) {
 	id, err := parseOptUUID(orgUnitID)
 	if err != nil {

@@ -6,7 +6,7 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 export WMESH_BUILD_VERSION := $(VERSION)
 
 .DEFAULT_GOAL := help
-.PHONY: help env test-db test-db-down test build up down logs ps upgrade bundle push dev-server dev-web
+.PHONY: help env test-db test-db-down test guard build up down logs ps upgrade bundle push dev-server dev-web
 
 help: ## 列出可用命令
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  %-14s %s\n", $$1, $$2}'
@@ -20,7 +20,11 @@ test-db: ## 起 go test 用的一次性测试库（:55433）
 test-db-down: ## 停掉测试库
 	cd server && $(COMPOSE) down
 
-test: test-db ## 服务端 vet + 矩阵验收，前端 lint + 类型检查
+guard: ## 注释与分层门禁（对齐 HTGlobal）
+	python3 ../scripts/style_guard.py
+
+test: test-db ## 门禁 + 服务端 vet + 矩阵验收，前端 lint + 类型检查
+	python3 ../scripts/style_guard.py
 	cd server && go vet ./... && go test ./...
 	cd frontend && npm ci --no-audit --no-fund && npm run lint && npm run typecheck
 

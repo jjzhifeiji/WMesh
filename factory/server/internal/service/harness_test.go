@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 
+	"wmesh/factory/internal/platform/assetcode"
 	"wmesh/factory/internal/platform/id"
 	"wmesh/factory/internal/platform/secret"
 	"wmesh/factory/internal/platform/testpg"
@@ -38,6 +39,13 @@ func (h *Harness) Provision(ctx context.Context, saLogin, saDisplay string) (See
 	svc := service.NewService(store.Open(testpg.OpenMigrated(h.t, dsn), facID))
 	// 夹具不连 WAN，自签一把租约才能写厂库正文。
 	if err := svc.Store().GrantLocalLease(ctx); err != nil {
+		return Seeded{}, nil, err
+	}
+	short, err := assetcode.FormatFactory(int64(len(h.factories) + 1))
+	if err != nil {
+		return Seeded{}, nil, err
+	}
+	if err := svc.Store().PutFactoryShortCode(ctx, short); err != nil {
 		return Seeded{}, nil, err
 	}
 	acc, token, err := svc.BootstrapInitial(ctx, saLogin, saDisplay)

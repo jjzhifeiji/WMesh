@@ -39,6 +39,7 @@ func (s *Org) Catalog(ctx context.Context, token string) (Catalog, error) {
 		_ = s.audit(ctx, &acc.ID, nil, "catalog", "self", audit.Allow)
 		return out, nil
 	}
+	// 超管才看全厂名册，不含秘密。
 	people, err := s.store.ListPeople(ctx)
 	if err != nil {
 		return Catalog{}, err

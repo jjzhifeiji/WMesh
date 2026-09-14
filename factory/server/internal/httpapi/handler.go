@@ -84,6 +84,7 @@ func (h *Handler) healthz(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, code, resp)
 }
 
+// 用共享密码在目标厂库写入待启用初始超管；激活码只回调用方。
 func (h *Handler) bootstrap(w http.ResponseWriter, r *http.Request) {
 	// 共享密码恒定时间比对；没配密码时一律拒绝，不给空密码放行。
 	if h.BootstrapToken == "" || !secret.Equal(bearer(r), h.BootstrapToken) {
@@ -100,6 +101,7 @@ func (h *Handler) bootstrap(w http.ResponseWriter, r *http.Request) {
 		writeBadRequest(w, errInvalidID)
 		return
 	}
+	// 建厂库并写入待启用初始超管。
 	personID, token, err := h.Hub.Bootstrap(r.Context(), fid, req.SALogin, req.SADisplay)
 	if err != nil {
 		writeErr(w, err)
@@ -108,12 +110,14 @@ func (h *Handler) bootstrap(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, bootResp{PersonID: personID.String(), ActivationToken: token})
 }
 
+// 按 URL 工厂身份打开已有厂库；库不在就当未初始化。
 func (h *Handler) withFactory(w http.ResponseWriter, r *http.Request, fn func(*service.Service)) {
 	id, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
 		writeBadRequest(w, errInvalidID)
 		return
 	}
+	// 打开已有厂库；库不在就当未初始化。
 	svc, err := h.Hub.Service(r.Context(), id)
 	if err != nil {
 		writeErr(w, err)

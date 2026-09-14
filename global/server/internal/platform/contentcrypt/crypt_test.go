@@ -1,3 +1,4 @@
+// WAN 侧正文信封：同一把钥可解开，错钥拒绝；明文不当信封。
 package contentcrypt_test
 
 import (

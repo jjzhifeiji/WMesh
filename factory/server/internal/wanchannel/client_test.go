@@ -1,3 +1,4 @@
+// 厂出站 hello 验签、心跳、租约失败不断连、注销停连。
 package wanchannel
 
 import (

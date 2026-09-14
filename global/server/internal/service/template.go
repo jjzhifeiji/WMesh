@@ -25,6 +25,7 @@ func openTemplate(t ContentTemplate) (ContentTemplate, error) {
 	if err != nil {
 		return ContentTemplate{}, domain.ErrTemplateInvalid
 	}
+	// 摘要对不上当篡改。
 	if !digest.Match(canon, t.Digest) {
 		return ContentTemplate{}, domain.ErrIntegrity
 	}
@@ -32,6 +33,7 @@ func openTemplate(t ContentTemplate) (ContentTemplate, error) {
 	return t, nil
 }
 
+// ensureTemplate 读该类型模版；没有则写入设备默认字段表。
 func (s *kernel) ensureTemplate(ctx context.Context, kind string) (ContentTemplate, error) {
 	t, err := s.store.TemplateByKind(ctx, kind)
 	if err == nil {
@@ -40,6 +42,7 @@ func (s *kernel) ensureTemplate(ctx context.Context, kind string) (ContentTempla
 	if !errors.Is(err, domain.ErrNotFound) {
 		return ContentTemplate{}, err
 	}
+	// 用设备默认字段表首次落库。
 	schema, err := contenttpl.Marshal(contenttpl.Default(kind))
 	if err != nil {
 		return ContentTemplate{}, domain.ErrTemplateInvalid
@@ -57,19 +60,43 @@ func (s *kernel) normalizeContent(ctx context.Context, kind string, content []by
 	if err != nil {
 		return nil, err
 	}
-	out, err := contenttpl.Apply(tpl.Schema, content)
+	out, err := contenttpl.Apply(tpl.Schema, content) // 按当前模版套正文。
 	if err != nil {
 		return nil, domain.ErrTemplateInvalid
 	}
 	return out, nil
 }
 
+// 审计对象：类型加修订。
 func templateTarget(kind string, rev int64) string {
 	return kind + " rev=" + strconv.FormatInt(rev, 10)
 }
 
+// BuiltinSchema 读代码里的默认字段表，不改已落库模版。
+func (s *Templates) BuiltinSchema(ctx context.Context, token, kind string) ([]byte, error) {
+	admin, err := s.RequireAdmin(ctx, token)
+	if err != nil {
+		_ = s.audit(ctx, nil, nil, nil, "get_template", kind+" default", audit.Deny)
+		return nil, err
+	}
+	if kind != KindProcess && kind != KindProject {
+		_ = s.audit(ctx, &admin.ID, nil, nil, "get_template", kind+" default", audit.Deny)
+		return nil, domain.ErrNotFound
+	}
+	raw, err := contenttpl.Marshal(contenttpl.Default(kind))
+	if err != nil {
+		_ = s.audit(ctx, &admin.ID, nil, nil, "get_template", kind+" default", audit.Deny)
+		return nil, domain.ErrTemplateInvalid
+	}
+	if err := s.audit(ctx, &admin.ID, nil, nil, "get_template", kind+" default", audit.Allow); err != nil {
+		return nil, err
+	}
+	return raw, nil
+}
+
 // GetTemplate 读该类型当前模版；没有则写入设备默认字段表。
 func (s *Templates) GetTemplate(ctx context.Context, token, kind string) (ContentTemplate, error) {
+	// 只有 WAN 管理员能读模版。失败一律记拒绝。
 	admin, err := s.RequireAdmin(ctx, token)
 	if err != nil {
 		_ = s.audit(ctx, nil, nil, nil, "get_template", kind, audit.Deny)
@@ -84,6 +111,7 @@ func (s *Templates) GetTemplate(ctx context.Context, token, kind string) (Conten
 		_ = s.audit(ctx, &admin.ID, nil, nil, "get_template", kind, audit.Deny)
 		return ContentTemplate{}, err
 	}
+	// 读取成功才记允许。
 	if err := s.audit(ctx, &admin.ID, nil, nil, "get_template", templateTarget(t.Kind, t.Revision), audit.Allow); err != nil {
 		return ContentTemplate{}, err
 	}
@@ -92,6 +120,7 @@ func (s *Templates) GetTemplate(ctx context.Context, token, kind string) (Conten
 
 // UpdateTemplate 保存字段表并下发；不改已有正文。
 func (s *Templates) UpdateTemplate(ctx context.Context, token, kind string, expected int64, schemaJSON []byte) (ContentTemplate, error) {
+	// 只有 WAN 管理员能改字段表。失败一律记拒绝。
 	admin, err := s.RequireAdmin(ctx, token)
 	if err != nil {
 		_ = s.audit(ctx, nil, nil, nil, "update_template", kind, audit.Deny)
@@ -101,7 +130,7 @@ func (s *Templates) UpdateTemplate(ctx context.Context, token, kind string, expe
 		_ = s.audit(ctx, &admin.ID, nil, nil, "update_template", kind, audit.Deny)
 		return ContentTemplate{}, domain.ErrNotFound
 	}
-	sch, err := contenttpl.Parse(schemaJSON)
+	sch, err := contenttpl.Parse(schemaJSON) // 收成规范字段表。
 	if err != nil {
 		_ = s.audit(ctx, &admin.ID, nil, nil, "update_template", kind, audit.Deny)
 		return ContentTemplate{}, domain.ErrTemplateInvalid
@@ -116,16 +145,19 @@ func (s *Templates) UpdateTemplate(ctx context.Context, token, kind string, expe
 		_ = s.audit(ctx, &admin.ID, nil, nil, "update_template", kind, audit.Deny)
 		return ContentTemplate{}, err
 	}
+	// 修订对不上则拒绝覆盖。
 	if expected != cur.Revision {
 		_ = s.audit(ctx, &admin.ID, nil, nil, "update_template", templateTarget(kind, expected), audit.Deny)
 		return ContentTemplate{}, domain.ErrRevisionConflict
 	}
 	if bytes.Equal(cur.Schema, canon) {
+		// 字段没变则幂等返回。
 		if err := s.audit(ctx, &admin.ID, nil, nil, "update_template", templateTarget(cur.Kind, cur.Revision), audit.Allow); err != nil {
 			return ContentTemplate{}, err
 		}
 		return cur, nil
 	}
+	// 保存新字段表并升高修订，不改已有正文。
 	row, err := s.store.UpdateTemplate(ctx, kind, expected, canon, digest.Sum(canon))
 	if err != nil {
 		_ = s.audit(ctx, &admin.ID, nil, nil, "update_template", templateTarget(kind, expected), audit.Deny)
@@ -136,6 +168,7 @@ func (s *Templates) UpdateTemplate(ctx context.Context, token, kind string, expe
 		_ = s.audit(ctx, &admin.ID, nil, nil, "update_template", templateTarget(kind, expected), audit.Deny)
 		return ContentTemplate{}, err
 	}
+	// 保存成功才记允许。
 	if err := s.audit(ctx, &admin.ID, nil, nil, "update_template", templateTarget(row.Kind, row.Revision), audit.Allow); err != nil {
 		return ContentTemplate{}, err
 	}

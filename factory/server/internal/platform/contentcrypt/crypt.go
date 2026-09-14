@@ -137,11 +137,13 @@ func TransitAAD(factoryID, assetID uuid.UUID, rev int64) []byte {
 	return out
 }
 
+// kekHint 信封上的 KEK 指纹，解包时不靠它验钥。
 func kekHint(kek []byte) []byte {
 	sum := sha256.Sum256(kek)
 	return sum[:kekIDSize]
 }
 
+// extraAAD 把 DEK/正文段名拼进 AAD，避免两段互用。
 func extraAAD(aad []byte, part string) []byte {
 	out := make([]byte, 0, len(aad)+len(part))
 	out = append(out, aad...)
@@ -149,6 +151,7 @@ func extraAAD(aad []byte, part string) []byte {
 	return out
 }
 
+// nonempty 空指针收成空切片，空正文也能封。
 func nonempty(b []byte) []byte {
 	if b == nil {
 		return []byte{}
@@ -156,6 +159,7 @@ func nonempty(b []byte) []byte {
 	return b
 }
 
+// gcmSeal AES-GCM 封一段，每次新 nonce。
 func gcmSeal(key, plain, aad []byte) (nonce, ct []byte, err error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
@@ -172,6 +176,7 @@ func gcmSeal(key, plain, aad []byte) (nonce, ct []byte, err error) {
 	return nonce, aead.Seal(nil, nonce, plain, aad), nil
 }
 
+// gcmOpen 解开一段；失败只回笼统错误。
 func gcmOpen(key, nonce, ct, aad []byte) ([]byte, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {

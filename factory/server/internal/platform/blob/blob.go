@@ -12,7 +12,9 @@ var ErrNotFound = errors.New("blob not found")
 
 // Store 按键存取不透明正文。
 type Store interface {
+	// Put 按键覆盖写入。
 	Put(ctx context.Context, key string, body []byte) error
+	// Get 按键读出正文。
 	Get(ctx context.Context, key string) ([]byte, error)
 }
 

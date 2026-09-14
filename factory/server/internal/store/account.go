@@ -103,6 +103,7 @@ func (s *Store) CreatePersonAt(ctx context.Context, personID uuid.UUID, loginNam
 	return row, nil
 }
 
+// RenamePerson 改显示名和登录名；登录名本厂唯一。
 func (s *Store) RenamePerson(ctx context.Context, personID uuid.UUID, displayName, loginName string) error {
 	res := s.db.WithContext(ctx).Model(&Person{}).Where("id = ?", personID).Updates(map[string]any{
 		"display_name": displayName,
@@ -120,6 +121,7 @@ func (s *Store) RenamePerson(ctx context.Context, personID uuid.UUID, displayNam
 	return nil
 }
 
+// CreateSession 写入厂内会话；库里只存令牌哈希。
 func (s *Store) CreateSession(ctx context.Context, personID uuid.UUID, tokenHash string, expiresAt time.Time) (Session, error) {
 	if err := s.assertPersonExists(ctx, personID); err != nil {
 		return Session{}, err
@@ -140,6 +142,7 @@ func (s *Store) CreateSession(ctx context.Context, personID uuid.UUID, tokenHash
 	return row, nil
 }
 
+// PersonByLogin 按本厂登录名取账号。
 func (s *Store) PersonByLogin(ctx context.Context, loginName string) (Person, error) {
 	var row Person
 	if err := s.db.WithContext(ctx).First(&row, "login_name = ?", loginName).Error; err != nil {
@@ -167,6 +170,7 @@ func (s *Store) PeopleByIDs(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID
 	return out, nil
 }
 
+// PersonByID 按稳定身份取本厂账号。
 func (s *Store) PersonByID(ctx context.Context, personID uuid.UUID) (Person, error) {
 	var row Person
 	if err := s.db.WithContext(ctx).First(&row, "id = ?", personID).Error; err != nil {
@@ -178,7 +182,9 @@ func (s *Store) PersonByID(ctx context.Context, personID uuid.UUID) (Person, err
 	return row, nil
 }
 
+// ActivatePerson 把待启用改成有效并写入日常密码；已激活拒绝。
 func (s *Store) ActivatePerson(ctx context.Context, personID uuid.UUID, passwordHash string) error {
+	// 只把待启用改成有效；已激活或停用不走这条。
 	res := s.db.WithContext(ctx).Model(&Person{}).
 		Where("id = ? AND status = ?", personID, StatusPending).
 		Updates(map[string]any{
@@ -195,6 +201,7 @@ func (s *Store) ActivatePerson(ctx context.Context, personID uuid.UUID, password
 	return nil
 }
 
+// SetActivationHash 写入一次性激活码哈希，不存原文。
 func (s *Store) SetActivationHash(ctx context.Context, personID uuid.UUID, hash string) error {
 	res := s.db.WithContext(ctx).Model(&Person{}).Where("id = ?", personID).Update("activation_token_hash", hash)
 	if res.Error != nil {
@@ -206,6 +213,7 @@ func (s *Store) SetActivationHash(ctx context.Context, personID uuid.UUID, hash 
 	return nil
 }
 
+// SetPasswordHash 只改日常密码哈希，不改登录名。
 func (s *Store) SetPasswordHash(ctx context.Context, personID uuid.UUID, passwordHash string) error {
 	res := s.db.WithContext(ctx).Model(&Person{}).Where("id = ?", personID).Update("password_hash", passwordHash)
 	if res.Error != nil {
@@ -242,6 +250,7 @@ func (s *Store) ApplyPersonPassword(ctx context.Context, personID uuid.UUID, pas
 	return nil
 }
 
+// SetPersonStatus 只改人员状态，不改密码。
 func (s *Store) SetPersonStatus(ctx context.Context, personID uuid.UUID, status string) error {
 	res := s.db.WithContext(ctx).Model(&Person{}).Where("id = ?", personID).Update("status", status)
 	if res.Error != nil {
@@ -253,6 +262,7 @@ func (s *Store) SetPersonStatus(ctx context.Context, personID uuid.UUID, status 
 	return nil
 }
 
+// SessionByTokenHash 按令牌哈希取会话；过期立刻无效。
 func (s *Store) SessionByTokenHash(ctx context.Context, tokenHash string) (Session, error) {
 	var row Session
 	if err := s.db.WithContext(ctx).First(&row, "token_hash = ?", tokenHash).Error; err != nil {
@@ -261,12 +271,14 @@ func (s *Store) SessionByTokenHash(ctx context.Context, tokenHash string) (Sessi
 		}
 		return Session{}, err
 	}
+	// 过期会话立刻无效，不当权限缓存。
 	if !row.ExpiresAt.After(time.Now().UTC()) {
 		return Session{}, domain.ErrSessionExpired
 	}
 	return row, nil
 }
 
+// DeleteSessionByTokenHash 作废这一条会话；找不到算不存在。
 func (s *Store) DeleteSessionByTokenHash(ctx context.Context, tokenHash string) error {
 	res := s.db.WithContext(ctx).Where("token_hash = ?", tokenHash).Delete(&Session{})
 	if res.Error != nil {
@@ -283,6 +295,7 @@ func (s *Store) DeleteSessionsForPerson(ctx context.Context, personID uuid.UUID)
 	return s.db.WithContext(ctx).Where("person_id = ?", personID).Delete(&Session{}).Error
 }
 
+// PersonCount 数本厂账号行。
 func (s *Store) PersonCount(ctx context.Context) (int64, error) {
 	var n int64
 	err := s.db.WithContext(ctx).Model(&Person{}).Count(&n).Error

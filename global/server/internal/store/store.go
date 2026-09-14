@@ -28,6 +28,7 @@ func (s *Store) Ping(ctx context.Context) error {
 	return s.db.WithContext(ctx).Exec("SELECT 1").Error
 }
 
+// AppendAudit 把一条审计写入 WAN 库；缺身份则现场发号。
 func (s *Store) AppendAudit(ctx context.Context, e audit.Event) error {
 	if e.ID == uuid.Nil {
 		e.ID = id.New()
@@ -42,6 +43,7 @@ func (s *Store) ListAudit(ctx context.Context) ([]audit.Row, error) {
 	return rows, err
 }
 
+// HasTable 看 public 下是否已有该表，给迁移夹具用。
 func (s *Store) HasTable(ctx context.Context, name string) (bool, error) {
 	var exists bool
 	err := s.db.WithContext(ctx).

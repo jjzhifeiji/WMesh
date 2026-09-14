@@ -17,6 +17,7 @@ export type Asset = {
   kind: AssetKind; // process / project
   level: AssetLevel; // factory / personal
   name: string; // 显示名，不当身份
+  code: string; // 只读编号，创建后不改
   status: AssetStatus; // draft / available / disabled
   copyable: boolean; // 可否升档
   revision: number; // 当前修订
@@ -78,6 +79,12 @@ export function useCopyAsset() {
 export function useRenameAsset() {
   return useAssetMutation((input: { id: string; expected: number; name: string }) =>
     http.post<Asset>(fpath(`/assets/${input.id}/rename`), { expected: input.expected, name: input.name }),
+  );
+}
+
+export function useSetAssetDeps() {
+  return useAssetMutation((input: { id: string; expected: number; deps: AssetDep[] }) =>
+    http.post<Asset>(fpath(`/assets/${input.id}/deps`), { expected: input.expected, deps: input.deps }),
   );
 }
 

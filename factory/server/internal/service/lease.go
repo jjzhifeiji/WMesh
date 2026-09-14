@@ -28,6 +28,7 @@ func (s *kernel) openTransitMembers(snap ClosureSnapshot) (ClosureSnapshot, erro
 	}
 	var key []byte
 	if needKey {
+		// 信封才取过站钥，用完清零。
 		var err error
 		key, err = s.store.TransitKey()
 		if err != nil {

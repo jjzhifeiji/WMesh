@@ -1,3 +1,4 @@
+// 默认日常密码与一次性 8 位激活码。
 package secret_test
 
 import (

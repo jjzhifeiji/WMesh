@@ -59,18 +59,19 @@ type Service struct {
 func NewService(st *Store) *Service {
 	k := &kernel{store: st, blobs: blob.NewMemory()}
 	return &Service{
-		kernel:  k,
-		Auth:    &Auth{k},
-		Org:     &Org{k},
-		Attr:    &Attr{k},
-		Node:    &Node{k},
+		kernel:    k,
+		Auth:      &Auth{k},
+		Org:       &Org{k},
+		Attr:      &Attr{k},
+		Node:      &Node{k},
 		Assets:    &Assets{k},
 		Templates: &Templates{k},
 		Closure:   &Closure{k},
-		Sync:    &Sync{k},
+		Sync:      &Sync{k},
 	}
 }
 
+// Store 取出本厂库连接，给验收夹具用。
 func (k *kernel) Store() *Store { return k.store }
 
 // Account 是对外可见的账号视图，不含密码或激活码。
@@ -81,14 +82,17 @@ type Account struct {
 	Status      string    `json:"status"`      // 人员状态：pending / active / disabled
 }
 
+// 对外账号视图，不含密码。
 func accountOf(p Person) Account {
 	return Account{ID: p.ID, LoginName: p.LoginName, DisplayName: p.DisplayName, Status: p.Status}
 }
 
+// ListAudit 列出本厂审计行，给验收用。
 func (k *kernel) ListAudit(ctx context.Context) ([]audit.Row, error) {
 	return k.store.ListAudit(ctx)
 }
 
+// audit 记下允许或拒绝；令牌和密码不进原文。
 func (k *kernel) audit(ctx context.Context, actor *uuid.UUID, claimed *string, action, target, result string) error {
 	fid := k.store.FactoryID()
 	return k.store.AppendAudit(ctx, audit.Event{

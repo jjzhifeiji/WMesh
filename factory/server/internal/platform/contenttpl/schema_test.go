@@ -1,3 +1,4 @@
+// 套用字段表：填缺省、丢掉未知键、非法 JSON 回退缺省。
 package contenttpl
 
 import (
@@ -134,4 +135,41 @@ func TestValidateRejectsBadKey(t *testing.T) {
 	if err := Validate(s); err == nil {
 		t.Fatal("want invalid")
 	}
+}
+
+func TestDefaultProjectRefsProcessID(t *testing.T) {
+	keys := fieldKeys(Default(KindProject).Item)
+	has := map[string]int{}
+	for _, k := range keys {
+		has[k]++
+	}
+	if has["processPath"] != 0 {
+		t.Fatalf("processPath still in default: %v", keys)
+	}
+	if has["process"] != 0 {
+		t.Fatalf("nested process still in default: %v", keys)
+	}
+	if has["processId"] < 5 {
+		t.Fatalf("processId count %d want >=5 in %v", has["processId"], keys)
+	}
+	if has["cornerGroupParams"] != 1 {
+		t.Fatalf("corner missing: %v", keys)
+	}
+}
+
+func fieldKeys(f *Field) []string {
+	if f == nil {
+		return nil
+	}
+	var out []string
+	if f.Key != "" {
+		out = append(out, f.Key)
+	}
+	for i := range f.Fields {
+		out = append(out, fieldKeys(&f.Fields[i])...)
+	}
+	if f.Items != nil {
+		out = append(out, fieldKeys(f.Items)...)
+	}
+	return out
 }

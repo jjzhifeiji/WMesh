@@ -12,30 +12,36 @@ import (
 	"github.com/google/uuid"
 
 	"wmesh/factory/internal/platform/audit"
+	"wmesh/factory/internal/platform/contenttpl"
 	"wmesh/factory/internal/platform/digest"
 	"wmesh/factory/internal/platform/domain"
 	"wmesh/factory/internal/store"
 )
 
+// 审计对象：身份加修订。
 func assetTarget(id uuid.UUID, rev int64) string {
 	return id.String() + " rev=" + strconv.FormatInt(rev, 10)
 }
 
+// 列表不回正文。
 func stripContent(a Asset) Asset {
 	a.Content = nil
 	return a
 }
 
+// replicaAsAsset 把已收副本当成平台级资产视图。
 func replicaAsAsset(r AssetReplica) Asset {
 	return Asset{
-		ID: r.ID, Kind: r.Kind, Level: AssetLevelPlatform, Name: r.Name,
+		ID: r.ID, Kind: r.Kind, Level: AssetLevelPlatform, Name: r.Name, Code: r.Code,
 		Status: r.Status, Copyable: r.Copyable, Revision: r.Revision,
 		Content: r.Content, Digest: r.Digest, Deps: r.Deps,
 		CreatedAt: r.ReceivedAt, UpdatedAt: r.ReceivedAt,
 	}
 }
 
+// loadReplica 取最高修订副本并核对摘要。
 func (s *Assets) loadReplica(ctx context.Context, id uuid.UUID) (Asset, error) {
+	// 摘要不符当完整性失败。
 	r, err := s.store.LatestReplica(ctx, id)
 	if err != nil {
 		return Asset{}, err
@@ -46,6 +52,7 @@ func (s *Assets) loadReplica(ctx context.Context, id uuid.UUID) (Asset, error) {
 	return replicaAsAsset(r), nil
 }
 
+// loadReplicaMeta 只取副本元数据，不解开正文。
 func (s *Assets) loadReplicaMeta(ctx context.Context, id uuid.UUID) (Asset, error) {
 	r, err := s.store.LatestReplicaMeta(ctx, id)
 	if err != nil {
@@ -54,6 +61,7 @@ func (s *Assets) loadReplicaMeta(ctx context.Context, id uuid.UUID) (Asset, erro
 	return replicaAsAsset(r), nil
 }
 
+// loadAny 本厂原件优先，没有再看已收副本。
 func (s *Assets) loadAny(ctx context.Context, id uuid.UUID) (Asset, error) {
 	a, err := s.loadChecked(ctx, id)
 	if err == nil {
@@ -65,6 +73,7 @@ func (s *Assets) loadAny(ctx context.Context, id uuid.UUID) (Asset, error) {
 	return s.loadReplica(ctx, id)
 }
 
+// loadAnyMeta 只读元数据；原件没有再看副本。
 func (s *Assets) loadAnyMeta(ctx context.Context, id uuid.UUID) (Asset, error) {
 	a, err := s.store.GovernedAssetMetaByID(ctx, id)
 	if err == nil {
@@ -76,6 +85,7 @@ func (s *Assets) loadAnyMeta(ctx context.Context, id uuid.UUID) (Asset, error) {
 	return s.loadReplicaMeta(ctx, id)
 }
 
+// loadChecked 读本厂原件并核对摘要。
 func (s *kernel) loadChecked(ctx context.Context, id uuid.UUID) (Asset, error) {
 	a, err := s.store.GovernedAssetByID(ctx, id)
 	if err != nil {
@@ -87,6 +97,7 @@ func (s *kernel) loadChecked(ctx context.Context, id uuid.UUID) (Asset, error) {
 	return a, nil
 }
 
+// loadCheckedMeta 只读本厂原件元数据，不解包。
 func (s *kernel) loadCheckedMeta(ctx context.Context, id uuid.UUID) (Asset, error) {
 	return s.store.GovernedAssetMetaByID(ctx, id)
 }
@@ -124,6 +135,7 @@ func (s *kernel) peCovers(ctx context.Context, acc Account, unit *uuid.UUID) err
 	return domain.ErrForbidden
 }
 
+// resolveAuthorContext 选定制作时工作位置并冻结当时路径。
 func (s *Assets) resolveAuthorContext(ctx context.Context, acc Account, wc WorkContext) (*uuid.UUID, []PathNode, error) {
 	if wc.Direct == (wc.OrgUnitID != nil) {
 		return nil, nil, domain.ErrWorkContext
@@ -139,8 +151,9 @@ func (s *Assets) resolveAuthorContext(ctx context.Context, acc Account, wc WorkC
 		return wc.OrgUnitID, nil, err
 	}
 	if unit.Status != StatusActive {
-		return &unit.ID, nil, domain.ErrDisabledOrgUnit
+		return &unit.ID, nil, domain.ErrDisabledOrgUnit // 停用节点不能再当新上下文
 	}
+	// 必须是当前有效分配。
 	ok, err := s.store.HasActiveAssignment(ctx, acc.ID, unit.ID)
 	if err != nil {
 		return &unit.ID, nil, err
@@ -151,6 +164,7 @@ func (s *Assets) resolveAuthorContext(ctx context.Context, acc Account, wc WorkC
 	if err := s.canAuthorFactory(ctx, acc, &unit.ID); err != nil {
 		return &unit.ID, nil, err
 	}
+	// 冻结当时组织路径。
 	path, err := s.store.PathSnapshot(ctx, unit.ID)
 	if err != nil {
 		return &unit.ID, nil, err
@@ -158,6 +172,7 @@ func (s *Assets) resolveAuthorContext(ctx context.Context, acc Account, wc WorkC
 	return &unit.ID, path, nil
 }
 
+// insertAuthored 套模版后落草稿。
 func (s *Assets) insertAuthored(ctx context.Context, acc Account, wc WorkContext, kind, level, name string, content []byte, deps []AssetDep) (Asset, error) {
 	unitID, path, err := s.resolveAuthorContext(ctx, acc, wc)
 	if err != nil {
@@ -169,11 +184,19 @@ func (s *Assets) insertAuthored(ctx context.Context, acc Account, wc WorkContext
 		_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny, unitID, path)
 		return Asset{}, err
 	}
+	// 套完后工程引用须落在已声明依赖里。
+	if kind == KindProject {
+		if err := s.assertProjectProcessIDs(ctx, content, deps); err != nil {
+			_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny, unitID, path)
+			return Asset{}, err
+		}
+	}
 	return s.insertGoverned(ctx, acc, unitID, path, kind, level, name, content, deps)
 }
 
 // insertGoverned 落一条草稿；调用方已决定是否套过模版。
 func (s *Assets) insertGoverned(ctx context.Context, acc Account, unitID *uuid.UUID, path []PathNode, kind, level, name string, content []byte, deps []AssetDep) (Asset, error) {
+	// 落一条草稿，默认可复制。
 	row, err := s.store.InsertGovernedAsset(ctx, Asset{
 		Kind: kind, Level: level, Name: name, Status: AssetDraft, Copyable: true,
 		Content: content, Digest: digest.Sum(content), CreatorID: acc.ID,
@@ -196,6 +219,7 @@ func (s *Assets) CopyProcess(ctx context.Context, token string, assetID uuid.UUI
 		return Asset{}, err
 	}
 	name = strings.TrimSpace(name)
+	// 有效账号才能另存；失败一律记拒绝。
 	if name == "" {
 		_ = s.audit(ctx, &acc.ID, nil, "create_asset", assetID.String(), audit.Deny)
 		return Asset{}, domain.ErrInvalidName
@@ -269,6 +293,7 @@ func (s *Assets) CreatePersonalProject(ctx context.Context, token string, wc Wor
 	return s.insertAuthored(ctx, acc, wc, KindProject, AssetLevelPersonal, name, content, deps)
 }
 
+// assertPersonalProjectDeps 个人工程只能钉自己的个人工艺或厂级可用工艺。
 func (s *kernel) assertPersonalProjectDeps(ctx context.Context, acc Account, deps []AssetDep) error {
 	for _, d := range deps {
 		p, err := s.loadCheckedMeta(ctx, d.ID)
@@ -307,8 +332,10 @@ func (s *Assets) CreateFactoryProject(ctx context.Context, token string, wc Work
 	return s.insertAuthored(ctx, acc, wc, KindProject, AssetLevelFactory, name, content, deps)
 }
 
+// assertFactoryProcessDeps 厂级工程只能钉本厂厂级或已收平台级可用工艺。
 func (s *kernel) assertFactoryProcessDeps(ctx context.Context, deps []AssetDep) error {
 	for _, d := range deps {
+		// 先看本厂原件，没有再看已收平台级。
 		p, err := s.store.GovernedAssetMetaByID(ctx, d.ID)
 		if err == nil {
 			if p.Kind != KindProcess || p.Level != AssetLevelFactory || p.Revision != d.Revision || !bytes.Equal(p.Digest, d.Digest) {
@@ -334,6 +361,28 @@ func (s *kernel) assertFactoryProcessDeps(ctx context.Context, deps []AssetDep) 
 		}
 		if r.Status != AssetAvailable {
 			return domain.ErrAssetNotAvailable
+		}
+	}
+	return nil
+}
+
+// assertProjectProcessIDs 按当前工程模版收集引用，非空的必须是本行 deps 的身份。
+func (s *kernel) assertProjectProcessIDs(ctx context.Context, content []byte, deps []AssetDep) error {
+	sch, err := s.projectSchemaJSON(ctx)
+	if err != nil {
+		return err
+	}
+	ids, err := contenttpl.CollectProcessIDs(sch, content)
+	if err != nil {
+		return domain.ErrAssetDependency
+	}
+	allowed := make(map[string]struct{}, len(deps))
+	for _, d := range deps {
+		allowed[d.ID.String()] = struct{}{}
+	}
+	for _, id := range ids {
+		if _, ok := allowed[id]; !ok {
+			return domain.ErrAssetDependency
 		}
 	}
 	return nil
@@ -372,6 +421,12 @@ func (s *Assets) UpdateAssetContent(ctx context.Context, token string, assetID u
 	return s.mutateAsset(ctx, acc, assetID, expected, "update_asset", func(cur Asset) (store.AssetWrite, error) {
 		if cur.Status == AssetDisabled {
 			return store.AssetWrite{}, domain.ErrAssetNotAvailable
+		}
+		// 工程焊道引用必须落在已声明依赖里。
+		if cur.Kind == KindProject {
+			if err := s.assertProjectProcessIDs(ctx, content, cur.Deps); err != nil {
+				return store.AssetWrite{}, err
+			}
 		}
 		return store.AssetWrite{Name: cur.Name, Content: content, Digest: digest.Sum(content), Copyable: cur.Copyable, Status: cur.Status, Deps: cur.Deps}, nil
 	})
@@ -439,6 +494,7 @@ func (s *Assets) DeleteAsset(ctx context.Context, token string, assetID uuid.UUI
 	if err != nil {
 		return err
 	}
+	// 须有制作权；个人级仅创建人。失败一律记拒绝。
 	cur, err := s.loadCheckedMeta(ctx, assetID)
 	if err != nil {
 		_ = s.audit(ctx, &acc.ID, nil, "delete_asset", assetID.String(), audit.Deny)
@@ -452,6 +508,7 @@ func (s *Assets) DeleteAsset(ctx context.Context, token string, assetID uuid.UUI
 		_ = s.audit(ctx, &acc.ID, nil, "delete_asset", assetTarget(assetID, cur.Revision), audit.Deny)
 		return domain.ErrForbidden
 	}
+	// 仍被工程钉着则拒绝。
 	used, err := s.store.AssetIsReferenced(ctx, assetID)
 	if err != nil {
 		return err
@@ -460,6 +517,7 @@ func (s *Assets) DeleteAsset(ctx context.Context, token string, assetID uuid.UUI
 		_ = s.audit(ctx, &acc.ID, nil, "delete_asset", assetTarget(assetID, cur.Revision), audit.Deny)
 		return domain.ErrReferenced
 	}
+	// 无引用才删本厂原件。
 	if err := s.store.DeleteGovernedAsset(ctx, assetID); err != nil {
 		_ = s.audit(ctx, &acc.ID, nil, "delete_asset", assetTarget(assetID, cur.Revision), audit.Deny)
 		return err
@@ -467,7 +525,9 @@ func (s *Assets) DeleteAsset(ctx context.Context, token string, assetID uuid.UUI
 	return s.audit(ctx, &acc.ID, nil, "delete_asset", assetTarget(assetID, cur.Revision), audit.Allow)
 }
 
+// mutateAsset 按期望修订改本厂原件；个人级仅创建人。
 func (s *kernel) mutateAsset(ctx context.Context, acc Account, assetID uuid.UUID, expected int64, action string, patch func(Asset) (store.AssetWrite, error)) (Asset, error) {
+	// 须有制作权；个人级仅创建人。失败一律记拒绝。
 	cur, err := s.loadCheckedMeta(ctx, assetID)
 	if err != nil {
 		_ = s.audit(ctx, &acc.ID, nil, action, assetTarget(assetID, expected), audit.Deny)
@@ -486,6 +546,7 @@ func (s *kernel) mutateAsset(ctx context.Context, acc Account, assetID uuid.UUID
 		_ = s.audit(ctx, &acc.ID, nil, action, assetTarget(assetID, cur.Revision), audit.Deny)
 		return Asset{}, err
 	}
+	// 按期望修订写入，冲突则拒绝。
 	row, err := s.store.UpdateGovernedAsset(ctx, assetID, expected, w)
 	if err != nil {
 		_ = s.audit(ctx, &acc.ID, nil, action, assetTarget(assetID, expected), audit.Deny)
@@ -511,6 +572,7 @@ func (s *Assets) GetAsset(ctx context.Context, token string, assetID uuid.UUID) 
 	if err != nil {
 		return Asset{}, err
 	}
+	// 读元数据，不解包正文。失败记拒绝。
 	a, err := s.loadAnyMeta(ctx, assetID)
 	if err != nil {
 		_ = s.audit(ctx, &acc.ID, nil, "get_asset", assetID.String(), audit.Deny)
@@ -532,6 +594,7 @@ func (s *Assets) ReadAssetContent(ctx context.Context, token string, assetID uui
 	if err != nil {
 		return nil, err
 	}
+	// 个人级仅创建人；不可复制平台级不给人看。失败一律记拒绝。
 	meta, err := s.loadAnyMeta(ctx, assetID)
 	if err != nil {
 		_ = s.audit(ctx, &acc.ID, nil, "read_asset_content", assetID.String(), audit.Deny)
@@ -593,6 +656,7 @@ func (s *Assets) PromoteToFactory(ctx context.Context, token string, assetID uui
 		return Asset{}, err
 	}
 	rev := src.Revision
+	// 已升过则按摘要跳过或覆盖。
 	existing, err := s.store.GovernedAssetBySourceID(ctx, src.ID)
 	if err == nil {
 		if bytes.Equal(existing.Digest, src.Digest) {
@@ -601,6 +665,7 @@ func (s *Assets) PromoteToFactory(ctx context.Context, token string, assetID uui
 			}
 			return stripContent(existing), nil
 		}
+		// 正文变了才覆盖厂级。
 		row, err := s.store.UpdateGovernedAsset(ctx, existing.ID, existing.Revision, store.AssetWrite{
 			Name: src.Name, Content: src.Content, Digest: src.Digest, Copyable: true, Status: AssetAvailable, Deps: src.Deps, SourceRevision: &rev,
 		})
@@ -617,6 +682,7 @@ func (s *Assets) PromoteToFactory(ctx context.Context, token string, assetID uui
 		_ = s.audit(ctx, &acc.ID, nil, "promote_asset", assetTarget(src.ID, src.Revision), audit.Deny)
 		return Asset{}, err
 	}
+	// 第一次升档复制新身份。
 	row, err := s.store.InsertGovernedAsset(ctx, Asset{
 		Kind: src.Kind, Level: AssetLevelFactory, Name: src.Name, Status: AssetAvailable, Copyable: true,
 		Content: src.Content, Digest: src.Digest, CreatorID: acc.ID,
@@ -633,6 +699,7 @@ func (s *Assets) PromoteToFactory(ctx context.Context, token string, assetID uui
 	return stripContent(row), nil
 }
 
+// assertPromoteToFactoryDeps 升厂级时工程依赖必须已是可用厂级工艺。
 func (s *Assets) assertPromoteToFactoryDeps(ctx context.Context, src Asset) error {
 	if src.Kind != KindProject {
 		return nil
@@ -672,6 +739,7 @@ func (s *Assets) ExportAssetSnapshot(ctx context.Context, token string, assetID 
 		_ = s.audit(ctx, &acc.ID, nil, "export_asset", assetTarget(src.ID, src.Revision), audit.Deny)
 		return AssetSnapshot{}, domain.ErrAssetNotAvailable
 	}
+	// 导出明文快照给 WAN 升档。
 	snap, err := s.store.ExportAssetSnapshot(ctx, assetID)
 	if err != nil {
 		return AssetSnapshot{}, err
@@ -685,15 +753,17 @@ type PromotableAsset struct {
 	Kind     string    `json:"kind"`     // process / project
 	Level    string    `json:"level"`    // factory / personal / platform
 	Name     string    `json:"name"`     // 显示名
+	Code     string    `json:"code"`     // 只读编号
 	Revision int64     `json:"revision"` // 当前修订
 	Digest   []byte    `json:"digest"`   // 内容摘要
 	Status   string    `json:"status"`   // draft / available / disabled
 	Copyable bool      `json:"copyable"` // 原样带回，升档时仍按可复制判定
 }
 
+// 升档列表只带元数据，不含正文。
 func toPromotable(a Asset) PromotableAsset {
 	return PromotableAsset{
-		ID: a.ID, Kind: a.Kind, Level: a.Level, Name: a.Name, Revision: a.Revision,
+		ID: a.ID, Kind: a.Kind, Level: a.Level, Name: a.Name, Code: a.Code, Revision: a.Revision,
 		Digest: a.Digest, Status: a.Status, Copyable: a.Copyable,
 	}
 }
@@ -703,6 +773,7 @@ func (s *Assets) ListPromotable(ctx context.Context, kind string) ([]PromotableA
 	if kind != "" && kind != KindProcess && kind != KindProject {
 		return nil, domain.ErrNotFound
 	}
+	// 本厂原件和已下发平台级一并列出，不含正文。
 	rows, err := s.store.ListGovernedAssets(ctx)
 	if err != nil {
 		return nil, err
@@ -786,6 +857,7 @@ func (s *Assets) AuthorContext(ctx context.Context, token string) (AssetAuthorCo
 		return AssetAuthorContext{}, err
 	}
 	out := AssetAuthorContext{AllowDirect: true, OrgUnits: []OrgUnit{}}
+	// 只收本人已分配的有效节点。
 	assigns, err := s.store.ActiveAssignments(ctx, acc.ID)
 	if err != nil {
 		return AssetAuthorContext{}, err
@@ -819,6 +891,7 @@ func (s *Assets) ListAssets(ctx context.Context, token, kind string) ([]AssetVie
 	if kind != "" && kind != KindProcess && kind != KindProject {
 		return nil, domain.ErrNotFound
 	}
+	// 按许可过滤本厂工艺/工程元数据，不含正文。
 	rows, err := s.store.ListGovernedAssets(ctx)
 	if err != nil {
 		return nil, err
@@ -887,11 +960,13 @@ func (s *Assets) ListAssets(ctx context.Context, token, kind string) ([]AssetVie
 	return s.decorateAssets(ctx, visible)
 }
 
+// decorateAssets 补创建人登录名和显示名，不含正文。
 func (s *Assets) decorateAssets(ctx context.Context, rows []Asset) ([]AssetView, error) {
 	ids := make([]uuid.UUID, 0, len(rows))
 	for _, a := range rows {
 		ids = append(ids, a.CreatorID)
 	}
+	// 补创建人名字。
 	people, err := s.store.PeopleByIDs(ctx, ids)
 	if err != nil {
 		return nil, err

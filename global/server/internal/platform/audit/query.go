@@ -5,6 +5,7 @@ import (
 	"strings"
 )
 
+// Dump 把审计行收成可检索文本，给验收断言用；不含密码原文。
 func Dump(rows []Row) string {
 	var b strings.Builder
 	for _, r := range rows {
@@ -15,6 +16,7 @@ func Dump(rows []Row) string {
 	return b.String()
 }
 
+// ContainsAny 检查审计文本是否漏出秘密原文。
 func ContainsAny(text string, secrets ...string) bool {
 	for _, s := range secrets {
 		if s != "" && strings.Contains(text, s) {
@@ -24,6 +26,7 @@ func ContainsAny(text string, secrets ...string) bool {
 	return false
 }
 
+// HasResult 是否有服务端钟记下的指定动作与结果。
 func HasResult(rows []Row, action, result string) bool {
 	for _, r := range rows {
 		if r.Action == action && r.Result == result && r.TimeSource == Server {
@@ -33,6 +36,7 @@ func HasResult(rows []Row, action, result string) bool {
 	return false
 }
 
+// Incomplete 找出缺身份、动作、对象、结果、时间来源或发生时间的行。
 func Incomplete(rows []Row) []Row {
 	var bad []Row
 	for _, r := range rows {

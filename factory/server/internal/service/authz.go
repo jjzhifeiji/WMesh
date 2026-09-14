@@ -20,10 +20,12 @@ const (
 	permOperate                   // 节点上的业务操作，不含超管自动经营权
 )
 
+// grantsOf 只取当前有效角色；已收回的不参与判定。
 func (s *kernel) grantsOf(ctx context.Context, personID uuid.UUID) ([]RoleGrant, error) {
 	return s.store.ActiveGrants(ctx, personID)
 }
 
+// isFactorySA 是否持有本厂作用域的有效超管角色。
 func isFactorySA(grants []RoleGrant) bool {
 	for _, g := range grants {
 		if g.Role == RoleFactorySuperAdmin && g.ScopeKind == ScopeFactory {
@@ -33,6 +35,7 @@ func isFactorySA(grants []RoleGrant) bool {
 	return false
 }
 
+// covers 厂级覆盖全厂；组织作用域只覆盖当时子树。
 func (s *kernel) covers(ctx context.Context, grants []RoleGrant, unit *uuid.UUID) (bool, error) {
 	for _, g := range grants {
 		// Factory 作用域覆盖本厂当时全部节点。
@@ -40,6 +43,7 @@ func (s *kernel) covers(ctx context.Context, grants []RoleGrant, unit *uuid.UUID
 			return true, nil
 		}
 		if unit != nil && g.OrgUnitID != nil {
+			// 子树覆盖才算有权。
 			ok, err := s.store.InSubtree(ctx, *g.OrgUnitID, *unit)
 			if err != nil {
 				return false, err
@@ -52,6 +56,7 @@ func (s *kernel) covers(ctx context.Context, grants []RoleGrant, unit *uuid.UUID
 	return false, nil
 }
 
+// withRoles 只留下指定角色的授予，用来收窄判定面。
 func withRoles(grants []RoleGrant, roles ...string) []RoleGrant {
 	allow := map[string]struct{}{}
 	for _, r := range roles {
@@ -83,6 +88,7 @@ func (s *kernel) can(ctx context.Context, acc Account, p perm, unit *uuid.UUID) 
 			if unit == nil {
 				return nil
 			}
+			// 超管也要目标节点仍在本厂。
 			if _, err := s.store.Unit(ctx, *unit); err != nil {
 				return err
 			}
@@ -123,6 +129,7 @@ func (s *kernel) can(ctx context.Context, acc Account, p perm, unit *uuid.UUID) 
 	case permGrant:
 		return domain.ErrForbidden
 	default:
+		// 未列明的动作一律拒绝。
 		return domain.ErrForbidden
 	}
 }
@@ -169,6 +176,7 @@ func (s *kernel) guardLastAdminOnDisable(ctx context.Context, personID uuid.UUID
 	if !isSA {
 		return nil
 	}
+	// 有效超管入口还剩一个就不能停。
 	n, err := s.store.ActiveFactorySuperAdminCount(ctx)
 	if err != nil {
 		return err
@@ -179,6 +187,7 @@ func (s *kernel) guardLastAdminOnDisable(ctx context.Context, personID uuid.UUID
 	return nil
 }
 
+// guardLastAdminOnRevoke 收回厂级超管时，至少留一名有效超管入口。
 func (s *kernel) guardLastAdminOnRevoke(ctx context.Context, g RoleGrant) error {
 	if g.Status != StatusActive || g.Role != RoleFactorySuperAdmin || g.ScopeKind != ScopeFactory {
 		return nil
@@ -190,6 +199,7 @@ func (s *kernel) guardLastAdminOnRevoke(ctx context.Context, g RoleGrant) error 
 	if p.Status != StatusActive {
 		return nil
 	}
+	// 有效超管入口还剩一个就不能收。
 	n, err := s.store.ActiveFactorySuperAdminCount(ctx)
 	if err != nil {
 		return err

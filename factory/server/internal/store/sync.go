@@ -49,6 +49,7 @@ func (s *Store) MergeUpload(ctx context.Context, in UploadRecord) (UploadRecord,
 	}
 	got, err := s.UploadByID(ctx, in.ID)
 	if err == nil {
+		// 已有行摘要或来源不同不能覆盖。
 		if got.Kind != in.Kind || !bytes.Equal(got.Digest, in.Digest) || got.CreatorID != in.CreatorID || got.ClientID != in.ClientID {
 			return UploadRecord{}, domain.ErrIntegrity
 		}
@@ -94,6 +95,7 @@ func (s *Store) UploadByID(ctx context.Context, uploadID uuid.UUID) (UploadRecor
 	return uploadFromRow(row), nil
 }
 
+// 库行收成上传元数据，不含正文。
 func uploadFromRow(row uploadRow) UploadRecord {
 	return UploadRecord{
 		ID:        row.ID,

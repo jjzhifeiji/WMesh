@@ -34,16 +34,17 @@ type TemplateSnapshot struct {
 }
 
 type contentTemplateReplicaRow struct {
-	ID         uuid.UUID       `gorm:"type:uuid;primaryKey"`
-	Revision   int64           `gorm:"primaryKey"`
-	Kind       string          `gorm:"not null"`
-	Schema     json.RawMessage `gorm:"type:jsonb;not null"`
-	Digest     []byte          `gorm:"type:bytea;not null"`
-	ReceivedAt time.Time       `gorm:"not null"`
+	ID         uuid.UUID       `gorm:"type:uuid;primaryKey"` // 与 WAN 原件相同
+	Revision   int64           `gorm:"primaryKey"`           // 送达修订
+	Kind       string          `gorm:"not null"`             // process / project
+	Schema     json.RawMessage `gorm:"type:jsonb;not null"`  // 字段表 JSON
+	Digest     []byte          `gorm:"type:bytea;not null"`  // SHA-256
+	ReceivedAt time.Time       `gorm:"not null"`             // 本厂收到时间
 }
 
 func (contentTemplateReplicaRow) TableName() string { return "content_template_replicas" }
 
+// 库行收成已收模版视图。
 func templateFromRow(row contentTemplateReplicaRow) ContentTemplate {
 	return ContentTemplate{
 		ID: row.ID, Kind: row.Kind, Revision: row.Revision,
@@ -67,6 +68,7 @@ func (s *Store) InsertTemplateReplica(ctx context.Context, in ContentTemplate) (
 			if getErr != nil {
 				return ContentTemplate{}, getErr
 			}
+			// 同身份修订摘要必须相同，否则当损坏。
 			if !bytes.Equal(got.Digest, in.Digest) {
 				return ContentTemplate{}, domain.ErrIntegrity
 			}

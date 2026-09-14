@@ -24,6 +24,7 @@ func DBName(factoryID uuid.UUID) string {
 	return "wmesh_fac_" + stripDash(factoryID.String())
 }
 
+// stripDash 去掉 UUID 里的横线，用来拼库名。
 func stripDash(s string) string {
 	b := make([]byte, 0, 32)
 	for i := 0; i < len(s); i++ {

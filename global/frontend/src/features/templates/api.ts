@@ -23,6 +23,14 @@ export function useTemplate(kind: AssetKind) {
   });
 }
 
+export function useBuiltinTemplate(kind: AssetKind, enabled = true) {
+  return useQuery({
+    queryKey: ["wan-template-builtin", kind],
+    queryFn: ({ signal }) => http.get<{ kind: AssetKind; schema: ContentSchema }>(`/v1/templates/builtin?kind=${kind}`, signal),
+    enabled,
+  });
+}
+
 export function useUpdateTemplate() {
   const qc = useQueryClient();
   return useMutation({

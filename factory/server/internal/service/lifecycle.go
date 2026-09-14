@@ -36,6 +36,7 @@ func (s *Auth) ApplyLifecycle(ctx context.Context, status string, revision int64
 
 // CloseFromWAN 名录已注销或已从 WAN 消失时，本厂立即拒绝登录。
 func (s *Auth) CloseFromWAN(ctx context.Context) error {
+	// 已注销则幂等；否则抬修订立刻关掉登录。
 	cur, err := s.store.Lifecycle(ctx)
 	if err != nil {
 		return err

@@ -4,7 +4,8 @@ import (
 	"net/http"
 )
 
-func (h *Handler) mountAuth(mux *http.ServeMux) { // WAN 管理员登录、会话与改密码
+// 挂登录、登出、当前管理员和改密码。
+func (h *Handler) mountAuth(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/login", h.login)
 	mux.HandleFunc("POST /v1/logout", h.logout)
 	mux.HandleFunc("GET /v1/me", h.me)
@@ -25,6 +26,7 @@ type meResp struct {
 	LoginName string `json:"loginName"` // 登录名
 }
 
+// 校验密码开会话。
 func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 	var req loginReq
 	if err := decodeJSON(r, &req); err != nil {
@@ -39,6 +41,7 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, tokenResp{Token: token})
 }
 
+// 结束会话。
 func (h *Handler) logout(w http.ResponseWriter, r *http.Request) {
 	if err := h.svc.Auth.Logout(r.Context(), bearer(r)); err != nil {
 		writeErr(w, err)
@@ -47,6 +50,7 @@ func (h *Handler) logout(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// 返回当前管理员。
 func (h *Handler) me(w http.ResponseWriter, r *http.Request) {
 	admin, err := h.svc.Auth.RequireAdmin(r.Context(), bearer(r))
 	if err != nil {
@@ -60,6 +64,7 @@ type passwordReq struct {
 	Password string `json:"password"` // 新日常密码，不进审计
 }
 
+// 改自己的日常密码。
 func (h *Handler) changePassword(w http.ResponseWriter, r *http.Request) {
 	var req passwordReq
 	if err := decodeJSON(r, &req); err != nil {

@@ -30,6 +30,7 @@ func (s *Closure) AcceptPlatformDelivery(ctx context.Context, snap ClosureSnapsh
 		_ = s.audit(ctx, nil, nil, "accept_closure", closureTarget(snap), audit.Deny)
 		return domain.ErrForbidden
 	}
+	// 只收平台级成员为只读副本。
 	for _, m := range snap.Members {
 		if m.Level != AssetLevelPlatform {
 			_ = s.audit(ctx, nil, nil, "accept_closure", closureTarget(snap), audit.Deny)
@@ -37,7 +38,7 @@ func (s *Closure) AcceptPlatformDelivery(ctx context.Context, snap ClosureSnapsh
 		}
 		if _, err := s.store.InsertReplica(ctx, AssetReplica{
 			ID: m.ID, Revision: m.Revision, Kind: m.Kind, Level: AssetLevelPlatform,
-			Name: m.Name, Status: m.Status, Copyable: m.Copyable, Content: m.Content, Digest: m.Digest, Deps: m.Deps,
+			Name: m.Name, Code: m.Code, Status: m.Status, Copyable: m.Copyable, Content: m.Content, Digest: m.Digest, Deps: m.Deps,
 		}); err != nil {
 			_ = s.audit(ctx, nil, nil, "accept_closure", closureTarget(snap), audit.Deny)
 			return err
@@ -48,6 +49,7 @@ func (s *Closure) AcceptPlatformDelivery(ctx context.Context, snap ClosureSnapsh
 
 // RetractPlatformDelivery 云端删除后撤回展示；没有副本也算成功，已钉修订仍可读。
 func (s *Closure) RetractPlatformDelivery(ctx context.Context, assetID uuid.UUID) error {
+	// 撤回展示；没有副本也算成功，已钉修订仍可读。
 	if err := s.store.RetractReplicas(ctx, assetID); err != nil {
 		_ = s.audit(ctx, nil, nil, "retract_closure", assetID.String(), audit.Deny)
 		return err
@@ -62,6 +64,7 @@ func (s *Closure) GrantClientProject(ctx context.Context, token string, projectI
 		return err
 	}
 	target := projectID.String() + " client=" + clientID.String()
+	// 只有工厂超管能授权 Client 收工程。失败一律记拒绝。
 	if err := s.can(ctx, acc, permManageAccount, nil); err != nil {
 		_ = s.audit(ctx, &acc.ID, nil, "grant_closure", target, audit.Deny)
 		return err
@@ -79,6 +82,7 @@ func (s *Closure) GrantClientProject(ctx context.Context, token string, projectI
 		_ = s.audit(ctx, &acc.ID, nil, "grant_closure", target, audit.Deny)
 		return domain.ErrBindingVoid
 	}
+	// 记下该 Client 可接收该工程。
 	if _, err := s.store.UpsertClientGrant(ctx, projectID, clientID, acc.ID); err != nil {
 		_ = s.audit(ctx, &acc.ID, nil, "grant_closure", target, audit.Deny)
 		return err
@@ -97,6 +101,7 @@ func (s *Closure) RevokeClientProject(ctx context.Context, token string, project
 		_ = s.audit(ctx, &acc.ID, nil, "revoke_closure", target, audit.Deny)
 		return err
 	}
+	// 收回该 Client 接收该工程的授权。
 	if err := s.store.RevokeClientGrant(ctx, projectID, clientID); err != nil {
 		_ = s.audit(ctx, &acc.ID, nil, "revoke_closure", target, audit.Deny)
 		return err
@@ -104,6 +109,7 @@ func (s *Closure) RevokeClientProject(ctx context.Context, token string, project
 	return s.audit(ctx, &acc.ID, nil, "revoke_closure", target, audit.Allow)
 }
 
+// assertGrantableProject 可授权的须是可用厂级或已收平台级工程，不含个人级。
 func (s *Closure) assertGrantableProject(ctx context.Context, projectID uuid.UUID) error {
 	a, err := s.store.GovernedAssetMetaByID(ctx, projectID)
 	if err == nil {
@@ -137,10 +143,12 @@ func (s *Closure) SetCacheLimit(ctx context.Context, token string, n int) error 
 	if err != nil {
 		return err
 	}
+	// 只有工厂超管能改缓存上限。失败记拒绝。
 	if err := s.can(ctx, acc, permManageAccount, nil); err != nil {
 		_ = s.audit(ctx, &acc.ID, nil, "set_cache_limit", "max_cached_projects", audit.Deny)
 		return err
 	}
+	// 每 Client 工程缓存上限。
 	if err := s.store.SetCacheLimit(ctx, n); err != nil {
 		_ = s.audit(ctx, &acc.ID, nil, "set_cache_limit", "max_cached_projects", audit.Deny)
 		return err
@@ -155,6 +163,7 @@ func (s *Closure) DistributeToClient(ctx context.Context, token string, projectI
 		return err
 	}
 	target := projectID.String() + " client=" + clientID.String()
+	// 有权工艺工程师且 Client 已授权、绑定有效。失败一律记拒绝。
 	root, err := s.loadRootForPack(ctx, projectID)
 	if err != nil {
 		_ = s.audit(ctx, &acc.ID, nil, "distribute_closure", target, audit.Deny)
@@ -204,6 +213,7 @@ func (s *Closure) DistributeToClient(ctx context.Context, token string, projectI
 		_ = s.audit(ctx, &acc.ID, nil, "distribute_closure", target, audit.Deny)
 		return err
 	}
+	// 记下本次下发闭包摘要。
 	if _, err := s.store.InsertClientRecord(ctx, store.ClientDistributionRecord{
 		ProjectID: snap.AssetID, Revision: snap.Revision, ClientID: clientID,
 		ClosureDigest: snap.Digest, Members: recordMembers(snap),
@@ -214,6 +224,7 @@ func (s *Closure) DistributeToClient(ctx context.Context, token string, projectI
 	return s.audit(ctx, &acc.ID, nil, "distribute_closure", closureTarget(snap), audit.Allow)
 }
 
+// assertClientRuntime 当前最高修订须仍允许运行且未过期。
 func (s *Closure) assertClientRuntime(ctx context.Context, clientID uuid.UUID, clocks Clocks) error {
 	g, err := s.store.LatestRuntimeGrant(ctx, clientID)
 	if err != nil {
@@ -236,6 +247,7 @@ func (s *Closure) CachePersonalProject(ctx context.Context, token string, projec
 		return err
 	}
 	target := projectID.String() + " client=" + clientID.String()
+	// 仅创建人能把自己的可用个人级工程装进本厂设备。失败一律记拒绝。
 	a, err := s.loadChecked(ctx, projectID)
 	if err != nil {
 		_ = s.audit(ctx, &acc.ID, nil, "cache_closure", target, audit.Deny)
@@ -302,6 +314,7 @@ func (s *Closure) ListReplicas(ctx context.Context, token string) ([]AssetReplic
 	if _, err := s.RequireActive(ctx, token); err != nil {
 		return nil, err
 	}
+	// 不含正文。
 	rows, err := s.store.ListReplicas(ctx)
 	if err != nil {
 		return nil, err
@@ -320,6 +333,7 @@ func (s *Closure) GetReplica(ctx context.Context, token string, assetID uuid.UUI
 	if err != nil {
 		return AssetReplica{}, err
 	}
+	// 只读已收副本元数据，不解包。
 	r, err := s.store.ReplicaMetaByIDRev(ctx, assetID, revision)
 	if err != nil {
 		_ = s.audit(ctx, &acc.ID, nil, "get_replica", assetTarget(assetID, revision), audit.Deny)
@@ -336,6 +350,7 @@ func (s *Closure) GetReplica(ctx context.Context, token string, assetID uuid.UUI
 	return r, nil
 }
 
+// canViewReplica 已收副本元数据本厂有效账号都能看。
 func (s *Closure) canViewReplica(ctx context.Context, acc Account) error {
 	_ = ctx
 	_ = acc

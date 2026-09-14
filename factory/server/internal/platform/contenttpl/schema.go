@@ -17,17 +17,17 @@ const (
 	RootObject = "object" // 根是对象
 	RootArray  = "array"  // 根是数组
 
-	TypeString = "string"
-	TypeNumber = "number"
-	TypeBool   = "bool"
-	TypeObject = "object"
-	TypeArray  = "array"
+	TypeString = "string" // 文本；有 options 当枚举
+	TypeNumber = "number" // 旧数字；套用时仍收
+	TypeBool   = "bool"   // 旧布尔；套用时仍收
+	TypeObject = "object" // 对象
+	TypeArray  = "array"  // 数组
 )
 
-const maxDepth = 8
-const maxFields = 200
+const maxDepth = 8    // 嵌套上限
+const maxFields = 200 // 单层字段个数上限
 
-var keyRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+var keyRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`) // 字段键只许字母数字下划线
 
 // Field 是模版里的一个字段。
 type Field struct {
@@ -87,6 +87,7 @@ func Validate(s Schema) error {
 	}
 }
 
+// validateFields 键不重复、深度和个数有上限。
 func validateFields(fields []Field, depth int) error {
 	if depth > maxDepth || len(fields) > maxFields {
 		return fmt.Errorf("content template is invalid")
@@ -104,6 +105,7 @@ func validateFields(fields []Field, depth int) error {
 	return nil
 }
 
+// validateField 类型与子结构必须匹配。
 func validateField(f Field, depth int) error {
 	if f.Label == "" {
 		return fmt.Errorf("content template is invalid")
@@ -152,6 +154,7 @@ func Apply(schemaJSON, content []byte) ([]byte, error) {
 	return json.Marshal(out)
 }
 
+// applyObject 只保留模版里的键，缺的补默认。
 func applyObject(fields []Field, v any) map[string]any {
 	src, _ := v.(map[string]any)
 	if src == nil {
@@ -164,6 +167,7 @@ func applyObject(fields []Field, v any) map[string]any {
 	return out
 }
 
+// applyArray 按元素模版逐项套用。
 func applyArray(item Field, v any) []any {
 	src, ok := v.([]any)
 	if !ok {
@@ -176,6 +180,7 @@ func applyArray(item Field, v any) []any {
 	return out
 }
 
+// applyField 按类型套单值。
 func applyField(f Field, v any) any {
 	switch f.Type {
 	case TypeString:
@@ -234,6 +239,7 @@ func applyText(v, def any) any {
 	}
 }
 
+// parsePlainNumber 纯数字串收成数字，前导零不当数字。
 func parsePlainNumber(s string) (float64, bool) {
 	n, err := strconv.ParseFloat(s, 64)
 	if err != nil {
@@ -264,6 +270,7 @@ func applyEnum(f Field, v any) any {
 	return enumDefault(f)
 }
 
+// enumDefault 默认不在选项里就用第一项。
 func enumDefault(f Field) string {
 	s := asStringDef(f.Default)
 	for _, o := range f.Options {
@@ -277,6 +284,7 @@ func enumDefault(f Field) string {
 	return f.Options[0]
 }
 
+// enumCandidates 把旧布尔/数字也收成可匹配的选项。
 func enumCandidates(v any) []string {
 	switch x := v.(type) {
 	case string:
@@ -296,6 +304,7 @@ func enumCandidates(v any) []string {
 	}
 }
 
+// asString 能当文本就收成字符串。
 func asString(v any) (string, bool) {
 	switch x := v.(type) {
 	case nil:
@@ -313,6 +322,7 @@ func asString(v any) (string, bool) {
 	}
 }
 
+// asStringDef 收不成文本则空串。
 func asStringDef(v any) string {
 	if s, ok := asString(v); ok {
 		return s
@@ -320,6 +330,7 @@ func asStringDef(v any) string {
 	return ""
 }
 
+// asFloat 能当数字就收成浮点。
 func asFloat(v any) (float64, bool) {
 	switch x := v.(type) {
 	case float64:
@@ -339,6 +350,7 @@ func asFloat(v any) (float64, bool) {
 	}
 }
 
+// asFloatDef 收不成数字则 0。
 func asFloatDef(v any) float64 {
 	if n, ok := asFloat(v); ok {
 		return n
@@ -346,6 +358,7 @@ func asFloatDef(v any) float64 {
 	return 0
 }
 
+// asBool 能当布尔就收下。
 func asBool(v any) (bool, bool) {
 	switch x := v.(type) {
 	case bool:
@@ -358,6 +371,7 @@ func asBool(v any) (bool, bool) {
 	}
 }
 
+// asBoolDef 收不成布尔则否。
 func asBoolDef(v any) bool {
 	if b, ok := asBool(v); ok {
 		return b
@@ -365,7 +379,7 @@ func asBoolDef(v any) bool {
 	return false
 }
 
-// Default 返回该类型的初始字段表，对应设备已有明文。
+// Default 工艺按设备明文；工程按身份引用，不收路径。
 func Default(kind string) Schema {
 	if kind == KindProject {
 		return defaultProject()
@@ -373,10 +387,12 @@ func Default(kind string) Schema {
 	return defaultProcess()
 }
 
+// num 带单位的数字字段，套用时当文本收。
 func num(key, label, unit string, def float64) Field {
 	return Field{Key: key, Label: label, Type: TypeString, Unit: unit, Default: def}
 }
 
+// str 普通文本字段。
 func str(key, label, def string) Field {
 	return Field{Key: key, Label: label, Type: TypeString, Default: def}
 }
@@ -390,6 +406,7 @@ func flag(key, label string, on bool) Field {
 	return Field{Key: key, Label: label, Type: TypeString, Options: []string{"否", "是"}, Default: def}
 }
 
+// poseFields 位姿六个轴加外部轴。
 func poseFields() []Field {
 	return []Field{
 		num("x", "X", "mm", 0), num("y", "Y", "mm", 0), num("z", "Z", "mm", 0),
@@ -398,6 +415,7 @@ func poseFields() []Field {
 	}
 }
 
+// pointField 一个焊点：身份、类型、位姿、关节角。
 func pointField() Field {
 	ja := Field{Key: "jointAngles", Label: "关节角", Type: TypeArray, Items: &Field{Key: "a", Label: "角", Type: TypeString, Default: 0.0}}
 	return Field{Type: TypeObject, Label: "点", Fields: []Field{
@@ -408,17 +426,37 @@ func pointField() Field {
 	}}
 }
 
+// pathFields 一条路径：身份、点列、工艺引用。
 func pathFields() []Field {
 	el := pointField()
 	return []Field{
 		str("id", "路径身份", ""),
 		str("name", "路径名", ""),
 		{Key: "points", Label: "点", Type: TypeArray, Items: &el},
-		str("processPath", "工艺路径", ""),
+		str("processId", "工艺", ""),
 		num("selectedPointIndex", "选中点", "", 0),
 	}
 }
 
+// cornerFields 包角几何加工艺引用，不嵌工艺参数。
+func cornerFields() []Field {
+	return []Field{
+		str("groupId", "包角组", ""),
+		str("refPathAId", "参考路径 A", ""),
+		str("refPathBId", "参考路径 B", ""),
+		num("layerCount", "层数", "", 0),
+		num("initialLength", "初始长", "mm", 0),
+		num("upwardOffset", "上偏", "mm", 0),
+		num("lengthReduction", "长度递减", "mm", 0),
+		flag("isMaster", "主焊道", false),
+		num("torchRx", "焊枪 Rx", "°", 0),
+		num("torchRy", "焊枪 Ry", "°", 0),
+		num("torchRz", "焊枪 Rz", "°", 0),
+		str("processId", "工艺", ""),
+	}
+}
+
+// defaultProcess 设备侧已有的工艺字段表。
 func defaultProcess() Schema {
 	osc := Field{Key: "oscillation", Label: "摆动", Type: TypeObject, Fields: []Field{
 		{Key: "type", Label: "摆动类型", Type: TypeString, Options: []string{"正弦波摆动"}, Default: "正弦波摆动"},
@@ -452,6 +490,7 @@ func defaultProcess() Schema {
 	}}
 }
 
+// defaultProject 工程根是焊缝数组；工艺只引用身份。
 func defaultProject() Schema {
 	pass := Field{Type: TypeObject, Label: "焊道", Fields: []Field{
 		str("id", "焊道身份", ""),
@@ -461,7 +500,7 @@ func defaultProject() Schema {
 		num("valYRight", "右 Y", "mm", 0),
 		num("valZ", "Z", "mm", 0),
 		num("valR", "R", "mm", 0),
-		{Key: "process", Label: "工艺参数", Type: TypeObject, Fields: defaultProcess().Fields},
+		str("processId", "工艺", ""),
 		flag("isCompleted", "已完成", false),
 		flag("isEnabled", "启用", true),
 	}}
@@ -474,14 +513,15 @@ func defaultProject() Schema {
 		str("id", "身份", ""),
 		str("name", "名称", ""),
 		{Key: "points", Label: "点", Type: TypeArray, Items: ptr(pointField())},
-		str("processPath", "工艺路径", ""),
+		str("processId", "工艺", ""),
 		num("selectedPointIndex", "选中点", "", 0),
 		{Key: "extraProcesses", Label: "附加工艺", Type: TypeArray, Items: &Field{Type: TypeObject, Label: "附加", Fields: []Field{
-			str("id", "身份", ""), str("processPath", "工艺路径", ""),
+			str("id", "身份", ""), str("processId", "工艺", ""),
 		}}},
 		flag("isEnabled", "启用", true),
 		base,
 		{Key: "passes", Label: "多层焊道", Type: TypeArray, Items: &pass},
+		{Key: "cornerGroupParams", Label: "包角", Type: TypeObject, Fields: cornerFields()},
 		{Key: "refPointX1", Label: "起点 X", Type: TypeObject, Fields: ref.Fields},
 		{Key: "refPointZ1", Label: "起点 Z", Type: TypeObject, Fields: ref.Fields},
 		{Key: "refPointXEnd", Label: "终点 X", Type: TypeObject, Fields: ref.Fields},
@@ -491,4 +531,5 @@ func defaultProject() Schema {
 	return Schema{Root: RootArray, Item: &item}
 }
 
+// ptr 给数组元素取地址。
 func ptr(f Field) *Field { return &f }

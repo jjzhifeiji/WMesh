@@ -31,6 +31,7 @@ func (s *Sync) EnqueueFact(ctx context.Context, bag *Bag, clocks Clocks, loginNa
 		_ = s.auditTimed(ctx, &p.ID, &loginName, "enqueue_fact", bag.ClientID.String(), audit.Deny, src)
 		return PendingFact{}, err
 	}
+	// 产生端发号，汇聚时当幂等键。
 	item := PendingFact{
 		ID:        id.New(),
 		CreatorID: p.ID,
@@ -58,6 +59,7 @@ func (s *Sync) EnqueueUpload(ctx context.Context, bag *Bag, clocks Clocks, login
 		return PendingUpload{}, domain.ErrForbidden
 	}
 	body := append([]byte(nil), content...)
+	// 产生端发号；正文只在袋内，摘要一并记下。
 	item := PendingUpload{
 		ID:        id.New(),
 		Kind:      kind,
@@ -77,6 +79,7 @@ func (s *Sync) ConvergeIntent(ctx context.Context, bag *Bag) error {
 		_ = s.auditTimed(ctx, personActor(bag), nil, "converge_intent", bag.ClientID.String(), audit.Deny, src)
 		return err
 	}
+	// 只接受更高修订。
 	rt, err := s.store.LatestRuntimeGrant(ctx, bag.ClientID)
 	if err != nil && !errors.Is(err, domain.ErrNotFound) {
 		_ = s.auditTimed(ctx, personActor(bag), nil, "converge_intent", bag.ClientID.String(), audit.Deny, src)
@@ -107,6 +110,7 @@ func (s *Sync) FlushPending(ctx context.Context, bag *Bag) error {
 	}
 	for len(bag.PendingFacts) > 0 {
 		item := bag.PendingFacts[0]
+		// 按产生端身份幂等写入。
 		if _, err := s.store.MergeFact(ctx, FactStub{
 			ID: item.ID, CreatorID: item.CreatorID, OrgUnitID: item.OrgUnitID, OrgPath: item.OrgPath,
 		}); err != nil {
@@ -140,6 +144,7 @@ func (s *Sync) GetUpload(ctx context.Context, token string, uploadID uuid.UUID) 
 	if err != nil {
 		return UploadRecord{}, err
 	}
+	// 只读元数据，不含正文。
 	row, err := s.store.UploadByID(ctx, uploadID)
 	if err != nil {
 		return UploadRecord{}, err
@@ -157,6 +162,7 @@ func (s *Sync) ReadUploadContent(ctx context.Context, token string, uploadID uui
 	if err != nil {
 		return nil, err
 	}
+	// 正文在对象存储，不进审计。
 	body, err := s.blobs.Get(ctx, row.ObjectKey)
 	if err != nil {
 		if errors.Is(err, blob.ErrNotFound) {
@@ -167,6 +173,7 @@ func (s *Sync) ReadUploadContent(ctx context.Context, token string, uploadID uui
 	return body, nil
 }
 
+// mergeOneUpload 摘要一致则幂等跳过；否则写入对象存储并落元数据。
 func (s *Sync) mergeOneUpload(ctx context.Context, bag Bag, item PendingUpload) error {
 	if !digest.Match(item.Content, item.Digest) {
 		return domain.ErrIntegrity
@@ -182,6 +189,7 @@ func (s *Sync) mergeOneUpload(ctx context.Context, bag Bag, item PendingUpload) 
 	if !errors.Is(err, domain.ErrNotFound) {
 		return err
 	}
+	// 正文进对象存储，库只落元数据和摘要。
 	if err := s.blobs.Put(ctx, key, item.Content); err != nil {
 		return err
 	}
@@ -197,6 +205,7 @@ func (s *Sync) mergeOneUpload(ctx context.Context, bag Bag, item PendingUpload) 
 	return err
 }
 
+// assertBagFactory 袋必须认定本厂。
 func (s *Sync) assertBagFactory(bag Bag) error {
 	if bag.FactoryID != s.store.FactoryID() {
 		return domain.ErrForbidden
@@ -204,6 +213,7 @@ func (s *Sync) assertBagFactory(bag Bag) error {
 	return nil
 }
 
+// assertOnlineBag 须连网且 Client 仍绑定本厂。
 func (s *Sync) assertOnlineBag(ctx context.Context, bag Bag) error {
 	if err := s.assertBagFactory(bag); err != nil {
 		return err
@@ -221,6 +231,7 @@ func (s *Sync) assertOnlineBag(ctx context.Context, bag Bag) error {
 	return nil
 }
 
+// runtimeFromRow 从库行还原已签名凭证。
 func runtimeFromRow(row RuntimeGrant) (RuntimeCred, error) {
 	cred, err := decodeRuntime(row.Payload)
 	if err != nil {

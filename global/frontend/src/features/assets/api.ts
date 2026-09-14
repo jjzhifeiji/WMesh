@@ -15,6 +15,7 @@ export type Asset = {
   kind: AssetKind; // process / project
   level: "platform"; // 固定平台级
   name: string; // 显示名
+  code: string; // 只读编号，创建后不改
   status: AssetStatus; // draft / available / disabled
 	copyable: boolean; // 可否被上一级复制；新建默认为否
   revision: number; // 当前修订
@@ -74,6 +75,12 @@ export function useRenameAsset() {
   );
 }
 
+export function useSetAssetDeps() {
+  return useAssetMutation((input: { id: string; expected: number; deps: AssetDep[] }) =>
+    http.post<Asset>(`/v1/assets/${input.id}/deps`, { expected: input.expected, deps: input.deps }),
+  );
+}
+
 export function useUpdateAssetContent() {
   return useAssetMutation((input: { id: string; expected: number; content: string }) =>
     http.post<Asset>(`/v1/assets/${input.id}/content`, { expected: input.expected, content: input.content }),
@@ -113,6 +120,7 @@ export type PromotableAsset = {
   kind: AssetKind;
   level: "factory" | "personal" | "platform"; // 厂内级别
   name: string; // 显示名
+  code: string; // 只读编号
   revision: number;
   digest: string; // 摘要
   status: AssetStatus;

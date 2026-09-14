@@ -9,6 +9,7 @@ import (
 	"wmesh/factory/internal/platform/domain"
 )
 
+// 空则不登记；只认 32 字节公钥。
 func decodeOptionalPublicKey(s string) ([]byte, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -26,6 +27,7 @@ func decodeOptionalPublicKey(s string) ([]byte, error) {
 	return nil, domain.ErrInvalidKey
 }
 
+// 把 RFC3339 收成 UTC。
 func parseTime(s string) (time.Time, error) {
 	t, err := time.Parse(time.RFC3339, strings.TrimSpace(s))
 	if err != nil {

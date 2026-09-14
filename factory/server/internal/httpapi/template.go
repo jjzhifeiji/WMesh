@@ -7,7 +7,8 @@ import (
 	"wmesh/factory/internal/service"
 )
 
-func (h *Handler) mountTemplate(mux *http.ServeMux) { // 本厂已收字段模版
+// 本厂已收字段模版。
+func (h *Handler) mountTemplate(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/factories/{id}/templates", h.getTemplate)
 }
 
@@ -19,6 +20,7 @@ type templateResp struct {
 	Digest   []byte          `json:"digest"`   // SHA-256
 }
 
+// 读本厂已收字段模版。
 func (h *Handler) getTemplate(w http.ResponseWriter, r *http.Request) {
 	h.withFactory(w, r, func(svc *service.Service) {
 		row, err := svc.Templates.GetTemplate(r.Context(), bearer(r), r.URL.Query().Get("kind"))

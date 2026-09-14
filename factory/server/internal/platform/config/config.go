@@ -60,6 +60,7 @@ func Load() (Config, error) {
 	return c, c.validate()
 }
 
+// validate 半配置直接拒绝，避免带空密码上线。
 func (c Config) validate() error {
 	var errs []error
 	if c.WebDir != "" {
@@ -74,6 +75,7 @@ func (c Config) validate() error {
 	return errors.Join(errs...)
 }
 
+// envOr 空则用开发默认。
 func envOr(key, def string) string {
 	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
 		return v

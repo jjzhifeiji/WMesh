@@ -47,6 +47,7 @@ type statusWriter struct {
 	wrote  bool
 }
 
+// 记下状态码再写出。
 func (w *statusWriter) WriteHeader(code int) {
 	if !w.wrote {
 		w.status = code
@@ -55,13 +56,16 @@ func (w *statusWriter) WriteHeader(code int) {
 	w.ResponseWriter.WriteHeader(code)
 }
 
+// 记下已写再转发。
 func (w *statusWriter) Write(b []byte) (int, error) {
 	w.wrote = true
 	return w.ResponseWriter.Write(b)
 }
 
+// 交给底层 writer。
 func (w *statusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
+// 把套接字交给通道升级；不支持则握手失败。
 func (w *statusWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	h, ok := w.ResponseWriter.(http.Hijacker)
 	if !ok {
@@ -70,6 +74,7 @@ func (w *statusWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	return h.Hijack()
 }
 
+// 立刻刷出缓冲，给心跳用。
 func (w *statusWriter) Flush() {
 	if f, ok := w.ResponseWriter.(http.Flusher); ok {
 		f.Flush()

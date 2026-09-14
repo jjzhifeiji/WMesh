@@ -52,6 +52,7 @@ type Asset struct {
 	Kind              string     `json:"kind"`           // process / project
 	Level             string     `json:"level"`          // 固定 platform
 	Name              string     `json:"name"`           // 显示名
+	Code              string     `json:"code"`          // 只读编号，创建后不改
 	Status            string     `json:"status"`         // draft / available / disabled
 	Copyable          bool       `json:"copyable"`       // 可否被上一级复制；新建默认为否
 	Revision          int64      `json:"revision"`       // 当前修订
@@ -83,6 +84,7 @@ type assetRow struct {
 	Kind            string     `gorm:"not null"`               // process / project
 	Level           string     `gorm:"not null"`               // 固定 platform
 	Name            string     `gorm:"not null"`               // 显示名
+	Code            string     `gorm:"not null"`               // 只读编号
 	Status          string     `gorm:"not null"`               // draft / available / disabled
 	Copyable        bool       `gorm:"not null"`               // 可复制
 	Revision        int64      `gorm:"not null"`               // 当前修订
@@ -109,26 +111,38 @@ func (s *Store) InsertAsset(ctx context.Context, in Asset) (Asset, error) {
 		return Asset{}, err
 	}
 	now := time.Now().UTC()
-	row := assetRow{
-		ID:              valueOrNew(in.ID),
-		Kind:            in.Kind,
-		Level:           AssetLevelPlatform,
-		Name:            in.Name,
-		Status:          in.Status,
-		Copyable:        in.Copyable,
-		Revision:        1,
-		Content:         nonempty(in.Content),
-		Digest:          in.Digest,
-		CreatorID:       in.CreatorID,
-		SourceID:        in.SourceID,
-		SourceRevision:  in.SourceRevision,
-		SourceFactoryID: in.SourceFactoryID,
-		Deps:            deps,
-		CreatedAt:       now,
-		UpdatedAt:       now,
-	}
-	if err := s.db.WithContext(ctx).Create(&row).Error; err != nil {
-		return Asset{}, mapAssetWriteErr(err)
+	var row assetRow
+	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		code, err := nextWANAssetCode(tx, in.Kind)
+		if err != nil {
+			return err
+		}
+		row = assetRow{
+			ID:              valueOrNew(in.ID),
+			Kind:            in.Kind,
+			Level:           AssetLevelPlatform,
+			Name:            in.Name,
+			Code:            code,
+			Status:          in.Status,
+			Copyable:        in.Copyable,
+			Revision:        1,
+			Content:         nonempty(in.Content),
+			Digest:          in.Digest,
+			CreatorID:       in.CreatorID,
+			SourceID:        in.SourceID,
+			SourceRevision:  in.SourceRevision,
+			SourceFactoryID: in.SourceFactoryID,
+			Deps:            deps,
+			CreatedAt:       now,
+			UpdatedAt:       now,
+		}
+		if err := tx.Create(&row).Error; err != nil {
+			return mapAssetWriteErr(err)
+		}
+		return nil
+	})
+	if err != nil {
+		return Asset{}, err
 	}
 	return assetFromRow(row), nil
 }
@@ -165,6 +179,7 @@ func (s *Store) UpdateAsset(ctx context.Context, assetID uuid.UUID, expected int
 		if w.SourceRevision != nil {
 			updates["source_revision"] = *w.SourceRevision
 		}
+		// 期望修订对不上则原件不变。
 		res := tx.Model(&assetRow{}).Where("id = ? AND revision = ?", assetID, expected).Updates(updates)
 		if res.Error != nil {
 			return mapAssetWriteErr(res.Error)
@@ -198,6 +213,18 @@ func (s *Store) ListAssets(ctx context.Context) ([]Asset, error) {
 func (s *Store) AssetByID(ctx context.Context, assetID uuid.UUID) (Asset, error) {
 	var row assetRow
 	if err := s.db.WithContext(ctx).First(&row, "id = ?", assetID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return Asset{}, domain.ErrNotFound
+		}
+		return Asset{}, err
+	}
+	return assetFromRow(row), nil
+}
+
+// AssetByCode 按只读编号取当前行。
+func (s *Store) AssetByCode(ctx context.Context, code string) (Asset, error) {
+	var row assetRow
+	if err := s.db.WithContext(ctx).First(&row, "code = ?", code).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return Asset{}, domain.ErrNotFound
 		}
@@ -261,6 +288,7 @@ func (s *Store) DeleteAssetAndRetract(ctx context.Context, assetID uuid.UUID) er
 		if err := tx.Where("asset_id = ?", assetID).Delete(&distGrantRow{}).Error; err != nil {
 			return err
 		}
+		// 撤回身份幂等记下，厂端用来补送删除。
 		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&retractionRow{
 			AssetID: assetID, CreatedAt: time.Now().UTC(),
 		}).Error; err != nil {
@@ -277,6 +305,7 @@ func (s *Store) DeleteAssetAndRetract(ctx context.Context, assetID uuid.UUID) er
 	})
 }
 
+// marshalAssetDeps 工艺不得带依赖；空切片落成 []。
 func marshalAssetDeps(kind string, deps []AssetDep) ([]byte, error) {
 	if deps == nil {
 		deps = []AssetDep{}
@@ -287,6 +316,7 @@ func marshalAssetDeps(kind string, deps []AssetDep) ([]byte, error) {
 	return json.Marshal(deps)
 }
 
+// assertAssetDigest 摘要必须是 32 字节 SHA-256。
 func assertAssetDigest(d []byte) error {
 	if len(d) != 32 {
 		return domain.ErrIntegrity
@@ -294,7 +324,11 @@ func assertAssetDigest(d []byte) error {
 	return nil
 }
 
+// mapAssetWriteErr 库约束收成业务错误，不抛 SQL。
 func mapAssetWriteErr(err error) error {
+	if domain.IsUniqueViolation(err) {
+		return domain.ErrAssetCodeConflict
+	}
 	if domain.IsCheckViolation(err) {
 		return domain.ErrIntegrity
 	}
@@ -304,6 +338,7 @@ func mapAssetWriteErr(err error) error {
 	return err
 }
 
+// valueOrNew 没给身份就现场发号。
 func valueOrNew(given uuid.UUID) uuid.UUID {
 	if given == uuid.Nil {
 		return id.New()
@@ -311,6 +346,7 @@ func valueOrNew(given uuid.UUID) uuid.UUID {
 	return given
 }
 
+// nonempty 空指针收成空切片，避免 NULL。
 func nonempty(b []byte) []byte {
 	if b == nil {
 		return []byte{}
@@ -318,6 +354,7 @@ func nonempty(b []byte) []byte {
 	return b
 }
 
+// unmarshalAssetDeps 坏 JSON 当没有依赖，不当损坏。
 func unmarshalAssetDeps(raw []byte) []AssetDep {
 	if len(raw) == 0 {
 		return []AssetDep{}
@@ -329,12 +366,14 @@ func unmarshalAssetDeps(raw []byte) []AssetDep {
 	return deps
 }
 
+// 库行收成当前资产视图。
 func assetFromRow(row assetRow) Asset {
 	return Asset{
 		ID:              row.ID,
 		Kind:            row.Kind,
 		Level:           row.Level,
 		Name:            row.Name,
+		Code:            row.Code,
 		Status:          row.Status,
 		Copyable:        row.Copyable,
 		Revision:        row.Revision,

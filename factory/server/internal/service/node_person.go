@@ -31,6 +31,7 @@ func (s *kernel) loginPerson(ctx context.Context, bag Bag, clocks Clocks, loginN
 	return p, ev
 }
 
+// canOperateAs 须有操作员或工程师角色，分配不够。
 func (s *kernel) canOperateAs(ctx context.Context, personID uuid.UUID) (bool, error) {
 	grants, err := s.store.ActiveGrants(ctx, personID)
 	if err != nil {
@@ -44,6 +45,7 @@ func (s *kernel) canOperateAs(ctx context.Context, personID uuid.UUID) (bool, er
 	return false, nil
 }
 
+// operatorAccount 袋上当前使用人须仍是本厂有效账号。
 func (s *kernel) operatorAccount(ctx context.Context, bag Bag) (Account, error) {
 	if bag.OperatorID == nil {
 		return Account{}, domain.ErrForbidden
@@ -58,6 +60,7 @@ func (s *kernel) operatorAccount(ctx context.Context, bag Bag) (Account, error) 
 	return accountOf(p), nil
 }
 
+// 袋上当前使用人，给审计当操作者。
 func personActor(bag *Bag) *uuid.UUID {
 	if bag == nil || bag.OperatorID == nil {
 		return nil
@@ -66,6 +69,7 @@ func personActor(bag *Bag) *uuid.UUID {
 	return &id
 }
 
+// 登录通过才把人员记成操作者。
 func actorID(p Person, ev NodeEval) *uuid.UUID {
 	if ev.Decision != NodeAllow {
 		return nil
@@ -103,6 +107,7 @@ func (s *Node) EvaluateOfflineOp(ctx context.Context, bag Bag, clocks Clocks, lo
 	return ev, nil
 }
 
+// evalOffline 账号、节点凭证、资产桩都过才允许。
 func (s *kernel) evalOffline(ctx context.Context, bag Bag, clocks Clocks, loginName, password string) (Person, NodeEval) {
 	p, ev := s.loginPerson(ctx, bag, clocks, loginName, password)
 	if ev.Decision != NodeAllow {
@@ -126,6 +131,7 @@ func (s *kernel) evalOffline(ctx context.Context, bag Bag, clocks Clocks, loginN
 	return p, ev
 }
 
+// rememberOperator 把当前使用人落到该 Client，便于管理端查看。
 func (s *kernel) rememberOperator(ctx context.Context, clientID, personID uuid.UUID) error {
 	return s.store.SetClientOperator(ctx, clientID, personID)
 }
@@ -143,6 +149,7 @@ func (s *Node) CreateOfflineFact(ctx context.Context, bag Bag, clocks Clocks, lo
 		_ = s.auditAtSrc(ctx, actor, "create_fact", "fact", audit.Deny, ev.TimeSource, unitID, path)
 		return FactStub{}, err
 	}
+	// 冻结发生时路径，写入事实桩。
 	row, err := s.store.InsertFact(ctx, p.ID, unitID, path)
 	if err != nil {
 		_ = s.auditAtSrc(ctx, actor, "create_fact", "fact", audit.Deny, ev.TimeSource, unitID, path)

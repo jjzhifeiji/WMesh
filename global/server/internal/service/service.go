@@ -63,6 +63,7 @@ func NewService(st *Store) *Service {
 	}
 }
 
+// Store 取出本侧库连接，给验收夹具用。
 func (k *kernel) Store() *Store { return k.store }
 
 // Ping 只确认 WAN 库可达，给探活用。
@@ -76,14 +77,17 @@ func (k *kernel) AdminExists(ctx context.Context) (bool, error) {
 	return n > 0, err
 }
 
+// ListAudit 读 WAN 审计行，不含秘密原文。
 func (k *kernel) ListAudit(ctx context.Context) ([]audit.Row, error) {
 	return k.store.ListAudit(ctx)
 }
 
+// HasTable 查迁移是否已建该表，给夹具用。
 func (k *kernel) HasTable(ctx context.Context, name string) (bool, error) {
 	return k.store.HasTable(ctx, name)
 }
 
+// audit 写审计行，不含秘密原文。
 func (k *kernel) audit(ctx context.Context, actor *uuid.UUID, claimed *string, factoryID *uuid.UUID, action, target, result string) error {
 	return k.store.AppendAudit(ctx, audit.Event{
 		ActorID:      actor,

@@ -35,6 +35,7 @@ func (h *Hub) StartChannel(ctx context.Context, wanURL string) {
 	}
 }
 
+// 每厂只起一条出站循环，已有则跳过。
 func (h *Hub) ensureChannel(factoryID uuid.UUID) {
 	h.presenceMu.Lock()
 	defer h.presenceMu.Unlock()
@@ -49,6 +50,7 @@ func (h *Hub) ensureChannel(factoryID uuid.UUID) {
 	go h.holdChannel(ctx, factoryID)
 }
 
+// 取消该厂出站循环，不再重连。
 func (h *Hub) stopChannel(factoryID uuid.UUID) {
 	h.presenceMu.Lock()
 	defer h.presenceMu.Unlock()
@@ -58,6 +60,7 @@ func (h *Hub) stopChannel(factoryID uuid.UUID) {
 	}
 }
 
+// 断线退避重连；注销后停，避免空转。
 func (h *Hub) holdChannel(ctx context.Context, factoryID uuid.UUID) {
 	wait := time.Second
 	for {
@@ -96,12 +99,14 @@ func (h *Hub) holdChannel(ctx context.Context, factoryID uuid.UUID) {
 	}
 }
 
+// 用本厂签发钥 hello，并把 WAN 推来的状态落到本厂。
 func (h *Hub) dialHold(ctx context.Context, factoryID uuid.UUID) error {
 	svc, err := h.Service(ctx, factoryID)
 	if err != nil {
 		return err
 	}
 	var priv []byte
+	// 取出本厂签发私钥做 hello。
 	k, err := svc.Store().SigningKey(ctx)
 	if err != nil && !errors.Is(err, domain.ErrNotFound) {
 		return err
@@ -112,9 +117,15 @@ func (h *Hub) dialHold(ctx context.Context, factoryID uuid.UUID) error {
 	h.presenceMu.Lock()
 	wanURL := h.wanURL
 	h.presenceMu.Unlock()
+	// 通道连上才允许解厂库正文。
 	svc.Store().SetContentChannelOnline(true)
 	defer svc.Store().SetContentChannelOnline(false)
 	err = wanchannel.Hold(ctx, wanURL, factoryID, priv, func(st wanchannel.State) error {
+		if st.ShortCode != "" {
+			if err := svc.Store().PutFactoryShortCode(ctx, st.ShortCode); err != nil {
+				return err
+			}
+		}
 		// 把 WAN 推来的停用/启用/注销落到本厂库。
 		out, err := svc.Auth.ApplyLifecycle(ctx, st.Status, st.Revision)
 		if err != nil {
@@ -134,7 +145,13 @@ func (h *Hub) dialHold(ctx context.Context, factoryID uuid.UUID) error {
 			return err
 		}
 		_, err := svc.Node.AcceptBinding(ctx, in.ClientID, in.Name, in.PublicKey, in.Revision)
-		return err
+		if err != nil {
+			return err
+		}
+		if in.ShortCode != "" {
+			return svc.Store().PutClientShortCode(ctx, in.ClientID, in.ShortCode)
+		}
+		return nil
 	}, func(raw json.RawMessage) error {
 		// 已发布平台级：写入只读副本，失败只记日志，不断通道。
 		var snap service.ClosureSnapshot
@@ -181,6 +198,7 @@ func (h *Hub) dialHold(ctx context.Context, factoryID uuid.UUID) error {
 	return err
 }
 
+// 回答 WAN 的升档列表或快照；失败不拆连接。
 func (h *Hub) answerAsset(ctx context.Context, svc *service.Service, typ, kind, assetID string) (json.RawMessage, json.RawMessage, error) {
 	switch typ {
 	case "asset_list":
@@ -206,6 +224,7 @@ func (h *Hub) answerAsset(ctx context.Context, svc *service.Service, typ, kind, 
 	}
 }
 
+// 控制面无正文，避免空包覆盖已有副本。
 func closureHasBody(snap service.ClosureSnapshot) bool {
 	for _, m := range snap.Members {
 		if len(m.Content) > 0 {

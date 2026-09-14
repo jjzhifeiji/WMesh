@@ -9,7 +9,8 @@ import (
 	"wmesh/factory/internal/service"
 )
 
-func (h *Handler) mountNode(mux *http.ServeMux) { // Client 绑定、运行许可
+// Client 绑定、运行许可。
+func (h *Handler) mountNode(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/factories/{id}/clients", h.listClients)
 	mux.HandleFunc("POST /v1/factories/{id}/clients", h.registerClient)
 	mux.HandleFunc("PATCH /v1/factories/{id}/clients/{clientId}", h.renameClient)
@@ -40,6 +41,7 @@ type signingKeyResp struct {
 	PublicKey []byte `json:"publicKey"` // 本厂签发公钥，无私钥
 }
 
+// 列出本厂已绑定现场设备。
 func (h *Handler) listClients(w http.ResponseWriter, r *http.Request) {
 	h.withFactory(w, r, func(svc *service.Service) {
 		rows, err := svc.Node.ListClients(r.Context(), bearer(r))
@@ -51,6 +53,7 @@ func (h *Handler) listClients(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// 解析可选公钥后按修订向前登记绑定。
 func (h *Handler) registerClient(w http.ResponseWriter, r *http.Request) {
 	h.withFactory(w, r, func(svc *service.Service) {
 		var req acceptClientReq
@@ -68,6 +71,7 @@ func (h *Handler) registerClient(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, err)
 			return
 		}
+		// 按修订向前落本厂绑定，公钥可空。
 		row, err := svc.Node.RegisterBinding(r.Context(), bearer(r), cid, req.Name, pub, req.BindingRevision)
 		if err != nil {
 			writeErr(w, err)
@@ -77,6 +81,7 @@ func (h *Handler) registerClient(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// 改本厂设备显示名。
 func (h *Handler) renameClient(w http.ResponseWriter, r *http.Request) {
 	h.withFactory(w, r, func(svc *service.Service) {
 		clientID, err := uuid.Parse(r.PathValue("clientId"))
@@ -98,6 +103,7 @@ func (h *Handler) renameClient(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// 作废本厂绑定，设备不再可用。
 func (h *Handler) voidClient(w http.ResponseWriter, r *http.Request) {
 	h.withFactory(w, r, func(svc *service.Service) {
 		clientID, err := uuid.Parse(r.PathValue("clientId"))
@@ -113,14 +119,17 @@ func (h *Handler) voidClient(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// 签发运行许可窗口。
 func (h *Handler) issueRuntime(w http.ResponseWriter, r *http.Request) {
 	h.writeRuntime(w, r, true)
 }
 
+// 收回运行许可窗口。
 func (h *Handler) revokeRuntime(w http.ResponseWriter, r *http.Request) {
 	h.writeRuntime(w, r, false)
 }
 
+// 签发或收回运行许可窗口。
 func (h *Handler) writeRuntime(w http.ResponseWriter, r *http.Request, canRun bool) {
 	h.withFactory(w, r, func(svc *service.Service) {
 		clientID, err := uuid.Parse(r.PathValue("clientId"))
@@ -155,6 +164,7 @@ func (h *Handler) writeRuntime(w http.ResponseWriter, r *http.Request, canRun bo
 	})
 }
 
+// 列出本厂运行许可。
 func (h *Handler) listRuntime(w http.ResponseWriter, r *http.Request) {
 	h.withFactory(w, r, func(svc *service.Service) {
 		rows, err := svc.Node.ListRuntimeGrants(r.Context(), bearer(r))
@@ -166,6 +176,7 @@ func (h *Handler) listRuntime(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// 登录有效才返回本厂签发公钥，无私钥。
 func (h *Handler) signingPublicKey(w http.ResponseWriter, r *http.Request) {
 	h.withFactory(w, r, func(svc *service.Service) {
 		if _, err := svc.Auth.RequireActive(r.Context(), bearer(r)); err != nil {
@@ -181,6 +192,7 @@ func (h *Handler) signingPublicKey(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// 把许可窗口收成 UTC。
 func parseWindow(notBefore, notAfter string) (time.Time, time.Time, error) {
 	nb, err := parseTime(notBefore)
 	if err != nil {

@@ -19,6 +19,7 @@ type CreatedFactory struct {
 	EnrollmentToken string    `json:"enrollmentToken"` // 一次性建厂码原文，禁止写入审计
 }
 
+// Directory 是名录只读视图，不含厂内人员和密码。
 type Directory struct {
 	Factories []Factory           `json:"factories"` // WAN 工厂名录
 	Initials  []InitialSuperAdmin `json:"initials"`  // 各厂初始超管身份，不含密码
@@ -26,15 +27,18 @@ type Directory struct {
 
 // CreateFactory 只在 WAN 名录写下工厂与初始超管身份，发建厂码；不反打厂内网。
 func (s *Factories) CreateFactory(ctx context.Context, token, name, saLogin, saDisplay string) (CreatedFactory, error) {
+	// 只有 WAN 管理员能建厂。失败一律记拒绝。
 	admin, err := s.RequireAdmin(ctx, token)
 	if err != nil {
 		_ = s.audit(ctx, nil, nil, nil, "create_factory", name, audit.Deny)
 		return CreatedFactory{}, err
 	}
+	// 发一次性建厂码，只回给持有者。
 	code, err := secret.RandomToken()
 	if err != nil {
 		return CreatedFactory{}, err
 	}
+	// 工厂与初始超管身份当场发号。
 	fid := id.New()
 	personID := id.New()
 	// 名录与初始超管对账同一事务写入；厂端稍后用建厂码认领。
@@ -43,6 +47,7 @@ func (s *Factories) CreateFactory(ctx context.Context, token, name, saLogin, saD
 		_ = s.audit(ctx, &admin.ID, nil, &fid, "create_factory", name, audit.Deny)
 		return CreatedFactory{}, err
 	}
+	// 建厂成功才记允许。
 	if err := s.audit(ctx, &admin.ID, nil, &fac.ID, "create_factory", fac.ID.String()+" "+personID.String(), audit.Allow); err != nil {
 		return CreatedFactory{}, err
 	}
@@ -51,6 +56,7 @@ func (s *Factories) CreateFactory(ctx context.Context, token, name, saLogin, saD
 
 // IssueInitialSuperAdmin 拒绝再给已有工厂下发第二名初始超管。
 func (s *Factories) IssueInitialSuperAdmin(ctx context.Context, token string, factoryID uuid.UUID) error {
+	// 已有工厂一律拒绝第二名初始超管。
 	admin, err := s.RequireAdmin(ctx, token)
 	if err != nil {
 		_ = s.audit(ctx, nil, nil, &factoryID, "issue_initial_sa", factoryID.String(), audit.Deny)
@@ -62,6 +68,7 @@ func (s *Factories) IssueInitialSuperAdmin(ctx context.Context, token string, fa
 
 // InviteWANAdmin 拒绝任何第二 WAN 用户或授权。
 func (s *Factories) InviteWANAdmin(ctx context.Context, token, targetLogin string) error {
+	// 任何第二 WAN 用户都拒绝；能认出操作者则记上。
 	var actor *uuid.UUID
 	if admin, err := s.RequireAdmin(ctx, token); err == nil {
 		actor = &admin.ID
@@ -85,6 +92,7 @@ func (s *Factories) GrantFactoryRole(ctx context.Context, token string, factoryI
 	return s.denyFactoryManage(ctx, token, factoryID, "grant_factory_role", target)
 }
 
+// denyFactoryManage 厂内人员、组织、角色 WAN 一律拒绝，并记审计。
 func (s *kernel) denyFactoryManage(ctx context.Context, token string, factoryID uuid.UUID, action, target string) error {
 	var actor *uuid.UUID
 	if admin, err := s.RequireAdmin(ctx, token); err == nil {
@@ -96,11 +104,13 @@ func (s *kernel) denyFactoryManage(ctx context.Context, token string, factoryID 
 
 // Directory 只返回工厂名录和初始超管身份，不含厂内扩展明细。
 func (s *Factories) Directory(ctx context.Context, token string) (Directory, error) {
+	// 只有 WAN 管理员能读名录。
 	admin, err := s.RequireAdmin(ctx, token)
 	if err != nil {
 		_ = s.audit(ctx, nil, nil, nil, "read_directory", "wan", audit.Deny)
 		return Directory{}, err
 	}
+	// 只取工厂名录和初始超管身份，不含密码。
 	facs, err := s.store.ListFactories(ctx)
 	if err != nil {
 		return Directory{}, err
@@ -109,6 +119,7 @@ func (s *Factories) Directory(ctx context.Context, token string) (Directory, err
 	if err != nil {
 		return Directory{}, err
 	}
+	// 读名录成功才记允许。
 	if err := s.audit(ctx, &admin.ID, nil, nil, "read_directory", "wan", audit.Allow); err != nil {
 		return Directory{}, err
 	}
@@ -127,6 +138,7 @@ func (s *Factories) EnableFactory(ctx context.Context, token string, factoryID u
 
 // DeleteFactory 未认领则从名录拿掉；已认领只注销，历史与绑定保留。
 func (s *Factories) DeleteFactory(ctx context.Context, token string, factoryID uuid.UUID) (*Factory, error) {
+	// 只有 WAN 管理员能拿掉或注销工厂。失败一律记拒绝。
 	admin, err := s.RequireAdmin(ctx, token)
 	if err != nil {
 		_ = s.audit(ctx, nil, nil, &factoryID, "delete_factory", factoryID.String(), audit.Deny)
@@ -137,24 +149,29 @@ func (s *Factories) DeleteFactory(ctx context.Context, token string, factoryID u
 		_ = s.audit(ctx, &admin.ID, nil, &factoryID, "delete_factory", factoryID.String(), audit.Deny)
 		return nil, err
 	}
+	// 已认领或已注销只改注销，历史与绑定保留。
 	if fac.EnrolledAt != nil || fac.Status == FactoryRetired {
 		out, err := s.store.SetFactoryStatus(ctx, factoryID, FactoryRetired)
 		if err != nil {
 			_ = s.audit(ctx, &admin.ID, nil, &factoryID, "retire_factory", factoryID.String(), audit.Deny)
 			return nil, err
 		}
+		// 注销成功才记允许。
 		if err := s.audit(ctx, &admin.ID, nil, &factoryID, "retire_factory", factoryID.String(), audit.Allow); err != nil {
 			return nil, err
 		}
 		return &out, nil
 	}
+	// 未认领且无引用则从名录删除。
 	if err := s.store.DeleteUnclaimedFactory(ctx, factoryID); err != nil {
 		if errors.Is(err, domain.ErrReferenced) {
+			// 已有绑定则改为注销，不硬删。
 			out, err := s.store.SetFactoryStatus(ctx, factoryID, FactoryRetired)
 			if err != nil {
 				_ = s.audit(ctx, &admin.ID, nil, &factoryID, "retire_factory", factoryID.String(), audit.Deny)
 				return nil, err
 			}
+			// 注销成功才记允许。
 			if err := s.audit(ctx, &admin.ID, nil, &factoryID, "retire_factory", factoryID.String(), audit.Allow); err != nil {
 				return nil, err
 			}
@@ -163,13 +180,16 @@ func (s *Factories) DeleteFactory(ctx context.Context, token string, factoryID u
 		_ = s.audit(ctx, &admin.ID, nil, &factoryID, "delete_factory", factoryID.String(), audit.Deny)
 		return nil, err
 	}
+	// 删除成功才记允许。
 	if err := s.audit(ctx, &admin.ID, nil, &factoryID, "delete_factory", factoryID.String(), audit.Allow); err != nil {
 		return nil, err
 	}
 	return nil, nil
 }
 
+// setStatus 写入工厂治理状态并升高修订。
 func (s *Factories) setStatus(ctx context.Context, token string, factoryID uuid.UUID, status, action string) (Factory, error) {
+	// 只有 WAN 管理员能改工厂治理状态。
 	admin, err := s.RequireAdmin(ctx, token)
 	if err != nil {
 		_ = s.audit(ctx, nil, nil, &factoryID, action, factoryID.String(), audit.Deny)
@@ -181,6 +201,7 @@ func (s *Factories) setStatus(ctx context.Context, token string, factoryID uuid.
 		_ = s.audit(ctx, &admin.ID, nil, &factoryID, action, factoryID.String(), audit.Deny)
 		return Factory{}, err
 	}
+	// 改状态成功才记允许。
 	if err := s.audit(ctx, &admin.ID, nil, &factoryID, action, factoryID.String(), audit.Allow); err != nil {
 		return Factory{}, err
 	}

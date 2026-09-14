@@ -30,6 +30,7 @@ func openTemplate(t ContentTemplate) (ContentTemplate, error) {
 
 // normalizeContent 新建时按已收模版套正文；尚未收到副本则原样返回。
 func (s *kernel) normalizeContent(ctx context.Context, kind string, content []byte) ([]byte, error) {
+	// 尚未收到模版副本则原样返回。
 	tpl, err := s.store.LatestTemplateByKind(ctx, kind)
 	if errors.Is(err, domain.ErrNotFound) {
 		return content, nil
@@ -41,6 +42,7 @@ func (s *kernel) normalizeContent(ctx context.Context, kind string, content []by
 	if err != nil {
 		return nil, err
 	}
+	// 按已收模版套新建正文。
 	out, err := contenttpl.Apply(tpl.Schema, content)
 	if err != nil {
 		return nil, domain.ErrTemplateInvalid
@@ -48,6 +50,23 @@ func (s *kernel) normalizeContent(ctx context.Context, kind string, content []by
 	return out, nil
 }
 
+// projectSchemaJSON 写工程时用来扫引用：有已收副本用副本，没有则用代码默认表。
+func (s *kernel) projectSchemaJSON(ctx context.Context) ([]byte, error) {
+	tpl, err := s.store.LatestTemplateByKind(ctx, KindProject)
+	if errors.Is(err, domain.ErrNotFound) {
+		return contenttpl.Marshal(contenttpl.Default(KindProject))
+	}
+	if err != nil {
+		return nil, err
+	}
+	tpl, err = openTemplate(tpl)
+	if err != nil {
+		return nil, err
+	}
+	return tpl.Schema, nil
+}
+
+// 审计对象：类型加修订。
 func templateTarget(kind string, rev int64) string {
 	return kind + " rev=" + strconv.FormatInt(rev, 10)
 }
@@ -58,6 +77,7 @@ func (s *Templates) GetTemplate(ctx context.Context, token, kind string) (Conten
 	if err != nil {
 		return ContentTemplate{}, err
 	}
+	// 有效账号可读已收模版。失败记拒绝。
 	if kind != KindProcess && kind != KindProject {
 		_ = s.audit(ctx, &acc.ID, nil, "get_template", kind, audit.Deny)
 		return ContentTemplate{}, domain.ErrNotFound
@@ -89,6 +109,7 @@ func (s *Closure) AcceptTemplateDelivery(ctx context.Context, snap TemplateSnaps
 		_ = s.audit(ctx, nil, nil, "accept_template", snap.Kind, audit.Deny)
 		return domain.ErrForbidden
 	}
+	// 摘要或字段表不对一律记拒绝。
 	if !digest.Match([]byte(snap.Schema), snap.Digest) {
 		_ = s.audit(ctx, nil, nil, "accept_template", snap.Kind, audit.Deny)
 		return domain.ErrIntegrity
@@ -97,6 +118,7 @@ func (s *Closure) AcceptTemplateDelivery(ctx context.Context, snap TemplateSnaps
 		_ = s.audit(ctx, nil, nil, "accept_template", snap.Kind, audit.Deny)
 		return domain.ErrTemplateInvalid
 	}
+	// 只读副本，不改已有正文。
 	if _, err := s.store.InsertTemplateReplica(ctx, ContentTemplate{
 		ID: snap.ID, Kind: snap.Kind, Revision: snap.Revision,
 		Schema: []byte(snap.Schema), Digest: snap.Digest,

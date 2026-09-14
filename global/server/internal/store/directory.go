@@ -30,10 +30,12 @@ type Factory struct {
 	ChannelLastSeenAt     *time.Time `json:"channelLastSeenAt,omitempty"`       // 最近一次心跳或握手
 	ChannelDisconnectedAt *time.Time `json:"channelDisconnectedAt,omitempty"`   // 最近一次断开；在线时为空
 	ChannelOnline         bool       `gorm:"-" json:"channelOnline"`            // 当前有没有钉死的厂端通道
+	ShortCode             string     `gorm:"not null" json:"shortCode"`        // 本厂短码 F01…F99，创建后不改
 	CreatedAt             time.Time  `gorm:"not null" json:"createdAt"`         // 名录入库时间
 }
 
-func (f *Factory) fillPresence() { // 有当前连接时间才算在线，不另存列
+// fillPresence 有当前连接时间才算在线，不另存列。
+func (f *Factory) fillPresence() {
 	f.ChannelOnline = f.ChannelConnectedAt != nil
 }
 
@@ -54,8 +56,13 @@ func (InitialSuperAdmin) TableName() string { return "initial_super_admins" }
 func (s *Store) RegisterFactory(ctx context.Context, factoryID uuid.UUID, name string, personID uuid.UUID, saLogin, saDisplay, enrollHash string) (Factory, error) {
 	now := time.Now().UTC()
 	hash := enrollHash
-	fac := Factory{ID: factoryID, Name: name, Status: FactoryActive, EnrollmentTokenHash: &hash, CreatedAt: now}
+	var fac Factory
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		short, err := nextOriginCode(tx, originKindFactory)
+		if err != nil {
+			return err
+		}
+		fac = Factory{ID: factoryID, Name: name, Status: FactoryActive, EnrollmentTokenHash: &hash, ShortCode: short, CreatedAt: now}
 		if err := tx.Create(&fac).Error; err != nil {
 			return err
 		}
@@ -72,6 +79,7 @@ func (s *Store) BindInitialSuperAdmin(ctx context.Context, factoryID, personID u
 	return bindInitialSuperAdmin(s.db.WithContext(ctx), factoryID, personID, loginName, displayName, time.Now().UTC())
 }
 
+// bindInitialSuperAdmin 一厂只能绑一名初始超管，不含密码。
 func bindInitialSuperAdmin(tx *gorm.DB, factoryID, personID uuid.UUID, loginName, displayName string, at time.Time) error {
 	row := InitialSuperAdmin{FactoryID: factoryID, PersonID: personID, LoginName: loginName, DisplayName: displayName, CreatedAt: at}
 	if err := tx.Create(&row).Error; err != nil {
@@ -83,6 +91,7 @@ func bindInitialSuperAdmin(tx *gorm.DB, factoryID, personID uuid.UUID, loginName
 	return nil
 }
 
+// FactoryByID 按稳定身份取名录行。
 func (s *Store) FactoryByID(ctx context.Context, factoryID uuid.UUID) (Factory, error) {
 	var row Factory
 	if err := s.db.WithContext(ctx).First(&row, "id = ?", factoryID).Error; err != nil {
@@ -116,9 +125,11 @@ func (s *Store) SetFactoryStatus(ctx context.Context, factoryID uuid.UUID, statu
 			}
 			return err
 		}
+		// 相同状态不升修订，避免厂端被无意义推送。
 		if out.Status == status {
 			return nil
 		}
+		// 已注销不能再启用或停用。
 		if out.Status == FactoryRetired && status != FactoryRetired {
 			return domain.ErrFactoryRetired
 		}
@@ -149,6 +160,7 @@ func (s *Store) DeleteUnclaimedFactory(ctx context.Context, factoryID uuid.UUID)
 			}
 			return err
 		}
+		// 已认领不能从名录拿掉。
 		if fac.EnrolledAt != nil {
 			return domain.ErrReferenced
 		}
@@ -166,6 +178,7 @@ func (s *Store) DeleteUnclaimedFactory(ctx context.Context, factoryID uuid.UUID)
 	})
 }
 
+// InitialSuperAdmin 读该厂交付对账用的初始超管身份。
 func (s *Store) InitialSuperAdmin(ctx context.Context, factoryID uuid.UUID) (InitialSuperAdmin, error) {
 	var row InitialSuperAdmin
 	if err := s.db.WithContext(ctx).First(&row, "factory_id = ?", factoryID).Error; err != nil {

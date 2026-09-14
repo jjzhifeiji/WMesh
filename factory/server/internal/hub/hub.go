@@ -20,6 +20,7 @@ import (
 	"wmesh/factory/internal/wanchannel"
 )
 
+// 一家厂已打开的库和应用服务。
 type tenant struct {
 	db  *gorm.DB
 	svc *service.Service
@@ -96,6 +97,7 @@ func (h *Hub) Service(ctx context.Context, factoryID uuid.UUID) (*service.Servic
 	return h.ensure(factoryID)
 }
 
+// 没有厂库就建并组装服务；已打开则复用。
 func (h *Hub) ensure(factoryID uuid.UUID) (*service.Service, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -114,6 +116,7 @@ func (h *Hub) ensure(factoryID uuid.UUID) (*service.Service, error) {
 	if err != nil {
 		return nil, err
 	}
+	// 按工厂身份打开本厂库并组装应用服务。
 	svc := service.NewService(store.Open(db, factoryID))
 	h.tenants[factoryID] = &tenant{db: db, svc: svc}
 	return svc, nil
@@ -171,6 +174,11 @@ func (h *Hub) Claim(ctx context.Context, wanURL, enrollmentCode, password string
 	if _, err := svc.Auth.AcceptEnrollment(ctx, offer.SAPersonID, offer.SALogin, offer.SADisplay, password); err != nil {
 		return SiteFactory{}, err
 	}
+	if offer.ShortCode != "" {
+		if err := svc.Store().PutFactoryShortCode(ctx, offer.ShortCode); err != nil {
+			return SiteFactory{}, err
+		}
+	}
 	pub, _, err := h.signingMaterial(ctx, svc)
 	if err != nil {
 		return SiteFactory{}, err
@@ -182,6 +190,7 @@ func (h *Hub) Claim(ctx context.Context, wanURL, enrollmentCode, password string
 	return SiteFactory{ID: offer.FactoryID, SALogin: offer.SALogin, Status: store.FactoryActive}, nil
 }
 
+// 已有签发钥就用；没有则生成并写入本厂库。
 func (h *Hub) signingMaterial(ctx context.Context, svc *service.Service) (pub, priv []byte, err error) {
 	k, err := svc.Store().SigningKey(ctx)
 	if err == nil {
@@ -194,6 +203,7 @@ func (h *Hub) signingMaterial(ctx context.Context, svc *service.Service) (pub, p
 	if err != nil {
 		return nil, nil, err
 	}
+	// 本厂还没有签发钥时生成并写入。
 	if err := svc.Node.InstallSigningKey(ctx, pub, priv); err != nil {
 		return nil, nil, err
 	}

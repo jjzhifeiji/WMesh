@@ -17,10 +17,12 @@ const sessionTTL = 12 * time.Hour // 厂内在线会话有效期
 
 // BootstrapInitial 在本厂写入待启用初始超管和预置厂级超管角色，激活码只返回给交付方。
 func (s *Auth) BootstrapInitial(ctx context.Context, saLogin, saDisplay string) (Account, string, error) {
+	// 写入待启用初始超管，尚无日常密码。
 	p, err := s.store.CreatePerson(ctx, saLogin, saDisplay, true)
 	if err != nil {
 		return Account{}, "", err
 	}
+	// 激活码只给交付方，库里只存哈希。
 	token, err := secret.ActivationCode()
 	if err != nil {
 		return Account{}, "", err
@@ -28,6 +30,7 @@ func (s *Auth) BootstrapInitial(ctx context.Context, saLogin, saDisplay string) 
 	if err := s.store.SetActivationHash(ctx, p.ID, secret.TokenHash(token)); err != nil {
 		return Account{}, "", err
 	}
+	// 预置厂级超管角色，待启用时还不生效。
 	if _, err := s.store.GrantRole(ctx, p.ID, RoleFactorySuperAdmin, ScopeFactory, nil); err != nil {
 		return Account{}, "", err
 	}
@@ -42,6 +45,7 @@ func (s *Auth) AcceptEnrollment(ctx context.Context, personID uuid.UUID, loginNa
 	if password == "" {
 		return Account{}, domain.ErrInvalidActivation
 	}
+	// 身份须对上；尚无档则按约定写入。失败一律记拒绝。
 	p, err := s.store.PersonByID(ctx, personID)
 	if errors.Is(err, domain.ErrNotFound) {
 		p, err = s.store.CreatePersonAt(ctx, personID, loginName, displayName, true)
@@ -55,6 +59,7 @@ func (s *Auth) AcceptEnrollment(ctx context.Context, personID uuid.UUID, loginNa
 		_ = s.audit(ctx, &p.ID, &loginName, "enroll_factory", personID.String(), audit.Deny)
 		return Account{}, domain.ErrInvalidEnrollment
 	}
+	// 幂等补厂级超管角色；已有则跳过。
 	if _, err := s.store.GrantRole(ctx, p.ID, RoleFactorySuperAdmin, ScopeFactory, nil); err != nil && !errors.Is(err, domain.ErrDuplicateRoleGrant) {
 		_ = s.audit(ctx, &p.ID, &loginName, "enroll_factory", p.ID.String(), audit.Deny)
 		return Account{}, err
@@ -62,6 +67,7 @@ func (s *Auth) AcceptEnrollment(ctx context.Context, personID uuid.UUID, loginNa
 	if p.Status == StatusActive {
 		return accountOf(p), nil
 	}
+	// 当场自设日常密码，只存哈希。
 	hash, err := secret.HashPassword(password)
 	if err != nil {
 		return Account{}, err
@@ -78,6 +84,7 @@ func (s *Auth) AcceptEnrollment(ctx context.Context, personID uuid.UUID, loginNa
 
 // Activate 由持有者自己设日常密码，账号转为有效；WAN 不得代设。
 func (s *Auth) Activate(ctx context.Context, loginName, activationToken, password string) error {
+	// 工厂须开着；码不对或已激活一律记拒绝。
 	if err := s.requireFactoryOpen(ctx); err != nil {
 		_ = s.audit(ctx, nil, &loginName, "activate", s.store.FactoryID().String(), audit.Deny)
 		return err
@@ -96,6 +103,7 @@ func (s *Auth) Activate(ctx context.Context, loginName, activationToken, passwor
 		_ = s.audit(ctx, &p.ID, &loginName, "activate", p.ID.String(), audit.Deny)
 		return domain.ErrInvalidActivation
 	}
+	// 日常密码只存哈希；激活后激活码作废。
 	hash, err := secret.HashPassword(password)
 	if err != nil {
 		return err
@@ -114,6 +122,7 @@ func activationOK(storedHash, token string) bool {
 
 // Login 只接受本厂有效账号；待启用、已停用或密码错误都拒绝，审计不记秘密。
 func (s *Auth) Login(ctx context.Context, loginName, password string) (string, error) {
+	// 只接受本厂有效账号；失败一律记拒绝，不记密码。
 	if err := s.requireFactoryOpen(ctx); err != nil {
 		_ = s.audit(ctx, nil, &loginName, "login", s.store.FactoryID().String(), audit.Deny)
 		return "", err
@@ -136,6 +145,7 @@ func (s *Auth) Login(ctx context.Context, loginName, password string) (string, e
 		_ = s.audit(ctx, &p.ID, &loginName, "login", s.store.FactoryID().String(), audit.Deny)
 		return "", domain.ErrInvalidCredentials
 	}
+	// 发会话令牌，库只存哈希。
 	token, err := secret.RandomToken()
 	if err != nil {
 		return "", err
@@ -144,6 +154,7 @@ func (s *Auth) Login(ctx context.Context, loginName, password string) (string, e
 		return "", err
 	}
 	if err := s.audit(ctx, &p.ID, &loginName, "login", s.store.FactoryID().String(), audit.Allow); err != nil {
+		// 审计失败则立刻作废刚开会话。
 		_ = s.store.DeleteSessionByTokenHash(ctx, secret.TokenHash(token))
 		return "", err
 	}
@@ -157,6 +168,7 @@ func (s *Auth) Logout(ctx context.Context, token string) error {
 		_ = s.audit(ctx, nil, nil, "logout", s.store.FactoryID().String(), audit.Deny)
 		return domain.ErrUnauthorized
 	}
+	// 立刻结束会话，账号状态不变。
 	if err := s.store.DeleteSessionByTokenHash(ctx, secret.TokenHash(token)); err != nil {
 		return err
 	}
@@ -165,6 +177,7 @@ func (s *Auth) Logout(ctx context.Context, token string) error {
 
 // RequireActive 校验会话后重查账号状态；停用或待启用的旧会话也不能再做新操作。
 func (s *kernel) RequireActive(ctx context.Context, token string) (Account, error) {
+	// 令牌只比哈希；过期、停用、待启用都拒绝，会话不当权限缓存。
 	sess, err := s.store.SessionByTokenHash(ctx, secret.TokenHash(token))
 	if err != nil {
 		if errors.Is(err, domain.ErrSessionExpired) {
@@ -199,6 +212,7 @@ func (s *Auth) ChangePassword(ctx context.Context, token, newPassword string) er
 	if err != nil {
 		return err
 	}
+	// 日常密码只存哈希，不写原文。
 	hash, err := secret.HashPassword(newPassword)
 	if err != nil {
 		return err
@@ -215,6 +229,7 @@ func (s *Auth) Rename(ctx context.Context, token, displayName, loginName string)
 	if err != nil {
 		return err
 	}
+	// 改显示名或登录名，稳定身份不变。
 	if err := s.store.RenamePerson(ctx, acc.ID, displayName, loginName); err != nil {
 		_ = s.audit(ctx, &acc.ID, &loginName, "rename", acc.ID.String(), audit.Deny)
 		return err
@@ -228,6 +243,7 @@ func (s *Auth) DisableAccount(ctx context.Context, token string, targetID uuid.U
 	if err != nil {
 		return err
 	}
+	// 只有工厂超管能停用；最后一名有效超管入口不能停。失败一律记拒绝。
 	if err := s.can(ctx, acc, permManageAccount, nil); err != nil {
 		_ = s.audit(ctx, &acc.ID, nil, "disable_account", targetID.String(), audit.Deny)
 		return err
@@ -237,6 +253,7 @@ func (s *Auth) DisableAccount(ctx context.Context, token string, targetID uuid.U
 		_ = s.audit(ctx, &acc.ID, nil, "disable_account", targetID.String(), audit.Deny)
 		return err
 	}
+	// 停用后新操作立刻按新状态判定。
 	if err := s.store.SetPersonStatus(ctx, targetID, StatusDisabled); err != nil {
 		_ = s.audit(ctx, &acc.ID, nil, "disable_account", targetID.String(), audit.Deny)
 		return err
@@ -250,6 +267,7 @@ func (s *Auth) ResetPassword(ctx context.Context, token string, targetID uuid.UU
 	if err != nil {
 		return Account{}, err
 	}
+	// 只有工厂超管能重置他人密码。失败一律记拒绝。
 	if err := s.can(ctx, acc, permManageAccount, nil); err != nil {
 		_ = s.audit(ctx, &acc.ID, nil, "reset_password", targetID.String(), audit.Deny)
 		return Account{}, err
@@ -272,6 +290,7 @@ func (s *Auth) ResetPassword(ctx context.Context, token string, targetID uuid.UU
 	if p.Status == StatusDisabled {
 		next = StatusDisabled
 	}
+	// 覆盖哈希；停用账号保持停用。旧会话立刻作废。
 	if err := s.store.ApplyPersonPassword(ctx, p.ID, hash, next); err != nil {
 		_ = s.audit(ctx, &acc.ID, &p.LoginName, "reset_password", p.ID.String(), audit.Deny)
 		return Account{}, err
@@ -295,6 +314,7 @@ func (s *Auth) EnableAccount(ctx context.Context, token string, targetID uuid.UU
 	if err != nil {
 		return err
 	}
+	// 只有工厂超管能恢复账号。失败一律记拒绝。
 	if err := s.can(ctx, acc, permManageAccount, nil); err != nil {
 		_ = s.audit(ctx, &acc.ID, nil, "enable_account", targetID.String(), audit.Deny)
 		return err
@@ -311,6 +331,7 @@ func (s *Auth) EnableAccount(ctx context.Context, token string, targetID uuid.UU
 	if p.PasswordHash != nil && *p.PasswordHash != "" {
 		next = StatusActive
 	}
+	// 有日常密码的回到有效，否则回到待启用。
 	if err := s.store.SetPersonStatus(ctx, targetID, next); err != nil {
 		_ = s.audit(ctx, &acc.ID, nil, "enable_account", targetID.String(), audit.Deny)
 		return err

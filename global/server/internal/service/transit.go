@@ -16,7 +16,7 @@ func (s *Closure) SealClosureTransit(ctx context.Context, factoryID uuid.UUID, s
 	if err != nil {
 		return ClosureSnapshot{}, err
 	}
-	defer contentcrypt.Zero(key)
+	defer contentcrypt.Zero(key) // 用完清租约材料。
 	out := snap
 	out.Members = append([]ClosureMember(nil), snap.Members...)
 	for i, m := range out.Members {
@@ -32,14 +32,16 @@ func (s *Closure) SealClosureTransit(ctx context.Context, factoryID uuid.UUID, s
 
 // OpenSnapshotTransit 升档快照到站解开；无信封则当明文夹具。
 func (s *Assets) OpenSnapshotTransit(ctx context.Context, snap AssetSnapshot) ([]byte, error) {
+	// 取来源厂当前 L；没有则只接受明文夹具。
 	key, err := s.store.LeaseKey(ctx, snap.SourceFactoryID)
 	if err != nil {
+		// 有信封却没有 L，当损坏。
 		if contentcrypt.IsEnvelope(snap.Content) {
 			return nil, domain.ErrIntegrity
 		}
 		return snap.Content, nil
 	}
-	defer contentcrypt.Zero(key)
+	defer contentcrypt.Zero(key) // 用完清租约材料。
 	// 无 WM2 前缀当明文夹具。
 	return contentcrypt.Open(key, snap.Content, contentcrypt.TransitAAD(snap.SourceFactoryID, snap.SourceID, snap.SourceRevision))
 }

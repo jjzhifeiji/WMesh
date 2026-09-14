@@ -3,13 +3,15 @@ import { useState } from "react";
 import { errorMessage } from "@/shared/api/client";
 import { PageHeader } from "@/shared/ui/PageHeader";
 import type { AssetKind } from "@/features/assets/api";
-import { useTemplate, useUpdateTemplate } from "./api";
+import { useTemplate, useUpdateTemplate, useBuiltinTemplate } from "./api";
 import { SchemaEditor } from "./SchemaEditor";
 import { contentFromSchema, schemaFromJSON, adoptSchema, type ContentSchema } from "./schema";
 
 export function TemplatesPage({ kind }: { kind: AssetKind }) {
   const { message, modal } = App.useApp();
+  const isProcess = kind === "process";
   const q = useTemplate(kind);
+  const builtin = useBuiltinTemplate(kind, !isProcess);
   const save = useUpdateTemplate();
   const [local, setLocal] = useState<{ kind: AssetKind; revision: number; schema: ContentSchema } | null>(null);
   const [importOpen, setImportOpen] = useState(false);
@@ -23,7 +25,6 @@ export function TemplatesPage({ kind }: { kind: AssetKind }) {
   };
 
   const onErr = (e: unknown) => message.error(errorMessage(e));
-  const isProcess = kind === "process";
   const title = isProcess ? "工艺模版" : "工程模版";
   const noun = isProcess ? "工艺" : "工程";
   const exportJSON = draft ? JSON.stringify(contentFromSchema(draft), null, 4) : "";
@@ -73,6 +74,18 @@ export function TemplatesPage({ kind }: { kind: AssetKind }) {
             >
               导入 JSON
             </Button>
+            {!isProcess ? (
+              <Button
+                disabled={!builtin.data || !q.data}
+                onClick={() => {
+                  if (!builtin.data || !q.data) return;
+                  setLocal({ kind, revision: q.data.revision, schema: builtin.data.schema });
+                  message.success("已恢复默认，尚未保存");
+                }}
+              >
+                恢复默认
+              </Button>
+            ) : null}
             <Button
               type="primary"
               loading={save.isPending}

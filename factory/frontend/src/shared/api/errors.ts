@@ -37,6 +37,9 @@ const zh: Record<string, string> = {
 	"client public key does not match": "公钥与已登记的不一致",
   "content lease expired": "解包租约已过期或尚未从云端领到，请确认厂端已连上云端后再试",
   "content template is invalid": "内容模版字段不合法",
+  "asset origin code is not assigned": "还没有本端编号短码，不能新建",
+  "asset code already exists": "编号已占用或与身份不一致",
+  "origin code exhausted": "短码或编号已用尽",
   "internal error": "服务异常，请稍后再试",
 };
 

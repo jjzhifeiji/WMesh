@@ -365,6 +365,9 @@ func TestFactoryAssets(t *testing.T) {
 	if err := s.GrantLocalLease(ctx); err != nil {
 		t.Fatal(err)
 	}
+	if err := s.PutFactoryShortCode(ctx, "F01"); err != nil {
+		t.Fatal(err)
+	}
 	p, err := s.CreatePerson(ctx, "pe", "工艺师", false)
 	if err != nil {
 		t.Fatal(err)
@@ -480,6 +483,9 @@ func TestContentMasterRestore(t *testing.T) {
 	ctx := context.Background()
 	facDB, facID := testpg.Fresh(t)
 	s := store.Open(facDB, facID)
+	if err := s.PutFactoryShortCode(ctx, "F01"); err != nil {
+		t.Fatal(err)
+	}
 	l, err := contentcrypt.RandomKey()
 	if err != nil {
 		t.Fatal(err)
@@ -531,6 +537,9 @@ func TestLeaseClockWindows(t *testing.T) {
 	ctx := context.Background()
 	facDB, facID := testpg.Fresh(t)
 	s := store.Open(facDB, facID)
+	if err := s.PutFactoryShortCode(ctx, "F01"); err != nil {
+		t.Fatal(err)
+	}
 	base := time.Date(2026, 9, 13, 6, 0, 0, 0, time.UTC)
 	var mu sync.Mutex
 	offset := time.Duration(0)
@@ -610,6 +619,9 @@ func TestChannelFlapKeepsLease(t *testing.T) {
 	ctx := context.Background()
 	facDB, facID := testpg.Fresh(t)
 	s := store.Open(facDB, facID)
+	if err := s.PutFactoryShortCode(ctx, "F01"); err != nil {
+		t.Fatal(err)
+	}
 	l, err := contentcrypt.RandomKey()
 	if err != nil {
 		t.Fatal(err)

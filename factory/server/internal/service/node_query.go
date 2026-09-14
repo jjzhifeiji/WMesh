@@ -33,6 +33,7 @@ func (s *Node) RegisterBinding(ctx context.Context, token string, clientID uuid.
 	if err != nil {
 		return Client{}, err
 	}
+	// 只有工厂超管能登记 WAN 已送达的绑定。失败一律记拒绝。
 	if err := s.can(ctx, acc, permManageAccount, nil); err != nil {
 		_ = s.audit(ctx, &acc.ID, nil, "accept_binding", clientID.String(), audit.Deny)
 		return Client{}, err
@@ -44,6 +45,7 @@ func (s *Node) RegisterBinding(ctx context.Context, token string, clientID uuid.
 			return Client{}, err
 		}
 	}
+	// 修订只向前。
 	row, err := s.store.AcceptBinding(ctx, clientID, name, publicKey, revision)
 	if err != nil {
 		_ = s.audit(ctx, &acc.ID, nil, "accept_binding", clientID.String(), audit.Deny)
@@ -58,6 +60,7 @@ func (s *Node) RenameClient(ctx context.Context, token string, clientID uuid.UUI
 	if err != nil {
 		return Client{}, err
 	}
+	// 只有工厂超管能改显示名。失败一律记拒绝。
 	if err := s.can(ctx, acc, permManageAccount, nil); err != nil {
 		_ = s.audit(ctx, &acc.ID, nil, "rename_client", clientID.String(), audit.Deny)
 		return Client{}, err
@@ -67,6 +70,7 @@ func (s *Node) RenameClient(ctx context.Context, token string, clientID uuid.UUI
 		_ = s.audit(ctx, &acc.ID, nil, "rename_client", clientID.String(), audit.Deny)
 		return Client{}, err
 	}
+	// 只改显示名，不改归属。
 	row, err := s.store.RenameClient(ctx, clientID, name)
 	if err != nil {
 		_ = s.audit(ctx, &acc.ID, nil, "rename_client", clientID.String(), audit.Deny)
@@ -81,6 +85,7 @@ func (s *Node) VoidClientBinding(ctx context.Context, token string, clientID uui
 	if err != nil {
 		return err
 	}
+	// 只有工厂超管能作废绑定。失败一律记拒绝。
 	if err := s.can(ctx, acc, permManageAccount, nil); err != nil {
 		_ = s.audit(ctx, &acc.ID, nil, "void_binding", clientID.String(), audit.Deny)
 		return err
@@ -98,6 +103,7 @@ func (s *Node) ListClients(ctx context.Context, token string) ([]ClientView, err
 	if err != nil {
 		return nil, err
 	}
+	// 只有工厂超管能看设备名录。失败记拒绝。
 	if err := s.can(ctx, acc, permManageAccount, nil); err != nil {
 		_ = s.audit(ctx, &acc.ID, nil, "list_clients", "clients", audit.Deny)
 		return nil, err
@@ -112,6 +118,7 @@ func (s *Node) ListClients(ctx context.Context, token string) ([]ClientView, err
 			ids = append(ids, *row.OperatorID)
 		}
 	}
+	// 补当前使用人名字，不含密码。
 	people, err := s.store.PeopleByIDs(ctx, ids)
 	if err != nil {
 		return nil, err
@@ -136,6 +143,7 @@ func (s *Node) ListRuntimeGrants(ctx context.Context, token string) ([]RuntimeGr
 	if err != nil {
 		return nil, err
 	}
+	// 只有工厂超管能看节点凭证摘要。失败记拒绝。
 	if err := s.can(ctx, acc, permManageAccount, nil); err != nil {
 		_ = s.audit(ctx, &acc.ID, nil, "list_runtime", "runtime", audit.Deny)
 		return nil, err

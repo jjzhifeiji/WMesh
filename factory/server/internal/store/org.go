@@ -17,7 +17,7 @@ type OrgUnit struct {
 	ID        uuid.UUID  `gorm:"type:uuid;primaryKey" json:"id"` // 节点稳定身份
 	ParentID  *uuid.UUID `gorm:"type:uuid" json:"parentId"`      // 空表示直接挂在工厂下
 	Name      string     `gorm:"not null" json:"name"`           // 显示名，改名不改历史快照
-	Status    string     `gorm:"not null" json:"status"`         // 停用后不能再当新工作上下文
+	Status    string     `gorm:"not null" json:"status"`         // 组织状态：active / disabled；停用后不能再当新工作上下文
 	CreatedAt time.Time  `gorm:"not null" json:"createdAt"`      // 创建时间
 }
 
@@ -49,6 +49,7 @@ type RoleGrant struct {
 
 func (RoleGrant) TableName() string { return "role_grants" }
 
+// CreateOrgUnit 在本厂树上新建节点；父节点必须有效。
 func (s *Store) CreateOrgUnit(ctx context.Context, name string, parentID *uuid.UUID) (OrgUnit, error) {
 	if parentID != nil {
 		if err := s.assertUnitActive(ctx, *parentID); err != nil {
@@ -63,6 +64,7 @@ func (s *Store) CreateOrgUnit(ctx context.Context, name string, parentID *uuid.U
 		CreatedAt: time.Now().UTC(),
 	}
 	if err := s.db.WithContext(ctx).Create(&row).Error; err != nil {
+		// 库约束挡住自挂为父。
 		if domain.IsCheckViolation(err) {
 			return OrgUnit{}, domain.ErrCycle
 		}
@@ -71,6 +73,7 @@ func (s *Store) CreateOrgUnit(ctx context.Context, name string, parentID *uuid.U
 	return row, nil
 }
 
+// RenameOrgUnit 只改显示名，不改已落库的路径快照。
 func (s *Store) RenameOrgUnit(ctx context.Context, unitID uuid.UUID, name string) error {
 	res := s.db.WithContext(ctx).Model(&OrgUnit{}).Where("id = ?", unitID).Update("name", name)
 	if res.Error != nil {
@@ -112,6 +115,7 @@ func (s *Store) ReparentOrgUnit(ctx context.Context, unitID uuid.UUID, parentID 
 	return nil
 }
 
+// wouldCycle 沿新父上走，碰到自己或已见过的节点就是环。
 func (s *Store) wouldCycle(ctx context.Context, nodeID, newParent uuid.UUID) (bool, error) {
 	current := &newParent
 	seen := map[uuid.UUID]struct{}{}
@@ -159,8 +163,10 @@ func (s *Store) Assign(ctx context.Context, personID, unitID uuid.UUID) (Assignm
 	return row, nil
 }
 
+// Unassign 取消有效分配：只改状态不删行，留给历史。
 func (s *Store) Unassign(ctx context.Context, personID, unitID uuid.UUID) error {
 	now := time.Now().UTC()
+	// 取消只改状态不删行，留给历史。
 	res := s.db.WithContext(ctx).Model(&Assignment{}).
 		Where("person_id = ? AND org_unit_id = ? AND status = ?", personID, unitID, StatusActive).
 		Updates(map[string]any{"status": StatusEnded, "ended_at": now})
@@ -207,8 +213,10 @@ func (s *Store) GrantRole(ctx context.Context, personID uuid.UUID, role, scopeKi
 	return row, nil
 }
 
+// RevokeRole 收回有效授予：只改状态不删行。
 func (s *Store) RevokeRole(ctx context.Context, grantID uuid.UUID) error {
 	now := time.Now().UTC()
+	// 收回只改状态不删行。
 	res := s.db.WithContext(ctx).Model(&RoleGrant{}).
 		Where("id = ? AND status = ?", grantID, StatusActive).
 		Updates(map[string]any{"status": StatusRevoked, "revoked_at": now})
@@ -276,6 +284,7 @@ func (s *Store) DeleteOrgUnit(ctx context.Context, unitID uuid.UUID) error {
 	})
 }
 
+// DisableOrgUnit 停用节点；还有有效下级则拒绝。
 func (s *Store) DisableOrgUnit(ctx context.Context, unitID uuid.UUID) error {
 	var n int64
 	if err := s.db.WithContext(ctx).Model(&OrgUnit{}).
@@ -284,6 +293,7 @@ func (s *Store) DisableOrgUnit(ctx context.Context, unitID uuid.UUID) error {
 		return err
 	}
 	if n > 0 {
+		// 还有有效下级时不能停用。
 		return domain.ErrHasActiveChildren
 	}
 	res := s.db.WithContext(ctx).Model(&OrgUnit{}).Where("id = ?", unitID).Update("status", StatusDisabled)
@@ -330,18 +340,21 @@ func ValidScope(role, scopeKind string, orgUnitID *uuid.UUID) bool {
 	}
 }
 
+// RoleGrantCount 数角色授予行，含已收回。
 func (s *Store) RoleGrantCount(ctx context.Context) (int64, error) {
 	var n int64
 	err := s.db.WithContext(ctx).Model(&RoleGrant{}).Count(&n).Error
 	return n, err
 }
 
+// ActiveGrants 列出某人当前有效角色。
 func (s *Store) ActiveGrants(ctx context.Context, personID uuid.UUID) ([]RoleGrant, error) {
 	var rows []RoleGrant
 	err := s.db.WithContext(ctx).Where("person_id = ? AND status = ?", personID, StatusActive).Order("created_at DESC").Find(&rows).Error
 	return rows, err
 }
 
+// GrantByID 按身份取一条授予，含已收回。
 func (s *Store) GrantByID(ctx context.Context, grantID uuid.UUID) (RoleGrant, error) {
 	var row RoleGrant
 	if err := s.db.WithContext(ctx).First(&row, "id = ?", grantID).Error; err != nil {
@@ -365,6 +378,7 @@ func (s *Store) ActiveFactorySuperAdminCount(ctx context.Context) (int64, error)
 	return n, err
 }
 
+// PersonIsActiveFactorySA 是否仍握着有效厂级超管角色。
 func (s *Store) PersonIsActiveFactorySA(ctx context.Context, personID uuid.UUID) (bool, error) {
 	var n int64
 	err := s.db.WithContext(ctx).Model(&RoleGrant{}).
@@ -373,6 +387,7 @@ func (s *Store) PersonIsActiveFactorySA(ctx context.Context, personID uuid.UUID)
 	return n > 0, err
 }
 
+// Unit 按稳定身份取组织节点。
 func (s *Store) Unit(ctx context.Context, unitID uuid.UUID) (OrgUnit, error) {
 	return s.getUnit(ctx, unitID)
 }
@@ -408,6 +423,7 @@ func (s *Store) TryDeleteOrgUnit(ctx context.Context, unitID uuid.UUID) error {
 	return s.db.WithContext(ctx).Exec("DELETE FROM org_units WHERE id = ?", unitID).Error
 }
 
+// AssignmentCount 数某人当前有效分配。
 func (s *Store) AssignmentCount(ctx context.Context, personID uuid.UUID) (int64, error) {
 	var n int64
 	err := s.db.WithContext(ctx).Model(&Assignment{}).

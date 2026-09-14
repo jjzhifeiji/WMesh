@@ -30,6 +30,7 @@ type Client struct {
 	FactoryID       *uuid.UUID `gorm:"type:uuid" json:"factoryId"`      // 当前所属工厂；空表示未分配
 	BindingRevision int64      `gorm:"not null" json:"bindingRevision"` // 绑定修订；未分配为 0，改分必须升高
 	BoundAt         *time.Time `json:"boundAt"`                         // 当前这次分配生效时间；未分配为空
+	ShortCode       string     `gorm:"not null" json:"shortCode"`       // Client 短码 C0001…C9999，登记后不改
 	CreatedAt       time.Time  `gorm:"not null" json:"createdAt"`       // 身份登记时间
 }
 
@@ -57,6 +58,7 @@ func (s *Store) PutFactoryPublicKey(ctx context.Context, factoryID uuid.UUID, pu
 	return nil
 }
 
+// FactoryPublicKey 取该厂签发公钥，不含私钥。
 func (s *Store) FactoryPublicKey(ctx context.Context, factoryID uuid.UUID) (FactoryPublicKey, error) {
 	var row FactoryPublicKey
 	if err := s.db.WithContext(ctx).First(&row, "factory_id = ?", factoryID).Error; err != nil {
@@ -68,6 +70,7 @@ func (s *Store) FactoryPublicKey(ctx context.Context, factoryID uuid.UUID) (Fact
 	return row, nil
 }
 
+// normalizePublicKey 空切片收成 nil，避免未上线写成空数组。
 func normalizePublicKey(publicKey []byte) []byte {
 	if len(publicKey) == 0 {
 		return nil
@@ -80,28 +83,41 @@ func (s *Store) CreateClient(ctx context.Context, clientID uuid.UUID, name strin
 	if clientID == uuid.Nil {
 		clientID = id.New()
 	}
-	row := Client{
-		ID:              clientID,
-		Name:            name,
-		PublicKey:       normalizePublicKey(publicKey),
-		BindingRevision: 0,
-		CreatedAt:       time.Now().UTC(),
-	}
-	if err := s.db.WithContext(ctx).Create(&row).Error; err != nil {
-		if domain.IsUniqueViolation(err) {
-			return Client{}, domain.ErrClientKeyTaken
+	var row Client
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		short, err := nextOriginCode(tx, originKindClient)
+		if err != nil {
+			return err
 		}
-		if domain.IsCheckViolation(err) {
-			if len(normalizePublicKey(publicKey)) != 0 && len(normalizePublicKey(publicKey)) != 32 {
-				return Client{}, domain.ErrInvalidKey
+		row = Client{
+			ID:              clientID,
+			Name:            name,
+			PublicKey:       normalizePublicKey(publicKey),
+			BindingRevision: 0,
+			ShortCode:       short,
+			CreatedAt:       time.Now().UTC(),
+		}
+		if err := tx.Create(&row).Error; err != nil {
+			if domain.IsUniqueViolation(err) {
+				return domain.ErrClientKeyTaken
 			}
-			return Client{}, domain.ErrInvalidName
+			if domain.IsCheckViolation(err) {
+				if len(normalizePublicKey(publicKey)) != 0 && len(normalizePublicKey(publicKey)) != 32 {
+					return domain.ErrInvalidKey
+				}
+				return domain.ErrInvalidName
+			}
+			return err
 		}
+		return nil
+	})
+	if err != nil {
 		return Client{}, err
 	}
 	return row, nil
 }
 
+// ClientByID 按固定识别号取现场设备。
 func (s *Store) ClientByID(ctx context.Context, clientID uuid.UUID) (Client, error) {
 	var row Client
 	if err := s.db.WithContext(ctx).First(&row, "id = ?", clientID).Error; err != nil {
@@ -175,6 +191,7 @@ func (s *Store) SetClientPublicKey(ctx context.Context, clientID uuid.UUID, publ
 		if err != nil {
 			return err
 		}
+		// 同钥再写算成功；已有另一把不能换。
 		if bytes.Equal(cur.PublicKey, publicKey) {
 			return nil
 		}
@@ -198,15 +215,18 @@ func (s *Store) BindClient(ctx context.Context, clientID, factoryID uuid.UUID) (
 			}
 			return err
 		}
+		// 已属一厂不能再绑。
 		if row.FactoryID != nil {
 			return domain.ErrClientBound
 		}
+		// 目标厂必须已在名录。
 		if err := tx.First(&Factory{}, "id = ?", factoryID).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return domain.ErrNotFound
 			}
 			return err
 		}
+		// 只改尚未分配的行，修订从 0 升到 1。
 		res := tx.Model(&Client{}).Where("id = ? AND factory_id IS NULL", clientID).Updates(map[string]any{
 			"factory_id":       factoryID,
 			"binding_revision": int64(1),
@@ -242,19 +262,24 @@ func (s *Store) RebindClient(ctx context.Context, clientID, factoryID uuid.UUID)
 			}
 			return err
 		}
+		// 未绑定不能改绑。
 		if row.FactoryID == nil {
 			return domain.ErrUnbound
 		}
+		// 仍是同一厂不算改分。
 		if *row.FactoryID == factoryID {
 			return domain.ErrClientBound
 		}
+		// 目标厂必须已在名录。
 		if err := tx.First(&Factory{}, "id = ?", factoryID).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return domain.ErrNotFound
 			}
 			return err
 		}
+		// 改分必须升高修订，厂端只认更高修订。
 		next := row.BindingRevision + 1
+		// 只改已经分给别厂的行。
 		res := tx.Model(&Client{}).Where("id = ? AND factory_id IS NOT NULL AND factory_id <> ?", clientID, factoryID).
 			Updates(map[string]any{
 				"factory_id":       factoryID,
@@ -276,6 +301,7 @@ func (s *Store) RebindClient(ctx context.Context, clientID, factoryID uuid.UUID)
 	return out, err
 }
 
+// HasColumn 看某表是否已有该列，给迁移夹具用。
 func (s *Store) HasColumn(ctx context.Context, table, column string) (bool, error) {
 	var exists bool
 	err := s.db.WithContext(ctx).

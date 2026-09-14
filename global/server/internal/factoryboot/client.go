@@ -33,7 +33,7 @@ type bootReq struct {
 type bootResp struct {
 	PersonID        string `json:"personId"`        // 厂库里的账号身份
 	ActivationToken string `json:"activationToken"` // 一次性 8 位激活码，禁止写入 WAN
-	Error           string `json:"error"`
+	Error           string `json:"error"`           // 厂端返回的英文错误
 }
 
 // 厂端响应体上限，防止异常网关把整页 HTML 灌进来。

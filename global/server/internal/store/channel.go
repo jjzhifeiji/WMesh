@@ -16,6 +16,7 @@ import (
 type EnrollmentOffer struct {
 	FactoryID  uuid.UUID // 工厂稳定身份
 	Name       string    // 工厂显示名
+	ShortCode  string    // 本厂短码，认领后用来发编号
 	SAPersonID uuid.UUID // 约定的初始超管身份，厂库必须用这个
 	SALogin    string    // 初始超管登录名
 	SADisplay  string    // 初始超管显示名
@@ -40,6 +41,7 @@ func (s *Store) LookupEnrollment(ctx context.Context, tokenHash string) (Enrollm
 	return EnrollmentOffer{
 		FactoryID:  fac.ID,
 		Name:       fac.Name,
+		ShortCode:  fac.ShortCode,
 		SAPersonID: sa.PersonID,
 		SALogin:    sa.LoginName,
 		SADisplay:  sa.DisplayName,
@@ -61,6 +63,7 @@ func (s *Store) ConfirmEnrollment(ctx context.Context, factoryID uuid.UUID, publ
 		err := tx.First(&existing, "factory_id = ?", factoryID).Error
 		switch {
 		case err == nil:
+			// 同一把钥再确认算成功；换钥拒绝。
 			if !bytes.Equal(existing.PublicKey, publicKey) {
 				return domain.ErrFactoryKeyExists
 			}
@@ -75,6 +78,7 @@ func (s *Store) ConfirmEnrollment(ctx context.Context, factoryID uuid.UUID, publ
 		default:
 			return err
 		}
+		// 建厂码一次性，认领后清空。
 		res := tx.Model(&Factory{}).Where("id = ?", factoryID).Updates(map[string]any{
 			"enrollment_token_hash": nil,
 			"enrolled_at":           now,

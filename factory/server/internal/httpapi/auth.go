@@ -6,7 +6,8 @@ import (
 	"wmesh/factory/internal/service"
 )
 
-func (h *Handler) mountAuth(mux *http.ServeMux) { // 本厂登录、激活、会话
+// 本厂登录、激活、会话。
+func (h *Handler) mountAuth(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/factories/{id}/login", h.login)
 	mux.HandleFunc("POST /v1/factories/{id}/activate", h.activate)
 	mux.HandleFunc("POST /v1/factories/{id}/logout", h.logout)
@@ -33,6 +34,7 @@ type passwordReq struct {
 	Password string `json:"password"` // 新日常密码，不进审计
 }
 
+// 校验密码开会话。
 func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 	h.withFactory(w, r, func(svc *service.Service) {
 		var req loginReq
@@ -49,6 +51,7 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// 用激活码自设日常密码。
 func (h *Handler) activate(w http.ResponseWriter, r *http.Request) {
 	h.withFactory(w, r, func(svc *service.Service) {
 		var req activateReq
@@ -64,6 +67,7 @@ func (h *Handler) activate(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// 结束会话。
 func (h *Handler) logout(w http.ResponseWriter, r *http.Request) {
 	h.withFactory(w, r, func(svc *service.Service) {
 		if err := svc.Auth.Logout(r.Context(), bearer(r)); err != nil {
@@ -74,6 +78,7 @@ func (h *Handler) logout(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// 返回当前登录人。
 func (h *Handler) me(w http.ResponseWriter, r *http.Request) {
 	h.withFactory(w, r, func(svc *service.Service) {
 		acc, err := svc.Auth.RequireActive(r.Context(), bearer(r))
@@ -85,6 +90,7 @@ func (h *Handler) me(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// 改自己的日常密码。
 func (h *Handler) changePassword(w http.ResponseWriter, r *http.Request) {
 	h.withFactory(w, r, func(svc *service.Service) {
 		var req passwordReq

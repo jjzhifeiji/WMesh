@@ -44,6 +44,7 @@ type statusWriter struct {
 	wrote  bool
 }
 
+// 记下状态码再转发。
 func (w *statusWriter) WriteHeader(code int) {
 	if !w.wrote {
 		w.status = code
@@ -52,6 +53,7 @@ func (w *statusWriter) WriteHeader(code int) {
 	w.ResponseWriter.WriteHeader(code)
 }
 
+// 记下已写再转发。
 func (w *statusWriter) Write(b []byte) (int, error) {
 	w.wrote = true
 	return w.ResponseWriter.Write(b)

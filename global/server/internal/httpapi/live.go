@@ -12,8 +12,9 @@ import (
 	"wmesh/global/internal/platform/domain"
 )
 
+// 一家厂当前钉死的连接世代。
 type liveSlot struct {
-	gen  uint64
+	gen  uint64 // 世代号，旧连接断开不得覆盖新连接
 	conn *websocket.Conn
 }
 
@@ -24,14 +25,17 @@ type liveConns struct {
 	wait  map[string]chan channelMsg // 厂+问询号，等通道回执
 }
 
+// 空的在线连接表。
 func newLiveConns() *liveConns {
 	return &liveConns{slots: map[uuid.UUID]*liveSlot{}, wait: map[string]chan channelMsg{}}
 }
 
+// 厂身份加问询号。
 func waitKey(id uuid.UUID, reqID string) string {
 	return id.String() + "/" + reqID
 }
 
+// 换世代钉死新连接，旧世代断开不再标离线。
 func (l *liveConns) acquire(id uuid.UUID) uint64 {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -43,6 +47,7 @@ func (l *liveConns) acquire(id uuid.UUID) uint64 {
 	return next
 }
 
+// 只把当前世代的套接字挂上，过期世代丢掉。
 func (l *liveConns) attach(id uuid.UUID, gen uint64, conn *websocket.Conn) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -53,6 +58,7 @@ func (l *liveConns) attach(id uuid.UUID, gen uint64, conn *websocket.Conn) {
 	s.conn = conn
 }
 
+// 往钉死连接写一帧；没有连接就丢掉。
 func (l *liveConns) push(ctx context.Context, id uuid.UUID, msg channelMsg) bool {
 	l.mu.Lock()
 	s := l.slots[id]
@@ -94,6 +100,7 @@ func (l *liveConns) call(ctx context.Context, id uuid.UUID, req channelMsg) (cha
 	}
 }
 
+// 登记等回执的槽位；通道不在则失败。
 func (l *liveConns) park(id uuid.UUID, reqID string, ch chan channelMsg) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -105,12 +112,14 @@ func (l *liveConns) park(id uuid.UUID, reqID string, ch chan channelMsg) bool {
 	return true
 }
 
+// 问询结束清掉等槽，避免把迟到回执交给下一问。
 func (l *liveConns) unpark(id uuid.UUID, reqID string) {
 	l.mu.Lock()
 	delete(l.wait, waitKey(id, reqID))
 	l.mu.Unlock()
 }
 
+// 把回执交给对应问询；没有等槽就丢。
 func (l *liveConns) deliver(id uuid.UUID, msg channelMsg) {
 	if msg.ReqID == "" {
 		return
@@ -127,6 +136,7 @@ func (l *liveConns) deliver(id uuid.UUID, msg channelMsg) {
 	}
 }
 
+// 把厂端英文错误收回本侧业务错误。
 func mapChannelErr(msg string) error {
 	switch msg {
 	case domain.ErrNotFound.Error():

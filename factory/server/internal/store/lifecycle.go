@@ -6,6 +6,9 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+
+	"wmesh/factory/internal/platform/assetcode"
+	"wmesh/factory/internal/platform/domain"
 )
 
 const (
@@ -19,6 +22,7 @@ type Lifecycle struct {
 	ID        int16     `gorm:"primaryKey" json:"-"`       // 全表一行
 	Status    string    `gorm:"not null" json:"status"`    // active / disabled / retired
 	Revision  int64     `gorm:"not null" json:"revision"`  // 已接受的 WAN 修订，只向前
+	ShortCode string    `json:"shortCode,omitempty"`      // 本厂短码，认领后写入
 	UpdatedAt time.Time `gorm:"not null" json:"updatedAt"` // 最近一次落地
 }
 
@@ -51,11 +55,50 @@ func (s *Store) ApplyLifecycle(ctx context.Context, status string, revision int6
 		if revision <= out.Revision {
 			return nil
 		}
-		out = Lifecycle{ID: 1, Status: status, Revision: revision, UpdatedAt: now}
+		out = Lifecycle{ID: 1, Status: status, Revision: revision, ShortCode: out.ShortCode, UpdatedAt: now}
+		if out.ShortCode == "" {
+			return tx.Omit("ShortCode").Save(&out).Error
+		}
 		return tx.Save(&out).Error
 	})
 	if err != nil {
 		return Lifecycle{}, err
 	}
 	return out, nil
+}
+
+// PutFactoryShortCode 写入本厂短码；已有则必须相同。
+func (s *Store) PutFactoryShortCode(ctx context.Context, code string) error {
+	if !assetcode.ValidFactoryOrigin(code) {
+		return domain.ErrAssetCodeConflict
+	}
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var row Lifecycle
+		if err := tx.First(&row, "id = ?", 1).Error; err != nil {
+			if !errors.Is(err, gorm.ErrRecordNotFound) {
+				return err
+			}
+			row = Lifecycle{ID: 1, Status: FactoryActive}
+		}
+		if row.ShortCode != "" && row.ShortCode != code {
+			return domain.ErrAssetCodeConflict
+		}
+		row.ShortCode = code
+		if row.UpdatedAt.IsZero() {
+			row.UpdatedAt = time.Now().UTC()
+		}
+		return tx.Save(&row).Error
+	})
+}
+
+// FactoryShortCode 取本厂短码；未齐则不得发号。
+func (s *Store) FactoryShortCode(ctx context.Context) (string, error) {
+	row, err := s.Lifecycle(ctx)
+	if err != nil {
+		return "", err
+	}
+	if row.ShortCode == "" {
+		return "", domain.ErrAssetCodeMissing
+	}
+	return row.ShortCode, nil
 }

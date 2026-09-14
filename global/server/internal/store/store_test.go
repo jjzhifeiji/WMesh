@@ -221,8 +221,8 @@ func TestWANPlatformAssets(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := db.Exec(
-		`INSERT INTO assets (id, kind, level, name, status, copyable, revision, content, digest, creator_id, deps)
-		 VALUES (?, 'process', 'platform', '可复制草稿', 'draft', true, 1, decode('00','hex'), ?, ?, '[]'::jsonb)`,
+		`INSERT INTO assets (id, kind, level, name, code, status, copyable, revision, content, digest, creator_id, deps)
+		 VALUES (?, 'process', 'platform', '可复制草稿', 'GY-W-000099', 'draft', true, 1, decode('00','hex'), ?, ?, '[]'::jsonb)`,
 		id.New(), sum, admin.ID,
 	).Error; err != nil {
 		t.Fatalf("copyable true: %v", err)

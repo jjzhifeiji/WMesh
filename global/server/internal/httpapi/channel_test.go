@@ -1,3 +1,4 @@
+// HTTP 适配：厂出站认领、验签、租约先于闭包、回连补送与升档问询。
 package httpapi_test
 
 import (

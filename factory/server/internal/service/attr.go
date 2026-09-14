@@ -21,6 +21,7 @@ func (s *Attr) CreateFact(ctx context.Context, token string, wc WorkContext) (Fa
 		_ = s.auditAt(ctx, &acc.ID, "create_fact", "fact", audit.Deny, unitID, path)
 		return FactStub{}, err
 	}
+	// 冻结当时组织路径，写入事实桩。
 	row, err := s.store.InsertFact(ctx, acc.ID, unitID, path)
 	if err != nil {
 		_ = s.auditAt(ctx, &acc.ID, "create_fact", "fact", audit.Deny, unitID, path)
@@ -40,6 +41,7 @@ func (s *Attr) CreatePersonalAsset(ctx context.Context, token string, wc WorkCon
 		_ = s.auditAt(ctx, &acc.ID, "create_asset", "asset", audit.Deny, unitID, path)
 		return PersonalAsset{}, err
 	}
+	// 内容不进审计。
 	row, err := s.store.InsertAsset(ctx, acc.ID, unitID, path, content)
 	if err != nil {
 		_ = s.auditAt(ctx, &acc.ID, "create_asset", "asset", audit.Deny, unitID, path)
@@ -54,6 +56,7 @@ func (s *Attr) GetFact(ctx context.Context, token string, factID uuid.UUID) (Fac
 	if err != nil {
 		return FactStub{}, err
 	}
+	// 按落库快照读，不按当前分配反查。
 	row, err := s.store.FactByID(ctx, factID)
 	if err != nil {
 		return FactStub{}, err
@@ -75,6 +78,7 @@ func (s *Attr) ListFactsByCreator(ctx context.Context, token string, creatorID u
 		_ = s.audit(ctx, &acc.ID, nil, "list_facts", creatorID.String(), audit.Deny)
 		return nil, err
 	}
+	// 已停用账号名下的路径不改。
 	rows, err := s.store.FactsByCreator(ctx, creatorID)
 	if err != nil {
 		return nil, err
@@ -88,6 +92,7 @@ func (s *Attr) GetPersonalAsset(ctx context.Context, token string, assetID uuid.
 	if err != nil {
 		return PersonalAsset{}, err
 	}
+	// 只取元数据和创建时路径，不含内容。
 	meta, err := s.store.AssetByID(ctx, assetID)
 	if err != nil {
 		return PersonalAsset{}, err
@@ -155,6 +160,7 @@ func (s *kernel) resolveWorkContext(ctx context.Context, acc Account, wc WorkCon
 	if unit.Status != StatusActive {
 		return &unit.ID, nil, domain.ErrDisabledOrgUnit // 停用节点不能再当新上下文
 	}
+	// 必须是当前有效分配，不能拿别人的节点当上下文。
 	ok, err := s.store.HasActiveAssignment(ctx, acc.ID, unit.ID)
 	if err != nil {
 		return &unit.ID, nil, err
@@ -165,6 +171,7 @@ func (s *kernel) resolveWorkContext(ctx context.Context, acc Account, wc WorkCon
 	if err := s.can(ctx, acc, permOperate, &unit.ID); err != nil {
 		return &unit.ID, nil, err
 	}
+	// 冻结当时组织路径，事后改树也不改这条。
 	path, err := s.store.PathSnapshot(ctx, unit.ID)
 	if err != nil {
 		return &unit.ID, nil, err
@@ -186,6 +193,7 @@ func (s *kernel) canOperateFactory(ctx context.Context, acc Account) error {
 	return domain.ErrForbidden
 }
 
+// canReadMeta 创建人或对该节点有只读许可才能看元数据。
 func (s *kernel) canReadMeta(ctx context.Context, acc Account, creatorID uuid.UUID, unitID *uuid.UUID) error {
 	if acc.ID == creatorID {
 		return nil
@@ -193,6 +201,7 @@ func (s *kernel) canReadMeta(ctx context.Context, acc Account, creatorID uuid.UU
 	return s.can(ctx, acc, permView, unitID)
 }
 
+// 用服务器时间记下带组织路径的允许或拒绝。
 func (s *kernel) auditAt(ctx context.Context, actor *uuid.UUID, action, target, result string, unit *uuid.UUID, path []PathNode) error {
 	return s.auditAtSrc(ctx, actor, action, target, result, audit.Server, unit, path)
 }

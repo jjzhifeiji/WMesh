@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 
+	"wmesh/factory/internal/platform/assetcode"
 	"wmesh/factory/internal/platform/domain"
 	"wmesh/factory/internal/platform/id"
 )
@@ -40,6 +41,7 @@ type Client struct {
 	BoundAt         time.Time  `gorm:"not null" json:"boundAt"`               // 最近一次接受为 bound 的时间
 	VoidedAt        *time.Time `json:"voidedAt"`                              // 作废时间；bound 必须为空
 	OperatorID      *uuid.UUID `gorm:"type:uuid" json:"operatorId,omitempty"` // 当前在本机登录的本厂账号；无人则为空
+	ShortCode       string     `json:"shortCode,omitempty"`                 // Client 短码，随绑定补齐
 }
 
 func (Client) TableName() string { return "clients" }
@@ -79,6 +81,7 @@ func (s *Store) PutSigningKey(ctx context.Context, publicKey, privateKey []byte)
 	return row, nil
 }
 
+// SigningKey 取本厂唯一签发密钥，含私钥。
 func (s *Store) SigningKey(ctx context.Context) (SigningKey, error) {
 	var row SigningKey
 	if err := s.db.WithContext(ctx).First(&row).Error; err != nil {
@@ -117,7 +120,8 @@ func (s *Store) AcceptBinding(ctx context.Context, clientID uuid.UUID, name stri
 				Status:          ClientStatusBound,
 				BoundAt:         now,
 			}
-			if err := tx.Create(&row).Error; err != nil {
+			// 短码稍后随绑定帧补齐，空串不能落库。
+			if err := tx.Omit("ShortCode").Create(&row).Error; err != nil {
 				if domain.IsCheckViolation(err) {
 					if len(publicKey) != 0 && len(publicKey) != 32 {
 						return domain.ErrInvalidKey
@@ -132,9 +136,11 @@ func (s *Store) AcceptBinding(ctx context.Context, clientID uuid.UUID, name stri
 		if err != nil {
 			return err
 		}
+		// 修订只向前，迟到的帧丢掉。
 		if revision < row.BindingRevision {
 			return domain.ErrStaleRevision
 		}
+		// 已有公钥不能换成另一把。
 		if len(publicKey) > 0 && len(row.PublicKey) > 0 && !bytes.Equal(row.PublicKey, publicKey) {
 			return domain.ErrClientKeyMismatch
 		}
@@ -149,6 +155,7 @@ func (s *Store) AcceptBinding(ctx context.Context, clientID uuid.UUID, name stri
 		if strings.TrimSpace(name) != "" {
 			patch["name"] = name
 		}
+		// 同修订只允许补尚未登记的公钥。
 		if len(row.PublicKey) == 0 && len(publicKey) > 0 {
 			patch["public_key"] = publicKey
 		}
@@ -165,6 +172,24 @@ func (s *Store) AcceptBinding(ctx context.Context, clientID uuid.UUID, name stri
 		return nil
 	})
 	return out, err
+}
+
+// PutClientShortCode 写入 Client 短码；已有则必须相同。
+func (s *Store) PutClientShortCode(ctx context.Context, clientID uuid.UUID, code string) error {
+	if !assetcode.ValidClientOrigin(code) {
+		return domain.ErrAssetCodeConflict
+	}
+	var row Client
+	if err := s.db.WithContext(ctx).First(&row, "id = ?", clientID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return domain.ErrNotFound
+		}
+		return err
+	}
+	if row.ShortCode != "" && row.ShortCode != code {
+		return domain.ErrAssetCodeConflict
+	}
+	return s.db.WithContext(ctx).Model(&Client{}).Where("id = ?", clientID).Update("short_code", code).Error
 }
 
 // RenameClient 只改给人看的名字，不改绑定修订。
@@ -194,6 +219,7 @@ func (s *Store) VoidBinding(ctx context.Context, clientID uuid.UUID) error {
 	if res.RowsAffected > 0 {
 		return nil
 	}
+	// 已作废再调不算错。
 	var n int64
 	if err := s.db.WithContext(ctx).Model(&Client{}).Where("id = ?", clientID).Count(&n).Error; err != nil {
 		return err
@@ -204,6 +230,7 @@ func (s *Store) VoidBinding(ctx context.Context, clientID uuid.UUID) error {
 	return nil
 }
 
+// ClientByID 按固定识别号取本厂绑定。
 func (s *Store) ClientByID(ctx context.Context, clientID uuid.UUID) (Client, error) {
 	var row Client
 	if err := s.db.WithContext(ctx).First(&row, "id = ?", clientID).Error; err != nil {
@@ -253,6 +280,7 @@ func (s *Store) ListRuntimeGrants(ctx context.Context) ([]RuntimeGrant, error) {
 	return rows, nil
 }
 
+// assertClientBound 作废后不得再签发。
 func (s *Store) assertClientBound(ctx context.Context, tx *gorm.DB, clientID uuid.UUID) error {
 	var row Client
 	db := s.db.WithContext(ctx)
@@ -271,6 +299,7 @@ func (s *Store) assertClientBound(ctx context.Context, tx *gorm.DB, clientID uui
 	return nil
 }
 
+// maxRevision 该对象当前最大修订；没有则为 0。
 func maxRevision(tx *gorm.DB, model any, query string, args ...any) (int64, error) {
 	var n sql.NullInt64
 	if err := tx.Model(model).Where(query, args...).Select("MAX(revision)").Scan(&n).Error; err != nil {
@@ -292,6 +321,7 @@ func (s *Store) InsertRuntimeGrant(ctx context.Context, g RuntimeGrant) (Runtime
 		if err != nil {
 			return err
 		}
+		// 修订必须严格更大。
 		if g.Revision <= max {
 			return domain.ErrStaleRevision
 		}
@@ -318,6 +348,7 @@ func (s *Store) InsertRuntimeGrant(ctx context.Context, g RuntimeGrant) (Runtime
 	return g, err
 }
 
+// LatestRuntimeGrant 取该 Client 最新一版运行凭证。
 func (s *Store) LatestRuntimeGrant(ctx context.Context, clientID uuid.UUID) (RuntimeGrant, error) {
 	var row RuntimeGrant
 	if err := s.db.WithContext(ctx).Where("client_id = ?", clientID).Order("revision DESC").First(&row).Error; err != nil {
@@ -328,4 +359,3 @@ func (s *Store) LatestRuntimeGrant(ctx context.Context, clientID uuid.UUID) (Run
 	}
 	return row, nil
 }
-

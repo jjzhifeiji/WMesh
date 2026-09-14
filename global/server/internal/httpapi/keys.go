@@ -8,6 +8,7 @@ import (
 	"wmesh/global/internal/platform/domain"
 )
 
+// 空则不登记；只认 32 字节公钥。
 func decodeOptionalPublicKey(s string) ([]byte, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
