@@ -1,39 +1,52 @@
 import { Button, Checkbox, Input, Select, Typography } from "antd";
 import { enumDefault, enumOptions, kindOf, parseText, textOf, type ContentSchema, type Kind, type TemplateField } from "./schema";
 
-const typeOptions = [
+const typeOptionsBase = [
   { value: "string", label: "文本" },
   { value: "enum", label: "枚举" },
   { value: "object", label: "对象" },
   { value: "array", label: "数组" },
 ];
 
-export function SchemaEditor({ value, onChange }: { value: ContentSchema; onChange: (s: ContentSchema) => void }) {
+const typeOptionsWithProcess = [
+  { value: "string", label: "文本" },
+  { value: "process", label: "工艺" },
+  { value: "enum", label: "枚举" },
+  { value: "object", label: "对象" },
+  { value: "array", label: "数组" },
+];
+
+export function SchemaEditor({ value, onChange, allowProcess }: { value: ContentSchema; onChange: (s: ContentSchema) => void; allowProcess?: boolean }) {
+  const typeOptions = allowProcess ? typeOptionsWithProcess : typeOptionsBase;
   if (value.root === "array") {
     return (
       <div className="schema-editor">
         <Typography.Text type="secondary" style={{ fontSize: 12, display: "block", marginBottom: 6 }}>
           根是数组，下面是每个元素。
         </Typography.Text>
-        {value.item ? <FieldEditor field={value.item} allowKey={false} onChange={(item) => onChange({ ...value, item })} /> : null}
+        {value.item ? <FieldEditor field={value.item} allowKey={false} typeOptions={typeOptions} onChange={(item) => onChange({ ...value, item })} /> : null}
       </div>
     );
   }
   return (
     <div className="schema-editor">
-      <FieldList fields={value.fields ?? []} onChange={(fields) => onChange({ ...value, fields })} headed />
+      <FieldList fields={value.fields ?? []} typeOptions={typeOptions} onChange={(fields) => onChange({ ...value, fields })} headed />
     </div>
   );
 }
+
+type TypeOption = { value: string; label: string };
 
 function FieldList({
   fields,
   onChange,
   headed,
+  typeOptions,
 }: {
   fields: TemplateField[];
   onChange: (f: TemplateField[]) => void;
   headed?: boolean;
+  typeOptions: TypeOption[];
 }) {
   const compact: { f: TemplateField; i: number }[] = [];
   const wide: { f: TemplateField; i: number }[] = [];
@@ -58,14 +71,14 @@ function FieldList({
             <div className="schema-col" key={ci}>
               {headed ? <ColHead /> : null}
               {col.map(({ f, i }) => (
-                <FieldEditor key={`${f.key}-${i}`} field={f} onChange={(n) => patch(i, n)} onRemove={() => remove(i)} />
+                <FieldEditor key={`${f.key}-${i}`} field={f} typeOptions={typeOptions} onChange={(n) => patch(i, n)} onRemove={() => remove(i)} />
               ))}
             </div>
           ),
         )}
       </div>
       {wide.map(({ f, i }) => (
-        <FieldEditor key={`${f.key}-${i}`} field={f} onChange={(n) => patch(i, n)} onRemove={() => remove(i)} />
+        <FieldEditor key={`${f.key}-${i}`} field={f} typeOptions={typeOptions} onChange={(n) => patch(i, n)} onRemove={() => remove(i)} />
       ))}
       <Button size="small" style={{ marginTop: 8 }} onClick={() => onChange([...fields, { key: nextKey(fields), label: "新字段", type: "string", default: "" }])}>
         添加字段
@@ -93,11 +106,13 @@ function FieldEditor({
   onChange,
   onRemove,
   allowKey = true,
+  typeOptions,
 }: {
   field: TemplateField;
   onChange: (f: TemplateField) => void;
   onRemove?: () => void;
   allowKey?: boolean;
+  typeOptions: TypeOption[];
 }) {
   const kind = kindOf(field);
   const opts = enumOptions(field);
@@ -151,12 +166,12 @@ function FieldEditor({
       {row}
       {kind === "object" ? (
         <div className="schema-item-nested">
-          <FieldList fields={field.fields ?? []} onChange={(fields) => onChange({ ...field, fields })} headed />
+          <FieldList fields={field.fields ?? []} typeOptions={typeOptions} onChange={(fields) => onChange({ ...field, fields })} headed />
         </div>
       ) : null}
       {kind === "array" && field.items ? (
         <div className="schema-item-nested">
-          <FieldEditor field={field.items} allowKey={false} onChange={(items) => onChange({ ...field, items })} />
+          <FieldEditor field={field.items} allowKey={false} typeOptions={typeOptions} onChange={(items) => onChange({ ...field, items })} />
         </div>
       ) : null}
     </div>
@@ -218,6 +233,14 @@ function withKind(field: TemplateField, kind: Kind): TemplateField {
   if (kind === "enum") {
     const options = enumOptions(field).length ? enumOptions(field) : ["选项1"];
     return withEnumOptions({ ...field, type: "string" }, options);
+  }
+  if (kind === "process") {
+    const next: TemplateField = { ...field, type: "process", default: "" };
+    delete next.fields;
+    delete next.items;
+    delete next.options;
+    delete next.unit;
+    return next;
   }
   const next: TemplateField = { ...field, type: "string" };
   delete next.fields;

@@ -142,6 +142,11 @@ body,
   grid-template-columns: 6.5em 140px;
 }
 
+.content-field:has(.content-ctrl-process) {
+  grid-column: 1 / -1;
+  grid-template-columns: 6.5em minmax(240px, 1fr);
+}
+
 .content-field-label {
   font-size: 12px;
   color: rgba(0, 0, 0, 0.55);
@@ -156,6 +161,12 @@ body,
 .content-ctrl-text,
 .content-field .ant-select {
   width: 140px !important;
+}
+
+.content-ctrl-process.ant-select,
+.content-field .ant-select.content-ctrl-process {
+  width: 100% !important;
+  min-width: 240px;
 }
 
 .content-field-group {
@@ -349,4 +360,31 @@ body,
 .schema-json {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: 12px;
+}
+
+.project-kind-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.project-kind-idx {
+  width: 1.5em;
+  color: rgba(0, 0, 0, 0.45);
+  font-size: 12px;
+}
+
+.project-kind-select {
+  min-width: 220px;
+}
+
+.project-kind-hint {
+  flex: 1 1 12em;
+  min-width: 0;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }

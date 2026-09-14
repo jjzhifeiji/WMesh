@@ -39,7 +39,7 @@ type createAssetReq struct {
 	Kind    string             `json:"kind"`    // process / project
 	Name    string             `json:"name"`    // 显示名
 	Content string             `json:"content"` // UTF-8 正文
-	Deps    []service.AssetDep `json:"deps"`    // 工程依赖；工艺必须空
+	Deps    []service.AssetDep `json:"deps"`    // 可空；新建从参数补
 }
 
 type expectedReq struct {

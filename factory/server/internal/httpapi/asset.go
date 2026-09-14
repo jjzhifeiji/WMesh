@@ -35,7 +35,7 @@ type createAssetReq struct {
 	Content   string             `json:"content"`   // UTF-8 正文
 	Direct    bool               `json:"direct"`    // 兼容旧客户端；未带节点时按工厂直属
 	OrgUnitID *string            `json:"orgUnitId"` // 未传则记工厂直属
-	Deps      []service.AssetDep `json:"deps"`      // 工程依赖；工艺必须空
+	Deps      []service.AssetDep `json:"deps"`      // 可空；新建从参数补
 }
 
 type expectedReq struct {

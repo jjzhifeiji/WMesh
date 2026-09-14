@@ -88,6 +88,10 @@ func TestFactoryHTTP(t *testing.T) {
 		t.Fatalf("login %d %s", code, body)
 	}
 	tok := gjson(t, body, "token")
+	code, body = do(t, srv, "GET", base+"/project-templates", tok, "")
+	if code != http.StatusOK || strings.TrimSpace(body) != "[]" {
+		t.Fatalf("project templates %d %s", code, body)
+	}
 	code, body = do(t, srv, "GET", base+"/catalog", tok, "")
 	if code != http.StatusOK {
 		t.Fatalf("catalog %d %s", code, body)

@@ -12,7 +12,6 @@ import (
 	"github.com/google/uuid"
 
 	"wmesh/factory/internal/platform/audit"
-	"wmesh/factory/internal/platform/contenttpl"
 	"wmesh/factory/internal/platform/digest"
 	"wmesh/factory/internal/platform/domain"
 	"wmesh/factory/internal/store"
@@ -172,7 +171,7 @@ func (s *Assets) resolveAuthorContext(ctx context.Context, acc Account, wc WorkC
 	return &unit.ID, path, nil
 }
 
-// insertAuthored 套模版后落草稿。
+// insertAuthored 套模版后落草稿；工程依赖从参数补齐。
 func (s *Assets) insertAuthored(ctx context.Context, acc Account, wc WorkContext, kind, level, name string, content []byte, deps []AssetDep) (Asset, error) {
 	unitID, path, err := s.resolveAuthorContext(ctx, acc, wc)
 	if err != nil {
@@ -184,8 +183,23 @@ func (s *Assets) insertAuthored(ctx context.Context, acc Account, wc WorkContext
 		_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny, unitID, path)
 		return Asset{}, err
 	}
-	// 套完后工程引用须落在已声明依赖里。
 	if kind == KindProject {
+		// 参数里选过的工艺补进依赖，钉当前修订。
+		deps, err = s.fillProjectDeps(ctx, acc, level, content, deps)
+		if err != nil {
+			_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny, unitID, path)
+			return Asset{}, err
+		}
+		if level == AssetLevelPersonal {
+			err = s.assertPersonalProjectDeps(ctx, acc, deps)
+		} else {
+			err = s.assertFactoryProcessDeps(ctx, deps)
+		}
+		if err != nil {
+			_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny, unitID, path)
+			return Asset{}, err
+		}
+		// 套完后工程引用须落在已声明依赖里。
 		if err := s.assertProjectProcessIDs(ctx, content, deps); err != nil {
 			_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny, unitID, path)
 			return Asset{}, err
@@ -280,14 +294,10 @@ func (s *Assets) CreatePersonalProcess(ctx context.Context, token string, wc Wor
 	return s.insertAuthored(ctx, acc, wc, KindProcess, AssetLevelPersonal, name, content, nil)
 }
 
-// CreatePersonalProject 创建个人级工程；依赖须是自己的可用个人级工艺或本厂可用厂级工艺。
+// CreatePersonalProject 创建个人级工程；参数里的工艺写入 deps，不必另填。
 func (s *Assets) CreatePersonalProject(ctx context.Context, token string, wc WorkContext, name string, content []byte, deps []AssetDep) (Asset, error) {
 	acc, err := s.RequireActive(ctx, token)
 	if err != nil {
-		return Asset{}, err
-	}
-	if err := s.assertPersonalProjectDeps(ctx, acc, deps); err != nil {
-		_ = s.audit(ctx, &acc.ID, nil, "create_asset", name, audit.Deny)
 		return Asset{}, err
 	}
 	return s.insertAuthored(ctx, acc, wc, KindProject, AssetLevelPersonal, name, content, deps)
@@ -319,26 +329,22 @@ func (s *kernel) assertPersonalProjectDeps(ctx context.Context, acc Account, dep
 	return nil
 }
 
-// CreateFactoryProject 创建厂级工程；依赖必须是本厂可用厂级工艺且修订、摘要对得上。
+// CreateFactoryProject 创建厂级工程；参数里的工艺写入 deps，不必另填。
 func (s *Assets) CreateFactoryProject(ctx context.Context, token string, wc WorkContext, name string, content []byte, deps []AssetDep) (Asset, error) {
 	acc, err := s.RequireActive(ctx, token)
 	if err != nil {
 		return Asset{}, err
 	}
-	if err := s.assertFactoryProcessDeps(ctx, deps); err != nil {
-		_ = s.audit(ctx, &acc.ID, nil, "create_asset", name, audit.Deny)
-		return Asset{}, err
-	}
 	return s.insertAuthored(ctx, acc, wc, KindProject, AssetLevelFactory, name, content, deps)
 }
 
-// assertFactoryProcessDeps 厂级工程只能钉本厂厂级或已收平台级可用工艺。
+// assertFactoryProcessDeps 厂级工程可钉本厂可用厂级、个人级或已收平台级工艺。
 func (s *kernel) assertFactoryProcessDeps(ctx context.Context, deps []AssetDep) error {
 	for _, d := range deps {
 		// 先看本厂原件，没有再看已收平台级。
 		p, err := s.store.GovernedAssetMetaByID(ctx, d.ID)
 		if err == nil {
-			if p.Kind != KindProcess || p.Level != AssetLevelFactory || p.Revision != d.Revision || !bytes.Equal(p.Digest, d.Digest) {
+			if p.Kind != KindProcess || !factoryProjectProcessLevel(p.Level) || p.Revision != d.Revision || !bytes.Equal(p.Digest, d.Digest) {
 				return domain.ErrAssetDependency
 			}
 			if p.Status != AssetAvailable {
@@ -366,13 +372,116 @@ func (s *kernel) assertFactoryProcessDeps(ctx context.Context, deps []AssetDep) 
 	return nil
 }
 
+// fillProjectDeps 把参数里的工艺补进 deps，钉当前可用修订。
+func (s *kernel) fillProjectDeps(ctx context.Context, acc Account, level string, content []byte, deps []AssetDep) ([]AssetDep, error) {
+	ids, err := s.collectProjectProcessIDs(ctx, content)
+	if err != nil {
+		return nil, domain.ErrAssetDependency
+	}
+	return mergeProjectDeps(deps, ids, func(id uuid.UUID) (AssetDep, error) {
+		if level == AssetLevelPersonal {
+			return s.pinPersonalProcess(ctx, acc, id)
+		}
+		return s.pinFactoryProcess(ctx, id)
+	})
+}
+
+// pinFactoryProcess 厂级工程钉本厂可用厂级、个人级或已收平台级工艺。
+func (s *kernel) pinFactoryProcess(ctx context.Context, id uuid.UUID) (AssetDep, error) {
+	p, err := s.store.GovernedAssetMetaByID(ctx, id)
+	if err == nil {
+		if p.Kind != KindProcess || !factoryProjectProcessLevel(p.Level) {
+			return AssetDep{}, domain.ErrAssetDependency
+		}
+		if p.Status != AssetAvailable {
+			return AssetDep{}, domain.ErrAssetNotAvailable
+		}
+		return AssetDep{ID: p.ID, Revision: p.Revision, Digest: p.Digest}, nil
+	}
+	if !errors.Is(err, domain.ErrNotFound) {
+		return AssetDep{}, err
+	}
+	r, err := s.store.LatestReplicaMeta(ctx, id)
+	if err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			return AssetDep{}, domain.ErrAssetDependency
+		}
+		return AssetDep{}, err
+	}
+	if r.Kind != KindProcess || r.Level != AssetLevelPlatform {
+		return AssetDep{}, domain.ErrAssetDependency
+	}
+	if r.Status != AssetAvailable {
+		return AssetDep{}, domain.ErrAssetNotAvailable
+	}
+	return AssetDep{ID: r.ID, Revision: r.Revision, Digest: r.Digest}, nil
+}
+
+// factoryProjectProcessLevel 厂级工程可钉本厂原件里的厂级和个人级工艺。
+func factoryProjectProcessLevel(level string) bool {
+	return level == AssetLevelFactory || level == AssetLevelPersonal
+}
+
+// pinPersonalProcess 个人工程钉自己的个人工艺或本厂厂级可用工艺。
+func (s *kernel) pinPersonalProcess(ctx context.Context, acc Account, id uuid.UUID) (AssetDep, error) {
+	p, err := s.loadCheckedMeta(ctx, id)
+	if err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			return AssetDep{}, domain.ErrAssetDependency
+		}
+		return AssetDep{}, err
+	}
+	if p.Kind != KindProcess {
+		return AssetDep{}, domain.ErrAssetDependency
+	}
+	if p.Status != AssetAvailable {
+		return AssetDep{}, domain.ErrAssetNotAvailable
+	}
+	switch p.Level {
+	case AssetLevelFactory:
+	case AssetLevelPersonal:
+		if p.CreatorID != acc.ID {
+			return AssetDep{}, domain.ErrAssetDependency
+		}
+	default:
+		return AssetDep{}, domain.ErrAssetDependency
+	}
+	return AssetDep{ID: p.ID, Revision: p.Revision, Digest: p.Digest}, nil
+}
+
+// mergeProjectDeps 保留已声明依赖，再按参数引用补缺。
+func mergeProjectDeps(existing []AssetDep, ids []string, lookup func(uuid.UUID) (AssetDep, error)) ([]AssetDep, error) {
+	have := make(map[string]struct{}, len(existing)+len(ids))
+	out := make([]AssetDep, 0, len(existing)+len(ids))
+	for _, d := range existing {
+		key := d.ID.String()
+		if _, ok := have[key]; ok {
+			continue
+		}
+		have[key] = struct{}{}
+		out = append(out, d)
+	}
+	for _, raw := range ids {
+		if _, ok := have[raw]; ok {
+			continue
+		}
+		id, err := uuid.Parse(raw)
+		if err != nil {
+			return nil, domain.ErrAssetDependency
+		}
+		d, err := lookup(id)
+		if err != nil {
+			return nil, err
+		}
+		have[raw] = struct{}{}
+		out = append(out, d)
+	}
+	return out, nil
+}
+
 // assertProjectProcessIDs 按当前工程模版收集引用，非空的必须是本行 deps 的身份。
 func (s *kernel) assertProjectProcessIDs(ctx context.Context, content []byte, deps []AssetDep) error {
-	sch, err := s.projectSchemaJSON(ctx)
-	if err != nil {
-		return err
-	}
-	ids, err := contenttpl.CollectProcessIDs(sch, content)
+	ids, err := s.collectProjectProcessIDs(ctx, content)
 	if err != nil {
 		return domain.ErrAssetDependency
 	}

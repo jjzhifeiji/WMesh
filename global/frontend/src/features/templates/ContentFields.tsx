@@ -1,8 +1,10 @@
-import { Button, Collapse, Input, Select, Space } from "antd";
-import type { ContentSchema, TemplateField } from "./schema";
-import { defaultField, defaultValue, encodeContent, enumOptions, enumValue, kindOf, parseContent, parseText, textOf } from "./schema";
+import { Button, Collapse, Input, Select, Space, Typography } from "antd";
+import type { ContentSchema, ProjectItemSchema, TemplateField } from "./schema";
+import { defaultField, defaultItemFromFields, defaultValue, encodeContent, enumOptions, enumValue, isProcessRef, kindOf, parseContent, parseText, textOf } from "./schema";
+import { itemExtra, itemFields, kindLabel } from "./projectKinds";
+import type { ProjectItemTemplate } from "./projectKinds";
 
-export type ProcessOption = { value: string; label: string }; // 已声明依赖，给焊道选工艺
+export type ProcessOption = { value: string; label: string; disabled?: boolean }; // 焊道上选工艺
 
 type FieldsProps = {
   schema: ContentSchema;
@@ -15,6 +17,13 @@ type FieldsProps = {
 export function ContentFields({ schema, value, onChange, disabled, processOptions }: FieldsProps) {
   const current = value === undefined ? defaultValue(schema) : value;
   if (schema.root === "array") {
+    if (schema.projectItems || schema.templates || schema.kinds?.length) {
+      return (
+        <div className="content-fields-scroll">
+          <ProjectArrayFields schema={schema} value={asArr(current)} onChange={(v) => onChange?.(v)} disabled={disabled} processOptions={processOptions} />
+        </div>
+      );
+    }
     return (
       <div className="content-fields-scroll">
         <ArrayFields
@@ -54,6 +63,99 @@ export function ContentEditor({ schema, value, onChange, disabled, processOption
       disabled={disabled}
       processOptions={processOptions}
     />
+  );
+}
+
+function ProjectArrayFields({
+  schema,
+  value,
+  onChange,
+  disabled,
+  processOptions,
+}: {
+  schema: ContentSchema;
+  value: unknown[];
+  onChange: (v: unknown[]) => void;
+  disabled?: boolean;
+  processOptions?: ProcessOption[];
+}) {
+  const items: ProjectItemSchema[] =
+    schema.projectItems ??
+    (schema.templates ?? []).map((t: ProjectItemTemplate) => ({
+      id: t.id,
+      name: t.name,
+      fields: itemFields(t.kind, itemExtra(t)),
+    }));
+  const byId = new Map(items.map((t) => [t.id, t]));
+  const union: ProjectItemSchema["fields"] = [];
+  const seen = new Set<string>();
+  for (const t of items) {
+    for (const f of t.fields) {
+      if (seen.has(f.key)) continue;
+      seen.add(f.key);
+      union.push(f);
+    }
+  }
+  const add = (t: ProjectItemSchema) => onChange([...value, defaultItemFromFields(t.fields, t.id)]);
+  return (
+    <div>
+      {value.length === 0 && !disabled ? (
+        <Typography.Text type="secondary" style={{ display: "block", marginBottom: 8 }}>
+          还没有焊缝。从下面按模版添加。
+        </Typography.Text>
+      ) : null}
+      <Collapse
+        size="small"
+        items={value.map((el, i) => {
+          const obj = asObj(el);
+          const tpl = typeof obj.templateId === "string" ? byId.get(obj.templateId) : undefined;
+          const kind = typeof obj.kind === "string" ? obj.kind : "";
+          const name = typeof obj.name === "string" && obj.name ? obj.name : "";
+          const rowKey = typeof obj.id === "string" && obj.id ? obj.id : `row-${i}`;
+          const title = tpl?.name ?? (kind ? kindLabel(kind) : "焊缝");
+          const fields = tpl?.fields ?? union;
+          return {
+            key: rowKey,
+            label: `${title}${name ? ` · ${name}` : ""}`,
+            extra: disabled ? null : (
+              <Button
+                size="small"
+                type="text"
+                danger
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onChange(value.filter((_, j) => j !== i));
+                }}
+              >
+                删
+              </Button>
+            ),
+            children: (
+              <ObjectFields
+                fields={fields}
+                value={obj}
+                onChange={(v) => {
+                  const next = value.slice();
+                  next[i] = { ...v, templateId: tpl?.id ?? obj.templateId };
+                  onChange(next);
+                }}
+                disabled={disabled}
+                processOptions={processOptions}
+              />
+            ),
+          };
+        })}
+      />
+      {disabled ? null : (
+        <Space size={4} wrap style={{ marginTop: 4 }}>
+          {items.map((t) => (
+            <Button key={t.id} size="small" onClick={() => add(t)}>
+              添加{t.name}
+            </Button>
+          ))}
+        </Space>
+      )}
+    </div>
   );
 }
 
@@ -208,7 +310,11 @@ function FieldInput({
           onChange={(v: string | undefined) => onChange(v ?? "")}
           disabled={disabled}
           placeholder="未选工艺"
-          className="content-ctrl-text"
+          className="content-ctrl-process"
+          popupMatchSelectWidth={false}
+          listHeight={360}
+          virtual={false}
+          getPopupContainer={() => document.body}
         />
       );
     }
@@ -273,14 +379,9 @@ function FieldInput({
   );
 }
 
-// 工艺引用：按已发布工艺下拉，不填路径或身份。
-function isProcessRef(field: TemplateField): boolean {
-  return (field.key === "processId" || field.key === "processPath") && kindOf(field) === "string";
-}
-
 // 焊道/点/路径自己的身份，添加时已生成，不用填。
 function isIdentityField(field: TemplateField): boolean {
-  return field.key === "id" && kindOf(field) === "string";
+  return (field.key === "id" || field.key === "kind" || field.key === "templateId") && kindOf(field) === "string";
 }
 
 function asObj(v: unknown): Record<string, unknown> {

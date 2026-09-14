@@ -290,12 +290,12 @@ func (s *Assets) PromoteFromSnapshot(ctx context.Context, token string, snap Ass
 	}
 	// 只改工程：按当前模版改写工艺引用，不套模版。
 	if snap.Kind == KindProject {
-		tpl, err := s.ensureTemplate(ctx, KindProject)
+		items, err := s.projectItemSchemas(ctx)
 		if err != nil {
 			_ = s.audit(ctx, &admin.ID, nil, &fid, "promote_asset", snap.SourceID.String(), audit.Deny)
 			return Asset{}, err
 		}
-		body, err = contenttpl.RewriteProcessIDs(tpl.Schema, body, idMap)
+		body, err = contenttpl.RewriteProcessIDsFromItems(items, body, idMap)
 		if err != nil {
 			_ = s.audit(ctx, &admin.ID, nil, &fid, "promote_asset", snap.SourceID.String(), audit.Deny)
 			return Asset{}, domain.ErrAssetDependency
@@ -378,7 +378,7 @@ func (s *Assets) rewritePromoteDeps(ctx context.Context, kind string, deps []Ass
 	return out, idMap, nil
 }
 
-// CreatePlatformProject 创建平台级工程；只允许依赖平台级可用工艺。
+// CreatePlatformProject 创建平台级工程；参数里的工艺写入 deps，不必另填。
 func (s *Assets) CreatePlatformProject(ctx context.Context, token, name string, content []byte, deps []AssetDep) (Asset, error) {
 	// 只有 WAN 管理员能做平台级工程。失败一律记拒绝。
 	admin, err := s.RequireAdmin(ctx, token)
@@ -386,12 +386,18 @@ func (s *Assets) CreatePlatformProject(ctx context.Context, token, name string, 
 		_ = s.audit(ctx, nil, nil, nil, "create_asset", name, audit.Deny)
 		return Asset{}, err
 	}
-	if err := s.assertPlatformProcessDeps(ctx, deps); err != nil {
+	content, err = s.normalizeContent(ctx, KindProject, content)
+	if err != nil {
 		_ = s.audit(ctx, &admin.ID, nil, nil, "create_asset", name, audit.Deny)
 		return Asset{}, err
 	}
-	content, err = s.normalizeContent(ctx, KindProject, content)
+	// 参数里选过的工艺补进依赖，钉当前修订。
+	deps, err = s.fillPlatformProjectDeps(ctx, content, deps)
 	if err != nil {
+		_ = s.audit(ctx, &admin.ID, nil, nil, "create_asset", name, audit.Deny)
+		return Asset{}, err
+	}
+	if err := s.assertPlatformProcessDeps(ctx, deps); err != nil {
 		_ = s.audit(ctx, &admin.ID, nil, nil, "create_asset", name, audit.Deny)
 		return Asset{}, err
 	}
@@ -414,6 +420,64 @@ func (s *Assets) CreatePlatformProject(ctx context.Context, token, name string, 
 		return Asset{}, err
 	}
 	return stripContent(row), nil
+}
+
+// fillPlatformProjectDeps 把参数里的工艺补进 deps，钉当前可用修订。
+func (s *kernel) fillPlatformProjectDeps(ctx context.Context, content []byte, deps []AssetDep) ([]AssetDep, error) {
+	items, err := s.projectItemSchemas(ctx)
+	if err != nil {
+		return nil, err
+	}
+	ids, err := contenttpl.CollectProcessIDsFromItems(items, content)
+	if err != nil {
+		return nil, domain.ErrAssetDependency
+	}
+	return mergeProjectDeps(deps, ids, func(id uuid.UUID) (AssetDep, error) {
+		p, err := s.loadChecked(ctx, id)
+		if err != nil {
+			if errors.Is(err, domain.ErrNotFound) {
+				return AssetDep{}, domain.ErrAssetDependency
+			}
+			return AssetDep{}, err
+		}
+		if p.Kind != KindProcess || p.Level != AssetLevelPlatform {
+			return AssetDep{}, domain.ErrAssetDependency
+		}
+		if p.Status != AssetAvailable {
+			return AssetDep{}, domain.ErrAssetNotAvailable
+		}
+		return AssetDep{ID: p.ID, Revision: p.Revision, Digest: p.Digest}, nil
+	})
+}
+
+// mergeProjectDeps 保留已声明依赖，再按参数引用补缺。
+func mergeProjectDeps(existing []AssetDep, ids []string, lookup func(uuid.UUID) (AssetDep, error)) ([]AssetDep, error) {
+	have := make(map[string]struct{}, len(existing)+len(ids))
+	out := make([]AssetDep, 0, len(existing)+len(ids))
+	for _, d := range existing {
+		key := d.ID.String()
+		if _, ok := have[key]; ok {
+			continue
+		}
+		have[key] = struct{}{}
+		out = append(out, d)
+	}
+	for _, raw := range ids {
+		if _, ok := have[raw]; ok {
+			continue
+		}
+		id, err := uuid.Parse(raw)
+		if err != nil {
+			return nil, domain.ErrAssetDependency
+		}
+		d, err := lookup(id)
+		if err != nil {
+			return nil, err
+		}
+		have[raw] = struct{}{}
+		out = append(out, d)
+	}
+	return out, nil
 }
 
 // assertPlatformProcessDeps 依赖必须是平台级可用工艺，修订和摘要都要对上。
@@ -439,11 +503,11 @@ func (s *kernel) assertPlatformProcessDeps(ctx context.Context, deps []AssetDep)
 
 // assertProjectProcessIDs 按当前工程模版收集引用，非空的必须是本行 deps 的身份。
 func (s *kernel) assertProjectProcessIDs(ctx context.Context, content []byte, deps []AssetDep) error {
-	tpl, err := s.ensureTemplate(ctx, KindProject)
+	items, err := s.projectItemSchemas(ctx)
 	if err != nil {
 		return err
 	}
-	ids, err := contenttpl.CollectProcessIDs(tpl.Schema, content)
+	ids, err := contenttpl.CollectProcessIDsFromItems(items, content)
 	if err != nil {
 		return domain.ErrAssetDependency
 	}

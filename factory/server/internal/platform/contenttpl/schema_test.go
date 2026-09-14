@@ -71,11 +71,23 @@ func TestApplyProjectArray(t *testing.T) {
 	if err := json.Unmarshal(out, &arr); err != nil {
 		t.Fatal(err)
 	}
-	if len(arr) != 1 || arr[0]["name"] != "焊道 1" {
+	if len(arr) != 1 || arr[0]["name"] != "焊道 1" || arr[0]["kind"] != ItemSingle {
 		t.Fatalf("%s", out)
 	}
 	if _, ok := arr[0]["secret"]; ok {
 		t.Fatalf("secret kept")
+	}
+	if _, ok := arr[0]["basePath"]; ok {
+		t.Fatalf("stuffed multi")
+	}
+	if _, ok := arr[0]["cornerGroupParams"]; ok {
+		t.Fatalf("stuffed corner")
+	}
+	if _, ok := arr[0]["passes"]; ok {
+		t.Fatalf("stuffed passes")
+	}
+	if arr[0]["templateId"] != defaultTplSingle {
+		t.Fatalf("templateId %v", arr[0]["templateId"])
 	}
 	pts, _ := arr[0]["points"].([]any)
 	if len(pts) != 1 {
@@ -88,6 +100,60 @@ func TestApplyProjectArray(t *testing.T) {
 	pose := p0["pose"].(map[string]any)
 	if pose["x"] != 1.0 || pose["y"] != 0.0 {
 		t.Fatalf("pose %v", pose)
+	}
+}
+
+func TestApplyProjectEmpty(t *testing.T) {
+	raw, err := Marshal(Default(KindProject))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := Apply(raw, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(out) != "[]" {
+		t.Fatalf("%s", out)
+	}
+}
+
+func TestApplyProjectDropsUnselectedKind(t *testing.T) {
+	sch := Schema{Root: RootArray, Kinds: []string{ItemSingle}}
+	raw, err := Marshal(sch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := Apply(raw, []byte(`[{"kind":"multi","name":"多层"},{"kind":"single","name":"单"}]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var arr []map[string]any
+	if err := json.Unmarshal(out, &arr); err != nil {
+		t.Fatal(err)
+	}
+	if len(arr) != 1 || arr[0]["name"] != "单" || arr[0]["kind"] != ItemSingle {
+		t.Fatalf("%s", out)
+	}
+}
+
+func TestValidateProjectKinds(t *testing.T) {
+	if err := Validate(Schema{Root: RootArray, Kinds: []string{ItemExtra}}); err == nil {
+		t.Fatal("extra-only")
+	}
+	if err := Validate(Schema{Root: RootArray, Kinds: []string{ItemSingle, ItemSingle}}); err == nil {
+		t.Fatal("dup")
+	}
+	if err := Validate(Default(KindProject)); err != nil {
+		t.Fatal(err)
+	}
+	if err := Validate(Schema{Root: RootArray, Templates: []ProjectTemplate{{ID: defaultTplSingle, Name: "", Kind: ItemSingle}}}); err == nil {
+		t.Fatal("empty name")
+	}
+	if err := Validate(Schema{Root: RootArray, Templates: []ProjectTemplate{{ID: defaultTplSingle, Name: "x", Kind: ItemExtra}}}); err == nil {
+		t.Fatal("extra kind")
+	}
+	if err := Validate(Schema{Root: RootArray}); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -137,20 +203,77 @@ func TestValidateRejectsBadKey(t *testing.T) {
 	}
 }
 
+func TestValidateProcessType(t *testing.T) {
+	ok := Schema{Root: RootObject, Fields: []Field{{Key: "p", Label: "工艺", Type: TypeProcess, Default: ""}}}
+	if err := Validate(ok); err != nil {
+		t.Fatal(err)
+	}
+	bad := Schema{Root: RootObject, Fields: []Field{{Key: "p", Label: "工艺", Type: TypeProcess, Options: []string{"a"}}}}
+	if err := Validate(bad); err == nil {
+		t.Fatal("want invalid options")
+	}
+}
+
+func TestApplyProcessID(t *testing.T) {
+	sch := Schema{Root: RootObject, Fields: []Field{{Key: "p", Label: "工艺", Type: TypeProcess, Default: ""}}}
+	raw, err := Marshal(sch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := Apply(raw, []byte(`{"p":"  abc  ","extra":1}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(out, &m); err != nil {
+		t.Fatal(err)
+	}
+	if m["p"] != "abc" {
+		t.Fatalf("p %v", m["p"])
+	}
+	out, err = Apply(raw, []byte(`{"p":1}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(out, &m); err != nil {
+		t.Fatal(err)
+	}
+	if m["p"] != "" {
+		t.Fatalf("non-string %v", m["p"])
+	}
+}
+
 func TestDefaultProjectRefsProcessID(t *testing.T) {
-	keys := fieldKeys(Default(KindProject).Item)
+	s := Default(KindProject)
+	if len(s.Templates) != 3 || s.Item != nil || len(s.Kinds) != 0 {
+		t.Fatalf("templates %+v item %v kinds %v", s.Templates, s.Item, s.Kinds)
+	}
+	var keys []string
+	for _, k := range []string{ItemSingle, ItemMulti, ItemCorner} {
+		fields := ItemFields(k, true)
+		item := Field{Type: TypeObject, Fields: fields}
+		keys = append(keys, fieldKeys(&item)...)
+	}
 	has := map[string]int{}
 	for _, k := range keys {
 		has[k]++
 	}
 	if has["processPath"] != 0 {
-		t.Fatalf("processPath still in default: %v", keys)
+		t.Fatalf("processPath still in catalog: %v", keys)
 	}
 	if has["process"] != 0 {
-		t.Fatalf("nested process still in default: %v", keys)
+		t.Fatalf("nested process still in catalog: %v", keys)
 	}
 	if has["processId"] < 5 {
 		t.Fatalf("processId count %d want >=5 in %v", has["processId"], keys)
+	}
+	n := 0
+	for _, k := range []string{ItemSingle, ItemMulti, ItemCorner} {
+		item := Field{Type: TypeObject, Fields: ItemFields(k, true)}
+		n += countProcessType(&item)
+	}
+	if n < 5 {
+		t.Fatalf("process type count %d want >=5", n)
 	}
 	if has["cornerGroupParams"] != 1 {
 		t.Fatalf("corner missing: %v", keys)
@@ -172,4 +295,22 @@ func fieldKeys(f *Field) []string {
 		out = append(out, fieldKeys(f.Items)...)
 	}
 	return out
+}
+
+// countProcessType 统计工艺引用字段个数。
+func countProcessType(f *Field) int {
+	if f == nil {
+		return 0
+	}
+	n := 0
+	if f.Type == TypeProcess {
+		n++
+	}
+	for i := range f.Fields {
+		n += countProcessType(&f.Fields[i])
+	}
+	if f.Items != nil {
+		n += countProcessType(f.Items)
+	}
+	return n
 }

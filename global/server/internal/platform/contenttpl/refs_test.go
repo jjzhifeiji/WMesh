@@ -1,3 +1,4 @@
+// 工艺引用：按模版收集、改写身份，不扫正文里多出来的键。
 package contenttpl
 
 import (
@@ -19,8 +20,9 @@ func projectSchema(t *testing.T) []byte {
 func TestCollectProcessIDs(t *testing.T) {
 	sch := projectSchema(t)
 	raw := []byte(`[
-		{"processId":"A","basePath":{"processId":"A"},"passes":[{"processId":"B"}],"extraProcesses":[{"id":"x","processId":"C"}],"cornerGroupParams":{"processId":"D"}},
-		{"processId":"","passes":[{"processId":""}]}
+		{"kind":"single","processId":"A","extraProcesses":[{"id":"x","processId":"C"}]},
+		{"kind":"multi","basePath":{"processId":"A"},"passes":[{"processId":"B"}]},
+		{"kind":"corner","processId":"D","cornerGroupParams":{"processId":"D"}}
 	]`)
 	ids, err := CollectProcessIDs(sch, raw)
 	if err != nil {
@@ -40,6 +42,17 @@ func TestCollectProcessIDs(t *testing.T) {
 	}
 }
 
+func TestCollectSkipsUnselectedKind(t *testing.T) {
+	sch, err := Marshal(Schema{Root: RootArray, Kinds: []string{ItemSingle}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids, err := CollectProcessIDs(sch, []byte(`[{"processId":"KEEP","extraProcesses":[{"processId":"SKIP"}],"basePath":{"processId":"SKIP2"}}]`))
+	if err != nil || len(ids) != 1 || ids[0] != "KEEP" {
+		t.Fatalf("%v %v", ids, err)
+	}
+}
+
 func TestCollectFollowsSchema(t *testing.T) {
 	sch, err := Marshal(Schema{Root: RootArray, Item: &Field{Type: TypeObject, Label: "焊缝", Fields: []Field{
 		{Key: "alt", Label: "另", Type: TypeObject, Fields: []Field{str("processId", "工艺", "")}},
@@ -48,6 +61,19 @@ func TestCollectFollowsSchema(t *testing.T) {
 		t.Fatal(err)
 	}
 	ids, err := CollectProcessIDs(sch, []byte(`[{"processId":"SKIP","alt":{"processId":"KEEP"}}]`))
+	if err != nil || len(ids) != 1 || ids[0] != "KEEP" {
+		t.Fatalf("%v %v", ids, err)
+	}
+}
+
+func TestCollectFollowsProcessType(t *testing.T) {
+	sch, err := Marshal(Schema{Root: RootArray, Item: &Field{Type: TypeObject, Label: "焊缝", Fields: []Field{
+		{Key: "foo", Label: "工艺", Type: TypeProcess, Default: ""},
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids, err := CollectProcessIDs(sch, []byte(`[{"foo":"KEEP","processId":"SKIP"}]`))
 	if err != nil || len(ids) != 1 || ids[0] != "KEEP" {
 		t.Fatalf("%v %v", ids, err)
 	}
@@ -80,7 +106,7 @@ func TestRewriteFollowsSchema(t *testing.T) {
 
 func TestRewriteProcessIDs(t *testing.T) {
 	sch := projectSchema(t)
-	raw := []byte(`[{"name":"w","processId":"fac-1","keep":true,"passes":[{"processId":"fac-1"}]}]`)
+	raw := []byte(`[{"kind":"multi","name":"w","keep":true,"basePath":{"processId":"fac-1"},"passes":[{"processId":"fac-1"}]}]`)
 	out, err := RewriteProcessIDs(sch, raw, map[string]string{"fac-1": "plat-1"})
 	if err != nil {
 		t.Fatal(err)
@@ -89,8 +115,12 @@ func TestRewriteProcessIDs(t *testing.T) {
 	if err := json.Unmarshal(out, &welds); err != nil {
 		t.Fatal(err)
 	}
-	if welds[0]["processId"] != "plat-1" || welds[0]["keep"] != true {
+	if welds[0]["keep"] != true {
 		t.Fatalf("%s", out)
+	}
+	base, _ := welds[0]["basePath"].(map[string]any)
+	if base["processId"] != "plat-1" {
+		t.Fatalf("base %v", base)
 	}
 	passes, _ := welds[0]["passes"].([]any)
 	p0 := passes[0].(map[string]any)

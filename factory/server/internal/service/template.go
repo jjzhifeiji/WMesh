@@ -28,8 +28,43 @@ func openTemplate(t ContentTemplate) (ContentTemplate, error) {
 	return t, nil
 }
 
+// projectItems 已收的对象根工程模版；没有则空。
+func (s *kernel) projectItems(ctx context.Context) ([]contenttpl.ProjectItemSchema, error) {
+	rows, err := s.store.LatestProjectTemplates(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]contenttpl.ProjectItemSchema, 0, len(rows))
+	for _, row := range rows {
+		row, err = openTemplate(row)
+		if err != nil {
+			return nil, err
+		}
+		sch, err := contenttpl.Parse(row.Schema)
+		if err != nil || sch.Root != contenttpl.RootObject {
+			continue
+		}
+		out = append(out, contenttpl.ProjectItemSchema{ID: row.ID.String(), Name: row.Name, Fields: sch.Fields})
+	}
+	return out, nil
+}
+
 // normalizeContent 新建时按已收模版套正文；尚未收到副本则原样返回。
 func (s *kernel) normalizeContent(ctx context.Context, kind string, content []byte) ([]byte, error) {
+	if kind == KindProject {
+		items, err := s.projectItems(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if len(items) == 0 {
+			return content, nil
+		}
+		out, err := contenttpl.ApplyProjectItems(items, content)
+		if err != nil {
+			return nil, domain.ErrTemplateInvalid
+		}
+		return out, nil
+	}
 	// 尚未收到模版副本则原样返回。
 	tpl, err := s.store.LatestTemplateByKind(ctx, kind)
 	if errors.Is(err, domain.ErrNotFound) {
@@ -50,20 +85,16 @@ func (s *kernel) normalizeContent(ctx context.Context, kind string, content []by
 	return out, nil
 }
 
-// projectSchemaJSON 写工程时用来扫引用：有已收副本用副本，没有则用代码默认表。
-func (s *kernel) projectSchemaJSON(ctx context.Context) ([]byte, error) {
-	tpl, err := s.store.LatestTemplateByKind(ctx, KindProject)
-	if errors.Is(err, domain.ErrNotFound) {
-		return contenttpl.Marshal(contenttpl.Default(KindProject))
-	}
+// collectProjectProcessIDs 有已收对象模版用各份字段；没有则用空库三份明细扫引用。
+func (s *kernel) collectProjectProcessIDs(ctx context.Context, content []byte) ([]string, error) {
+	items, err := s.projectItems(ctx)
 	if err != nil {
 		return nil, err
 	}
-	tpl, err = openTemplate(tpl)
-	if err != nil {
-		return nil, err
+	if len(items) == 0 {
+		items = contenttpl.SeedProjectItems()
 	}
-	return tpl.Schema, nil
+	return contenttpl.CollectProcessIDsFromItems(items, content)
 }
 
 // 审计对象：类型加修订。
@@ -71,14 +102,14 @@ func templateTarget(kind string, rev int64) string {
 	return kind + " rev=" + strconv.FormatInt(rev, 10)
 }
 
-// GetTemplate 读本厂已收该类型最高修订模版。
+// GetTemplate 读本厂已收工艺最高修订模版。
 func (s *Templates) GetTemplate(ctx context.Context, token, kind string) (ContentTemplate, error) {
 	acc, err := s.RequireActive(ctx, token)
 	if err != nil {
 		return ContentTemplate{}, err
 	}
 	// 有效账号可读已收模版。失败记拒绝。
-	if kind != KindProcess && kind != KindProject {
+	if kind != KindProcess {
 		_ = s.audit(ctx, &acc.ID, nil, "get_template", kind, audit.Deny)
 		return ContentTemplate{}, domain.ErrNotFound
 	}
@@ -96,6 +127,36 @@ func (s *Templates) GetTemplate(ctx context.Context, token, kind string) (Conten
 		return ContentTemplate{}, err
 	}
 	return t, nil
+}
+
+// ListProjectTemplates 列出本厂已收各份工程模版最高修订。
+func (s *Templates) ListProjectTemplates(ctx context.Context, token string) ([]ContentTemplate, error) {
+	acc, err := s.RequireActive(ctx, token)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.store.LatestProjectTemplates(ctx)
+	if err != nil {
+		_ = s.audit(ctx, &acc.ID, nil, "get_template", KindProject, audit.Deny)
+		return nil, err
+	}
+	out := make([]ContentTemplate, 0, len(rows))
+	for _, row := range rows {
+		row, err = openTemplate(row)
+		if err != nil {
+			_ = s.audit(ctx, &acc.ID, nil, "get_template", KindProject, audit.Deny)
+			return nil, err
+		}
+		sch, err := contenttpl.Parse(row.Schema)
+		if err != nil || sch.Root != contenttpl.RootObject {
+			continue
+		}
+		out = append(out, row)
+	}
+	if err := s.audit(ctx, &acc.ID, nil, "get_template", KindProject, audit.Allow); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // AcceptTemplateDelivery 把 WAN 送达的模版写入只读副本，不改已有正文。
@@ -120,7 +181,7 @@ func (s *Closure) AcceptTemplateDelivery(ctx context.Context, snap TemplateSnaps
 	}
 	// 只读副本，不改已有正文。
 	if _, err := s.store.InsertTemplateReplica(ctx, ContentTemplate{
-		ID: snap.ID, Kind: snap.Kind, Revision: snap.Revision,
+		ID: snap.ID, Kind: snap.Kind, Name: snap.Name, Revision: snap.Revision,
 		Schema: []byte(snap.Schema), Digest: snap.Digest,
 	}); err != nil {
 		_ = s.audit(ctx, nil, nil, "accept_template", templateTarget(snap.Kind, snap.Revision), audit.Deny)

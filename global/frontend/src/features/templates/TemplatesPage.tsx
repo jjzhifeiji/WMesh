@@ -2,33 +2,27 @@ import { App, Button, Card, Input, Modal, Space, Spin, Typography, Upload } from
 import { useState } from "react";
 import { errorMessage } from "@/shared/api/client";
 import { PageHeader } from "@/shared/ui/PageHeader";
-import type { AssetKind } from "@/features/assets/api";
-import { useTemplate, useUpdateTemplate, useBuiltinTemplate } from "./api";
+import { useTemplate, useUpdateTemplate } from "./api";
 import { SchemaEditor } from "./SchemaEditor";
 import { contentFromSchema, schemaFromJSON, adoptSchema, type ContentSchema } from "./schema";
 
-export function TemplatesPage({ kind }: { kind: AssetKind }) {
+export function TemplatesPage() {
   const { message, modal } = App.useApp();
-  const isProcess = kind === "process";
-  const q = useTemplate(kind);
-  const builtin = useBuiltinTemplate(kind, !isProcess);
+  const q = useTemplate("process");
   const save = useUpdateTemplate();
-  const [local, setLocal] = useState<{ kind: AssetKind; revision: number; schema: ContentSchema } | null>(null);
+  const [local, setLocal] = useState<{ revision: number; schema: ContentSchema } | null>(null);
   const [importOpen, setImportOpen] = useState(false);
   const [importText, setImportText] = useState("");
   const [exportOpen, setExportOpen] = useState(false);
 
-  const draft = local && q.data && local.kind === kind && local.revision === q.data.revision ? local.schema : (q.data?.schema ?? null);
+  const draft = local && q.data && local.revision === q.data.revision ? local.schema : (q.data?.schema ?? null);
   const setDraft = (schema: ContentSchema) => {
     if (!q.data) return;
-    setLocal({ kind, revision: q.data.revision, schema });
+    setLocal({ revision: q.data.revision, schema });
   };
 
   const onErr = (e: unknown) => message.error(errorMessage(e));
-  const title = isProcess ? "工艺模版" : "工程模版";
-  const noun = isProcess ? "工艺" : "工程";
   const exportJSON = draft ? JSON.stringify(contentFromSchema(draft), null, 4) : "";
-  const fileName = isProcess ? "工艺.json" : "工程.json";
 
   const applyImport = (raw: string) => {
     try {
@@ -37,7 +31,7 @@ export function TemplatesPage({ kind }: { kind: AssetKind }) {
         message.error("模版还没加载完");
         return;
       }
-      setLocal({ kind, revision: q.data.revision, schema });
+      setLocal({ revision: q.data.revision, schema });
       setImportOpen(false);
       setImportText("");
       message.success("已导入，尚未保存");
@@ -51,7 +45,7 @@ export function TemplatesPage({ kind }: { kind: AssetKind }) {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = fileName;
+    a.download = "工艺.json";
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -59,8 +53,8 @@ export function TemplatesPage({ kind }: { kind: AssetKind }) {
   return (
     <>
       <PageHeader
-        title={title}
-        description={`全平台一份。保存后下发给在线工厂，不改已有${noun}正文；只有新建才按模版套字段。`}
+        title="工艺模版"
+        description="全平台一份。保存后下发给在线工厂，不改已有工艺正文；只有新建才按模版套字段。"
         extra={
           <Space wrap>
             <Button disabled={!draft} onClick={() => setExportOpen(true)}>
@@ -74,18 +68,6 @@ export function TemplatesPage({ kind }: { kind: AssetKind }) {
             >
               导入 JSON
             </Button>
-            {!isProcess ? (
-              <Button
-                disabled={!builtin.data || !q.data}
-                onClick={() => {
-                  if (!builtin.data || !q.data) return;
-                  setLocal({ kind, revision: q.data.revision, schema: builtin.data.schema });
-                  message.success("已恢复默认，尚未保存");
-                }}
-              >
-                恢复默认
-              </Button>
-            ) : null}
             <Button
               type="primary"
               loading={save.isPending}
@@ -93,11 +75,11 @@ export function TemplatesPage({ kind }: { kind: AssetKind }) {
               onClick={() => {
                 if (!draft || !q.data) return;
                 modal.confirm({
-                  title: `保存${title}？`,
-                  content: `已有${noun}正文不变。此后新建才按新字段。`,
+                  title: "保存工艺模版？",
+                  content: "已有工艺正文不变。此后新建才按新字段。",
                   onOk: () =>
                     save.mutate(
-                      { kind, expected: q.data.revision, schema: draft },
+                      { kind: "process", expected: q.data.revision, schema: draft },
                       { onSuccess: () => message.success("已保存"), onError: onErr },
                     ),
                 });
@@ -134,7 +116,7 @@ export function TemplatesPage({ kind }: { kind: AssetKind }) {
         width={720}
       >
         <Typography.Text type="secondary" style={{ display: "block", marginBottom: 8 }}>
-          贴{noun}正文，和设备里的 JSON 一样。
+          贴工艺正文，和设备里的 JSON 一样。
         </Typography.Text>
         <Upload
           accept="application/json,.json"

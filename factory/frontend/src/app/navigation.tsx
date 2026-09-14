@@ -2,6 +2,7 @@ import {
   ApartmentOutlined,
   AppstoreOutlined,
   AuditOutlined,
+  BarChartOutlined,
   CloudSyncOutlined,
   ClusterOutlined,
   DashboardOutlined,
@@ -92,6 +93,7 @@ export const navTree: NavEntry[] = [
       { key: paths.auditStats, label: "统计", placeholder: true, description: "按事实发生时的组织路径归集，历史不随调动改写。" },
     ],
   },
+  { key: paths.reports, label: "报表", icon: <BarChartOutlined />, placeholder: true, description: "本厂报表查询，按事实发生时的组织路径归集。" },
 ];
 
 export const accountTitle = "我的账号";
@@ -104,7 +106,7 @@ export function openGroupFor(pathname: string): string[] {
 }
 
 export const placeholderPaths = navTree.flatMap((entry) =>
-  (entry.children ?? []).filter((c) => c.placeholder).map((c) => c.key),
+  (entry.children ?? [entry]).filter((c) => c.placeholder).map((c) => c.key),
 );
 
 export function menuItems(isSuperAdmin: boolean): NonNullable<MenuProps["items"]> {
@@ -131,6 +133,9 @@ export function breadcrumbItems(pathname: string): { title: string }[] {
 
 export function placeholderMeta(pathname: string): { title: string; description?: string } | undefined {
   for (const entry of navTree) {
+    if (!entry.children && entry.key === pathname && entry.placeholder) {
+      return { title: entry.label, description: entry.description };
+    }
     const leaf = entry.children?.find((c) => c.key === pathname && c.placeholder);
     if (leaf) return { title: leaf.label, description: leaf.description };
   }

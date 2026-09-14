@@ -5,6 +5,7 @@ import { FactoriesPage } from "@/features/factories/FactoriesPage";
 import { ClientsPage } from "@/features/clients/ClientsPage";
 import { AssetsPage } from "@/features/assets/AssetsPage";
 import { TemplatesPage } from "@/features/templates/TemplatesPage";
+import { ProjectTemplatesPage } from "@/features/templates/ProjectTemplatesPage";
 import { AccountPage } from "@/features/account/AccountPage";
 import { AdminLayout } from "@/layouts/AdminLayout";
 import { AuthLayout } from "@/layouts/AuthLayout";
@@ -32,8 +33,8 @@ export const router = createBrowserRouter([
       { path: paths.clients, element: <ClientsPage /> },
       { path: paths.processes, element: <AssetsPage kind="process" /> },
       { path: paths.projects, element: <AssetsPage kind="project" /> },
-      { path: paths.templates, element: <TemplatesPage kind="process" /> },
-      { path: paths.projectTemplates, element: <TemplatesPage kind="project" /> },
+      { path: paths.templates, element: <TemplatesPage /> },
+      { path: paths.projectTemplates, element: <ProjectTemplatesPage /> },
       { path: paths.account, element: <AccountPage /> },
       ...placeholderPaths.map((path) => ({ path, element: <PlaceholderPage /> })),
       { path: "*", element: <NotFoundPage /> },

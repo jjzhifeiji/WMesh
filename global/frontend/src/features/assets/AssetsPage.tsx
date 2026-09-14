@@ -7,8 +7,8 @@ import { IdText } from "@/shared/ui/IdText";
 import { PageHeader } from "@/shared/ui/PageHeader";
 import { useDirectory } from "@/features/factories/api";
 import { ContentEditor } from "@/features/templates/ContentFields";
-import { collectProcessIds, defaultValue } from "@/features/templates/schema";
-import { useTemplate } from "@/features/templates/api";
+import { collectProcessIds, defaultValue, projectContentSchema } from "@/features/templates/schema";
+import { useProjectTemplates, useTemplate } from "@/features/templates/api";
 import type { ContentSchema } from "@/features/templates/schema";
 import {
   useAssetContent,
@@ -32,7 +32,7 @@ import {
   type PromotableAsset,
 } from "./api";
 
-type CreateForm = { name: string; content: string; processIds?: string[] };
+type CreateForm = { name: string; content: string };
 
 function statusLabel(status: string) {
   if (status === "draft") return "未发布";
@@ -83,8 +83,9 @@ export function AssetsPage({ kind }: { kind: AssetKind }) {
   const title = isProcess ? "平台工艺" : "平台工程";
   const assets = useAssets(kind);
   const processes = useAssets("process");
-  const template = useTemplate(kind);
-  const schema = template.data?.schema ?? null;
+  const processTpl = useTemplate("process");
+  const projectTpls = useProjectTemplates();
+  const schema = isProcess ? (processTpl.data?.schema ?? null) : projectTpls.data?.length ? projectContentSchema(projectTpls.data) : null;
   const create = useCreateAsset();
   const copy = useCopyAsset();
   const rename = useRenameAsset();
@@ -104,6 +105,9 @@ export function AssetsPage({ kind }: { kind: AssetKind }) {
   const [detailFor, setDetailFor] = useState<Asset | null>(null);
   const [editFor, setEditFor] = useState<Asset | null>(null);
   const [factoryId, setFactoryId] = useState<string | null>(null);
+  const [promoteQuery, setPromoteQuery] = useState("");
+  const [promotePage, setPromotePage] = useState(1);
+  const [promotePageSize, setPromotePageSize] = useState(10);
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [sourceFilter, setSourceFilter] = useState("all");
@@ -159,12 +163,30 @@ export function AssetsPage({ kind }: { kind: AssetKind }) {
   const closePromote = () => {
     setPromoteOpen(false);
     setFactoryId(null);
+    setPromoteQuery("");
+    setPromotePage(1);
+    setPromotePageSize(10);
   };
+  const pickFactory = (id: string) => {
+    setFactoryId(id);
+    setPromoteQuery("");
+    setPromotePage(1);
+  };
+  const promoteRows = useMemo(() => {
+    const needle = promoteQuery.trim().toLowerCase();
+    const exact = promoteQuery.trim();
+    return (promotable.data ?? []).filter((a) => {
+      if (!needle) return true;
+      if (a.code && (a.code === exact || a.code === exact.toUpperCase())) return true;
+      return a.name.toLowerCase().includes(needle) || (a.code ?? "").toLowerCase().includes(needle);
+    });
+  }, [promotable.data, promoteQuery]);
 
   const columns: TableColumnsType<Asset> = [
     {
       title: isProcess ? "工艺名称" : "工程名称",
       dataIndex: "name",
+      width: 180,
       ellipsis: true,
       render: (name: string) => <Typography.Text strong>{name}</Typography.Text>,
     },
@@ -319,7 +341,7 @@ export function AssetsPage({ kind }: { kind: AssetKind }) {
           columns={columns}
           dataSource={rows}
           loading={assets.isLoading}
-          scroll={{ x: 960 }}
+          scroll={{ x: 1200 }}
           pagination={{ pageSize: 20, hideOnSinglePage: true }}
           locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={`还没有${title}。可在本页新建，或从在线工厂升档。`} /> }}
         />
@@ -332,9 +354,7 @@ export function AssetsPage({ kind }: { kind: AssetKind }) {
           requiredMark={false}
           initialValues={{ content: "" }}
           onFinish={(values) => {
-            const deps = isProcess
-              ? undefined
-              : depsFromSelection(values.processIds, values.content, availableProcesses);
+            const deps = isProcess ? undefined : depsFromSelection(undefined, values.content, processes.data ?? [], schema);
             const input: CreateAssetInput = {
               kind,
               name: values.name,
@@ -354,17 +374,8 @@ export function AssetsPage({ kind }: { kind: AssetKind }) {
           <Form.Item name="name" label="显示名" extra="显示名不是身份。" rules={[{ required: true, message: "请输入显示名" }]}>
             <Input autoComplete="off" autoFocus />
           </Form.Item>
-          {!isProcess ? (
-            <Form.Item
-              name="processIds"
-              label="依赖工艺"
-              extra={availableProcesses.length ? "焊道里按名称选工艺即可；这里可多带组包要用、焊道未引用的。" : "还没有已发布的平台工艺，请先发布工艺。"}
-            >
-              <Select mode="multiple" optionFilterProp="label" options={availableProcesses.map((p) => ({ value: p.id, label: `${p.name} · r${p.revision}` }))} />
-            </Form.Item>
-          ) : null}
           <Form.Item name="content" label="参数">
-            <ContentEditor schema={schema} processOptions={isProcess ? undefined : processSelectOptions(undefined, availableProcesses)} />
+            <ContentEditor schema={schema} processOptions={isProcess ? undefined : processPickerOptions(processes.data ?? [], (p) => p.status === "available")} />
           </Form.Item>
         </Form>
       </Modal>
@@ -409,24 +420,51 @@ export function AssetsPage({ kind }: { kind: AssetKind }) {
           style={{ width: "100%", marginBottom: 12 }}
           placeholder="选择工厂"
           value={factoryId ?? undefined}
-          onChange={(v) => setFactoryId(v)}
+          onChange={pickFactory}
           options={factories.map((f) => ({
             value: f.id,
             label: `${f.name}${f.channelOnline ? " · 在线" : " · 离线"}`,
             disabled: !f.channelOnline,
           }))}
         />
+        <Input.Search
+          allowClear
+          placeholder={`搜索${isProcess ? "工艺" : "工程"}名称或编号`}
+          value={promoteQuery}
+          onChange={(e) => {
+            setPromoteQuery(e.target.value);
+            setPromotePage(1);
+          }}
+          style={{ width: "100%", marginBottom: 12 }}
+        />
         <Table<PromotableAsset>
           rowKey="id"
           size="small"
           loading={promotable.isFetching}
-          dataSource={promotable.data ?? []}
-          pagination={false}
+          dataSource={promoteRows}
+          pagination={{
+            current: promotePage,
+            pageSize: promotePageSize,
+            total: promoteRows.length,
+            showSizeChanger: true,
+            pageSizeOptions: [10, 20, 50],
+            showTotal: (n) => `共 ${n} 条`,
+            onChange: (page, size) => {
+              setPromotePage(page);
+              setPromotePageSize(size);
+            },
+          }}
           locale={{
             emptyText: (
               <Empty
                 image={Empty.PRESENTED_IMAGE_SIMPLE}
-                description={promotable.isError ? errorMessage(promotable.error) : `该厂没有${isProcess ? "工艺" : "工程"}，或厂端不在线。`}
+                description={
+                  promotable.isError
+                    ? errorMessage(promotable.error)
+                    : promoteQuery.trim()
+                      ? `没有匹配的${isProcess ? "工艺" : "工程"}。`
+                      : `该厂没有${isProcess ? "工艺" : "工程"}，或厂端不在线。`
+                }
               />
             ),
           }}
@@ -507,7 +545,7 @@ export function AssetsPage({ kind }: { kind: AssetKind }) {
             }
             if (editing.kind === "project") {
               const oldIds = (editing.deps ?? []).map((d) => d.id);
-              const nextIds = uniqueIds([...(processIds ?? []), ...processIdsFromContent(content)]);
+              const nextIds = uniqueIds([...(processIds ?? []), ...processIdsFromContent(content, schema)]);
               const added = nextIds.filter((id) => !oldIds.includes(id));
               const toDep = (id: string): AssetDep => {
                 const pinned = (editing.deps ?? []).find((d) => d.id === id);
@@ -628,21 +666,39 @@ function uniqueIds(ids: string[]): string[] {
   return out;
 }
 
-function processIdsFromContent(content: string | undefined): string[] {
+function processIdsFromContent(content: string | undefined, schema: ContentSchema | null): string[] {
   try {
-    return collectProcessIds(JSON.parse(content || "[]"));
+    return collectProcessIds(JSON.parse(content || "[]"), schema);
   } catch {
     return [];
   }
 }
 
-function depsFromSelection(selected: string[] | undefined, content: string | undefined, available: Asset[]): AssetDep[] {
-  const ids = uniqueIds([...(selected ?? []), ...processIdsFromContent(content)]);
+function depsFromSelection(selected: string[] | undefined, content: string | undefined, available: Asset[], schema: ContentSchema | null): AssetDep[] {
+  const ids = uniqueIds([...(selected ?? []), ...processIdsFromContent(content, schema)]);
   return ids.map((id) => {
     const p = available.find((x) => x.id === id);
     if (!p) return { id, revision: 0, digest: "" };
     return { id: p.id, revision: p.revision, digest: p.digest };
   });
+}
+
+function processPickerOptions(all: Asset[], pin: (p: Asset) => boolean, selected?: string[]) {
+  const seen = new Set<string>();
+  const selectedSet = new Set(selected ?? []);
+  const opts: { value: string; label: string; disabled?: boolean }[] = [];
+  for (const p of all) {
+    seen.add(p.id);
+    const ok = pin(p);
+    if (!ok && !selectedSet.has(p.id)) continue;
+    const extra = ok ? "" : ` · ${statusLabel(p.status)}`;
+    opts.push({ value: p.id, label: `${p.name} · r${p.revision}${extra}`, disabled: !ok });
+  }
+  for (const id of selected ?? []) {
+    if (seen.has(id)) continue;
+    opts.push({ value: id, label: id, disabled: true });
+  }
+  return opts;
 }
 
 function processSelectOptions(selected: string[] | undefined, pickable: Asset[], catalog: Asset[] = pickable) {
@@ -725,7 +781,7 @@ function EditModal({
           <ContentEditor
             schema={schema}
             disabled={locked}
-            processOptions={row?.kind === "project" ? processSelectOptions((row.deps ?? []).map((d) => d.id), availableProcesses, processes) : undefined}
+            processOptions={row?.kind === "project" ? processPickerOptions(processes, (p) => p.status === "available", (row.deps ?? []).map((d) => d.id)) : undefined}
           />
         </Form.Item>
       </Form>

@@ -1,6 +1,7 @@
 import {
   AppstoreOutlined,
   AuditOutlined,
+  BarChartOutlined,
   ClusterOutlined,
   DashboardOutlined,
   ShopOutlined,
@@ -48,7 +49,7 @@ export const navTree: NavEntry[] = [
       { key: paths.processes, label: "平台工艺", description: "平台级工艺的制作、维护与升档。" },
       { key: paths.projects, label: "平台工程", description: "平台级工程及其依赖工艺的治理。" },
       { key: paths.templates, label: "工艺模版", description: "平台工艺当前字段表。" },
-      { key: paths.projectTemplates, label: "工程模版", description: "平台工程当前字段表。" },
+      { key: paths.projectTemplates, label: "工程模版", description: "独立命名模版，可新建编辑删除。" },
     ],
   },
   {
@@ -60,6 +61,7 @@ export const navTree: NavEntry[] = [
       { key: paths.auditStats, label: "汇总", placeholder: true, description: "跨厂汇总，不含厂内人员明细与点云原件。" },
     ],
   },
+  { key: paths.reports, label: "报表", icon: <BarChartOutlined />, placeholder: true, description: "跨厂报表查询，不含厂内人员明细与点云原件。" },
 ];
 
 export function openGroupFor(pathname: string): string[] {
@@ -70,7 +72,7 @@ export function openGroupFor(pathname: string): string[] {
 }
 
 export const placeholderPaths = navTree.flatMap((entry) =>
-  (entry.children ?? []).filter((c) => c.placeholder).map((c) => c.key),
+  (entry.children ?? [entry]).filter((c) => c.placeholder).map((c) => c.key),
 );
 
 export function menuItems(): NonNullable<MenuProps["items"]> {
@@ -99,6 +101,9 @@ export function breadcrumbItems(pathname: string): { title: string }[] {
 
 export function placeholderMeta(pathname: string): { title: string; description?: string } | undefined {
   for (const entry of navTree) {
+    if (!entry.children && entry.key === pathname && entry.placeholder) {
+      return { title: entry.label, description: entry.description };
+    }
     const leaf = entry.children?.find((c) => c.key === pathname && c.placeholder);
     if (leaf) return { title: leaf.label, description: leaf.description };
   }

@@ -148,7 +148,7 @@ func TestPlatformAssetCodes(t *testing.T) {
 		t.Fatal(err)
 	}
 	dep := global.AssetDep{ID: pub.ID, Revision: pub.Revision, Digest: pub.Digest}
-	if _, err := h.WAN.CreatePlatformProject(ctx, tok, "编号当引用", []byte(`[{"processId":"`+p1.Code+`"}]`), []global.AssetDep{dep}); !errors.Is(err, domain.ErrAssetDependency) {
+	if _, err := h.WAN.CreatePlatformProject(ctx, tok, "编号当引用", []byte(`[{"templateId":"`+seedSingleID+`","processId":"`+p1.Code+`"}]`), []global.AssetDep{dep}); !errors.Is(err, domain.ErrAssetDependency) {
 		t.Fatalf("code as processId: %v", err)
 	}
 }

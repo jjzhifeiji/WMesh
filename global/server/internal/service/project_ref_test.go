@@ -15,6 +15,8 @@ import (
 	global "wmesh/global/internal/service"
 )
 
+const seedSingleID = "11111111-1111-4111-8111-111111111111"
+
 func TestProjectProcessRefs(t *testing.T) {
 	ctx := context.Background()
 	h := New(t)
@@ -36,7 +38,7 @@ func TestProjectProcessRefs(t *testing.T) {
 	}
 	dep := global.AssetDep{ID: proc.ID, Revision: proc.Revision, Digest: proc.Digest}
 
-	empty, err := h.WAN.CreatePlatformProject(ctx, tok, "空引用", []byte(`[{"name":"焊道"}]`), []global.AssetDep{dep})
+	empty, err := h.WAN.CreatePlatformProject(ctx, tok, "空引用", []byte(`[]`), []global.AssetDep{dep})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,24 +46,27 @@ func TestProjectProcessRefs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	schJSON, err := contenttpl.Marshal(contenttpl.Default(contenttpl.KindProject))
-	if err != nil {
-		t.Fatal(err)
-	}
-	ids, err := contenttpl.CollectProcessIDs(schJSON, emptyBody)
+	ids, err := contenttpl.CollectProcessIDsFromItems(contenttpl.SeedProjectItems(), emptyBody)
 	if err != nil || len(ids) != 0 {
 		t.Fatalf("empty refs %v %v", ids, err)
 	}
-	if _, err := h.WAN.CreatePlatformProject(ctx, tok, "错引用", []byte(`[{"processId":"`+id.New().String()+`"}]`), []global.AssetDep{dep}); !errors.Is(err, domain.ErrAssetDependency) {
+	if string(emptyBody) != "[]" {
+		t.Fatalf("empty body %s", emptyBody)
+	}
+	bad := []byte(`[{"templateId":"` + seedSingleID + `","processId":"` + id.New().String() + `"}]`)
+	if _, err := h.WAN.CreatePlatformProject(ctx, tok, "错引用", bad, []global.AssetDep{dep}); !errors.Is(err, domain.ErrAssetDependency) {
 		t.Fatalf("create mismatch %v", err)
 	}
 
-	okBody := []byte(`[{"name":"w","processId":"` + proc.ID.String() + `"}]`)
-	proj, err := h.WAN.CreatePlatformProject(ctx, tok, "对齐", okBody, []global.AssetDep{dep})
+	okBody := []byte(`[{"templateId":"` + seedSingleID + `","name":"w","processId":"` + proc.ID.String() + `"}]`)
+	proj, err := h.WAN.CreatePlatformProject(ctx, tok, "对齐", okBody, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.WAN.UpdatePlatformAssetContent(ctx, tok, proj.ID, proj.Revision, []byte(`[{"processId":"`+id.New().String()+`"}]`)); !errors.Is(err, domain.ErrAssetDependency) {
+	if len(proj.Deps) != 1 || proj.Deps[0].ID != proc.ID {
+		t.Fatalf("pinned %+v", proj.Deps)
+	}
+	if _, err := h.WAN.UpdatePlatformAssetContent(ctx, tok, proj.ID, proj.Revision, []byte(`[{"templateId":"`+seedSingleID+`","processId":"`+id.New().String()+`"}]`)); !errors.Is(err, domain.ErrAssetDependency) {
 		t.Fatalf("update mismatch %v", err)
 	}
 	proj, err = h.WAN.GetPlatformAsset(ctx, tok, proj.ID)
@@ -117,7 +122,7 @@ func TestProjectProcessRefs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	refs, err := contenttpl.CollectProcessIDs(schJSON, rewritten)
+	refs, err := contenttpl.CollectProcessIDsFromItems(contenttpl.SeedProjectItems(), rewritten)
 	if err != nil || len(refs) != 1 || refs[0] != plat.ID.String() {
 		t.Fatalf("rewritten refs %v %s", refs, rewritten)
 	}
@@ -143,62 +148,62 @@ func TestProjectProcessRefs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tpl, err := h.WAN.GetTemplate(ctx, tok, global.KindProject)
-	if err != nil {
-		t.Fatal(err)
+	list, err := h.WAN.ListProjectTemplates(ctx, tok)
+	if err != nil || len(list) == 0 {
+		t.Fatalf("list %+v %v", list, err)
 	}
-	var sch contenttpl.Schema
-	if err := json.Unmarshal(tpl.Schema, &sch); err != nil {
-		t.Fatal(err)
+	single := list[0]
+	for _, row := range list {
+		if row.ID.String() == seedSingleID {
+			single = row
+			break
+		}
 	}
-	sch.Item.Fields = append(sch.Item.Fields, contenttpl.Field{Key: "note", Label: "备注", Type: contenttpl.TypeString, Default: ""})
-	raw, err := json.Marshal(sch)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := h.WAN.UpdateTemplate(ctx, tok, global.KindProject, tpl.Revision, raw); err != nil {
-		t.Fatal(err)
+	renamed, err := h.WAN.UpdateProjectTemplate(ctx, tok, single.ID, single.Revision, "单层焊道改名", single.Schema)
+	if err != nil || renamed.Revision != single.Revision+1 {
+		t.Fatalf("rename %+v %v", renamed, err)
 	}
 	still, err := h.WAN.ReadPlatformAssetContent(ctx, tok, proj.ID)
 	if err != nil || !bytes.Equal(still, oldBody) {
 		t.Fatalf("old body changed %s", still)
 	}
-	tpl, err = h.WAN.GetTemplate(ctx, tok, global.KindProject)
+	if _, err := h.WAN.UpdateProjectTemplate(ctx, tok, renamed.ID, renamed.Revision, "", renamed.Schema); !errors.Is(err, domain.ErrTemplateInvalid) {
+		t.Fatalf("empty name %v", err)
+	}
+	created, err := h.WAN.CreateProjectTemplate(ctx, tok, "坡口", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := json.Unmarshal(tpl.Schema, &sch); err != nil {
+	if err := h.WAN.DeleteProjectTemplate(ctx, tok, created.ID); err != nil {
 		t.Fatal(err)
 	}
-	sch.Item.Fields = append(sch.Item.Fields, contenttpl.Field{
-		Key: "alt", Label: "另", Type: contenttpl.TypeObject,
-		Fields: []contenttpl.Field{{Key: "processId", Label: "工艺", Type: contenttpl.TypeString, Default: ""}},
-	})
-	raw, err = json.Marshal(sch)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := h.WAN.UpdateTemplate(ctx, tok, global.KindProject, tpl.Revision, raw); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := h.WAN.CreatePlatformProject(ctx, tok, "模版错引用", []byte(`[{"alt":{"processId":"`+id.New().String()+`"}}]`), []global.AssetDep{dep}); !errors.Is(err, domain.ErrAssetDependency) {
+	extraBad := []byte(`[{"templateId":"` + seedSingleID + `","extraProcesses":[{"processId":"` + id.New().String() + `"}]}]`)
+	if _, err := h.WAN.CreatePlatformProject(ctx, tok, "模版错引用", extraBad, []global.AssetDep{dep}); !errors.Is(err, domain.ErrAssetDependency) {
 		t.Fatalf("template mismatch %v", err)
 	}
-	if _, err := h.WAN.CreatePlatformProject(ctx, tok, "模版对齐", []byte(`[{"alt":{"processId":"`+proc.ID.String()+`"}}]`), []global.AssetDep{dep}); err != nil {
+	extraOK := []byte(`[{"templateId":"` + seedSingleID + `","extraProcesses":[{"processId":"` + proc.ID.String() + `"}]}]`)
+	if _, err := h.WAN.CreatePlatformProject(ctx, tok, "模版对齐", extraOK, nil); err != nil {
 		t.Fatal(err)
 	}
-	builtin, err := h.WAN.BuiltinSchema(ctx, tok, global.KindProject)
+	listed, err := h.WAN.ListProjectTemplates(ctx, tok)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Contains(builtin, []byte(`"processId"`)) || bytes.Contains(builtin, []byte("processPath")) {
-		t.Fatalf("builtin %s", builtin)
+	found := false
+	for _, row := range listed {
+		if bytes.Contains(row.Schema, []byte(`"processId"`)) && !bytes.Contains(row.Schema, []byte("processPath")) {
+			found = true
+			break
+		}
 	}
-	if _, err := h.WAN.BuiltinSchema(ctx, "bad", global.KindProject); !errors.Is(err, domain.ErrUnauthorized) && !errors.Is(err, domain.ErrInvalidCredentials) {
-		t.Fatalf("anon builtin %v", err)
+	if !found {
+		t.Fatalf("seed schema missing processId")
+	}
+	if _, err := h.WAN.ListProjectTemplates(ctx, "bad"); !errors.Is(err, domain.ErrUnauthorized) && !errors.Is(err, domain.ErrInvalidCredentials) {
+		t.Fatalf("anon list %v", err)
 	}
 
-	pack, err := h.WAN.CreatePlatformProject(ctx, tok, "组包", []byte(`[{"processId":"`+proc.ID.String()+`"}]`), []global.AssetDep{dep})
+	pack, err := h.WAN.CreatePlatformProject(ctx, tok, "组包", []byte(`[{"templateId":"`+seedSingleID+`","processId":"`+proc.ID.String()+`"}]`), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -81,3 +81,67 @@ func TestAcceptTemplateDelivery(t *testing.T) {
 		t.Fatalf("new %s want %s err %v", applied, want, err)
 	}
 }
+
+func TestListProjectTemplates(t *testing.T) {
+	ctx := context.Background()
+	h := New(t)
+	seed, fac, err := h.Provision(ctx, "sa", "超管")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fac.Activate(ctx, "sa", seed.ActivationToken, "sa-pass"); err != nil {
+		t.Fatal(err)
+	}
+	sa := mustLogin(t, ctx, fac, "sa", "sa-pass")
+	empty, err := fac.ListProjectTemplates(ctx, sa)
+	if err != nil || len(empty) != 0 {
+		t.Fatalf("empty %+v %v", empty, err)
+	}
+	var single contenttpl.ProjectItemSchema
+	for _, it := range contenttpl.SeedProjectItems() {
+		if it.Name == "单层焊道" {
+			single = it
+			break
+		}
+	}
+	raw, err := contenttpl.Marshal(contenttpl.ObjectSchema(single.Fields))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fid := seed.ID
+	if err := fac.AcceptTemplateDelivery(ctx, factory.TemplateSnapshot{
+		ID: id.New(), Kind: factory.KindProject, Name: single.Name, Revision: 3, Schema: raw, Digest: digest.Sum(raw),
+		TargetFactoryID: &fid,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := fac.ListProjectTemplates(ctx, sa)
+	if err != nil || len(rows) != 1 || rows[0].Name != single.Name || rows[0].Revision != 3 {
+		t.Fatalf("list %+v %v", rows, err)
+	}
+	anonID := id.New()
+	anon := factory.TemplateSnapshot{
+		ID: anonID, Kind: factory.KindProject, Revision: 1, Schema: raw, Digest: digest.Sum(raw),
+		TargetFactoryID: &fid,
+	}
+	if err := fac.AcceptTemplateDelivery(ctx, anon); err != nil {
+		t.Fatal(err)
+	}
+	anon.Name = "坡口"
+	if err := fac.AcceptTemplateDelivery(ctx, anon); err != nil {
+		t.Fatal(err)
+	}
+	rows, err = fac.ListProjectTemplates(ctx, sa)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, row := range rows {
+		if row.ID == anonID && row.Name == "坡口" && row.Revision == 1 {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("name not filled %+v", rows)
+	}
+}

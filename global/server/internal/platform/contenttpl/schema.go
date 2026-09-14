@@ -1,5 +1,5 @@
 // Package contenttpl 按云端当前模版套工艺/工程 JSON：缺的补默认，多的删掉。
-// 不管归属、修订、下发；不解析成行业等级。
+// 工程模版登记若干命名项；每种内部字段在代码目录。不管归属、修订、下发。
 package contenttpl
 
 import (
@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"regexp"
 	"strconv"
+	"strings"
 )
 
 const (
@@ -17,11 +18,12 @@ const (
 	RootObject = "object" // 根是对象
 	RootArray  = "array"  // 根是数组
 
-	TypeString = "string" // 文本；有 options 当枚举
-	TypeNumber = "number" // 旧数字；套用时仍收
-	TypeBool   = "bool"   // 旧布尔；套用时仍收
-	TypeObject = "object" // 对象
-	TypeArray  = "array"  // 数组
+	TypeString  = "string"  // 文本；有 options 当枚举
+	TypeNumber  = "number"  // 旧数字；套用时仍收
+	TypeBool    = "bool"    // 旧布尔；套用时仍收
+	TypeObject  = "object"  // 对象
+	TypeArray   = "array"   // 数组
+	TypeProcess = "process" // 工艺引用，值为身份字符串
 )
 
 const maxDepth = 8    // 嵌套上限
@@ -33,7 +35,7 @@ var keyRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`) // 字段键只许字
 type Field struct {
 	Key      string   `json:"key"`                // JSON 键
 	Label    string   `json:"label"`              // 给人看的名字
-	Type     string   `json:"type"`               // string 文本；有 options 为枚举；number、bool 为旧值
+	Type     string   `json:"type"`               // string 文本；process 工艺引用；有 options 为枚举；number、bool 为旧值
 	Unit     string   `json:"unit,omitempty"`     // 单位，如 A、V、mm
 	Required bool     `json:"required,omitempty"` // 表单是否必填；套用仍补默认
 	Default  any      `json:"default,omitempty"`  // 缺省时写入
@@ -42,11 +44,13 @@ type Field struct {
 	Items    *Field   `json:"items,omitempty"`    // array 的元素
 }
 
-// Schema 是一份类型的当前字段表。
+// Schema 是一份类型的当前模版：工艺为字段表，工程为若干命名项。
 type Schema struct {
-	Root   string  `json:"root"`             // object / array
-	Fields []Field `json:"fields,omitempty"` // 根为 object
-	Item   *Field  `json:"item,omitempty"`   // 根为 array 时的元素
+	Root      string            `json:"root"`                // object / array
+	Fields    []Field           `json:"fields,omitempty"`    // 工艺：根对象字段
+	Item      *Field            `json:"item,omitempty"`      // 旧工程表：一条焊缝的字段
+	Kinds     []string          `json:"kinds,omitempty"`     // 旧工程：种类表；与 Templates 互斥
+	Templates []ProjectTemplate `json:"templates,omitempty"` // 工程：命名模版
 }
 
 // Marshal 把字段表写成规范 JSON，供摘要和落库。
@@ -69,19 +73,37 @@ func Parse(raw []byte) (Schema, error) {
 	return s, nil
 }
 
-// Validate 检查字段表能用来套用。
+// Validate 检查模版能用来套用。
 func Validate(s Schema) error {
 	switch s.Root {
 	case RootObject:
-		if s.Item != nil {
+		if s.Item != nil || len(s.Kinds) > 0 || len(s.Templates) > 0 {
 			return fmt.Errorf("content template is invalid")
 		}
 		return validateFields(s.Fields, 1)
 	case RootArray:
-		if s.Item == nil {
+		if len(s.Templates) > 0 {
+			if s.Item != nil || len(s.Fields) > 0 || len(s.Kinds) > 0 {
+				return fmt.Errorf("content template is invalid")
+			}
+			return validateTemplates(s.Templates)
+		}
+		if len(s.Kinds) > 0 {
+			if s.Item != nil || len(s.Fields) > 0 {
+				return fmt.Errorf("content template is invalid")
+			}
+			return validateKinds(s.Kinds)
+		}
+		if s.Item != nil {
+			if len(s.Fields) > 0 {
+				return fmt.Errorf("content template is invalid")
+			}
+			return validateField(*s.Item, 1)
+		}
+		if len(s.Fields) > 0 {
 			return fmt.Errorf("content template is invalid")
 		}
-		return validateField(*s.Item, 1)
+		return validateTemplates(s.Templates)
 	default:
 		return fmt.Errorf("content template is invalid")
 	}
@@ -111,8 +133,8 @@ func validateField(f Field, depth int) error {
 		return fmt.Errorf("content template is invalid")
 	}
 	switch f.Type {
-	case TypeString, TypeNumber, TypeBool:
-		if len(f.Fields) > 0 || f.Items != nil {
+	case TypeString, TypeNumber, TypeBool, TypeProcess:
+		if len(f.Fields) > 0 || f.Items != nil || (f.Type == TypeProcess && len(f.Options) > 0) {
 			return fmt.Errorf("content template is invalid")
 		}
 		return nil
@@ -149,7 +171,48 @@ func Apply(schemaJSON, content []byte) ([]byte, error) {
 	case RootObject:
 		out = applyObject(s.Fields, v)
 	case RootArray:
-		out = applyArray(*s.Item, v)
+		if len(s.Templates) > 0 || (s.Item == nil && len(s.Kinds) == 0) {
+			out = applyProjectTemplates(s, v)
+		} else if len(s.Kinds) > 0 {
+			out = applyProjectKinds(s, v)
+		} else {
+			out = applyArray(*s.Item, v)
+		}
+	}
+	return json.Marshal(out)
+}
+
+// ApplyProjectItems 工程正文是数组；按 templateId 套那一份对象字段。
+func ApplyProjectItems(items []ProjectItemSchema, content []byte) ([]byte, error) {
+	byID := map[string][]Field{}
+	for _, it := range items {
+		byID[it.ID] = it.Fields
+	}
+	var v any
+	trim := bytes.TrimSpace(content)
+	if len(trim) > 0 {
+		if err := json.Unmarshal(trim, &v); err != nil {
+			v = nil
+		}
+	}
+	src, ok := v.([]any)
+	if !ok {
+		return json.Marshal([]any{})
+	}
+	out := make([]any, 0, len(src))
+	for _, el := range src {
+		obj, _ := el.(map[string]any)
+		if obj == nil {
+			continue
+		}
+		id, _ := obj["templateId"].(string)
+		fields, ok := byID[id]
+		if !ok {
+			continue
+		}
+		applied := applyObject(fields, obj)
+		applied["templateId"] = id
+		out = append(out, applied)
 	}
 	return json.Marshal(out)
 }
@@ -188,6 +251,8 @@ func applyField(f Field, v any) any {
 			return applyEnum(f, v)
 		}
 		return applyText(v, f.Default)
+	case TypeProcess:
+		return applyProcessID(v, f.Default)
 	case TypeNumber:
 		if n, ok := asFloat(v); ok {
 			return n
@@ -208,6 +273,20 @@ func applyField(f Field, v any) any {
 	default:
 		return nil
 	}
+}
+
+// applyProcessID 只留下字符串身份，空表示未选。
+func applyProcessID(v, def any) any {
+	if s, ok := v.(string); ok {
+		return strings.TrimSpace(s)
+	}
+	if s, ok := def.(string); ok && v == nil {
+		return strings.TrimSpace(s)
+	}
+	if v == nil {
+		return ""
+	}
+	return applyProcessID(nil, def)
 }
 
 // applyText 文本：能当数字的保持数字，其余当字符串。
@@ -379,7 +458,7 @@ func asBoolDef(v any) bool {
 	return false
 }
 
-// Default 工艺按设备明文；工程按身份引用，不收路径。
+// Default 工艺按设备明文；工程旧登记簿只给拆行。
 func Default(kind string) Schema {
 	if kind == KindProject {
 		return defaultProject()
@@ -395,6 +474,11 @@ func num(key, label, unit string, def float64) Field {
 // str 普通文本字段。
 func str(key, label, def string) Field {
 	return Field{Key: key, Label: label, Type: TypeString, Default: def}
+}
+
+// procRef 工程正文里的工艺身份槽，空表示未选。
+func procRef(key, label string) Field {
+	return Field{Key: key, Label: label, Type: TypeProcess, Default: ""}
 }
 
 // flag 已完成/启用这类是/否，落成可改选项的枚举。
@@ -433,7 +517,7 @@ func pathFields() []Field {
 		str("id", "路径身份", ""),
 		str("name", "路径名", ""),
 		{Key: "points", Label: "点", Type: TypeArray, Items: &el},
-		str("processId", "工艺", ""),
+		procRef("processId", "工艺"),
 		num("selectedPointIndex", "选中点", "", 0),
 	}
 }
@@ -452,7 +536,7 @@ func cornerFields() []Field {
 		num("torchRx", "焊枪 Rx", "°", 0),
 		num("torchRy", "焊枪 Ry", "°", 0),
 		num("torchRz", "焊枪 Rz", "°", 0),
-		str("processId", "工艺", ""),
+		procRef("processId", "工艺"),
 	}
 }
 
@@ -489,47 +573,3 @@ func defaultProcess() Schema {
 		osc,
 	}}
 }
-
-// defaultProject 工程根是焊缝数组；工艺只引用身份。
-func defaultProject() Schema {
-	pass := Field{Type: TypeObject, Label: "焊道", Fields: []Field{
-		str("id", "焊道身份", ""),
-		str("name", "焊道名", ""),
-		num("valX", "X", "mm", 0),
-		num("valYLeft", "左 Y", "mm", 0),
-		num("valYRight", "右 Y", "mm", 0),
-		num("valZ", "Z", "mm", 0),
-		num("valR", "R", "mm", 0),
-		str("processId", "工艺", ""),
-		flag("isCompleted", "已完成", false),
-		flag("isEnabled", "启用", true),
-	}}
-	ref := Field{Type: TypeObject, Label: "参考点", Fields: []Field{
-		{Key: "pose", Label: "位姿", Type: TypeObject, Fields: poseFields()},
-		{Key: "jointAngles", Label: "关节角", Type: TypeArray, Items: &Field{Key: "a", Label: "角", Type: TypeString, Default: 0.0}},
-	}}
-	base := Field{Key: "basePath", Label: "基准路径", Type: TypeObject, Fields: pathFields()}
-	item := Field{Type: TypeObject, Label: "焊缝", Fields: []Field{
-		str("id", "身份", ""),
-		str("name", "名称", ""),
-		{Key: "points", Label: "点", Type: TypeArray, Items: ptr(pointField())},
-		str("processId", "工艺", ""),
-		num("selectedPointIndex", "选中点", "", 0),
-		{Key: "extraProcesses", Label: "附加工艺", Type: TypeArray, Items: &Field{Type: TypeObject, Label: "附加", Fields: []Field{
-			str("id", "身份", ""), str("processId", "工艺", ""),
-		}}},
-		flag("isEnabled", "启用", true),
-		base,
-		{Key: "passes", Label: "多层焊道", Type: TypeArray, Items: &pass},
-		{Key: "cornerGroupParams", Label: "包角", Type: TypeObject, Fields: cornerFields()},
-		{Key: "refPointX1", Label: "起点 X", Type: TypeObject, Fields: ref.Fields},
-		{Key: "refPointZ1", Label: "起点 Z", Type: TypeObject, Fields: ref.Fields},
-		{Key: "refPointXEnd", Label: "终点 X", Type: TypeObject, Fields: ref.Fields},
-		{Key: "refPointZEnd", Label: "终点 Z", Type: TypeObject, Fields: ref.Fields},
-		flag("isBaseCompleted", "基准完成", false),
-	}}
-	return Schema{Root: RootArray, Item: &item}
-}
-
-// ptr 给数组元素取地址。
-func ptr(f Field) *Field { return &f }

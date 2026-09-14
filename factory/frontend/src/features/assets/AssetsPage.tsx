@@ -8,8 +8,8 @@ import { statusColor, statusLabel } from "@/shared/labels";
 import { IdText } from "@/shared/ui/IdText";
 import { PageHeader } from "@/shared/ui/PageHeader";
 import { ContentEditor } from "@/features/templates/ContentFields";
-import { collectProcessIds, defaultValue } from "@/features/templates/schema";
-import { useTemplate } from "@/features/templates/api";
+import { collectProcessIds, defaultValue, projectContentSchema } from "@/features/templates/schema";
+import { useProjectTemplates, useTemplate } from "@/features/templates/api";
 import type { ContentSchema } from "@/features/templates/schema";
 import {
   useAssetContent,
@@ -36,7 +36,6 @@ type CreateForm = {
   level: AssetLevel;
   name: string;
   content: string;
-  processIds?: string[];
 };
 
 function levelLabel(level: string) {
@@ -89,8 +88,9 @@ export function AssetsPage({ kind }: { kind: AssetKind }) {
   const catalog = useCatalog();
   const assets = useAssets(kind);
   const processes = useAssets("process");
-  const template = useTemplate(kind);
-  const schema = template.data?.schema ?? null;
+  const processTpl = useTemplate("process");
+  const projectTpls = useProjectTemplates();
+  const schema = isProcess ? (processTpl.data?.schema ?? null) : projectTpls.data?.length ? projectContentSchema(projectTpls.data) : null;
   const create = useCreateAsset();
   const copy = useCopyAsset();
   const rename = useRenameAsset();
@@ -126,14 +126,6 @@ export function AssetsPage({ kind }: { kind: AssetKind }) {
       return a.name.toLowerCase().includes(needle) || creator.includes(needle);
     });
   }, [assets.data, levelFilter, statusFilter, query, catalog.data]);
-
-  const availableProcesses = useMemo(() => {
-    const all = processes.data ?? [];
-    if (createLevel === "personal") {
-      return all.filter((p) => p.status === "available" && (p.level === "factory" || p.level === "platform" || p.creatorId === meId));
-    }
-    return all.filter((p) => p.status === "available" && (p.level === "factory" || p.level === "platform"));
-  }, [processes.data, createLevel, meId]);
 
   useEffect(() => {
     if (copyFor) copyForm.setFieldsValue({ name: `${copyFor.name}-副本` });
@@ -333,7 +325,7 @@ export function AssetsPage({ kind }: { kind: AssetKind }) {
           columns={columns}
           dataSource={rows}
           loading={assets.isLoading}
-          scroll={{ x: 1140 }}
+          scroll={{ x: 1280 }}
           pagination={{ pageSize: 20, hideOnSinglePage: true }}
           locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={emptyText} /> }}
         />
@@ -346,9 +338,7 @@ export function AssetsPage({ kind }: { kind: AssetKind }) {
           requiredMark={false}
           initialValues={{ level: "factory", content: "" }}
           onFinish={(values) => {
-            const deps = isProcess
-              ? undefined
-              : depsFromSelection(values.processIds, values.content, availableProcesses);
+            const deps = isProcess ? undefined : depsFromSelection(undefined, values.content, processes.data ?? [], schema);
             const input: CreateAssetInput = {
               kind,
               level: values.level,
@@ -375,17 +365,8 @@ export function AssetsPage({ kind }: { kind: AssetKind }) {
           <Form.Item name="name" label="显示名" extra="显示名不是身份，改名也不换编号。" rules={[{ required: true, message: "请输入显示名" }]}>
             <Input autoComplete="off" autoFocus />
           </Form.Item>
-          {!isProcess ? (
-            <Form.Item
-              name="processIds"
-              label="依赖工艺"
-              extra={availableProcesses.length ? "焊道里按名称选工艺即可；这里可多带组包要用、焊道未引用的。" : "还没有可依赖的已发布工艺，请先发布工艺。"}
-            >
-              <Select mode="multiple" optionFilterProp="label" options={availableProcesses.map((p) => ({ value: p.id, label: `${p.name} · ${levelLabel(p.level)} · r${p.revision}` }))} />
-            </Form.Item>
-          ) : null}
           <Form.Item name="content" label="参数">
-            <ContentEditor schema={schema} processOptions={isProcess ? undefined : processSelectOptions(undefined, availableProcesses)} />
+            <ContentEditor schema={schema} processOptions={isProcess ? undefined : processPickerOptions(processes.data ?? [], (p) => canPinForProject(createLevel ?? "factory", p, meId))} />
           </Form.Item>
         </Form>
       </Modal>
@@ -436,6 +417,7 @@ export function AssetsPage({ kind }: { kind: AssetKind }) {
         schema={schema}
         processes={processes.data ?? []}
         availableProcesses={pickableProcesses(editing, processes.data ?? [], meId)}
+        meId={meId}
         saving={rename.isPending || updateContent.isPending || setAssetDeps.isPending}
         locked={editing ? !canMutate(editing) : true}
         onClose={() => setEditFor(null)}
@@ -450,7 +432,7 @@ export function AssetsPage({ kind }: { kind: AssetKind }) {
             if (editing.kind === "project") {
               const oldIds = (editing.deps ?? []).map((d) => d.id);
               const pickable = pickableProcesses(editing, processes.data ?? [], meId);
-              const nextIds = uniqueIds([...(processIds ?? []), ...processIdsFromContent(content)]);
+              const nextIds = uniqueIds([...(processIds ?? []), ...processIdsFromContent(content, schema)]);
               const added = nextIds.filter((id) => !oldIds.includes(id));
               const toDep = (id: string): AssetDep => {
                 const pinned = (editing.deps ?? []).find((d) => d.id === id);
@@ -626,16 +608,16 @@ function uniqueIds(ids: string[]): string[] {
   return out;
 }
 
-function processIdsFromContent(content: string | undefined): string[] {
+function processIdsFromContent(content: string | undefined, schema: ContentSchema | null): string[] {
   try {
-    return collectProcessIds(JSON.parse(content || "[]"));
+    return collectProcessIds(JSON.parse(content || "[]"), schema);
   } catch {
     return [];
   }
 }
 
-function depsFromSelection(selected: string[] | undefined, content: string | undefined, available: Asset[]): AssetDep[] {
-  const ids = uniqueIds([...(selected ?? []), ...processIdsFromContent(content)]);
+function depsFromSelection(selected: string[] | undefined, content: string | undefined, available: Asset[], schema: ContentSchema | null): AssetDep[] {
+  const ids = uniqueIds([...(selected ?? []), ...processIdsFromContent(content, schema)]);
   return ids.map((id) => {
     const p = available.find((x) => x.id === id);
     if (!p) return { id, revision: 0, digest: "" };
@@ -645,6 +627,31 @@ function depsFromSelection(selected: string[] | undefined, content: string | und
 
 function processLabel(p: Asset) {
   return `${p.name} · ${levelLabel(p.level)} · r${p.revision}`;
+}
+
+function canPinForProject(projectLevel: string | undefined, p: Asset, meId?: string) {
+  if (p.status !== "available") return false;
+  if (p.level === "factory" || p.level === "platform") return true;
+  if (p.level !== "personal") return false;
+  return projectLevel === "factory" || p.creatorId === meId;
+}
+
+function processPickerOptions(all: Asset[], pin: (p: Asset) => boolean, selected?: string[]) {
+  const seen = new Set<string>();
+  const selectedSet = new Set(selected ?? []);
+  const opts: { value: string; label: string; disabled?: boolean }[] = [];
+  for (const p of all) {
+    seen.add(p.id);
+    const ok = pin(p);
+    if (!ok && !selectedSet.has(p.id)) continue;
+    const extra = ok ? "" : ` · ${statusLabel(p.status)}`;
+    opts.push({ value: p.id, label: processLabel(p) + extra, disabled: !ok });
+  }
+  for (const id of selected ?? []) {
+    if (seen.has(id)) continue;
+    opts.push({ value: id, label: id, disabled: true });
+  }
+  return opts;
 }
 
 function processSelectOptions(selected: string[] | undefined, pickable: Asset[], catalog: Asset[] = pickable) {
@@ -662,10 +669,7 @@ function processSelectOptions(selected: string[] | undefined, pickable: Asset[],
 
 function pickableProcesses(row: Asset | null, all: Asset[], meId?: string): Asset[] {
   if (!row || row.kind !== "project") return [];
-  if (row.level === "personal") {
-    return all.filter((p) => p.status === "available" && (p.level === "factory" || p.level === "platform" || p.creatorId === meId));
-  }
-  return all.filter((p) => p.status === "available" && (p.level === "factory" || p.level === "platform"));
+  return all.filter((p) => canPinForProject(row.level, p, meId));
 }
 
 function EditModal({
@@ -674,6 +678,7 @@ function EditModal({
   schema,
   processes,
   availableProcesses,
+  meId,
   saving,
   locked,
   extra,
@@ -685,6 +690,7 @@ function EditModal({
   schema: ContentSchema | null;
   processes: Asset[];
   availableProcesses: Asset[];
+  meId?: string;
   saving: boolean;
   locked: boolean;
   extra: ReactNode;
@@ -740,7 +746,7 @@ function EditModal({
           <ContentEditor
             schema={schema}
             disabled={locked}
-            processOptions={row?.kind === "project" ? processSelectOptions((row.deps ?? []).map((d) => d.id), availableProcesses, processes) : undefined}
+            processOptions={row?.kind === "project" ? processPickerOptions(processes, (p) => canPinForProject(row.level, p, meId), (row.deps ?? []).map((d) => d.id)) : undefined}
           />
         </Form.Item>
       </Form>

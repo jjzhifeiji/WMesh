@@ -10,5 +10,6 @@ export const paths = {
   projectTemplates: "/assets/project-templates",
   auditEvents: "/audit/events",
   auditStats: "/audit/stats",
+  reports: "/reports",
   account: "/account",
 } as const;

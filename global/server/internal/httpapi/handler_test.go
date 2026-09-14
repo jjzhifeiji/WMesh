@@ -143,9 +143,9 @@ func TestWANHTTP(t *testing.T) {
 	}
 	digest := gjson(t, body, "digest")
 	rev := gjson(t, body, "revision")
-	code, body = do(t, srv, "GET", "/v1/templates/builtin?kind=project", tok, "")
+	code, body = do(t, srv, "GET", "/v1/project-templates", tok, "")
 	if code != http.StatusOK || !strings.Contains(body, `"processId"`) || strings.Contains(body, "processPath") {
-		t.Fatalf("builtin template %d %s", code, body)
+		t.Fatalf("project templates %d %s", code, body)
 	}
 	code, body = do(t, srv, "POST", "/v1/assets", tok, `{"kind":"project","name":"平台工程","content":"job","deps":[{"id":"`+pid+`","revision":`+rev+`,"digest":"`+digest+`"}]}`)
 	if code != http.StatusCreated {

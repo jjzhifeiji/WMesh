@@ -358,10 +358,14 @@ func testAssetPromote(t *testing.T, run func(string, func(*testing.T))) {
 		if _, err := facA.ReadAssetContent(ctx, op.tok, personal.ID); !errors.Is(err, domain.ErrForbidden) {
 			t.Fatalf("read: %v", err)
 		}
-		if _, err := facA.CreateFactoryProject(ctx, op.tok, direct, "当厂级依赖", body, []factory.AssetDep{{
+		got, err := facA.CreateFactoryProject(ctx, op.tok, direct, "当厂级依赖", body, []factory.AssetDep{{
 			ID: personal.ID, Revision: personal.Revision, Digest: personal.Digest,
-		}}); !errors.Is(err, domain.ErrForbidden) && !errors.Is(err, domain.ErrAssetDependency) {
+		}})
+		if err != nil {
 			t.Fatalf("dep: %v", err)
+		}
+		if len(got.Deps) != 1 || got.Deps[0].ID != personal.ID {
+			t.Fatalf("deps %+v", got.Deps)
 		}
 		still, err := facA.GetAsset(ctx, pe.tok, personal.ID)
 		if err != nil || still.Level != factory.AssetLevelPersonal {

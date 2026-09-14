@@ -16,4 +16,5 @@ export const paths = {
   sync: "/delivery/sync",
   auditEvents: "/audit/events",
   auditStats: "/audit/stats",
+  reports: "/reports",
 } as const;
