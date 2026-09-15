@@ -61,12 +61,6 @@ type AssetReplica struct {
 	Retracted  bool       `json:"retracted"`  // 云端已删；列表不再展示
 }
 
-// FactorySettings 是本厂一份设置，目前只有 Client 工程缓存上限。
-type FactorySettings struct {
-	ID                int16 `json:"id"`                // 固定 1
-	MaxCachedProjects int   `json:"maxCachedProjects"` // 每 Client 工程份上限，≥1
-}
-
 // ClientDistributionGrant 是某工程可否下发到某 Client。
 type ClientDistributionGrant struct {
 	ID        uuid.UUID `json:"id"`        // 授权记录身份
@@ -107,13 +101,6 @@ type replicaRow struct {
 
 func (replicaRow) TableName() string { return "asset_replicas" }
 
-type factorySettingsRow struct {
-	ID                int16 `gorm:"primaryKey"` // 固定 1
-	MaxCachedProjects int   `gorm:"not null"`   // 缓存上限
-}
-
-func (factorySettingsRow) TableName() string { return "factory_settings" }
-
 type clientGrantRow struct {
 	ID        uuid.UUID `gorm:"type:uuid;primaryKey"` // 授权身份
 	ProjectID uuid.UUID `gorm:"type:uuid;not null"`   // 工程
@@ -137,30 +124,6 @@ type clientRecordRow struct {
 }
 
 func (clientRecordRow) TableName() string { return "client_distribution_records" }
-
-// CacheLimit 读本厂 Client 工程缓存上限。
-func (s *Store) CacheLimit(ctx context.Context) (int, error) {
-	var row factorySettingsRow
-	if err := s.db.WithContext(ctx).First(&row, "id = 1").Error; err != nil {
-		return 0, err
-	}
-	return row.MaxCachedProjects, nil
-}
-
-// SetCacheLimit 写入本厂缓存上限，须 ≥1。
-func (s *Store) SetCacheLimit(ctx context.Context, n int) error {
-	if n < 1 {
-		return domain.ErrForbidden
-	}
-	res := s.db.WithContext(ctx).Model(&factorySettingsRow{}).Where("id = 1").Update("max_cached_projects", n)
-	if res.Error != nil {
-		return res.Error
-	}
-	if res.RowsAffected == 0 {
-		return domain.ErrNotFound
-	}
-	return nil
-}
 
 // InsertReplica 写入一条平台级副本；同身份修订且摘要相同则原样返回，不重封。
 func (s *Store) InsertReplica(ctx context.Context, in AssetReplica) (AssetReplica, error) {

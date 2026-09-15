@@ -62,7 +62,7 @@ func (s *kernel) ensureTemplate(ctx context.Context, kind string) (ContentTempla
 	return openTemplate(row)
 }
 
-// ensureProjectItems 工程模版多份独立行；旧登记簿拆开，空库落下三份明细。
+// ensureProjectItems 工程模版多份独立行；旧登记簿拆开，空库落下四份明细。
 func (s *kernel) ensureProjectItems(ctx context.Context) ([]ContentTemplate, error) {
 	rows, err := s.store.TemplatesByKind(ctx, KindProject)
 	if err != nil {
@@ -75,7 +75,7 @@ func (s *kernel) ensureProjectItems(ctx context.Context) ([]ContentTemplate, err
 		if parseErr != nil || sch.Root != contenttpl.RootObject {
 			items := contenttpl.ExpandLegacyProject(sch)
 			if parseErr != nil {
-				items = contenttpl.SeedProjectItems()
+				items = contenttpl.LegacyProjectItems()
 			}
 			for _, it := range items {
 				id, idErr := uuid.Parse(it.ID)
@@ -120,7 +120,7 @@ func (s *kernel) ensureProjectItems(ctx context.Context) ([]ContentTemplate, err
 	if len(current) > 0 {
 		return current, nil
 	}
-	out := make([]ContentTemplate, 0, 3)
+	out := make([]ContentTemplate, 0, len(contenttpl.SeedProjectItems()))
 	for _, it := range contenttpl.SeedProjectItems() {
 		id, idErr := uuid.Parse(it.ID)
 		if idErr != nil {

@@ -5,8 +5,10 @@ import { AssignmentsPage } from "@/features/assignments/AssignmentsPage";
 import { ActivatePage } from "@/features/auth/ActivatePage";
 import { ClaimPage } from "@/features/auth/ClaimPage";
 import { LoginPage } from "@/features/auth/LoginPage";
+import { ClientPolicyPage } from "@/features/client-policy/ClientPolicyPage";
 import { ClientsPage } from "@/features/clients/ClientsPage";
 import { DashboardPage } from "@/features/dashboard/DashboardPage";
+import { LegacyImportPage } from "@/features/legacy-import/LegacyImportPage";
 import { OrgUnitsPage } from "@/features/org/OrgUnitsPage";
 import { PeoplePage } from "@/features/people/PeoplePage";
 import { AdminLayout } from "@/layouts/AdminLayout";
@@ -42,8 +44,10 @@ export const router = createBrowserRouter([
       { path: paths.people, element: sa(<PeoplePage />) },
       { path: paths.assignments, element: sa(<AssignmentsPage />) },
       { path: paths.clients, element: sa(<ClientsPage />) },
+      { path: paths.clientPolicy, element: sa(<ClientPolicyPage />) },
       { path: paths.processes, element: <AssetsPage kind="process" /> },
       { path: paths.projects, element: <AssetsPage kind="project" /> },
+      { path: paths.legacyImport, element: <LegacyImportPage /> },
       { path: paths.account, element: <AccountPage /> },
       ...placeholderPaths.map((path) => ({ path, element: <PlaceholderPage /> })),
       { path: "*", element: <NotFoundPage /> },

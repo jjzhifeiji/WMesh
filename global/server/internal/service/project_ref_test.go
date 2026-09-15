@@ -1,4 +1,4 @@
-// 工程焊道引用工艺身份：对齐 deps、升档改写、不套旧正文。
+// 工程焊道引用工艺身份；F2 空库四份、已有三份不自动插 T 排。
 package service_test
 
 import (
@@ -149,8 +149,17 @@ func TestProjectProcessRefs(t *testing.T) {
 		t.Fatal(err)
 	}
 	list, err := h.WAN.ListProjectTemplates(ctx, tok)
-	if err != nil || len(list) == 0 {
-		t.Fatalf("list %+v %v", list, err)
+	if err != nil || len(list) != 4 {
+		t.Fatalf("list %d %v", len(list), err)
+	}
+	foundTBar := false
+	for _, row := range list {
+		if row.ID.String() == contenttpl.SeedTplTBar && bytes.Contains(row.Schema, []byte("gapBands")) && !bytes.Contains(row.Schema, []byte("processPath")) {
+			foundTBar = true
+		}
+	}
+	if !foundTBar {
+		t.Fatalf("empty db missing tbar: %+v", list)
 	}
 	single := list[0]
 	for _, row := range list {
@@ -217,5 +226,44 @@ func TestProjectProcessRefs(t *testing.T) {
 	snap, err := h.WAN.DistributeToFactory(ctx, tok, pack.ID, fac.Factory.ID)
 	if err != nil || len(snap.Members) != 2 {
 		t.Fatalf("members %+v %v", snap, err)
+	}
+}
+
+func TestExistingProjectTemplatesKeepThree(t *testing.T) {
+	ctx := context.Background()
+	h := New(t)
+	if err := h.WAN.BootstrapAdmin(ctx, "w", "wan-secret"); err != nil {
+		t.Fatal(err)
+	}
+	tok, err := h.WAN.Login(ctx, "w", "wan-secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	list, err := h.WAN.ListProjectTemplates(ctx, tok)
+	if err != nil || len(list) != 4 {
+		t.Fatalf("seed %d %v", len(list), err)
+	}
+	var tbarID = list[0].ID
+	found := false
+	for _, row := range list {
+		if row.ID.String() == contenttpl.SeedTplTBar {
+			tbarID = row.ID
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("empty db missing tbar")
+	}
+	if err := h.WAN.DeleteProjectTemplate(ctx, tok, tbarID); err != nil {
+		t.Fatal(err)
+	}
+	again, err := h.WAN.ListProjectTemplates(ctx, tok)
+	if err != nil || len(again) != 3 {
+		t.Fatalf("after delete %d %v", len(again), err)
+	}
+	for _, row := range again {
+		if row.ID.String() == contenttpl.SeedTplTBar {
+			t.Fatal("auto reinserted tbar")
+		}
 	}
 }

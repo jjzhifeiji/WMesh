@@ -80,6 +80,7 @@ type (
 	AssetReplica    = store.AssetReplica
 	ClosureMember   = store.ClosureMember
 	ClosureSnapshot = store.ClosureSnapshot
+	ClientPolicy    = store.ClientPolicy
 
 	UploadRecord = store.UploadRecord
 

@@ -280,6 +280,47 @@ func TestDefaultProjectRefsProcessID(t *testing.T) {
 	}
 }
 
+func TestSeedProjectItemsFour(t *testing.T) {
+	seed := SeedProjectItems()
+	if len(seed) != 4 {
+		t.Fatalf("seed %d", len(seed))
+	}
+	legacy := LegacyProjectItems()
+	if len(legacy) != 3 {
+		t.Fatalf("legacy %d", len(legacy))
+	}
+	var tbar *ProjectItemSchema
+	for i := range seed {
+		if seed[i].ID == SeedTplTBar {
+			tbar = &seed[i]
+		}
+	}
+	if tbar == nil || tbar.Name != "T排对接" {
+		t.Fatalf("tbar %+v", seed)
+	}
+	keys := fieldKeys(&Field{Type: TypeObject, Fields: tbar.Fields})
+	has := map[string]int{}
+	for _, k := range keys {
+		has[k]++
+	}
+	if has["gapBands"] == 0 || has["rootProcessId"] == 0 || has["capProcessId"] == 0 {
+		t.Fatalf("tbar fields %v", keys)
+	}
+	if has["processPath"] != 0 {
+		t.Fatalf("processPath in tbar: %v", keys)
+	}
+	got := ExpandLegacyProject(Default(KindProject))
+	if len(got) != 3 {
+		t.Fatalf("expand default %d", len(got))
+	}
+	if InferItemKind(map[string]any{"gapBands": []any{}}) != ItemTBar {
+		t.Fatalf("infer gapBands")
+	}
+	if InferItemKind(map[string]any{"points": []any{map[string]any{"type": "GROOVE_A_LOWER"}}}) != ItemTBar {
+		t.Fatalf("infer groove")
+	}
+}
+
 func fieldKeys(f *Field) []string {
 	if f == nil {
 		return nil

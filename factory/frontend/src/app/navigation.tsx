@@ -63,6 +63,7 @@ export const navTree: NavEntry[] = [
     superAdminOnly: true,
     children: [
       { key: paths.clients, label: "设备" },
+      { key: paths.clientPolicy, label: "Client 策略" },
     ],
   },
   {
@@ -72,6 +73,7 @@ export const navTree: NavEntry[] = [
     children: [
       { key: paths.processes, label: "工艺", description: "厂级工艺的制作、维护与升档。" },
       { key: paths.projects, label: "工程", description: "工程及其依赖工艺的治理。" },
+      { key: paths.legacyImport, label: "旧文件导入", description: "把示教器旧工艺/工程收成本厂资产，路径换成身份。" },
       { key: paths.fieldFiles, label: "现场文件", placeholder: true, description: "Client 上传的点云/图片记录，本体在本厂对象存储。" },
     ],
   },

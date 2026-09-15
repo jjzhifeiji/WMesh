@@ -214,7 +214,7 @@ export function collectProcessIds(value: unknown, schema?: ContentSchema | null)
     }
     if (!v || typeof v !== "object") return;
     for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
-      if ((k === "processId" || k === "processPath") && typeof val === "string") {
+      if ((k === "processId" || k === "processPath" || k === "rootProcessId" || k === "capProcessId") && typeof val === "string") {
         add(val);
         continue;
       }

@@ -11,13 +11,18 @@ const (
 	ItemSingle = "single" // 单层焊道
 	ItemMulti  = "multi"  // 多层焊缝
 	ItemCorner = "corner" // 包角
+	ItemTBar   = "tbar"   // T排对接
 	ItemExtra  = "extra"  // 旧种类表：附加工艺开关
 )
 
 const (
-	defaultTplSingle = "11111111-1111-4111-8111-111111111111" // 默认单层模版身份
-	defaultTplMulti  = "22222222-2222-4222-8222-222222222222" // 默认多层模版身份
-	defaultTplCorner = "33333333-3333-4333-8333-333333333333" // 默认包角模版身份
+	SeedTplSingle    = "11111111-1111-4111-8111-111111111111" // 空库单层模版身份
+	SeedTplMulti     = "22222222-2222-4222-8222-222222222222" // 空库多层模版身份
+	SeedTplCorner    = "33333333-3333-4333-8333-333333333333" // 空库包角模版身份
+	SeedTplTBar      = "44444444-4444-4444-8444-444444444444" // 空库 T 排模版身份
+	defaultTplSingle = SeedTplSingle                          // 与 SeedTplSingle 相同
+	defaultTplMulti  = SeedTplMulti                           // 与 SeedTplMulti 相同
+	defaultTplCorner = SeedTplCorner                          // 与 SeedTplCorner 相同
 	maxProjectTpls   = 50                                     // 命名模版份数上限
 	maxTplNameRunes  = 80                                     // 名称字数上限
 )
@@ -31,7 +36,7 @@ var tplIDRe = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-
 type ProjectTemplate struct {
 	ID    string `json:"id"`    // 这份模版的身份
 	Name  string `json:"name"`  // 给人看的名称
-	Kind  string `json:"kind"`  // single / multi / corner
+	Kind  string `json:"kind"`  // single / multi / corner / tbar
 	Extra bool   `json:"extra"` // 是否带附加工艺槽
 }
 
@@ -42,13 +47,26 @@ type ProjectItemSchema struct {
 	Fields []Field // 这份自己的字段
 }
 
-// SeedProjectItems 空库三份，字段是现在各份自己的明细。
+// SeedProjectItems 空库四份，字段是现在各份自己的明细。
 func SeedProjectItems() []ProjectItemSchema {
 	return []ProjectItemSchema{
-		{ID: defaultTplSingle, Name: "单层焊道", Fields: itemSingle(true)},
-		{ID: defaultTplMulti, Name: "多层焊缝", Fields: itemMulti()},
-		{ID: defaultTplCorner, Name: "包角", Fields: itemCorner(true)},
+		{ID: SeedTplSingle, Name: "单层焊道", Fields: itemSingle(true)},
+		{ID: SeedTplMulti, Name: "多层焊缝", Fields: itemMulti()},
+		{ID: SeedTplCorner, Name: "包角", Fields: itemCorner(true)},
+		{ID: SeedTplTBar, Name: "T排对接", Fields: itemTBar()},
 	}
+}
+
+// LegacyProjectItems 已有库拆行用的三份，不含 T 排。
+func LegacyProjectItems() []ProjectItemSchema {
+	var out []ProjectItemSchema
+	for _, it := range SeedProjectItems() {
+		if it.ID == SeedTplTBar {
+			continue
+		}
+		out = append(out, it)
+	}
+	return out
 }
 
 // ObjectSchema 把一份字段表收成对象根。
@@ -56,7 +74,7 @@ func ObjectSchema(fields []Field) Schema {
 	return Schema{Root: RootObject, Fields: fields}
 }
 
-// ExpandLegacyProject 旧登记簿拆成独立份；对不上则用空库三份。
+// ExpandLegacyProject 旧登记簿拆成独立份；对不上则用已有三份，不插入 T 排。
 func ExpandLegacyProject(s Schema) []ProjectItemSchema {
 	if s.Root != RootArray {
 		return nil
@@ -71,14 +89,8 @@ func ExpandLegacyProject(s Schema) []ProjectItemSchema {
 	if len(s.Kinds) > 0 {
 		extra := HasKind(s.Kinds, ItemExtra)
 		out := make([]ProjectItemSchema, 0, 3)
-		for _, seed := range SeedProjectItems() {
-			kind := ItemSingle
-			if seed.ID == defaultTplMulti {
-				kind = ItemMulti
-			}
-			if seed.ID == defaultTplCorner {
-				kind = ItemCorner
-			}
+		for _, seed := range LegacyProjectItems() {
+			kind := seedKind(seed.ID)
 			if !HasKind(s.Kinds, kind) {
 				continue
 			}
@@ -88,7 +100,7 @@ func ExpandLegacyProject(s Schema) []ProjectItemSchema {
 			return out
 		}
 	}
-	return SeedProjectItems()
+	return LegacyProjectItems()
 }
 
 // defaultProject 旧登记簿形状，只给拆行用。
@@ -100,7 +112,7 @@ func defaultProject() Schema {
 	}}
 }
 
-// validateTemplates 名称必填且不重复，种类只许三种，身份不重复。
+// validateTemplates 名称必填且不重复，种类只许根项，身份不重复。
 func validateTemplates(list []ProjectTemplate) error {
 	if len(list) > maxProjectTpls {
 		return fmt.Errorf("content template is invalid")
@@ -169,9 +181,23 @@ func HasKind(kinds []string, kind string) bool {
 	return false
 }
 
-// IsRootItem 单层/多层/包角可作焊缝数组元素。
+// IsRootItem 单层/多层/包角/T 排可作焊缝数组元素。
 func IsRootItem(kind string) bool {
-	return kind == ItemSingle || kind == ItemMulti || kind == ItemCorner
+	return kind == ItemSingle || kind == ItemMulti || kind == ItemCorner || kind == ItemTBar
+}
+
+// seedKind 空库身份对应的根种类。
+func seedKind(id string) string {
+	switch id {
+	case SeedTplMulti:
+		return ItemMulti
+	case SeedTplCorner:
+		return ItemCorner
+	case SeedTplTBar:
+		return ItemTBar
+	default:
+		return ItemSingle
+	}
 }
 
 // ItemFields 某一种基础项的字段；extra 打开才带附加工艺槽。
@@ -183,6 +209,8 @@ func ItemFields(kind string, extra bool) []Field {
 		return itemMulti()
 	case ItemCorner:
 		return itemCorner(extra)
+	case ItemTBar:
+		return itemTBar()
 	default:
 		return nil
 	}
@@ -232,7 +260,27 @@ func InferItemKind(v any) string {
 	if _, ok := obj["cornerGroupParams"]; ok {
 		return ItemCorner
 	}
+	if _, ok := obj["gapBands"]; ok {
+		return ItemTBar
+	}
+	if hasGroovePoint(obj) {
+		return ItemTBar
+	}
 	return ItemSingle
+}
+
+// hasGroovePoint 点列里有坡口四点则当 T 排。
+func hasGroovePoint(obj map[string]any) bool {
+	arr, _ := obj["points"].([]any)
+	for _, el := range arr {
+		pt, _ := el.(map[string]any)
+		typ, _ := pt["type"].(string)
+		switch typ {
+		case "GROOVE_A_LOWER", "GROOVE_B_LOWER", "GROOVE_A_UPPER", "GROOVE_B_UPPER":
+			return true
+		}
+	}
+	return false
 }
 
 // lookupTemplate 按 templateId，没有则按种类对上第一份。
@@ -351,6 +399,25 @@ func itemCorner(extra bool) []Field {
 	fields := itemSingle(extra)
 	fields = append(fields, Field{Key: "cornerGroupParams", Label: "包角", Type: TypeObject, Fields: cornerFields()})
 	return fields
+}
+
+// itemTBar 坡口点列加间隙带工艺引用，不嵌打底/盖面参数。
+func itemTBar() []Field {
+	band := Field{Type: TypeObject, Label: "间隙带", Fields: []Field{
+		num("minGap", "最小间隙", "mm", 0),
+		num("maxGap", "最大间隙", "mm", 0),
+		num("layer", "层", "", 1),
+		procRef("rootProcessId", "打底工艺"),
+		procRef("capProcessId", "盖面工艺"),
+	}}
+	return []Field{
+		str("id", "身份", ""),
+		str("name", "名称", ""),
+		{Key: "points", Label: "点", Type: TypeArray, Items: ptr(pointField())},
+		num("selectedPointIndex", "选中点", "", 0),
+		flag("isEnabled", "启用", true),
+		{Key: "gapBands", Label: "间隙带", Type: TypeArray, Items: &band},
+	}
 }
 
 // extraProcessesField 挂在焊道上的额外工艺槽。

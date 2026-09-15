@@ -3,15 +3,16 @@ import type { TemplateField } from "./schema";
 export const ITEM_SINGLE = "single";
 export const ITEM_MULTI = "multi";
 export const ITEM_CORNER = "corner";
+export const ITEM_TBAR = "tbar";
 export const ITEM_EXTRA = "extra";
 
-export type RootItemKind = typeof ITEM_SINGLE | typeof ITEM_MULTI | typeof ITEM_CORNER;
+export type RootItemKind = typeof ITEM_SINGLE | typeof ITEM_MULTI | typeof ITEM_CORNER | typeof ITEM_TBAR;
 export type ProjectItemKind = RootItemKind | typeof ITEM_EXTRA;
 
 export type ProjectItemTemplate = {
   id: string; // 这份模版的身份
   name: string; // 给人看的名称
-  kind: RootItemKind; // single / multi / corner
+  kind: RootItemKind; // single / multi / corner / tbar
   extra: boolean; // 是否带附加工艺槽
 };
 
@@ -19,6 +20,7 @@ export const ROOT_KINDS: { key: RootItemKind; label: string }[] = [
   { key: ITEM_SINGLE, label: "单层焊道" },
   { key: ITEM_MULTI, label: "多层焊缝" },
   { key: ITEM_CORNER, label: "包角" },
+  { key: ITEM_TBAR, label: "T排对接" },
 ];
 
 export const CATALOG_KINDS: { key: ProjectItemKind; label: string; root: boolean }[] = [
@@ -39,11 +41,11 @@ export function isProjectItemKind(v: string): v is ProjectItemKind {
 }
 
 export function isRootItem(kind: string): kind is RootItemKind {
-  return kind === ITEM_SINGLE || kind === ITEM_MULTI || kind === ITEM_CORNER;
+  return kind === ITEM_SINGLE || kind === ITEM_MULTI || kind === ITEM_CORNER || kind === ITEM_TBAR;
 }
 
 export function kindLabel(kind: string): string {
-  return CATALOG_KINDS.find((k) => k.key === kind)?.label ?? kind;
+  return ROOT_KINDS.find((k) => k.key === kind)?.label ?? CATALOG_KINDS.find((k) => k.key === kind)?.label ?? kind;
 }
 
 export function hasKind(kinds: string[] | undefined, kind: string): boolean {
@@ -99,6 +101,7 @@ export function itemFields(kind: string, extra: boolean): TemplateField[] {
   if (kind === ITEM_SINGLE) return itemSingle(extra);
   if (kind === ITEM_MULTI) return itemMulti();
   if (kind === ITEM_CORNER) return itemCorner(extra);
+  if (kind === ITEM_TBAR) return itemTBar();
   return [];
 }
 
@@ -125,7 +128,18 @@ export function inferItemKind(v: unknown): ProjectItemKind {
   if (typeof obj.kind === "string" && isRootItem(obj.kind)) return obj.kind as ProjectItemKind;
   if ("basePath" in obj || "passes" in obj) return ITEM_MULTI;
   if ("cornerGroupParams" in obj) return ITEM_CORNER;
+  if ("gapBands" in obj) return ITEM_TBAR;
+  if (hasGroovePoint(obj)) return ITEM_TBAR;
   return ITEM_SINGLE;
+}
+
+function hasGroovePoint(obj: Record<string, unknown>): boolean {
+  if (!Array.isArray(obj.points)) return false;
+  return obj.points.some((el) => {
+    if (!el || typeof el !== "object" || Array.isArray(el)) return false;
+    const typ = (el as Record<string, unknown>).type;
+    return typ === "GROOVE_A_LOWER" || typ === "GROOVE_B_LOWER" || typ === "GROOVE_A_UPPER" || typ === "GROOVE_B_UPPER";
+  });
 }
 
 export function inferProjectKinds(value: unknown): ProjectItemKind[] {
@@ -273,4 +287,27 @@ function itemMulti(): TemplateField[] {
 
 function itemCorner(extra: boolean): TemplateField[] {
   return [...itemSingle(extra), { key: "cornerGroupParams", label: "包角", type: "object", fields: cornerFields() }];
+}
+
+function itemTBar(): TemplateField[] {
+  const band: TemplateField = {
+    type: "object",
+    key: "band",
+    label: "间隙带",
+    fields: [
+      num("minGap", "最小间隙", "mm", 0),
+      num("maxGap", "最大间隙", "mm", 0),
+      num("layer", "层", "", 1),
+      procRef("rootProcessId", "打底工艺"),
+      procRef("capProcessId", "盖面工艺"),
+    ],
+  };
+  return [
+    str("id", "身份", ""),
+    str("name", "名称", ""),
+    { key: "points", label: "点", type: "array", items: pointField() },
+    num("selectedPointIndex", "选中点", "", 0),
+    flag("isEnabled", "启用", true),
+    { key: "gapBands", label: "间隙带", type: "array", items: band },
+  ];
 }
