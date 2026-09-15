@@ -2082,22 +2082,12 @@ class MultiLayerViewModel @Inject constructor(
         stopPassIndex = lastReachedPassIndex
         stopPointIndex = lastReachedPointIndex
 
-        // 停止段的焊长按直线补进统计；与单层同一顺序
-        if (isWelding && isWeldingStatsActive && lastReachedPoint != null) {
-            val vLast = lastReachedPoint!!.pose?.let { Vector3(it.x, it.y, it.z) }
-            val vCurr = Vector3(operationPosition.x, operationPosition.y, operationPosition.z)
-            if (vLast != null) {
-                weldingLength += (vCurr - vLast).length() / 1000.0
-            }
-        }
+
 
         isWelding = false
         isSimulating = false
-        isControllerActive = false
-        isWeldingStatsActive = false
         isPaused = false
         programHasStarted = false
-        pauseState = null
         weldingTimerJob?.cancel()
         markPouchWelding(false)
         
@@ -2119,8 +2109,6 @@ class MultiLayerViewModel @Inject constructor(
         
         executionQueue.clear()
         isExecutingBatch = false
-
-        saveAppSettings()
     }
 
     private fun calculateNewArcMidPoint(pStart: Pose, pMid: Pose, pEnd: Pose, pCurrent: Pose): Pose {
