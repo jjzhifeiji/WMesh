@@ -1236,7 +1236,7 @@ class MultiLayerViewModel @Inject constructor(
             passes = mutableStateListOf()
         )
         
-        multiLayerWeldPaths.add(newMultiPath)
+        multiLayerWeldPaths.add(newMultiPath.asUiPath())
         selectedMultiLayerPathIndex = multiLayerWeldPaths.size - 1
         selectedPassIndex = -1 // Default to Base Path
         saveCurrentProject()
@@ -1271,7 +1271,7 @@ class MultiLayerViewModel @Inject constructor(
             passes = mutableStateListOf()
         )
         
-        multiLayerWeldPaths.add(newMultiPath)
+        multiLayerWeldPaths.add(newMultiPath.asUiPath())
         selectedMultiLayerPathIndex = multiLayerWeldPaths.size - 1
         selectedPassIndex = -1 // Default to Base Path
         saveCurrentProject()
@@ -3124,7 +3124,7 @@ class MultiLayerViewModel @Inject constructor(
                 emptyList()
             }
             multiLayerWeldPaths.clear()
-            multiLayerWeldPaths.addAll(loaded)
+            multiLayerWeldPaths.addAll(loaded.map { it.asUiPath() })
             if (multiLayerWeldPaths.isEmpty()) addLinearWeldPath()
             selectedMultiLayerPathIndex = 0
             selectedPassIndex = -1

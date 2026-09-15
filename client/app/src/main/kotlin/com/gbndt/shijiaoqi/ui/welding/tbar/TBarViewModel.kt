@@ -194,7 +194,7 @@ class TBarViewModel @Inject constructor(
                 emptyList()
             }
             weldPaths.clear()
-            weldPaths.addAll(loaded)
+            weldPaths.addAll(loaded.map { it.asUiPath() })
             if (weldPaths.isEmpty()) addWeldPath()
             selectedWeldPathIndex = 0
             pouchProjectId = id
@@ -275,7 +275,7 @@ class TBarViewModel @Inject constructor(
         )
         val process = WeldProcess()
         val weldPath = WeldPath(id, name, points, process, gapBands = weldPaths.firstOrNull()?.gapBands.orEmpty())
-        weldPaths.add(weldPath)
+        weldPaths.add(weldPath.asUiPath())
         selectedWeldPathIndex = weldPaths.lastIndex
         saveCurrentProject()
 
@@ -399,7 +399,7 @@ class TBarViewModel @Inject constructor(
 
             // Add the generated paths to the end
             newPaths.forEachIndexed { i, p ->
-                weldPaths.add(p.copy(name = "包角焊道 ${weldPaths.size + 1} (层 ${i + 1})"))
+                weldPaths.add(p.copy(name = "包角焊道 ${weldPaths.size + 1} (层 ${i + 1})").asUiPath())
             }
 
             saveCurrentProject()

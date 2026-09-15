@@ -1,7 +1,5 @@
 package com.gbndt.shijiaoqi.model
 
-import androidx.compose.runtime.mutableStateListOf
-import androidx.compose.runtime.snapshots.SnapshotStateList
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.Transient
 
@@ -151,13 +149,13 @@ data class GapBand(
 data class WeldPath(
     val id: String,
     var name: String,
-    val points: SnapshotStateList<WeldPoint>,
+    val points: MutableList<WeldPoint>,
     var process: WeldProcess,
     var processId: String = "",
     var selectedPointIndex: Int = 0,
     var isEnabled: Boolean = true,
     var cornerGroupParams: CornerGroupParams? = null,
-    val extraProcesses: SnapshotStateList<WeldPathProcessSlot> = mutableStateListOf(),
+    val extraProcesses: MutableList<WeldPathProcessSlot> = mutableListOf(),
     var gapBands: List<GapBand> = emptyList(),
 )
 
@@ -208,7 +206,7 @@ data class MultiLayerWeldPath(
     val id: String,
     var name: String,
     var basePath: WeldPath, // The base path (Layer 1)
-    val passes: SnapshotStateList<WeldPassOffset>, // Subsequent layers (Layer 2..N)
+    val passes: MutableList<WeldPassOffset>, // Subsequent layers (Layer 2..N)
     var refPointX1: RefPoint? = null,
     var refPointZ1: RefPoint? = null,
     var refPointXMiddle: RefPoint? = null,
@@ -238,7 +236,7 @@ fun MultiLayerWeldPath.toSurrogate() = MultiLayerWeldPathSurrogate(
 )
 
 fun MultiLayerWeldPathSurrogate.toMultiLayerWeldPath(): MultiLayerWeldPath {
-    val passList = mutableStateListOf<WeldPassOffset>()
+    val passList = mutableListOf<WeldPassOffset>()
     passList.addAll(passes)
     return MultiLayerWeldPath(
         id = id.ifBlank { java.util.UUID.randomUUID().toString() },
@@ -298,7 +296,7 @@ fun WeldPath.toSurrogate() = WeldPathSurrogate(
 )
 
 fun WeldPathSurrogate.toWeldPath(): WeldPath {
-    val stateList = mutableStateListOf<WeldPoint>()
+    val stateList = mutableListOf<WeldPoint>()
     stateList.addAll(points)
     val process = WeldProcess()
     var validIndex = selectedPointIndex
@@ -308,7 +306,7 @@ fun WeldPathSurrogate.toWeldPath(): WeldPath {
     if (stateList.isEmpty()) {
         validIndex = -1
     }
-    val extras = mutableStateListOf<WeldPathProcessSlot>()
+    val extras = mutableListOf<WeldPathProcessSlot>()
     extraProcesses.forEach { slot ->
         extras.add(
             WeldPathProcessSlot(

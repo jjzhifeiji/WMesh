@@ -1,6 +1,5 @@
 package com.gbndt.shijiaoqi.domain.weld
 
-import androidx.compose.runtime.mutableStateListOf
 import com.gbndt.shijiaoqi.model.CornerGroupParams
 import com.gbndt.shijiaoqi.model.Pose
 import com.gbndt.shijiaoqi.model.WeldPath
@@ -62,7 +61,7 @@ object CornerWeldGenerator {
                 torchRz = weldOrientation?.rz,
                 processId = processId,
             )
-            val points = mutableStateListOf<WeldPoint>()
+            val points = mutableListOf<WeldPoint>()
             layer.points.forEach { pt ->
                 points.add(
                     WeldPoint(

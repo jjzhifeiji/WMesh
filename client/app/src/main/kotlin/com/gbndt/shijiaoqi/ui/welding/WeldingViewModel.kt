@@ -1187,7 +1187,7 @@ abstract class WeldingViewModel(
                 emptyList()
             }
             weldPaths.clear()
-            weldPaths.addAll(loaded)
+            weldPaths.addAll(loaded.map { it.asUiPath() })
             if (weldPaths.isEmpty()) addWeldPath()
             selectedWeldPathIndex = 0
             pouchProjectId = id
@@ -1524,7 +1524,7 @@ abstract class WeldingViewModel(
         )
         val process = WeldProcess()
         val weldPath = WeldPath(id, name, points, process)
-        weldPaths.add(weldPath)
+        weldPaths.add(weldPath.asUiPath())
         selectedWeldPathIndex = weldPaths.lastIndex
         saveCurrentProject()
 
@@ -1677,7 +1677,7 @@ abstract class WeldingViewModel(
 
             // Add the generated paths to the end
             newPaths.forEachIndexed { i, p ->
-                weldPaths.add(p.copy(name = "包角焊道 ${weldPaths.size + 1} (层 ${i + 1})"))
+                weldPaths.add(p.copy(name = "包角焊道 ${weldPaths.size + 1} (层 ${i + 1})").asUiPath())
             }
 
             saveCurrentProject()
