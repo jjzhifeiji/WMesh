@@ -2,7 +2,7 @@ package com.gbndt.shijiaoqi.data.session
 
 import com.gbndt.shijiaoqi.data.pouch.TransitClosure
 import java.util.UUID
-import com.gbndt.shijiaoqi.data.remote.FactoryOffer
+import com.gbndt.shijiaoqi.model.FactoryOffer
 
 data class ClientLoginResult(
     val token: String,

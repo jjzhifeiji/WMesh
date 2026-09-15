@@ -10,7 +10,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
-import com.gbndt.shijiaoqi.data.update.UpdateInfo
+import com.gbndt.shijiaoqi.model.UpdateInfo
 
 @Composable
 fun UpdateDialog(

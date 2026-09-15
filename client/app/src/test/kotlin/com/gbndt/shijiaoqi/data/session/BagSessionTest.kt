@@ -10,7 +10,7 @@ import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.util.UUID
-import com.gbndt.shijiaoqi.data.remote.FactoryOffer
+import com.gbndt.shijiaoqi.model.FactoryOffer
 
 class BagSessionTest {
     @Test

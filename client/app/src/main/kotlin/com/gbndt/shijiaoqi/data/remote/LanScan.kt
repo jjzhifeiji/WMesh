@@ -1,5 +1,6 @@
 package com.gbndt.shijiaoqi.data.remote
 
+import com.gbndt.shijiaoqi.model.FactoryOffer
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.Inet4Address
@@ -13,22 +14,6 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
 /** 厂服探活命中：地址与身份由服务给出，App 不手填。 */
-data class FactoryOffer(
-    val httpBase: String,
-    val factoryId: String,
-    val status: String,
-    val belongs: Boolean,
-    val clientId: String,
-    val clientName: String,
-) {
-    fun label(): String {
-        val host = httpBase.removePrefix("https://").removePrefix("http://")
-        val name = clientName.ifBlank { "厂服务" }
-        return "$name · $host"
-    }
-}
-
-/** 扫局域网厂服务：UDP 探询加 HTTP 探活，多台都留下拉。 */
 object LanScan {
     const val UDP_PORT = 52082
     const val PROBE = "WMESH-DISCOVER/1"

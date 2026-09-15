@@ -19,23 +19,21 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import com.gbndt.shijiaoqi.data.legacy.ProcessManager
 import com.gbndt.shijiaoqi.data.legacy.ProjectManager
+import com.gbndt.shijiaoqi.data.repository.PouchRepository
+import com.gbndt.shijiaoqi.data.repository.UpdateRepository
 import com.gbndt.shijiaoqi.data.repository.RobotRepository
 import com.gbndt.shijiaoqi.data.repository.SessionRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
-import com.gbndt.shijiaoqi.data.robot.protocol.RobotCommands
-import com.gbndt.shijiaoqi.data.crypt.Wm2
-import com.gbndt.shijiaoqi.data.pouch.Pouch
-import com.gbndt.shijiaoqi.data.session.BagSession
+import com.gbndt.shijiaoqi.domain.robot.RobotCommands
 import com.gbndt.shijiaoqi.domain.weld.Capture
 import com.gbndt.shijiaoqi.domain.weld.MultiLayerProject
 import com.gbndt.shijiaoqi.domain.weld.MultiLayerRun
-import com.gbndt.shijiaoqi.domain.weld.PouchProcessSource
-import com.gbndt.shijiaoqi.data.pouch.PouchSave
 import com.gbndt.shijiaoqi.domain.weld.ProcessBind
 import com.gbndt.shijiaoqi.domain.weld.ProcessChoice
 import com.gbndt.shijiaoqi.domain.weld.ProcessJson
 import com.gbndt.shijiaoqi.domain.weld.ProcessRef
+import com.gbndt.shijiaoqi.domain.weld.ProcessSource
 import com.gbndt.shijiaoqi.domain.weld.ProjectChoice
 import com.gbndt.shijiaoqi.domain.script.WeldRun
 import com.gbndt.shijiaoqi.model.FileSystemItem
@@ -53,8 +51,7 @@ import java.util.UUID
 import java.util.Locale
 import kotlin.math.sqrt
 import kotlin.math.abs
-import com.gbndt.shijiaoqi.data.update.UpdateManager
-import com.gbndt.shijiaoqi.data.update.UpdateInfo
+import com.gbndt.shijiaoqi.model.UpdateInfo
 import android.os.Environment
 import android.content.IntentFilter
 import android.content.Intent
@@ -82,6 +79,8 @@ class MultiLayerViewModel @Inject constructor(
     application: Application,
     private val session: SessionRepository,
     private val socketManager: RobotRepository,
+    private val pouch: PouchRepository,
+    private val updateManager: UpdateRepository,
 ) : AndroidViewModel(application), WeldViewModelInterface {
 
     // Helper class for Vector math
@@ -112,7 +111,7 @@ class MultiLayerViewModel @Inject constructor(
 
     private val processManager = ProcessManager(application)
     private val projectManager = ProjectManager(application)
-    private val updateManager = UpdateManager(application)
+
     
     private fun handleCommandExecuted(id: Int) {
         val mapping = commandIdMap[id]
@@ -3066,13 +3065,11 @@ class MultiLayerViewModel @Inject constructor(
         viewModelScope.launch { _toastEvent.emit("请从本机袋打开工程") }
     }
 
-    private fun bag(): BagSession = session.bag
-
     private fun markPouchWelding(on: Boolean) {
-        runCatching { bag().setWelding(on) }
+        pouch.setWelding(on)
     }
 
-    private fun processSource(): PouchProcessSource = PouchProcessSource(bag().pouch)
+    private fun processSource(): ProcessSource = pouch.processSource()
 
     private fun String.toUuidOrNull(): UUID? = try {
         UUID.fromString(trim())
@@ -3118,14 +3115,8 @@ class MultiLayerViewModel @Inject constructor(
 
     override fun syncFromPouch() {
         refreshPouchLists()
-        val bag = bag()
-        val id = bag.pouch.activeProject() ?: return
-        val bytes = try {
-            bag.open(id)
-        } catch (_: Exception) {
-            return
-        }
-        try {
+        val id = pouch.activeProjectId() ?: return
+        pouch.withProjectPlain(id) { bytes ->
             val loaded = try {
                 MultiLayerProject.parse(bytes)
             } catch (e: Exception) {
@@ -3138,17 +3129,15 @@ class MultiLayerViewModel @Inject constructor(
             selectedMultiLayerPathIndex = 0
             selectedPassIndex = -1
             pouchProjectId = id
-            currentProjectName = bag.pouch.exportClosures().firstOrNull { it.assetId == id }?.name
+            currentProjectName = pouch.projectName(id)
             bindPouchProcesses()
-        } finally {
-            Wm2.zero(bytes)
         }
         refreshPouchLists()
     }
 
     override fun activatePouchProject(id: UUID) {
         try {
-            bag().activate(id)
+            pouch.activate(id)
             syncFromPouch()
         } catch (e: Exception) {
             viewModelScope.launch { _toastEvent.emit(e.message ?: "无法激活工程") }
@@ -3156,15 +3145,10 @@ class MultiLayerViewModel @Inject constructor(
     }
 
     override fun refreshPouchLists() {
-        val bag = runCatching { bag() }.getOrNull() ?: return
-        val active = bag.pouch.activeProject()
         pouchProjects.clear()
-        val self = bag.pouch.boundClient()
-        bag.pouch.exportClosures().filter { it.kind == Pouch.KIND_PROJECT && self != null && it.targetClientId == self }.forEach {
-            pouchProjects.add(ProjectChoice(it.assetId, it.name, it.revision, it.assetId == active))
-        }
+        pouchProjects.addAll(pouch.listProjects())
         pouchProcesses.clear()
-        pouchProcesses.addAll(PouchProcessSource(bag.pouch).list())
+        pouchProcesses.addAll(pouch.listProcesses())
     }
 
     override fun bindProcessFromPouch(processId: UUID?) {
@@ -3191,9 +3175,8 @@ class MultiLayerViewModel @Inject constructor(
 
     fun saveCurrentProject() {
         val id = pouchProjectId ?: return
-        val bag = runCatching { bag() }.getOrNull() ?: return
-        multiLayerWeldPaths.forEach { PouchSave.multi(bag, it) }
-        PouchSave.project(bag, id, MultiLayerProject.encode(multiLayerWeldPaths.toList()))
+        multiLayerWeldPaths.forEach { pouch.saveMultiLayerPath(it) }
+        pouch.saveProject(id, MultiLayerProject.encode(multiLayerWeldPaths.toList()))
     }
 
     // 复制当前工程
@@ -3874,14 +3857,10 @@ class MultiLayerViewModel @Inject constructor(
     // 创建工艺
     override fun createProcess(name: String, process: WeldProcess) {
         val cleanName = if (name.endsWith(".json")) name.substringBeforeLast(".json") else name
-        val bag = runCatching { bag() }.getOrNull() ?: return
         val body = ProcessJson.encode(process.copy(name = cleanName))
-        try {
-            bag.issuePersonal(Pouch.KIND_PROCESS, cleanName, body)
+        runCatching {
+            pouch.issueProcess(cleanName, body)
             refreshPouchLists()
-        } catch (_: Exception) {
-        } finally {
-            Wm2.zero(body)
         }
     }
 

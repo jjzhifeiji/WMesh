@@ -1,7 +1,7 @@
 package com.gbndt.shijiaoqi.domain.script
 
-import com.gbndt.shijiaoqi.data.robot.protocol.FrPacket
-import com.gbndt.shijiaoqi.data.robot.protocol.RobotCommands
+import com.gbndt.shijiaoqi.domain.robot.FrPacket
+import com.gbndt.shijiaoqi.domain.robot.RobotCommands
 
 /** 单层批量与暂停继续的现网报文；不生成 Lua 正文。 */
 object WeldRun {

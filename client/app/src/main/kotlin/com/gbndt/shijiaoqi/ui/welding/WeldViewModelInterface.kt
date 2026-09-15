@@ -92,7 +92,7 @@ interface WeldViewModelInterface {
 
     // Update
     var isUpdateDialogVisible: Boolean
-    var updateInfo: com.gbndt.shijiaoqi.data.update.UpdateInfo?
+    var updateInfo: com.gbndt.shijiaoqi.model.UpdateInfo?
     fun startUpdateDownload()
     fun checkForUpdate()
 

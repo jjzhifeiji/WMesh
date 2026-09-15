@@ -17,14 +17,13 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import com.gbndt.shijiaoqi.data.legacy.ProcessManager
 import com.gbndt.shijiaoqi.data.legacy.ProjectManager
+import com.gbndt.shijiaoqi.data.repository.PouchRepository
+import com.gbndt.shijiaoqi.data.repository.UpdateRepository
 import com.gbndt.shijiaoqi.data.repository.RobotRepository
 import com.gbndt.shijiaoqi.data.repository.SessionRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
-import com.gbndt.shijiaoqi.data.robot.protocol.RobotCommands
-import com.gbndt.shijiaoqi.data.crypt.Wm2
-import com.gbndt.shijiaoqi.data.pouch.Pouch
-import com.gbndt.shijiaoqi.data.session.BagSession
+import com.gbndt.shijiaoqi.domain.robot.RobotCommands
 import com.gbndt.shijiaoqi.model.FileSystemItem
 import com.gbndt.shijiaoqi.model.GapBand
 import com.gbndt.shijiaoqi.model.Pose
@@ -39,8 +38,6 @@ import com.gbndt.shijiaoqi.ui.welding.WeldViewModelInterface
 import com.gbndt.shijiaoqi.domain.weld.TBarGeometry
 import com.gbndt.shijiaoqi.domain.weld.TBarPass
 import com.gbndt.shijiaoqi.model.isTBarCollectable
-import com.gbndt.shijiaoqi.domain.weld.PouchProcessSource
-import com.gbndt.shijiaoqi.data.pouch.PouchSave
 import com.gbndt.shijiaoqi.domain.weld.ProcessBind
 import com.gbndt.shijiaoqi.domain.weld.ProcessChoice
 import com.gbndt.shijiaoqi.domain.weld.ProcessJson
@@ -59,8 +56,7 @@ import java.io.File
 import kotlin.math.sqrt
 import kotlin.math.abs
 
-import com.gbndt.shijiaoqi.data.update.UpdateManager
-import com.gbndt.shijiaoqi.data.update.UpdateInfo
+import com.gbndt.shijiaoqi.model.UpdateInfo
 import android.content.IntentFilter
 import android.content.Intent
 import android.app.DownloadManager
@@ -90,7 +86,9 @@ class TBarViewModel @Inject constructor(
     application: Application,
     session: SessionRepository,
     socketManager: RobotRepository,
-) : WeldingViewModel(application, session, socketManager) {
+    pouch: PouchRepository,
+    updateManager: UpdateRepository,
+) : WeldingViewModel(application, session, socketManager, pouch, updateManager) {
 
     private var boundProcesses = emptyMap<UUID, WeldProcess>()
 
@@ -187,14 +185,8 @@ class TBarViewModel @Inject constructor(
 
     override fun syncFromPouch() {
         refreshPouchLists()
-        val bag = bag()
-        val id = bag.pouch.activeProject() ?: return
-        val bytes = try {
-            bag.open(id)
-        } catch (_: Exception) {
-            return
-        }
-        try {
+        val id = pouch.activeProjectId() ?: return
+        pouch.withProjectPlain(id) { bytes ->
             val loaded = try {
                 TBarProject.parse(bytes)
             } catch (e: Exception) {
@@ -206,10 +198,8 @@ class TBarViewModel @Inject constructor(
             if (weldPaths.isEmpty()) addWeldPath()
             selectedWeldPathIndex = 0
             pouchProjectId = id
-            currentProjectName = bag.pouch.exportClosures().firstOrNull { it.assetId == id }?.name
+            currentProjectName = pouch.projectName(id)
             bindPouchProcesses(weldPaths)
-        } finally {
-            Wm2.zero(bytes)
         }
         refreshPouchLists()
     }
@@ -243,9 +233,8 @@ class TBarViewModel @Inject constructor(
 
     override fun saveCurrentProject() {
         val id = pouchProjectId ?: return
-        val bag = runCatching { bag() }.getOrNull() ?: return
-        weldPaths.forEach { PouchSave.weldPath(bag, it) }
-        PouchSave.project(bag, id, TBarProject.encode(weldPaths.toList()))
+        weldPaths.forEach { pouch.saveWeldPath(it) }
+        pouch.saveProject(id, TBarProject.encode(weldPaths.toList()))
     }
 
     override fun copyCurrentProject(newName: String) {

@@ -1,6 +1,6 @@
 package com.gbndt.shijiaoqi.ui.login
 
-import com.gbndt.shijiaoqi.data.remote.FactoryOffer
+import com.gbndt.shijiaoqi.model.FactoryOffer
 
 /** 登录界面的完整形状；界面只读它，不自己攒状态。 */
 data class LoginUiState(

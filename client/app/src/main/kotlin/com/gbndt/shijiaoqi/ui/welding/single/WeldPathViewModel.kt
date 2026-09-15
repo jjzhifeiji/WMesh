@@ -1,6 +1,8 @@
 package com.gbndt.shijiaoqi.ui.welding.single
 
 import android.app.Application
+import com.gbndt.shijiaoqi.data.repository.PouchRepository
+import com.gbndt.shijiaoqi.data.repository.UpdateRepository
 import com.gbndt.shijiaoqi.data.repository.RobotRepository
 import com.gbndt.shijiaoqi.data.repository.SessionRepository
 import com.gbndt.shijiaoqi.ui.welding.WeldingViewModel
@@ -13,4 +15,6 @@ class WeldPathViewModel @Inject constructor(
     application: Application,
     session: SessionRepository,
     socketManager: RobotRepository,
-) : WeldingViewModel(application, session, socketManager)
+    pouch: PouchRepository,
+    updateManager: UpdateRepository,
+) : WeldingViewModel(application, session, socketManager, pouch, updateManager)

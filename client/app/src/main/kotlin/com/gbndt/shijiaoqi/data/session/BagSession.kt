@@ -10,7 +10,7 @@ import com.gbndt.shijiaoqi.data.pouch.Pouch
 import com.gbndt.shijiaoqi.data.pouch.PouchRejected
 import java.util.UUID
 import com.gbndt.shijiaoqi.data.remote.DownChannel
-import com.gbndt.shijiaoqi.data.remote.FactoryOffer
+import com.gbndt.shijiaoqi.model.FactoryOffer
 import com.gbndt.shijiaoqi.data.remote.LanScan
 import com.gbndt.shijiaoqi.data.remote.NoopDownChannel
 

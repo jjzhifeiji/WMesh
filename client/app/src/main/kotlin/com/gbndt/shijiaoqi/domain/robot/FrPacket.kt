@@ -1,4 +1,4 @@
-package com.gbndt.shijiaoqi.data.robot.protocol
+package com.gbndt.shijiaoqi.domain.robot
 
 /** 控制器 ASCII 帧：`/f/bIII{id}III{type}III{len}III{payload}III/b/f`。 */
 data class FrPacket(

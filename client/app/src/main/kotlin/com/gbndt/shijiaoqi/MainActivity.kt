@@ -33,7 +33,6 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.launch
 import com.gbndt.shijiaoqi.data.repository.SessionRepository
-import com.gbndt.shijiaoqi.data.session.DeviceSerialHolder
 import com.gbndt.shijiaoqi.ui.login.LoginGate
 import com.gbndt.shijiaoqi.ui.navigation.LocalWeldInput
 import com.gbndt.shijiaoqi.ui.navigation.WMeshNavHost
@@ -47,9 +46,6 @@ import javax.inject.Inject
 class MainActivity : ComponentActivity() {
     @Inject
     lateinit var sessionRepository: SessionRepository
-
-    @Inject
-    lateinit var deviceSerial: DeviceSerialHolder
 
     var joy_X1: Float = 0f
     var joy_Y1: Float = 0f
@@ -376,7 +372,6 @@ class MainActivity : ComponentActivity() {
                         CompositionLocalProvider(LocalWeldInput provides register) {
                             WMeshNavHost(
                                 session = sessionRepository,
-                                deviceSerial = deviceSerial,
                                 onSplashFinished = { splashDone = true },
                             )
                         }

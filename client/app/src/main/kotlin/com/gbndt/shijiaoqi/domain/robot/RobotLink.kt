@@ -1,4 +1,4 @@
-package com.gbndt.shijiaoqi.data.robot.protocol
+package com.gbndt.shijiaoqi.domain.robot
 
 /** 探活：8080 通且 8083 在 1 秒内有数据；8082 不参与。 */
 object RobotLink {

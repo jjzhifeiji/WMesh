@@ -2,7 +2,7 @@ package com.gbndt.shijiaoqi.ui.login
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.gbndt.shijiaoqi.data.remote.FactoryOffer
+import com.gbndt.shijiaoqi.model.FactoryOffer
 import com.gbndt.shijiaoqi.data.repository.SessionRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow

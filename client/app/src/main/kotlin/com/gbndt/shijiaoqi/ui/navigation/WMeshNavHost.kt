@@ -7,7 +7,6 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.gbndt.shijiaoqi.data.repository.SessionRepository
-import com.gbndt.shijiaoqi.data.session.DeviceSerialHolder
 import com.gbndt.shijiaoqi.ui.login.SplashScreen
 import com.gbndt.shijiaoqi.ui.robottest.RobotTestScreen
 import com.gbndt.shijiaoqi.ui.robottest.RobotTestViewModel
@@ -33,7 +32,6 @@ object Route {
 @Composable
 fun WMeshNavHost(
     session: SessionRepository,
-    deviceSerial: DeviceSerialHolder,
     onSplashFinished: () -> Unit,
     navController: NavHostController = rememberNavController(),
 ) {
@@ -60,21 +58,21 @@ fun WMeshNavHost(
 
         composable(Route.SINGLE) {
             val vm: WeldPathViewModel = hiltViewModel()
-            WeldingShell(vm, session, deviceSerial, onExit = { navController.popBackStack() }) { onProject, onProcess ->
+            WeldingShell(vm, session, onExit = { navController.popBackStack() }) { onProject, onProcess ->
                 WeldPathScreen(vm, onProject, onProcess)
             }
         }
 
         composable(Route.MULTILAYER) {
             val vm: MultiLayerViewModel = hiltViewModel()
-            WeldingShell(vm, session, deviceSerial, onExit = { navController.popBackStack() }) { onProject, onProcess ->
+            WeldingShell(vm, session, onExit = { navController.popBackStack() }) { onProject, onProcess ->
                 MultiLayerScreen(vm, onProject, onProcess)
             }
         }
 
         composable(Route.TBAR) {
             val vm: TBarViewModel = hiltViewModel()
-            WeldingShell(vm, session, deviceSerial, onExit = { navController.popBackStack() }) { onProject, onProcess ->
+            WeldingShell(vm, session, onExit = { navController.popBackStack() }) { onProject, onProcess ->
                 TBarScreen(vm, onProject, onProcess)
             }
         }

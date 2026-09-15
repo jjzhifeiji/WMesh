@@ -10,8 +10,8 @@ import com.gbndt.shijiaoqi.data.pouch.ClosureMemberPlain
 import com.gbndt.shijiaoqi.data.pouch.ClosureSnapshotPlain
 import com.gbndt.shijiaoqi.data.pouch.Digest
 import com.gbndt.shijiaoqi.data.pouch.Pouch
-import com.gbndt.shijiaoqi.data.robot.protocol.FrPacket
-import com.gbndt.shijiaoqi.data.robot.protocol.RobotCommands
+import com.gbndt.shijiaoqi.domain.robot.FrPacket
+import com.gbndt.shijiaoqi.domain.robot.RobotCommands
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -20,7 +20,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.util.UUID
 import com.gbndt.shijiaoqi.domain.weld.Capture
-import com.gbndt.shijiaoqi.domain.weld.PouchProcessSource
+import com.gbndt.shijiaoqi.data.pouch.PouchProcessSource
 import com.gbndt.shijiaoqi.domain.weld.ProcessBind
 import com.gbndt.shijiaoqi.domain.weld.ProcessJson
 import com.gbndt.shijiaoqi.domain.weld.ProcessRef

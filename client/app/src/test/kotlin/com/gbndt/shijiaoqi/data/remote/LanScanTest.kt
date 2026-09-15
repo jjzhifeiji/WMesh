@@ -3,6 +3,7 @@ package com.gbndt.shijiaoqi.data.remote
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import com.gbndt.shijiaoqi.model.FactoryOffer
 
 class LanScanTest {
     @Test

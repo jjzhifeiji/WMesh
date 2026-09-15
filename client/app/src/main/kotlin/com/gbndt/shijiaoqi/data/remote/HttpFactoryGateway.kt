@@ -8,6 +8,7 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
 import java.util.Base64
+import com.gbndt.shijiaoqi.model.FactoryOffer
 import java.util.UUID
 import com.gbndt.shijiaoqi.data.session.ClientInbox
 import com.gbndt.shijiaoqi.data.session.ClientLoginResult

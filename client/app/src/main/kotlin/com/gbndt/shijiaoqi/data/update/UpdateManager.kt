@@ -15,17 +15,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import com.gbndt.shijiaoqi.model.UpdateInfo
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
-
-@Serializable
-data class UpdateInfo(
-    val versionCode: Int,
-    val versionName: String,
-    val downloadUrl: String,
-    val description: String
-)
 
 class UpdateManager(private val context: Context) {
     private val json = Json { ignoreUnknownKeys = true }

@@ -20,10 +20,10 @@ import kotlinx.coroutines.withTimeout
 import java.io.OutputStream
 import java.net.InetSocketAddress
 import java.net.Socket
-import com.gbndt.shijiaoqi.data.robot.protocol.FrPacket
-import com.gbndt.shijiaoqi.data.robot.protocol.RobotCommands
-import com.gbndt.shijiaoqi.data.robot.protocol.RobotLink
-import com.gbndt.shijiaoqi.data.robot.protocol.Status8083
+import com.gbndt.shijiaoqi.domain.robot.FrPacket
+import com.gbndt.shijiaoqi.domain.robot.RobotCommands
+import com.gbndt.shijiaoqi.domain.robot.RobotLink
+import com.gbndt.shijiaoqi.domain.robot.Status8083
 
 /** 三路 TCP 控制器适配：8080 点动/指令，8082 批量，8083 状态。不管身份。 */
 object LiveRobotBus {

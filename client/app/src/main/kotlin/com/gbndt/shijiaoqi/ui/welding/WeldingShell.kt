@@ -22,7 +22,6 @@ import androidx.compose.ui.zIndex
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import android.widget.Toast
 import com.gbndt.shijiaoqi.data.repository.SessionRepository
-import com.gbndt.shijiaoqi.data.session.DeviceSerialHolder
 import com.gbndt.shijiaoqi.ui.component.CustomStatusBar
 import com.gbndt.shijiaoqi.ui.component.UpdateDialog
 import com.gbndt.shijiaoqi.ui.navigation.LocalWeldInput
@@ -44,7 +43,6 @@ sealed class WeldPage {
 fun WeldingShell(
     viewModel: WeldViewModelInterface,
     session: SessionRepository,
-    deviceSerial: DeviceSerialHolder,
     onExit: () -> Unit,
     content: @Composable (onProject: () -> Unit, onProcess: (Boolean) -> Unit) -> Unit,
 ) {
@@ -67,7 +65,7 @@ fun WeldingShell(
 
     // 读到机械臂识别号后才匹配本机，匹配过再按本机袋装工程
     LaunchedEffect(viewModel.machineCode, sessionState.loggedIn) {
-        deviceSerial.set(viewModel.machineCode)
+        session.setDeviceSerial(viewModel.machineCode)
         if (sessionState.loggedIn && viewModel.machineCode.isNotBlank()) {
             runCatching { session.matchArm(viewModel.machineCode) }
                 .onFailure {

@@ -1,8 +1,9 @@
 package com.gbndt.shijiaoqi.data.repository
 
 import com.gbndt.shijiaoqi.data.pouch.Pouch
-import com.gbndt.shijiaoqi.data.remote.FactoryOffer
+import com.gbndt.shijiaoqi.model.FactoryOffer
 import com.gbndt.shijiaoqi.data.session.BagSession
+import com.gbndt.shijiaoqi.data.session.DeviceSerialHolder
 import com.gbndt.shijiaoqi.model.SessionState
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.flow.StateFlow
@@ -15,6 +16,7 @@ import javax.inject.Singleton
 @Singleton
 class SessionRepository @Inject constructor(
     private val session: BagSession,
+    private val serials: DeviceSerialHolder,
     private val io: CoroutineDispatcher,
 ) {
     val state: StateFlow<SessionState> = session.state
@@ -34,6 +36,9 @@ class SessionRepository @Inject constructor(
     /** 本厂账号登录，成功后按策略把密文拉进本机袋。 */
     suspend fun login(baseUrl: String, factoryId: String, loginName: String, password: String) =
         withContext(io) { session.login(baseUrl, factoryId, loginName, password) }
+
+    /** 连上臂读到的识别号；只在内存里，进程死即失。 */
+    fun setDeviceSerial(serial: String) = serials.set(serial)
 
     /** 读到机械臂识别号后再匹配本机；未登录时拒绝。 */
     suspend fun matchArm(serial: String) = withContext(io) { session.matchArm(serial) }

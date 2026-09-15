@@ -17,21 +17,19 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import com.gbndt.shijiaoqi.data.legacy.ProcessManager
 import com.gbndt.shijiaoqi.data.legacy.ProjectManager
+import com.gbndt.shijiaoqi.data.repository.PouchRepository
+import com.gbndt.shijiaoqi.data.repository.UpdateRepository
 import com.gbndt.shijiaoqi.data.repository.RobotRepository
 import com.gbndt.shijiaoqi.data.repository.SessionRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
-import com.gbndt.shijiaoqi.data.robot.protocol.RobotCommands
-import com.gbndt.shijiaoqi.data.crypt.Wm2
-import com.gbndt.shijiaoqi.data.pouch.Pouch
-import com.gbndt.shijiaoqi.data.session.BagSession
+import com.gbndt.shijiaoqi.domain.robot.RobotCommands
 import com.gbndt.shijiaoqi.domain.weld.Capture
-import com.gbndt.shijiaoqi.domain.weld.PouchProcessSource
-import com.gbndt.shijiaoqi.data.pouch.PouchSave
 import com.gbndt.shijiaoqi.domain.weld.ProcessBind
 import com.gbndt.shijiaoqi.domain.weld.ProcessChoice
 import com.gbndt.shijiaoqi.domain.weld.ProcessJson
 import com.gbndt.shijiaoqi.domain.weld.ProcessRef
+import com.gbndt.shijiaoqi.domain.weld.ProcessSource
 import com.gbndt.shijiaoqi.domain.weld.ProjectChoice
 import com.gbndt.shijiaoqi.domain.weld.SingleLayerProject
 import com.gbndt.shijiaoqi.domain.script.WeldRun
@@ -51,8 +49,7 @@ import java.util.Locale
 import kotlin.math.sqrt
 import kotlin.math.abs
 
-import com.gbndt.shijiaoqi.data.update.UpdateManager
-import com.gbndt.shijiaoqi.data.update.UpdateInfo
+import com.gbndt.shijiaoqi.model.UpdateInfo
 import android.content.IntentFilter
 import android.content.Intent
 import android.app.DownloadManager
@@ -84,6 +81,8 @@ abstract class WeldingViewModel(
     application: Application,
     protected val session: SessionRepository,
     protected val socketManager: RobotRepository,
+    protected val pouch: PouchRepository,
+    protected val updateManager: UpdateRepository,
 ) : AndroidViewModel(application), WeldViewModelInterface {
 
     // ... existing properties ...
@@ -110,7 +109,7 @@ abstract class WeldingViewModel(
 
     protected val projectManager = ProjectManager(application)
 
-    protected val updateManager = UpdateManager(application)
+
 
     protected fun handleCommandExecuted(id: Int) {
         val mapping = commandIdMap[id]
@@ -1132,13 +1131,11 @@ abstract class WeldingViewModel(
         viewModelScope.launch { _toastEvent.emit("请从本机袋打开工程") }
     }
 
-    protected fun bag(): BagSession = session.bag
-
     protected fun markPouchWelding(on: Boolean) {
-        runCatching { bag().setWelding(on) }
+        pouch.setWelding(on)
     }
 
-    protected fun processSource(): PouchProcessSource = PouchProcessSource(bag().pouch)
+    protected fun processSource(): ProcessSource = pouch.processSource()
 
     protected open fun refsOf(paths: List<WeldPath>): List<ProcessRef> {
         val out = mutableListOf<ProcessRef>()
@@ -1181,14 +1178,8 @@ abstract class WeldingViewModel(
 
     override fun syncFromPouch() {
         refreshPouchLists()
-        val bag = bag()
-        val id = bag.pouch.activeProject() ?: return
-        val bytes = try {
-            bag.open(id)
-        } catch (_: Exception) {
-            return
-        }
-        try {
+        val id = pouch.activeProjectId() ?: return
+        pouch.withProjectPlain(id) { bytes ->
             val loaded = try {
                 SingleLayerProject.parse(bytes)
             } catch (e: Exception) {
@@ -1200,17 +1191,15 @@ abstract class WeldingViewModel(
             if (weldPaths.isEmpty()) addWeldPath()
             selectedWeldPathIndex = 0
             pouchProjectId = id
-            currentProjectName = bag.pouch.exportClosures().firstOrNull { it.assetId == id }?.name
+            currentProjectName = pouch.projectName(id)
             bindPouchProcesses(weldPaths)
-        } finally {
-            Wm2.zero(bytes)
         }
         refreshPouchLists()
     }
 
     override fun activatePouchProject(id: UUID) {
         try {
-            bag().activate(id)
+            pouch.activate(id)
             syncFromPouch()
         } catch (e: Exception) {
             viewModelScope.launch { _toastEvent.emit(e.message ?: "无法激活工程") }
@@ -1218,15 +1207,10 @@ abstract class WeldingViewModel(
     }
 
     override fun refreshPouchLists() {
-        val bag = runCatching { bag() }.getOrNull() ?: return
-        val active = bag.pouch.activeProject()
         pouchProjects.clear()
-        val self = bag.pouch.boundClient()
-        bag.pouch.exportClosures().filter { it.kind == Pouch.KIND_PROJECT && self != null && it.targetClientId == self }.forEach {
-            pouchProjects.add(ProjectChoice(it.assetId, it.name, it.revision, it.assetId == active))
-        }
+        pouchProjects.addAll(pouch.listProjects())
         pouchProcesses.clear()
-        pouchProcesses.addAll(PouchProcessSource(bag.pouch).list())
+        pouchProcesses.addAll(pouch.listProcesses())
     }
 
     override fun bindProcessFromPouch(processId: UUID?) {
@@ -1277,9 +1261,8 @@ abstract class WeldingViewModel(
 
     open fun saveCurrentProject() {
         val id = pouchProjectId ?: return
-        val bag = runCatching { bag() }.getOrNull() ?: return
-        weldPaths.forEach { PouchSave.weldPath(bag, it) }
-        PouchSave.project(bag, id, SingleLayerProject.encode(weldPaths.toList()))
+        weldPaths.forEach { pouch.saveWeldPath(it) }
+        pouch.saveProject(id, SingleLayerProject.encode(weldPaths.toList()))
     }
 
     open fun copyCurrentProject(newName: String) {
@@ -1332,14 +1315,10 @@ abstract class WeldingViewModel(
     }
 
     override fun createProcess(name: String, process: WeldProcess) {
-        val bag = runCatching { bag() }.getOrNull() ?: return
         val body = ProcessJson.encode(process.copy(name = name))
-        try {
-            bag.issuePersonal(Pouch.KIND_PROCESS, name, body)
+        runCatching {
+            pouch.issueProcess(name, body)
             refreshPouchLists()
-        } catch (_: Exception) {
-        } finally {
-            Wm2.zero(body)
         }
     }
 
