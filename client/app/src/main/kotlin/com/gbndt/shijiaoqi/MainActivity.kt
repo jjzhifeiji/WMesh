@@ -59,7 +59,13 @@ import com.gbndt.shijiaoqi.ui.login.SplashScreen
 import com.gbndt.shijiaoqi.ui.component.UpdateDialog
 import com.gbndt.shijiaoqi.ui.robottest.RobotTestScreen
 import com.gbndt.shijiaoqi.ui.robottest.RobotTestViewModel
+import com.gbndt.shijiaoqi.data.repository.SessionRepository
+import com.gbndt.shijiaoqi.data.session.DeviceSerialHolder
 import com.gbndt.shijiaoqi.ui.theme.ShiJiaoQiTheme
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.hilt.navigation.compose.hiltViewModel
+import dagger.hilt.android.AndroidEntryPoint
+import javax.inject.Inject
 import com.gbndt.shijiaoqi.ui.welding.single.WeldPathViewModel
 
 import androidx.compose.foundation.layout.Arrangement
@@ -78,7 +84,14 @@ sealed class AppScreen {
     object RobotTest : AppScreen()
 }
 
+@AndroidEntryPoint
 class MainActivity : ComponentActivity() {
+    @Inject
+    lateinit var sessionRepository: SessionRepository
+
+    @Inject
+    lateinit var deviceSerial: DeviceSerialHolder
+
     var joy_X1: Float = 0f
     var joy_Y1: Float = 0f
     var joy_X2: Float = 0f
@@ -162,7 +175,7 @@ class MainActivity : ComponentActivity() {
         }
 
         if (isGameKey) {
-            if (!(application as ShiJiaoQiApp).bag.loggedIn) return true
+            if (!sessionRepository.state.value.loggedIn) return true
 
             if (event.repeatCount == 0) {
                 if (event.action == KeyEvent.ACTION_DOWN) {
@@ -289,7 +302,7 @@ class MainActivity : ComponentActivity() {
         }
 
         if (event.source and InputDevice.SOURCE_JOYSTICK != 0) {
-            if (!(application as ShiJiaoQiApp).bag.loggedIn) return true
+            if (!sessionRepository.state.value.loggedIn) return true
 
             // Process Joystick Axes
             val newJoyX1 = event.getAxisValue(MotionEvent.AXIS_X)
@@ -350,7 +363,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         if (isFinishing) {
-            (application as ShiJiaoQiApp).bag.logout()
+            sessionRepository.logout()
         }
         super.onDestroy()
     }
@@ -394,8 +407,8 @@ class MainActivity : ComponentActivity() {
             ShiJiaoQiTheme {
                 // A surface container using the 'background' color from the theme
                 Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-                    viewModel = viewModel<WeldPathViewModel>()
-                    val robotTestViewModel = viewModel<RobotTestViewModel>()
+                    viewModel = hiltViewModel<WeldPathViewModel>()
+                    val robotTestViewModel = hiltViewModel<RobotTestViewModel>()
                     val context = LocalContext.current
                     
                     LaunchedEffect(Unit) {
@@ -403,24 +416,24 @@ class MainActivity : ComponentActivity() {
                             Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
                         }
                     }
-                    val bag = (application as ShiJiaoQiApp).bag
-                    LaunchedEffect(viewModel.machineCode, bag.loggedIn) {
-                        (application as ShiJiaoQiApp).serial = viewModel.machineCode
-                        if (bag.loggedIn && viewModel.machineCode.isNotBlank()) {
-                            runCatching { bag.matchArm(viewModel.machineCode) }
+                    val session by sessionRepository.state.collectAsStateWithLifecycle()
+                    LaunchedEffect(viewModel.machineCode, session.loggedIn) {
+                        deviceSerial.set(viewModel.machineCode)
+                        if (session.loggedIn && viewModel.machineCode.isNotBlank()) {
+                            runCatching { sessionRepository.matchArm(viewModel.machineCode) }
                                 .onFailure {
-                                    Toast.makeText(context, bag.error ?: it.message ?: "设备不匹配", Toast.LENGTH_SHORT).show()
+                                    Toast.makeText(context, sessionRepository.state.value.error ?: it.message ?: "设备不匹配", Toast.LENGTH_SHORT).show()
                                 }
                             viewModel.syncFromPouch()
                         }
                     }
-                    LaunchedEffect(bag.loggedIn, bag.armMatched) {
-                        if (bag.loggedIn) viewModel.syncFromPouch()
+                    LaunchedEffect(session.loggedIn, session.armMatched) {
+                        if (session.loggedIn) viewModel.syncFromPouch()
                     }
 
                     var currentScreen by remember { mutableStateOf<AppScreen>(AppScreen.SplashScreen) }
 
-                    if (bag.loggedIn) {
+                    if (session.loggedIn) {
                         ToolListDialog(
                             viewModel = viewModel,
                             onDismiss = { viewModel.isToolListDialogVisible = false }
@@ -443,8 +456,8 @@ class MainActivity : ComponentActivity() {
                     Box(modifier = Modifier.fillMaxSize()) {
                         if (currentScreen is AppScreen.SplashScreen) {
                             SplashScreen(onSplashFinished = { currentScreen = AppScreen.ModeSelection })
-                        } else if (!bag.loggedIn) {
-                            LoginGate(bag = bag)
+                        } else if (!session.loggedIn) {
+                            LoginGate()
                         } else if (currentScreen is AppScreen.ModeSelection) {
                             ModeSelectionScreen(
                                 onSingleLayerClick = { currentScreen = AppScreen.WeldPath },

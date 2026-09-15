@@ -1,12 +1,15 @@
-package com.gbndt.shijiaoqi.data.robot.link
+package com.gbndt.shijiaoqi.data.repository
 
-import com.gbndt.shijiaoqi.model.Pose
 import com.gbndt.shijiaoqi.data.robot.link.LiveRobotBus
+import com.gbndt.shijiaoqi.model.Pose
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import javax.inject.Inject
+import javax.inject.Singleton
 
-/** 现网控制器入口；协议只在 robot 适配里。 */
-object SocketManager {
+/** 控制器数据源：状态出流、指令进方法；协议细节只在 robot/protocol。 */
+@Singleton
+class RobotRepository @Inject constructor() {
     val connectionStatus: StateFlow<String> get() = LiveRobotBus.connectionStatus
     val receivedText: SharedFlow<String> get() = LiveRobotBus.receivedText
     val receivedText8082: SharedFlow<String> get() = LiveRobotBus.receivedText8082
@@ -31,5 +34,6 @@ object SocketManager {
     fun sendControlCommand(command: String) = LiveRobotBus.sendControlCommand(command)
     fun sendBatchCommand(command: String) = LiveRobotBus.sendBatchCommand(command)
     suspend fun sendBatchCommandSync(command: String) = LiveRobotBus.sendBatchCommandSync(command)
-    suspend fun getInverseKin(pose: Pose, config: Int = -1): List<Double>? = LiveRobotBus.getInverseKin(pose, config)
+    suspend fun getInverseKin(pose: Pose, config: Int = -1): List<Double>? =
+        LiveRobotBus.getInverseKin(pose, config)
 }

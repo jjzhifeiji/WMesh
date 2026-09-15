@@ -17,9 +17,11 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import com.gbndt.shijiaoqi.data.legacy.ProcessManager
 import com.gbndt.shijiaoqi.data.legacy.ProjectManager
-import com.gbndt.shijiaoqi.data.robot.link.SocketManager
+import com.gbndt.shijiaoqi.data.repository.RobotRepository
+import com.gbndt.shijiaoqi.data.repository.SessionRepository
+import dagger.hilt.android.lifecycle.HiltViewModel
+import javax.inject.Inject
 import com.gbndt.shijiaoqi.data.robot.protocol.RobotCommands
-import com.gbndt.shijiaoqi.ShiJiaoQiApp
 import com.gbndt.shijiaoqi.data.crypt.Wm2
 import com.gbndt.shijiaoqi.data.pouch.Pouch
 import com.gbndt.shijiaoqi.data.session.BagSession
@@ -82,7 +84,12 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.async
 import com.gbndt.shijiaoqi.ui.welding.*
 
-class TBarViewModel(application: Application) : AndroidViewModel(application), WeldViewModelInterface {
+@HiltViewModel
+class TBarViewModel @Inject constructor(
+    application: Application,
+    private val session: SessionRepository,
+    private val socketManager: RobotRepository,
+) : AndroidViewModel(application), WeldViewModelInterface {
     // ... existing properties ...
 
     // Helper class for Vector math
@@ -105,7 +112,6 @@ class TBarViewModel(application: Application) : AndroidViewModel(application), W
 
     private val processManager = ProcessManager(application)
     private val projectManager = ProjectManager(application)
-    private val socketManager = SocketManager
     private val updateManager = UpdateManager(application)
     
     private fun handleCommandExecuted(id: Int) {
@@ -1039,7 +1045,7 @@ class TBarViewModel(application: Application) : AndroidViewModel(application), W
         viewModelScope.launch { _toastEvent.emit("请从本机袋打开工程") }
     }
 
-    private fun bag(): BagSession = (getApplication() as ShiJiaoQiApp).bag
+    private fun bag(): BagSession = session.bag
 
     private fun markPouchWelding(on: Boolean) {
         runCatching { bag().setWelding(on) }

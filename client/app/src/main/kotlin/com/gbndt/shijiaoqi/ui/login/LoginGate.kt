@@ -26,7 +26,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -37,38 +36,23 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
-import com.gbndt.shijiaoqi.data.session.BagSession
-import com.gbndt.shijiaoqi.data.remote.FactoryOffer
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
+import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun LoginGate(
-    bag: BagSession,
+    viewModel: LoginViewModel = hiltViewModel(),
 ) {
+    val state by viewModel.uiState.collectAsStateWithLifecycle()
     var login by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
-    var offers by remember { mutableStateOf<List<FactoryOffer>>(emptyList()) }
-    var selected by remember { mutableStateOf<FactoryOffer?>(null) }
-    var scanned by remember { mutableStateOf(false) }
     var menuOpen by remember { mutableStateOf(false) }
-    val scope = rememberCoroutineScope()
-
-    fun scan() {
-        scope.launch {
-            val hits = runCatching {
-                withContext(Dispatchers.IO) { bag.findFactories() }
-            }.getOrDefault(emptyList())
-            offers = hits
-            selected = hits.singleOrNull() ?: hits.firstOrNull()
-            scanned = true
-        }
-    }
+    val offers = state.offers
+    val selected = state.selected
 
     LaunchedEffect(Unit) {
-        if (!scanned && !bag.busy) scan()
+        if (!state.scanned && !state.busy) viewModel.scan()
     }
 
     Dialog(
@@ -107,8 +91,8 @@ fun LoginGate(
                             placeholder = {
                                 Text(
                                     when {
-                                        bag.busy && !scanned -> "正在扫描…"
-                                        scanned -> "未发现厂服务"
+                                        state.busy && !state.scanned -> "正在扫描…"
+                                        state.scanned -> "未发现厂服务"
                                         else -> "扫描后选择"
                                     },
                                 )
@@ -127,7 +111,7 @@ fun LoginGate(
                                 DropdownMenuItem(
                                     text = { Text(o.label()) },
                                     onClick = {
-                                        selected = o
+                                        viewModel.select(o)
                                         menuOpen = false
                                     },
                                 )
@@ -135,8 +119,8 @@ fun LoginGate(
                         }
                     }
                     OutlinedButton(
-                        onClick = { scan() },
-                        enabled = !bag.busy,
+                        onClick = { viewModel.scan() },
+                        enabled = !state.busy,
                     ) {
                         Text("扫描")
                     }
@@ -153,22 +137,13 @@ fun LoginGate(
                         modifier = Modifier.weight(1f),
                     )
                 }
-                bag.error?.let { Text(it, color = MaterialTheme.colorScheme.error, fontSize = 13.sp) }
+                state.error?.let { Text(it, color = MaterialTheme.colorScheme.error, fontSize = 13.sp) }
                 Button(
-                    onClick = {
-                        val hit = selected ?: return@Button
-                        scope.launch {
-                            runCatching {
-                                withContext(Dispatchers.IO) {
-                                    bag.login(hit.httpBase, hit.factoryId, login, password)
-                                }
-                            }
-                        }
-                    },
-                    enabled = !bag.busy && selected != null && login.isNotBlank() && password.isNotBlank(),
+                    onClick = { viewModel.login(login, password) },
+                    enabled = !state.busy && selected != null && login.isNotBlank() && password.isNotBlank(),
                     modifier = Modifier.align(Alignment.End),
                 ) {
-                    if (bag.busy) CircularProgressIndicator(modifier = Modifier.size(16.dp).padding(end = 8.dp), strokeWidth = 2.dp)
+                    if (state.busy) CircularProgressIndicator(modifier = Modifier.size(16.dp).padding(end = 8.dp), strokeWidth = 2.dp)
                     Text("登录")
                 }
             }

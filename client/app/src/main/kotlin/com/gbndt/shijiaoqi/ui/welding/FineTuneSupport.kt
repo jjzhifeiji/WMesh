@@ -4,7 +4,7 @@ import android.util.Log
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
-import com.gbndt.shijiaoqi.data.robot.link.SocketManager
+import com.gbndt.shijiaoqi.data.repository.RobotRepository
 import com.gbndt.shijiaoqi.model.Oscillation
 import com.gbndt.shijiaoqi.model.WeldProcess
 import kotlinx.coroutines.CoroutineScope
@@ -13,7 +13,7 @@ import java.util.Locale
 
 class FineTuneSupport(
     scope: CoroutineScope,
-    private val socketManager: SocketManager,
+    private val socketManager: RobotRepository,
     private val nextCommandId: () -> Int,
     private val toast: (String) -> Unit,
     private val currentProcess: () -> WeldProcess?,

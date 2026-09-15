@@ -1,9 +1,11 @@
 package com.gbndt.shijiaoqi.data.session
 
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.setValue
 import com.gbndt.shijiaoqi.data.crypt.Wm2
+import com.gbndt.shijiaoqi.model.SessionState
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import com.gbndt.shijiaoqi.data.pouch.Pouch
 import com.gbndt.shijiaoqi.data.pouch.PouchRejected
 import java.util.UUID
@@ -21,16 +23,19 @@ class BagSession(
     private val down: DownChannel = NoopDownChannel(),
 ) {
     val pouch = Pouch()
-    var loggedIn by mutableStateOf(false)
-        private set
-    var armMatched by mutableStateOf(false)
-        private set
-    var personName by mutableStateOf("")
-        private set
-    var error by mutableStateOf<String?>(null)
-        private set
-    var busy by mutableStateOf(false)
-        private set
+
+    private val _state = MutableStateFlow(SessionState())
+
+    /** 唯一可信源：会话状态只在这里改，调用方只读这一个流。 */
+    val state: StateFlow<SessionState> = _state.asStateFlow()
+
+    val loggedIn: Boolean get() = _state.value.loggedIn
+    val armMatched: Boolean get() = _state.value.armMatched
+    val personName: String get() = _state.value.personName
+    val error: String? get() = _state.value.error
+    val busy: Boolean get() = _state.value.busy
+
+    private fun edit(block: (SessionState) -> SessionState) = _state.update(block)
     private var token: String? = null
     private var devices: List<PadDevice> = emptyList()
 
@@ -39,30 +44,28 @@ class BagSession(
     fun savedClientId(): String = identity.clientId
 
     fun findFactories(): List<FactoryOffer> {
-        error = null
-        busy = true
+        edit { it.copy(error = null, busy = true) }
         try {
             val hits = LanScan.find(identity.factoryUrl) { base ->
                 factory.discover(base, "")
             }
             if (hits.isEmpty()) {
-                error = "本网没有发现厂服务"
+                edit { it.copy(error = "本网没有发现厂服务") }
             }
             return hits
         } catch (e: LoginRejected) {
-            error = translate(e.code)
+            edit { it.copy(error = translate(e.code)) }
             throw e
         } catch (e: Exception) {
-            error = e.message ?: "scan failed"
+            edit { it.copy(error = e.message ?: "scan failed") }
             throw e
         } finally {
-            busy = false
+            edit { it.copy(busy = false) }
         }
     }
 
     fun login(baseUrl: String, factoryId: String, loginName: String, password: String) {
-        error = null
-        busy = true
+        edit { it.copy(error = null, busy = true) }
         try {
             identity.factoryUrl = baseUrl.trim()
             identity.factoryId = factoryId.trim()
@@ -92,23 +95,27 @@ class BagSession(
             persistPouch(store, pouch)
             store.savePerson(sess.person)
             store.savePolicy(sess.policy)
-            personName = sess.person.displayName.ifBlank { sess.person.loginName }
-            loggedIn = true
-            armMatched = false
+            edit {
+                it.copy(
+                    personName = sess.person.displayName.ifBlank { sess.person.loginName },
+                    loggedIn = true,
+                    armMatched = false,
+                )
+            }
             val serial = serials.read().trim()
             if (serial.isNotEmpty()) {
                 runCatching { matchArm(serial) }
             }
         } catch (e: LoginRejected) {
             logoutMemory()
-            error = translate(e.code)
+            edit { it.copy(error = translate(e.code)) }
             throw e
         } catch (e: Exception) {
             logoutMemory()
-            error = e.message ?: "login failed"
+            edit { it.copy(error = e.message ?: "login failed") }
             throw e
         } finally {
-            busy = false
+            edit { it.copy(busy = false) }
         }
     }
 
@@ -116,14 +123,12 @@ class BagSession(
         val got = serial.trim()
         if (!loggedIn) throw LoginRejected("unauthorized")
         if (got.isEmpty()) {
-            error = "读不到设备号"
-            armMatched = false
+            edit { it.copy(error = "读不到设备号", armMatched = false) }
             throw LoginRejected("device serial is required")
         }
         val hit = devices.firstOrNull { it.deviceSerial == got }
             ?: run {
-                error = "设备号未在本厂登记"
-                armMatched = false
+                edit { it.copy(error = "设备号未在本厂登记", armMatched = false) }
                 pouch.clearClient()
                 identity.clientId = ""
                 identity.clientShortCode = ""
@@ -133,8 +138,7 @@ class BagSession(
         identity.clientShortCode = hit.shortCode
         pouch.bindClient(UUID.fromString(hit.id))
         if (hit.shortCode.isNotBlank()) pouch.setOrigin(hit.shortCode)
-        armMatched = true
-        error = null
+        edit { it.copy(armMatched = true, error = null) }
     }
 
     fun cachePlain(id: UUID, level: String, name: String, revision: Long, ownerId: UUID?, plain: ByteArray) {
@@ -183,7 +187,7 @@ class BagSession(
 
     fun logout() {
         logoutMemory()
-        error = null
+        edit { it.copy(error = null) }
     }
 
     private fun pullAllDevices(sess: PadLoginResult) {
@@ -218,10 +222,8 @@ class BagSession(
         pouch.clearClient()
         store.close()
         token = null
-        loggedIn = false
-        armMatched = false
-        personName = ""
         devices = emptyList()
+        edit { it.copy(loggedIn = false, armMatched = false, personName = "") }
     }
 
     private fun translate(code: String): String = when (code) {

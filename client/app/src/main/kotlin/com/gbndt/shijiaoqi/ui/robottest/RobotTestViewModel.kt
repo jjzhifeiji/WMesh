@@ -8,7 +8,9 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.gbndt.shijiaoqi.data.legacy.ProjectManager
-import com.gbndt.shijiaoqi.data.robot.link.SocketManager
+import com.gbndt.shijiaoqi.data.repository.RobotRepository
+import dagger.hilt.android.lifecycle.HiltViewModel
+import javax.inject.Inject
 import com.gbndt.shijiaoqi.model.CapturedPoint
 import com.gbndt.shijiaoqi.model.Oscillation
 import com.gbndt.shijiaoqi.model.Pose
@@ -21,8 +23,11 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.Locale
 
-class RobotTestViewModel(application: Application) : AndroidViewModel(application) {
-    private val socketManager = SocketManager
+@HiltViewModel
+class RobotTestViewModel @Inject constructor(
+    application: Application,
+    private val socketManager: RobotRepository,
+) : AndroidViewModel(application) {
     private val projectManager = ProjectManager(application)
     private var commandId = 1000
 

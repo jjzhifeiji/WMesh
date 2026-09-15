@@ -44,17 +44,29 @@ import com.gbndt.shijiaoqi.ui.welding.ToolListDialog
 import com.gbndt.shijiaoqi.ui.welding.PositionSelectionDialog
 import com.gbndt.shijiaoqi.ui.welding.SpeedSelectionDialog
 import com.gbndt.shijiaoqi.ui.login.SplashScreen
-import com.gbndt.shijiaoqi.ShiJiaoQiApp
 import com.gbndt.shijiaoqi.ui.login.LoginGate
 import com.gbndt.shijiaoqi.ui.component.UpdateDialog
+import com.gbndt.shijiaoqi.data.repository.SessionRepository
+import com.gbndt.shijiaoqi.data.session.DeviceSerialHolder
 import com.gbndt.shijiaoqi.ui.theme.ShiJiaoQiTheme
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.hilt.navigation.compose.hiltViewModel
+import dagger.hilt.android.AndroidEntryPoint
+import javax.inject.Inject
 import com.gbndt.shijiaoqi.AppScreen
 import com.gbndt.shijiaoqi.ui.component.*
 import com.gbndt.shijiaoqi.ui.login.*
 import com.gbndt.shijiaoqi.ui.project.* // Import common components
 import com.gbndt.shijiaoqi.ui.welding.*
 
+@AndroidEntryPoint
 class TBarActivity : ComponentActivity() {
+    @Inject
+    lateinit var sessionRepository: SessionRepository
+
+    @Inject
+    lateinit var deviceSerial: DeviceSerialHolder
+
     var joy_X1: Float = 0f
     var joy_Y1: Float = 0f
     var joy_X2: Float = 0f
@@ -360,7 +372,7 @@ class TBarActivity : ComponentActivity() {
             ShiJiaoQiTheme {
                 // A surface container using the 'background' color from the theme
                 Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-                    viewModel = viewModel<TBarViewModel>()
+                    viewModel = hiltViewModel<TBarViewModel>()
                     val context = LocalContext.current
                     
                     LaunchedEffect(Unit) {
@@ -369,19 +381,19 @@ class TBarActivity : ComponentActivity() {
                         }
                     }
 
-                    val bag = (application as ShiJiaoQiApp).bag
-                    LaunchedEffect(viewModel.machineCode, bag.loggedIn) {
-                        (application as ShiJiaoQiApp).serial = viewModel.machineCode
-                        if (bag.loggedIn && viewModel.machineCode.isNotBlank()) {
-                            runCatching { bag.matchArm(viewModel.machineCode) }
+                    val session by sessionRepository.state.collectAsStateWithLifecycle()
+                    LaunchedEffect(viewModel.machineCode, session.loggedIn) {
+                        deviceSerial.set(viewModel.machineCode)
+                        if (session.loggedIn && viewModel.machineCode.isNotBlank()) {
+                            runCatching { sessionRepository.matchArm(viewModel.machineCode) }
                                 .onFailure {
-                                    Toast.makeText(context, bag.error ?: it.message ?: "设备不匹配", Toast.LENGTH_SHORT).show()
+                                    Toast.makeText(context, sessionRepository.state.value.error ?: it.message ?: "设备不匹配", Toast.LENGTH_SHORT).show()
                                 }
                             viewModel.syncFromPouch()
                         }
                     }
-                    LaunchedEffect(bag.loggedIn, bag.armMatched) {
-                        if (bag.loggedIn) viewModel.syncFromPouch()
+                    LaunchedEffect(session.loggedIn, session.armMatched) {
+                        if (session.loggedIn) viewModel.syncFromPouch()
                     }
 
                     var currentScreen by remember { mutableStateOf<AppScreen>(AppScreen.WeldPath) }
@@ -454,7 +466,7 @@ class TBarActivity : ComponentActivity() {
                             }
 
                             // Registration Check - Blocks Interaction if Not Registered
-                            if (!(application as ShiJiaoQiApp).bag.loggedIn) {
+                            if (!session.loggedIn) {
                                 Box(
                                     modifier = Modifier
                                         .fillMaxSize()
@@ -462,7 +474,7 @@ class TBarActivity : ComponentActivity() {
                                         .zIndex(200f),
                                     contentAlignment = Alignment.Center
                                 ) {
-                                    LoginGate(bag = (application as ShiJiaoQiApp).bag)
+                                    LoginGate()
                                  }
                              }
                              
