@@ -73,6 +73,20 @@ func TestClientDeviceLoginHTTP(t *testing.T) {
 		t.Fatalf("pin %d %s", code, body)
 	}
 
+	code, body = do(t, srv, "POST", base+"/pad/login", "", `{"loginName":"sa","password":"secret"}`)
+	if code != http.StatusOK || gjson(t, body, "token") == "" || !strings.Contains(body, `"deviceSerial":"ARM-1"`) || !strings.Contains(body, `"unwrapKey"`) {
+		t.Fatalf("pad login %d %s", code, body)
+	}
+	padTok := gjson(t, body, "token")
+	code, body = do(t, srv, "GET", base+"/pad/clients/"+cid+"/inbox", padTok, "")
+	if code != http.StatusOK || !strings.Contains(body, `"closures"`) {
+		t.Fatalf("pad inbox %d %s", code, body)
+	}
+	code, body = do(t, srv, "GET", base+"/clients/"+cid+"/inbox", padTok, "")
+	if code != http.StatusForbidden {
+		t.Fatalf("pad token on client inbox %d %s", code, body)
+	}
+
 	code, body = do(t, srv, "POST", base+"/clients/"+cid+"/login", "", `{"deviceSerial":"ARM-9","loginName":"sa","password":"secret"}`)
 	if code != http.StatusBadRequest {
 		t.Fatalf("mismatch %d %s", code, body)
@@ -80,5 +94,17 @@ func TestClientDeviceLoginHTTP(t *testing.T) {
 	code, body = do(t, srv, "POST", base+"/clients/"+cid+"/login", "", `{"deviceSerial":"ARM-1","loginName":"sa","password":"secret"}`)
 	if code != http.StatusOK || gjson(t, body, "token") == "" || gjson(t, body, "unwrapKey") == "" || !strings.Contains(body, `"persistUnwrapKey":false`) {
 		t.Fatalf("client login %d %s", code, body)
+	}
+
+	code, body = do(t, srv, "GET", "/v1/discover?deviceSerial=ARM-1", "", "")
+	if code != http.StatusOK || !strings.Contains(body, `"belongs":true`) || !strings.Contains(body, cid) || !strings.Contains(body, fid.String()) {
+		t.Fatalf("discover mine %d %s", code, body)
+	}
+	if strings.Contains(body, "unwrapKey") || strings.Contains(body, "password") {
+		t.Fatalf("discover leaked %s", body)
+	}
+	code, body = do(t, srv, "GET", "/v1/discover?deviceSerial=ARM-OTHER", "", "")
+	if code != http.StatusOK || strings.Contains(body, `"belongs":true`) {
+		t.Fatalf("discover other %d %s", code, body)
 	}
 }

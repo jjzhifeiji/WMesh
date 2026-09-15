@@ -22,7 +22,7 @@ func Wrap(log *slog.Logger, next http.Handler) http.Handler {
 			}
 			level := slog.LevelInfo
 			switch {
-			case r.URL.Path == "/healthz":
+			case r.URL.Path == "/healthz", r.URL.Path == "/v1/discover":
 				return
 			case strings.HasPrefix(r.URL.Path, "/assets/"):
 				level = slog.LevelDebug

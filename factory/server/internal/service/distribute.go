@@ -137,25 +137,6 @@ func (s *Closure) assertGrantableProject(ctx context.Context, projectID uuid.UUI
 	return nil
 }
 
-// SetCacheLimit 由本厂超管设定每 Client 工程缓存上限。
-func (s *Closure) SetCacheLimit(ctx context.Context, token string, n int) error {
-	acc, err := s.RequireActive(ctx, token)
-	if err != nil {
-		return err
-	}
-	// 只有工厂超管能改缓存上限。失败记拒绝。
-	if err := s.can(ctx, acc, permManageAccount, nil); err != nil {
-		_ = s.audit(ctx, &acc.ID, nil, "set_cache_limit", "max_cached_projects", audit.Deny)
-		return err
-	}
-	// 每 Client 工程缓存上限。
-	if err := s.store.SetCacheLimit(ctx, n); err != nil {
-		_ = s.audit(ctx, &acc.ID, nil, "set_cache_limit", "max_cached_projects", audit.Deny)
-		return err
-	}
-	return s.audit(ctx, &acc.ID, nil, "set_cache_limit", "max_cached_projects", audit.Allow)
-}
-
 // DistributeToClient 由有权工艺工程师把工程闭包写入已授权本机袋。
 func (s *Closure) DistributeToClient(ctx context.Context, token string, projectID, clientID uuid.UUID, bag *Bag, clocks Clocks) error {
 	acc, err := s.RequireActive(ctx, token)

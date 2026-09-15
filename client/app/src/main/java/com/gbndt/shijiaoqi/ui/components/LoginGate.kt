@@ -13,7 +13,12 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -33,29 +38,37 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.gbndt.shijiaoqi.platform.session.BagSession
+import com.gbndt.shijiaoqi.platform.session.FactoryOffer
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun LoginGate(
     bag: BagSession,
-    serial: String,
-    onRefreshSerial: () -> Unit,
 ) {
-    var url by remember { mutableStateOf(bag.savedUrl()) }
-    var factoryId by remember { mutableStateOf(bag.savedFactoryId()) }
-    var clientId by remember { mutableStateOf(bag.savedClientId()) }
     var login by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
+    var offers by remember { mutableStateOf<List<FactoryOffer>>(emptyList()) }
+    var selected by remember { mutableStateOf<FactoryOffer?>(null) }
+    var scanned by remember { mutableStateOf(false) }
+    var menuOpen by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
-    LaunchedEffect(serial) {
-        while (serial.isBlank()) {
-            onRefreshSerial()
-            delay(2000)
+    fun scan() {
+        scope.launch {
+            val hits = runCatching {
+                withContext(Dispatchers.IO) { bag.findFactories() }
+            }.getOrDefault(emptyList())
+            offers = hits
+            selected = hits.singleOrNull() ?: hits.firstOrNull()
+            scanned = true
         }
+    }
+
+    LaunchedEffect(Unit) {
+        if (!scanned && !bag.busy) scan()
     }
 
     Dialog(
@@ -75,15 +88,58 @@ fun LoginGate(
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 Text("本厂登录", fontSize = 20.sp, fontWeight = FontWeight.Bold)
-                Text(
-                    if (serial.isBlank()) "正在读取设备号…" else "设备号 $serial",
-                    fontSize = 14.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                OutlinedTextField(url, { url = it }, label = { Text("厂地址") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                    OutlinedTextField(factoryId, { factoryId = it }, label = { Text("工厂身份") }, singleLine = true, modifier = Modifier.weight(1f))
-                    OutlinedTextField(clientId, { clientId = it }, label = { Text("Client 身份") }, singleLine = true, modifier = Modifier.weight(1f))
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    ExposedDropdownMenuBox(
+                        expanded = menuOpen && offers.isNotEmpty(),
+                        onExpandedChange = { if (offers.isNotEmpty()) menuOpen = !menuOpen },
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        OutlinedTextField(
+                            value = selected?.label().orEmpty(),
+                            onValueChange = {},
+                            readOnly = true,
+                            singleLine = true,
+                            label = { Text("厂服务") },
+                            placeholder = {
+                                Text(
+                                    when {
+                                        bag.busy && !scanned -> "正在扫描…"
+                                        scanned -> "未发现厂服务"
+                                        else -> "扫描后选择"
+                                    },
+                                )
+                            },
+                            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = menuOpen && offers.isNotEmpty()) },
+                            modifier = Modifier
+                                .menuAnchor()
+                                .fillMaxWidth(),
+                            enabled = offers.isNotEmpty(),
+                        )
+                        ExposedDropdownMenu(
+                            expanded = menuOpen && offers.isNotEmpty(),
+                            onDismissRequest = { menuOpen = false },
+                        ) {
+                            offers.forEach { o ->
+                                DropdownMenuItem(
+                                    text = { Text(o.label()) },
+                                    onClick = {
+                                        selected = o
+                                        menuOpen = false
+                                    },
+                                )
+                            }
+                        }
+                    }
+                    OutlinedButton(
+                        onClick = { scan() },
+                        enabled = !bag.busy,
+                    ) {
+                        Text("扫描")
+                    }
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                     OutlinedTextField(login, { login = it }, label = { Text("登录名") }, singleLine = true, modifier = Modifier.weight(1f))
@@ -100,15 +156,16 @@ fun LoginGate(
                 bag.error?.let { Text(it, color = MaterialTheme.colorScheme.error, fontSize = 13.sp) }
                 Button(
                     onClick = {
+                        val hit = selected ?: return@Button
                         scope.launch {
                             runCatching {
                                 withContext(Dispatchers.IO) {
-                                    bag.login(url, factoryId, clientId, login, password)
+                                    bag.login(hit.httpBase, hit.factoryId, login, password)
                                 }
                             }
                         }
                     },
-                    enabled = !bag.busy && serial.isNotBlank() && url.isNotBlank() && factoryId.isNotBlank() && clientId.isNotBlank() && login.isNotBlank() && password.isNotBlank(),
+                    enabled = !bag.busy && selected != null && login.isNotBlank() && password.isNotBlank(),
                     modifier = Modifier.align(Alignment.End),
                 ) {
                     if (bag.busy) CircularProgressIndicator(modifier = Modifier.size(16.dp).padding(end = 8.dp), strokeWidth = 2.dp)

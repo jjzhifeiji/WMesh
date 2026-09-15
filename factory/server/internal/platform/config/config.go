@@ -5,25 +5,28 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
 
 // Config 是厂内进程一次启动用到的全部外部配置。
 type Config struct {
-	HTTPAddr        string        // 监听地址
-	DSN             string        // 维护库连接串；按工厂身份从这里建/开各厂库，账号需 CREATEDB
-	WebDir          string        // 已构建管理端目录；空表示只提供 API
-	BootstrapToken  string        // 建厂引导共享密码，只用于 /internal/bootstrap；空则关闭该入口
-	WANURL          string        // WAN HTTP 根地址，厂出站认领；空则不能认领
-	WANMQTT         string        // WAN MQTT 地址，空则按 HTTP 主机拼 :52183
-	ClientMQTTAddr  string        // 本厂 Client MQTT 监听；空则 :1884
-	ClientMQTTURL   string        // 回给平板的 MQTT URL；空则登录不带
-	OSS             OSS           // 厂内对象存储；点云/图片本体落这里，不进 WAN
-	ShutdownTimeout time.Duration // 优雅退出最长等待
-	DockerUpdate    bool          // 超管确认后由帮手 docker load 换本容器
-	DockerHost      string        // Docker 套接字，默认 unix:///var/run/docker.sock
-	DockerUpdateDir string        // 与帮手共用的 tar 目录
+	HTTPAddr         string        // 监听地址
+	DSN              string        // 维护库连接串；按工厂身份从这里建/开各厂库，账号需 CREATEDB
+	WebDir           string        // 已构建管理端目录；空表示只提供 API
+	BootstrapToken   string        // 建厂引导共享密码，只用于 /internal/bootstrap；空则关闭该入口
+	WANURL           string        // WAN HTTP 根地址，厂出站认领；空则不能认领
+	WANMQTT          string        // WAN MQTT 地址，空则按 HTTP 主机拼 :52183
+	ClientMQTTAddr   string        // 本厂 Client MQTT 监听；空则 :1884
+	ClientMQTTURL    string        // 回给平板的 MQTT URL；空则登录不带
+	DiscoverUDP      string        // 局域网探询 UDP 监听；空则 :52082，- 关闭
+	DiscoverHTTPPort int           // 回给 Client 的 HTTP 端口；0 则用监听端口
+	OSS              OSS           // 厂内对象存储；点云/图片本体落这里，不进 WAN
+	ShutdownTimeout  time.Duration // 优雅退出最长等待
+	DockerUpdate     bool          // 超管确认后由帮手 docker load 换本容器
+	DockerHost       string        // Docker 套接字，默认 unix:///var/run/docker.sock
+	DockerUpdateDir  string        // 与帮手共用的 tar 目录
 }
 
 // OSS 是 S3 兼容对象存储的接入参数；Endpoint 为空表示本厂暂未接 OSS。
@@ -43,14 +46,16 @@ const devDSN = "postgres://wmesh:wmesh@127.0.0.1:55433/postgres?sslmode=disable"
 // Load 从 WMESH_* 环境变量装配配置；缺必填项直接报错，不带隐含默认密码上线。
 func Load() (Config, error) {
 	c := Config{
-		HTTPAddr:       envOr("WMESH_HTTP_ADDR", ":8081"),
-		DSN:            envOr("WMESH_DSN", devDSN),
-		WebDir:         strings.TrimSpace(os.Getenv("WMESH_WEB_DIR")),
-		BootstrapToken: os.Getenv("WMESH_BOOTSTRAP_TOKEN"),
-		WANURL:         strings.TrimSpace(os.Getenv("WMESH_WAN_URL")),
-		WANMQTT:        strings.TrimSpace(os.Getenv("WMESH_WAN_MQTT_URL")),
-		ClientMQTTAddr: envOr("WMESH_CLIENT_MQTT_ADDR", ":1884"),
-		ClientMQTTURL:  strings.TrimSpace(os.Getenv("WMESH_CLIENT_MQTT_URL")),
+		HTTPAddr:         envOr("WMESH_HTTP_ADDR", ":8081"),
+		DSN:              envOr("WMESH_DSN", devDSN),
+		WebDir:           strings.TrimSpace(os.Getenv("WMESH_WEB_DIR")),
+		BootstrapToken:   os.Getenv("WMESH_BOOTSTRAP_TOKEN"),
+		WANURL:           strings.TrimSpace(os.Getenv("WMESH_WAN_URL")),
+		WANMQTT:          strings.TrimSpace(os.Getenv("WMESH_WAN_MQTT_URL")),
+		ClientMQTTAddr:   envOr("WMESH_CLIENT_MQTT_ADDR", ":1884"),
+		ClientMQTTURL:    strings.TrimSpace(os.Getenv("WMESH_CLIENT_MQTT_URL")),
+		DiscoverUDP:      envOr("WMESH_DISCOVER_UDP", ":52082"),
+		DiscoverHTTPPort: envInt("WMESH_DISCOVER_HTTP_PORT"),
 		OSS: OSS{
 			Endpoint:  strings.TrimRight(strings.TrimSpace(os.Getenv("WMESH_OSS_ENDPOINT")), "/"),
 			Bucket:    strings.TrimSpace(os.Getenv("WMESH_OSS_BUCKET")),
@@ -95,6 +100,15 @@ func envTruthy(key string) bool {
 	default:
 		return false
 	}
+}
+
+// envInt 空或非法为 0。
+func envInt(key string) int {
+	n, err := strconv.Atoi(strings.TrimSpace(os.Getenv(key)))
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
 }
 
 // envOr 空则用开发默认。

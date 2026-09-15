@@ -135,3 +135,104 @@ func (s *Node) LoginOnClient(ctx context.Context, clientID uuid.UUID, serial, lo
 		SigningPublicKey: pub, ClientShortCode: cli.ShortCode, Roles: roles,
 	}, nil
 }
+
+// PadDevice 是厂网登录带回的本厂设备行，含到站解封钥供同步后清掉。
+type PadDevice struct {
+	ID           uuid.UUID `json:"id"`                     // Client 稳定身份
+	Name         string    `json:"name"`                   // 给人看的设备名
+	DeviceSerial string    `json:"deviceSerial,omitempty"` // 已钉机械臂识别号；未登记为空
+	ShortCode    string    `json:"shortCode,omitempty"`    // 本机短码 Cxxxx，未齐则空
+	UnwrapKey    []byte    `json:"unwrapKey,omitempty"`    // 到站解封钥，只回内存
+}
+
+// PadSession 是厂网登录结果：人员会话加本厂全部未作废设备，不校验机械臂号。
+type PadSession struct {
+	Token            string       `json:"token"`                      // 会话令牌原文，只回给调用方
+	Account          Account      `json:"account"`                    // 当前登录人，无密码
+	Policy           ClientPolicy `json:"policy"`                     // 本厂现行 Client 策略
+	SigningPublicKey []byte       `json:"signingPublicKey,omitempty"` // 本厂签发公钥，验下行 Intent
+	MqttURL          string       `json:"mqttUrl,omitempty"`          // 本厂 Client MQTT 地址；HTTP 层可补
+	Roles            []string     `json:"roles,omitempty"`            // 当前登录人有效角色
+	Devices          []PadDevice  `json:"devices"`                    // 本厂未作废设备；连臂时再按识别号匹配
+}
+
+// LoginPad 本厂有效账号在厂网登录并拉设备名录；不校验机械臂号，不占操作员位。
+func (s *Node) LoginPad(ctx context.Context, loginName, password string) (PadSession, error) {
+	loginName = strings.TrimSpace(loginName)
+	if err := s.requireFactoryOpen(ctx); err != nil {
+		_ = s.audit(ctx, nil, &loginName, "pad_login", s.store.FactoryID().String(), audit.Deny)
+		return PadSession{}, err
+	}
+	p, err := s.store.PersonByLogin(ctx, loginName)
+	if err != nil {
+		_ = s.audit(ctx, nil, &loginName, "pad_login", s.store.FactoryID().String(), audit.Deny)
+		return PadSession{}, domain.ErrInvalidCredentials
+	}
+	if p.Status == StatusPending {
+		_ = s.audit(ctx, &p.ID, &loginName, "pad_login", s.store.FactoryID().String(), audit.Deny)
+		return PadSession{}, domain.ErrAccountPending
+	}
+	if p.Status == StatusDisabled {
+		_ = s.audit(ctx, &p.ID, &loginName, "pad_login", s.store.FactoryID().String(), audit.Deny)
+		return PadSession{}, domain.ErrAccountDisabled
+	}
+	if p.PasswordHash == nil || !secret.VerifyPassword(*p.PasswordHash, password) {
+		_ = s.audit(ctx, &p.ID, &loginName, "pad_login", s.store.FactoryID().String(), audit.Deny)
+		return PadSession{}, domain.ErrInvalidCredentials
+	}
+	token, err := secret.RandomToken()
+	if err != nil {
+		return PadSession{}, err
+	}
+	if _, err := s.store.CreateSession(ctx, p.ID, secret.TokenHash(token), time.Now().UTC().Add(sessionTTL)); err != nil {
+		return PadSession{}, err
+	}
+	rows, err := s.store.ListClients(ctx)
+	if err != nil {
+		_ = s.store.DeleteSessionByTokenHash(ctx, secret.TokenHash(token))
+		return PadSession{}, err
+	}
+	pol, err := s.store.ClientPolicy(ctx)
+	if err != nil {
+		_ = s.store.DeleteSessionByTokenHash(ctx, secret.TokenHash(token))
+		return PadSession{}, err
+	}
+	pub, err := s.SigningPublicKey(ctx)
+	if err != nil {
+		_ = s.store.DeleteSessionByTokenHash(ctx, secret.TokenHash(token))
+		return PadSession{}, err
+	}
+	grants, err := s.store.ActiveGrants(ctx, p.ID)
+	if err != nil {
+		_ = s.store.DeleteSessionByTokenHash(ctx, secret.TokenHash(token))
+		return PadSession{}, err
+	}
+	roles := make([]string, 0, len(grants))
+	seen := map[string]struct{}{}
+	for _, g := range grants {
+		if _, ok := seen[g.Role]; ok {
+			continue
+		}
+		seen[g.Role] = struct{}{}
+		roles = append(roles, g.Role)
+	}
+	devices := make([]PadDevice, 0, len(rows))
+	for _, row := range rows {
+		if row.Status != ClientStatusBound {
+			continue
+		}
+		dev := PadDevice{ID: row.ID, Name: row.Name, DeviceSerial: row.DeviceSerial, ShortCode: row.ShortCode}
+		if len(row.UnwrapKey) == 32 {
+			dev.UnwrapKey = append([]byte(nil), row.UnwrapKey...)
+		}
+		devices = append(devices, dev)
+	}
+	if err := s.audit(ctx, &p.ID, &loginName, "pad_login", s.store.FactoryID().String(), audit.Allow); err != nil {
+		_ = s.store.DeleteSessionByTokenHash(ctx, secret.TokenHash(token))
+		return PadSession{}, err
+	}
+	return PadSession{
+		Token: token, Account: accountOf(p), Policy: pol,
+		SigningPublicKey: pub, Roles: roles, Devices: devices,
+	}, nil
+}

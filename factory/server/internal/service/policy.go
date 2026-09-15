@@ -61,6 +61,18 @@ func (s *Closure) SetClientPolicy(ctx context.Context, token string, in ClientPo
 	return got, nil
 }
 
+// SetCacheLimit 只改缓存上限，仍走本厂一行策略并推给已绑定 Client。
+func (s *Closure) SetCacheLimit(ctx context.Context, token string, n int) error {
+	// 先读现行策略，只改上限后走统一写入。
+	cur, err := s.store.ClientPolicy(ctx)
+	if err != nil {
+		return err
+	}
+	cur.MaxCachedProjects = n
+	_, err = s.SetClientPolicy(ctx, token, cur)
+	return err
+}
+
 // 审计对象只记键名与新旧修订，不含钥原文或扩展值。
 func policyAuditTarget(old, neu ClientPolicy) string {
 	return fmt.Sprintf(

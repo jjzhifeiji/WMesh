@@ -16,6 +16,7 @@ func (h *Handler) mountNode(mux *http.ServeMux) {
 	mux.HandleFunc("PATCH /v1/factories/{id}/clients/{clientId}", h.renameClient)
 	mux.HandleFunc("POST /v1/factories/{id}/clients/{clientId}/device", h.registerDevice)
 	mux.HandleFunc("POST /v1/factories/{id}/clients/{clientId}/login", h.loginOnClient)
+	mux.HandleFunc("POST /v1/factories/{id}/pad/login", h.loginPad)
 	mux.HandleFunc("POST /v1/factories/{id}/clients/{clientId}/void", h.voidClient)
 	mux.HandleFunc("POST /v1/factories/{id}/clients/{clientId}/runtime", h.issueRuntime)
 	mux.HandleFunc("POST /v1/factories/{id}/clients/{clientId}/runtime/revoke", h.revokeRuntime)
@@ -47,6 +48,11 @@ type clientLoginReq struct {
 	DeviceSerial string `json:"deviceSerial"` // 本次读到的机械臂识别号
 	LoginName    string `json:"loginName"`    // 本厂登录名
 	Password     string `json:"password"`     // 日常密码，不进审计
+}
+
+type padLoginReq struct {
+	LoginName string `json:"loginName"` // 本厂登录名
+	Password  string `json:"password"`  // 日常密码，不进审计
 }
 
 type signingKeyResp struct {
@@ -129,6 +135,24 @@ func (h *Handler) loginOnClient(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		sess, err := svc.Node.LoginOnClient(r.Context(), clientID, req.DeviceSerial, req.LoginName, req.Password)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		sess.MqttURL = h.ClientMQTTURL
+		writeJSON(w, http.StatusOK, sess)
+	})
+}
+
+// 厂网登录：不校验机械臂号，回本厂设备名录。
+func (h *Handler) loginPad(w http.ResponseWriter, r *http.Request) {
+	h.withFactory(w, r, func(svc *service.Service) {
+		var req padLoginReq
+		if err := decodeJSON(r, &req); err != nil {
+			writeBadRequest(w, err)
+			return
+		}
+		sess, err := svc.Node.LoginPad(r.Context(), req.LoginName, req.Password)
 		if err != nil {
 			writeErr(w, err)
 			return

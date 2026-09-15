@@ -3152,7 +3152,8 @@ class MultiLayerViewModel(application: Application) : AndroidViewModel(applicati
         val bag = runCatching { bag() }.getOrNull() ?: return
         val active = bag.pouch.activeProject()
         pouchProjects.clear()
-        bag.pouch.exportClosures().filter { it.kind == Pouch.KIND_PROJECT }.forEach {
+        val self = bag.pouch.boundClient()
+        bag.pouch.exportClosures().filter { it.kind == Pouch.KIND_PROJECT && self != null && it.targetClientId == self }.forEach {
             pouchProjects.add(ProjectChoice(it.assetId, it.name, it.revision, it.assetId == active))
         }
         pouchProcesses.clear()

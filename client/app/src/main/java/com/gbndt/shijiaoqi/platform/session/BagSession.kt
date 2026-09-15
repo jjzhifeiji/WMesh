@@ -19,6 +19,8 @@ class BagSession(
     val pouch = Pouch()
     var loggedIn by mutableStateOf(false)
         private set
+    var armMatched by mutableStateOf(false)
+        private set
     var personName by mutableStateOf("")
         private set
     var error by mutableStateOf<String?>(null)
@@ -26,60 +28,73 @@ class BagSession(
     var busy by mutableStateOf(false)
         private set
     private var token: String? = null
+    private var devices: List<PadDevice> = emptyList()
 
     fun savedUrl(): String = identity.factoryUrl
     fun savedFactoryId(): String = identity.factoryId
     fun savedClientId(): String = identity.clientId
 
-    fun login(baseUrl: String, factoryId: String, clientId: String, loginName: String, password: String) {
+    fun findFactories(): List<FactoryOffer> {
         error = null
-        val serial = serials.read().trim()
-        if (serial.isEmpty()) {
-            error = "读不到设备号"
-            throw LoginRejected("device serial is required")
+        busy = true
+        try {
+            val hits = LanScan.find(identity.factoryUrl) { base ->
+                factory.discover(base, "")
+            }
+            if (hits.isEmpty()) {
+                error = "本网没有发现厂服务"
+            }
+            return hits
+        } catch (e: LoginRejected) {
+            error = translate(e.code)
+            throw e
+        } catch (e: Exception) {
+            error = e.message ?: "scan failed"
+            throw e
+        } finally {
+            busy = false
         }
+    }
+
+    fun login(baseUrl: String, factoryId: String, loginName: String, password: String) {
+        error = null
         busy = true
         try {
             identity.factoryUrl = baseUrl.trim()
             identity.factoryId = factoryId.trim()
-            identity.clientId = clientId.trim()
-            factory.registerDevice(identity.factoryUrl, identity.factoryId, identity.clientId, serial)
-            val sess = factory.loginOnClient(
-                identity.factoryUrl, identity.factoryId, identity.clientId, serial, loginName.trim(), password,
+            identity.clientId = ""
+            identity.clientShortCode = ""
+            val sess = factory.loginPad(
+                identity.factoryUrl, identity.factoryId, loginName.trim(), password,
             )
             logoutMemory()
-            pouch.login(sess.unwrapKey, sess.person.id, sess.policy.persistUnwrapKey)
-            store.open(sess.unwrapKey)
-            pouch.restoreEnvelopes(store.loadEnvelopes())
-            pouch.restoreLedger(store.loadLedger())
-            pouch.restoreClosures(store.loadClosures())
-            pouch.bindClient(UUID.fromString(identity.clientId))
+            val pouchKey = sess.devices.filter { it.unwrapKey.size == 32 }.minByOrNull { it.id }?.unwrapKey?.copyOf()
+                ?: Wm2.randomKey()
+            pouch.login(pouchKey, sess.person.id, sess.policy.persistUnwrapKey)
+            store.open(pouchKey)
+            Wm2.zero(pouchKey)
+            runCatching {
+                pouch.restoreEnvelopes(store.loadEnvelopes())
+                pouch.restoreLedger(store.loadLedger())
+                pouch.restoreClosures(store.loadClosures())
+            }
             pouch.setOnline(true)
-            val saved = store.loadActive()
-            pouch.restoreActive(saved.first, saved.second)
             pouch.setPolicy(sess.policy.maxCachedProjects, sess.policy.cacheScope)
-            if (sess.clientShortCode.isNotBlank()) identity.clientShortCode = sess.clientShortCode.trim()
-            if (identity.clientShortCode.isNotBlank()) pouch.setOrigin(identity.clientShortCode)
             pouch.setRoles(sess.roles)
+            token = sess.token
+            pullAllDevices(sess)
+            sess.devices.forEach { Wm2.zero(it.unwrapKey) }
+            devices = sess.devices.map { it.copy(unwrapKey = ByteArray(0)) }
             persistPouch(store, pouch)
             store.savePerson(sess.person)
             store.savePolicy(sess.policy)
-            token = sess.token
             personName = sess.person.displayName.ifBlank { sess.person.loginName }
             loggedIn = true
-            Wm2.zero(sess.unwrapKey)
-            down.start(
-                LiveChannel(
-                    baseUrl = identity.factoryUrl,
-                    factoryId = UUID.fromString(identity.factoryId),
-                    clientId = UUID.fromString(identity.clientId),
-                    token = sess.token,
-                    mqttUrl = sess.mqttUrl,
-                    signingPub = sess.signingPublicKey,
-                    pouch = pouch,
-                    store = store,
-                ),
-            )
+            armMatched = false
+            val serial = serials.read().trim()
+            if (serial.isNotEmpty()) {
+                runCatching { matchArm(serial) }
+            }
         } catch (e: LoginRejected) {
             logoutMemory()
             error = translate(e.code)
@@ -91,6 +106,31 @@ class BagSession(
         } finally {
             busy = false
         }
+    }
+
+    fun matchArm(serial: String) {
+        val got = serial.trim()
+        if (!loggedIn) throw LoginRejected("unauthorized")
+        if (got.isEmpty()) {
+            error = "读不到设备号"
+            armMatched = false
+            throw LoginRejected("device serial is required")
+        }
+        val hit = devices.firstOrNull { it.deviceSerial == got }
+            ?: run {
+                error = "设备号未在本厂登记"
+                armMatched = false
+                pouch.clearClient()
+                identity.clientId = ""
+                identity.clientShortCode = ""
+                throw LoginRejected("device serial does not match")
+            }
+        identity.clientId = hit.id
+        identity.clientShortCode = hit.shortCode
+        pouch.bindClient(UUID.fromString(hit.id))
+        if (hit.shortCode.isNotBlank()) pouch.setOrigin(hit.shortCode)
+        armMatched = true
+        error = null
     }
 
     fun cachePlain(id: UUID, level: String, name: String, revision: Long, ownerId: UUID?, plain: ByteArray) {
@@ -110,6 +150,7 @@ class BagSession(
     }
 
     fun activate(projectId: UUID) {
+        if (!armMatched) throw LoginRejected("device serial does not match")
         pouch.activate(projectId)
         persistPouch(store, pouch)
     }
@@ -141,22 +182,52 @@ class BagSession(
         error = null
     }
 
+    private fun pullAllDevices(sess: PadLoginResult) {
+        if (sess.policy.cacheScope == "current") return
+        val tok = sess.token
+        val fid = identity.factoryId
+        val base = identity.factoryUrl
+        val factoryId = UUID.fromString(fid)
+        val keyed = sess.devices.filter { it.id.isNotBlank() && it.unwrapKey.size == 32 }
+        if (keyed.isEmpty()) return
+        val boxes = keyed.map { d -> d to factory.padInbox(base, fid, d.id, tok) }
+        val n = boxes.sumOf { it.second.closures.size }
+        pouch.setPolicy(maxOf(sess.policy.maxCachedProjects, n.coerceAtLeast(1)), "all")
+        for ((d, box) in boxes) {
+            val cid = UUID.fromString(d.id)
+            pouch.bindClient(cid)
+            for (ref in box.closures) {
+                val t = factory.padPullClosure(base, fid, d.id, ref.assetId.toString(), tok)
+                try {
+                    pouch.cacheTransit(factoryId, cid, t, d.unwrapKey)
+                } catch (_: PouchRejected) {
+                }
+            }
+        }
+        pouch.clearClient()
+        pouch.setPolicy(sess.policy.maxCachedProjects, sess.policy.cacheScope)
+    }
+
     private fun logoutMemory() {
         down.stop()
         pouch.logout()
+        pouch.clearClient()
         store.close()
         token = null
         loggedIn = false
+        armMatched = false
         personName = ""
+        devices = emptyList()
     }
 
     private fun translate(code: String): String = when (code) {
         "device serial is required" -> "读不到设备号"
         "device serial already bound" -> "该设备号已绑其他机"
-        "device serial does not match" -> "设备号与本机登记不一致"
+        "device serial does not match" -> "设备号未在本厂登记"
         "invalid credentials" -> "登录名或密码不对"
         "client binding is void" -> "绑定已作废"
         "not found" -> "未绑定本厂"
+        "scan failed" -> "扫描厂服务失败"
         else -> code
     }
 }

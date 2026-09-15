@@ -92,6 +92,8 @@ class Pouch {
             persistPerson = null
         }
         roles = emptySet()
+        clientId = null
+        origin = null
     }
 
     fun hasUnwrapKey(): Boolean = unwrap?.size == Wm2.KEY_SIZE
@@ -99,6 +101,12 @@ class Pouch {
     fun bindClient(id: UUID) {
         clientId = id
     }
+
+    fun clearClient() {
+        clientId = null
+    }
+
+    fun boundClient(): UUID? = clientId
 
     fun setPolicy(maxCachedProjects: Int, scope: String) {
         maxCached = if (maxCachedProjects < 1) 2 else maxCachedProjects
@@ -188,8 +196,8 @@ class Pouch {
         }
     }
 
-    fun cacheTransit(factoryId: UUID, clientId: UUID, t: TransitClosure) {
-        val key = unwrap ?: throw PouchRejected(ERR_UNAUTHORIZED)
+    fun cacheTransit(factoryId: UUID, clientId: UUID, t: TransitClosure, wrapKey: ByteArray? = null) {
+        val key = wrapKey ?: unwrap ?: throw PouchRejected(ERR_UNAUTHORIZED)
         val fid = uuidBytes(factoryId)
         val cid = uuidBytes(clientId)
         val dek = Wm2.open(key, t.wrap, Wm2.clientTransitDekAad(fid, cid))

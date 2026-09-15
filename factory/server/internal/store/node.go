@@ -316,6 +316,23 @@ func (s *Store) PinDeviceSerial(ctx context.Context, clientID uuid.UUID, serial 
 	return out, err
 }
 
+// BoundClientByDeviceSerial 按已钉机械臂号找本厂未作废 Client；空号或不存在则没有。
+func (s *Store) BoundClientByDeviceSerial(ctx context.Context, serial string) (Client, error) {
+	serial = strings.TrimSpace(serial)
+	if serial == "" {
+		return Client{}, domain.ErrDeviceSerialRequired
+	}
+	var row Client
+	err := s.db.WithContext(ctx).First(&row, "status = ? AND device_serial = ?", ClientStatusBound, serial).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return Client{}, domain.ErrNotFound
+		}
+		return Client{}, err
+	}
+	return row, nil
+}
+
 // ListClients 列出本厂已接受的 Client，按接受时间从新到旧。
 func (s *Store) ListClients(ctx context.Context) ([]Client, error) {
 	var rows []Client

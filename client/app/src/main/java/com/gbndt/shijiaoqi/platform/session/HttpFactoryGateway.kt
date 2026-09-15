@@ -6,6 +6,7 @@ import kotlinx.serialization.json.Json
 import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
+import java.net.URLEncoder
 import java.util.Base64
 import java.util.UUID
 
@@ -52,6 +53,84 @@ class HttpFactoryGateway : FactoryGateway {
     override fun inbox(baseUrl: String, factoryId: String, clientId: String, token: String): ClientInbox {
         val (code, text) = get(baseUrl, "/v1/factories/$factoryId/clients/$clientId/inbox", token)
         if (code !in 200..299) throw LoginRejected(parseError(code, text))
+        return decodeInbox(text)
+    }
+
+    override fun padInbox(baseUrl: String, factoryId: String, clientId: String, token: String): ClientInbox {
+        val (code, text) = get(baseUrl, "/v1/factories/$factoryId/pad/clients/$clientId/inbox", token)
+        if (code !in 200..299) throw LoginRejected(parseError(code, text))
+        return decodeInbox(text)
+    }
+
+    override fun pullClosure(baseUrl: String, factoryId: String, clientId: String, projectId: String, token: String): TransitClosure {
+        val (code, text) = get(baseUrl, "/v1/factories/$factoryId/clients/$clientId/closures/$projectId", token)
+        if (code !in 200..299) throw LoginRejected(parseError(code, text))
+        return decodeTransit(text)
+    }
+
+    override fun padPullClosure(baseUrl: String, factoryId: String, clientId: String, projectId: String, token: String): TransitClosure {
+        val (code, text) = get(baseUrl, "/v1/factories/$factoryId/pad/clients/$clientId/closures/$projectId", token)
+        if (code !in 200..299) throw LoginRejected(parseError(code, text))
+        return decodeTransit(text)
+    }
+
+    override fun loginPad(
+        baseUrl: String,
+        factoryId: String,
+        loginName: String,
+        password: String,
+    ): PadLoginResult {
+        val body = """{"loginName":${jsonStr(loginName)},"password":${jsonStr(password)}}"""
+        val (code, text) = post(baseUrl, "/v1/factories/$factoryId/pad/login", body)
+        if (code !in 200..299) throw LoginRejected(parseError(code, text))
+        val dto = json.decodeFromString(PadLoginDto.serializer(), text)
+        return PadLoginResult(
+            token = dto.token,
+            person = PersonMeta(UUID.fromString(dto.account.id), dto.account.loginName, dto.account.displayName),
+            policy = PolicyMeta(
+                revision = dto.policy.revision,
+                maxCachedProjects = dto.policy.maxCachedProjects,
+                cacheScope = dto.policy.cacheScope,
+                persistUnwrapKey = dto.policy.persistUnwrapKey,
+                keyTtlSeconds = dto.policy.keyTtlSeconds,
+            ),
+            mqttUrl = dto.mqttUrl,
+            signingPublicKey = decodeB64(dto.signingPublicKey),
+            roles = dto.roles,
+            devices = dto.devices.map { d ->
+                PadDevice(
+                    id = d.id,
+                    name = d.name,
+                    deviceSerial = d.deviceSerial,
+                    shortCode = d.shortCode,
+                    unwrapKey = decodeB64(d.unwrapKey),
+                )
+            },
+        )
+    }
+
+    override fun discover(baseUrl: String, serial: String): List<FactoryOffer> {
+        val path = if (serial.isBlank()) "/v1/discover" else {
+            val q = URLEncoder.encode(serial, Charsets.UTF_8.name())
+            "/v1/discover?deviceSerial=$q"
+        }
+        val (code, text) = get(baseUrl, path, token = "", connectMs = 800, readMs = 1500)
+        if (code !in 200..299) throw LoginRejected(parseError(code, text))
+        val dto = json.decodeFromString(DiscoverDto.serializer(), text)
+        val httpBase = dto.httpBase.ifBlank { baseUrl.trimEnd('/') }
+        return dto.factories.map { f ->
+            FactoryOffer(
+                httpBase = httpBase,
+                factoryId = f.factoryId,
+                status = f.status,
+                belongs = f.belongs,
+                clientId = f.clientId,
+                clientName = f.clientName,
+            )
+        }
+    }
+
+    private fun decodeInbox(text: String): ClientInbox {
         val dto = json.decodeFromString(InboxDto.serializer(), text)
         return ClientInbox(
             policy = dto.policy.toMeta(),
@@ -62,9 +141,7 @@ class HttpFactoryGateway : FactoryGateway {
         )
     }
 
-    override fun pullClosure(baseUrl: String, factoryId: String, clientId: String, projectId: String, token: String): TransitClosure {
-        val (code, text) = get(baseUrl, "/v1/factories/$factoryId/clients/$clientId/closures/$projectId", token)
-        if (code !in 200..299) throw LoginRejected(parseError(code, text))
+    private fun decodeTransit(text: String): TransitClosure {
         val dto = json.decodeFromString(TransitDto.serializer(), text)
         val members = dto.snapshot.members.map { m ->
             com.gbndt.shijiaoqi.platform.pouch.TransitMember(
@@ -120,13 +197,15 @@ class HttpFactoryGateway : FactoryGateway {
         return code to text
     }
 
-    private fun get(baseUrl: String, path: String, token: String): Pair<Int, String> {
+    private fun get(baseUrl: String, path: String, token: String, connectMs: Int = 15_000, readMs: Int = 30_000): Pair<Int, String> {
         val url = URL(baseUrl.trimEnd('/') + path)
         val conn = (url.openConnection() as HttpURLConnection).apply {
             requestMethod = "GET"
-            connectTimeout = 15_000
-            readTimeout = 30_000
-            setRequestProperty("Authorization", "Bearer $token")
+            connectTimeout = connectMs
+            readTimeout = readMs
+            if (token.isNotBlank()) {
+                setRequestProperty("Authorization", "Bearer $token")
+            }
         }
         val text = (if (conn.responseCode in 200..299) conn.inputStream else conn.errorStream)
             ?.bufferedReader(Charsets.UTF_8)?.readText().orEmpty()
@@ -161,7 +240,43 @@ class HttpFactoryGateway : FactoryGateway {
     }
 
     @Serializable
+    private data class DiscoverDto(
+        val status: String = "",
+        val httpBase: String = "",
+        val factories: List<DiscoverFactoryDto> = emptyList(),
+    )
+
+    @Serializable
+    private data class DiscoverFactoryDto(
+        val factoryId: String = "",
+        val status: String = "",
+        val belongs: Boolean = false,
+        val clientId: String = "",
+        val clientName: String = "",
+    )
+
+    @Serializable
     private data class ErrorDto(val error: String = "")
+
+    @Serializable
+    private data class PadLoginDto(
+        val token: String,
+        val account: AccountDto,
+        val policy: PolicyDto,
+        val mqttUrl: String = "",
+        val signingPublicKey: String = "",
+        val roles: List<String> = emptyList(),
+        val devices: List<PadDeviceDto> = emptyList(),
+    )
+
+    @Serializable
+    private data class PadDeviceDto(
+        val id: String = "",
+        val name: String = "",
+        val deviceSerial: String = "",
+        val shortCode: String = "",
+        val unwrapKey: String = "",
+    )
 
     @Serializable
     private data class LoginDto(

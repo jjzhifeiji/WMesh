@@ -81,6 +81,33 @@ func (s *Closure) ClientInbox(ctx context.Context, token string, clientID uuid.U
 	return out, s.audit(ctx, &acc.ID, nil, "client_inbox", clientID.String(), audit.Allow)
 }
 
+// PadClientInbox 厂网登录后按设备对账获准闭包；不要求已占操作员位。
+func (s *Closure) PadClientInbox(ctx context.Context, token string, clientID uuid.UUID) (ClientInbox, error) {
+	acc, _, err := s.requireBoundClient(ctx, token, clientID)
+	if err != nil {
+		_ = s.audit(ctx, actorOf(acc), nil, "pad_inbox", clientID.String(), audit.Deny)
+		return ClientInbox{}, err
+	}
+	pol, err := s.store.ClientPolicy(ctx)
+	if err != nil {
+		return ClientInbox{}, err
+	}
+	key, err := s.ensureSigningKey(ctx)
+	if err != nil {
+		return ClientInbox{}, err
+	}
+	out := ClientInbox{Policy: pol, Closures: []ClosureRef{}, SigningPublicKey: key.PublicKey}
+	if pol.CacheScope == CacheScopeCurrent {
+		return out, s.audit(ctx, &acc.ID, nil, "pad_inbox", clientID.String(), audit.Allow)
+	}
+	refs, err := s.listAuthorizedRefs(ctx, acc, clientID)
+	if err != nil {
+		return ClientInbox{}, err
+	}
+	out.Closures = refs
+	return out, s.audit(ctx, &acc.ID, nil, "pad_inbox", clientID.String(), audit.Allow)
+}
+
 // PullClientClosure 组包后另造过站 DEK 封给这台已登录本机；厂库信封不原样拷。
 func (s *Closure) PullClientClosure(ctx context.Context, token string, clientID, projectID uuid.UUID) (TransitClosure, error) {
 	acc, cli, err := s.requireClientOperator(ctx, token, clientID)
@@ -113,6 +140,38 @@ func (s *Closure) PullClientClosure(ctx context.Context, token string, clientID,
 	return out, s.audit(ctx, &acc.ID, nil, "pull_closure", target, audit.Allow)
 }
 
+// PadPullClientClosure 厂网登录后按设备拉过站密文；不要求已占操作员位。
+func (s *Closure) PadPullClientClosure(ctx context.Context, token string, clientID, projectID uuid.UUID) (TransitClosure, error) {
+	acc, cli, err := s.requireBoundClient(ctx, token, clientID)
+	target := projectID.String() + " client=" + clientID.String()
+	if err != nil {
+		_ = s.audit(ctx, actorOf(acc), nil, "pad_pull", target, audit.Deny)
+		return TransitClosure{}, err
+	}
+	if err := s.assertPullable(ctx, acc, clientID, projectID); err != nil {
+		_ = s.audit(ctx, &acc.ID, nil, "pad_pull", target, audit.Deny)
+		return TransitClosure{}, err
+	}
+	root, err := s.loadRootForPack(ctx, projectID)
+	if err != nil {
+		_ = s.audit(ctx, &acc.ID, nil, "pad_pull", target, audit.Deny)
+		return TransitClosure{}, err
+	}
+	snap, err := s.packFromMember(ctx, root)
+	if err != nil {
+		_ = s.audit(ctx, &acc.ID, nil, "pad_pull", target, audit.Deny)
+		return TransitClosure{}, err
+	}
+	cid := clientID
+	snap.TargetClientID = &cid
+	out, err := sealTransit(s.store.FactoryID(), cli, snap)
+	if err != nil {
+		_ = s.audit(ctx, &acc.ID, nil, "pad_pull", target, audit.Deny)
+		return TransitClosure{}, err
+	}
+	return out, s.audit(ctx, &acc.ID, nil, "pad_pull", target, audit.Allow)
+}
+
 // HandleClientUp 收下本机回执；身份以 MQTT 会话为准，载荷里自报的不管。
 func (s *Closure) HandleClientUp(ctx context.Context, clientID uuid.UUID, payload []byte) {
 	if clientmqtt.HasBody(payload) {
@@ -132,6 +191,18 @@ func (s *Closure) HandleClientUp(ctx context.Context, clientID uuid.UUID, payloa
 
 // 当前登录人必须是这台已绑定本机的操作员。
 func (s *kernel) requireClientOperator(ctx context.Context, token string, clientID uuid.UUID) (Account, Client, error) {
+	acc, cli, err := s.requireBoundClient(ctx, token, clientID)
+	if err != nil {
+		return acc, cli, err
+	}
+	if cli.OperatorID == nil || *cli.OperatorID != acc.ID {
+		return acc, cli, domain.ErrForbidden
+	}
+	return acc, cli, nil
+}
+
+// 厂网登录人可对账本厂未作废设备；不要求已占操作员位。
+func (s *kernel) requireBoundClient(ctx context.Context, token string, clientID uuid.UUID) (Account, Client, error) {
 	acc, err := s.RequireActive(ctx, token)
 	if err != nil {
 		return Account{}, Client{}, err
@@ -142,9 +213,6 @@ func (s *kernel) requireClientOperator(ctx context.Context, token string, client
 	}
 	if cli.Status != ClientStatusBound {
 		return acc, cli, domain.ErrBindingVoid
-	}
-	if cli.OperatorID == nil || *cli.OperatorID != acc.ID {
-		return acc, cli, domain.ErrForbidden
 	}
 	return acc, cli, nil
 }

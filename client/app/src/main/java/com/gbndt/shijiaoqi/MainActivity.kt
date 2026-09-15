@@ -162,6 +162,7 @@ class MainActivity : ComponentActivity() {
         }
 
         if (isGameKey) {
+            if (!(application as ShiJiaoQiApp).bag.loggedIn) return true
 
             if (event.repeatCount == 0) {
                 if (event.action == KeyEvent.ACTION_DOWN) {
@@ -288,6 +289,8 @@ class MainActivity : ComponentActivity() {
         }
 
         if (event.source and InputDevice.SOURCE_JOYSTICK != 0) {
+            if (!(application as ShiJiaoQiApp).bag.loggedIn) return true
+
             // Process Joystick Axes
             val newJoyX1 = event.getAxisValue(MotionEvent.AXIS_X)
             val newJoyY1 = event.getAxisValue(MotionEvent.AXIS_Y)
@@ -401,37 +404,47 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                     val bag = (application as ShiJiaoQiApp).bag
-                    LaunchedEffect(bag.loggedIn) {
+                    LaunchedEffect(viewModel.machineCode, bag.loggedIn) {
+                        (application as ShiJiaoQiApp).serial = viewModel.machineCode
+                        if (bag.loggedIn && viewModel.machineCode.isNotBlank()) {
+                            runCatching { bag.matchArm(viewModel.machineCode) }
+                                .onFailure {
+                                    Toast.makeText(context, bag.error ?: it.message ?: "设备不匹配", Toast.LENGTH_SHORT).show()
+                                }
+                            viewModel.syncFromPouch()
+                        }
+                    }
+                    LaunchedEffect(bag.loggedIn, bag.armMatched) {
                         if (bag.loggedIn) viewModel.syncFromPouch()
                     }
 
                     var currentScreen by remember { mutableStateOf<AppScreen>(AppScreen.SplashScreen) }
 
-                    // Global Dialogs
-                    ToolListDialog(
-                        viewModel = viewModel,
-                        onDismiss = { viewModel.isToolListDialogVisible = false }
-                    )
-                    ToolEditDialog(viewModel = viewModel)
-                    
-                    PositionSelectionDialog(
-                        viewModel = viewModel,
-                        onDismiss = { viewModel.isPositionDialogVisible = false }
-                    )
-                    
-                    SpeedSelectionDialog(
-                        viewModel = viewModel,
-                        onDismiss = { viewModel.isSpeedDialogVisible = false }
-                    )
-
-                    InstallPosSelectionDialog(
-                        viewModel = viewModel,
-                        onDismiss = { viewModel.isInstallPosDialogVisible = false }
-                    )
+                    if (bag.loggedIn) {
+                        ToolListDialog(
+                            viewModel = viewModel,
+                            onDismiss = { viewModel.isToolListDialogVisible = false }
+                        )
+                        ToolEditDialog(viewModel = viewModel)
+                        PositionSelectionDialog(
+                            viewModel = viewModel,
+                            onDismiss = { viewModel.isPositionDialogVisible = false }
+                        )
+                        SpeedSelectionDialog(
+                            viewModel = viewModel,
+                            onDismiss = { viewModel.isSpeedDialogVisible = false }
+                        )
+                        InstallPosSelectionDialog(
+                            viewModel = viewModel,
+                            onDismiss = { viewModel.isInstallPosDialogVisible = false }
+                        )
+                    }
 
                     Box(modifier = Modifier.fillMaxSize()) {
                         if (currentScreen is AppScreen.SplashScreen) {
                             SplashScreen(onSplashFinished = { currentScreen = AppScreen.ModeSelection })
+                        } else if (!bag.loggedIn) {
+                            LoginGate(bag = bag)
                         } else if (currentScreen is AppScreen.ModeSelection) {
                             ModeSelectionScreen(
                                 onSingleLayerClick = { currentScreen = AppScreen.WeldPath },
@@ -507,24 +520,6 @@ class MainActivity : ComponentActivity() {
                                 }
                             }
 
-                            // Registration Check - Blocks Interaction if Not Registered
-                            if (! (application as ShiJiaoQiApp).bag.loggedIn) {
-                                (application as ShiJiaoQiApp).serial = viewModel.machineCode
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxSize()
-                                        .background(Color.Black.copy(alpha = 0.5f))
-                                        .zIndex(200f),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    LoginGate(
-                                        bag = (application as ShiJiaoQiApp).bag,
-                                        serial = viewModel.machineCode,
-                                        onRefreshSerial = { viewModel.checkRegistration() },
-                                    )
-                                 }
-                             }
-                             
                              // Update Dialog
                              if (viewModel.isUpdateDialogVisible && viewModel.updateInfo != null) {
                                  UpdateDialog(

@@ -132,6 +132,83 @@ func TestRegisterDeviceAndLogin(t *testing.T) {
 	}
 }
 
+func TestPadLoginListsDevicesWithoutSerial(t *testing.T) {
+	ctx := context.Background()
+	h := New(t)
+	seed, fac, err := h.Provision(ctx, "sa", "超管")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fac.Activate(ctx, "sa", seed.ActivationToken, "sa-pass"); err != nil {
+		t.Fatal(err)
+	}
+	saTok := mustLogin(t, ctx, fac, "sa", "sa-pass")
+	op := mustCreateRole(t, ctx, fac, saTok, "op", "op-pass", factory.RoleOperator, factory.ScopeFactory, nil)
+
+	cidA := id.New()
+	cidB := id.New()
+	pubA, _, _ := nodekey.Generate()
+	pubB, _, _ := nodekey.Generate()
+	if _, err := fac.AcceptBinding(ctx, cidA, "焊机A", pubA, 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fac.AcceptBinding(ctx, cidB, "焊机B", pubB, 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fac.RegisterDevice(ctx, cidA, "ARM-A"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fac.RegisterDevice(ctx, cidB, "ARM-B"); err != nil {
+		t.Fatal(err)
+	}
+
+	sess, err := fac.LoginPad(ctx, "op", "op-pass")
+	if err != nil || sess.Token == "" || sess.Account.ID != op.acc.ID || len(sess.Devices) != 2 {
+		t.Fatalf("pad %+v %v", sess, err)
+	}
+	seen := map[string]factory.PadDevice{}
+	for _, d := range sess.Devices {
+		if len(d.UnwrapKey) != 32 || d.DeviceSerial == "" {
+			t.Fatalf("device %+v", d)
+		}
+		seen[d.DeviceSerial] = d
+	}
+	if _, ok := seen["ARM-A"]; !ok {
+		t.Fatal("missing ARM-A")
+	}
+	if _, ok := seen["ARM-B"]; !ok {
+		t.Fatal("missing ARM-B")
+	}
+
+	listed, err := fac.ListClients(ctx, saTok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range listed {
+		if c.OperatorID != nil {
+			t.Fatalf("pad login occupied operator %+v", c)
+		}
+	}
+
+	if _, err := fac.ClientInbox(ctx, sess.Token, cidA); !errors.Is(err, domain.ErrForbidden) {
+		t.Fatalf("operator inbox: %v", err)
+	}
+	if _, err := fac.PadClientInbox(ctx, sess.Token, cidA); err != nil {
+		t.Fatalf("pad inbox a: %v", err)
+	}
+	if _, err := fac.PadClientInbox(ctx, sess.Token, cidB); err != nil {
+		t.Fatalf("pad inbox b: %v", err)
+	}
+
+	rows, err := fac.ListAudit(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !audit.ContainsAny(audit.Dump(rows), "pad_login") {
+		t.Fatalf("audit %s", audit.Dump(rows))
+	}
+}
+
 func TestLoginOnClientClearsOtherDevice(t *testing.T) {
 	ctx := context.Background()
 	h := New(t)

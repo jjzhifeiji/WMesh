@@ -48,6 +48,10 @@ func TestFactoryHTTP(t *testing.T) {
 	if code != http.StatusOK || !strings.Contains(body, `"wanConfigured":false`) {
 		t.Fatalf("site %d %s", code, body)
 	}
+	code, body = do(t, srv, "GET", "/v1/discover", "", "")
+	if code != http.StatusOK || !strings.Contains(body, `"httpBase"`) {
+		t.Fatalf("discover %d %s", code, body)
+	}
 	code, body = do(t, srv, "GET", "/v1/nope", "", "")
 	if code != http.StatusNotFound || gjson(t, body, "error") != "not found" {
 		t.Fatalf("unknown api %d %s", code, body)

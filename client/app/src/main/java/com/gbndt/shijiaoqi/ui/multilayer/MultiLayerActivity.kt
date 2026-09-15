@@ -367,7 +367,17 @@ class MultiLayerActivity : ComponentActivity() {
                         }
                     }
                     val bag = (application as ShiJiaoQiApp).bag
-                    LaunchedEffect(bag.loggedIn) {
+                    LaunchedEffect(viewModel.machineCode, bag.loggedIn) {
+                        (application as ShiJiaoQiApp).serial = viewModel.machineCode
+                        if (bag.loggedIn && viewModel.machineCode.isNotBlank()) {
+                            runCatching { bag.matchArm(viewModel.machineCode) }
+                                .onFailure {
+                                    Toast.makeText(context, bag.error ?: it.message ?: "设备不匹配", Toast.LENGTH_SHORT).show()
+                                }
+                            viewModel.syncFromPouch()
+                        }
+                    }
+                    LaunchedEffect(bag.loggedIn, bag.armMatched) {
                         if (bag.loggedIn) viewModel.syncFromPouch()
                     }
 
@@ -448,7 +458,6 @@ class MultiLayerActivity : ComponentActivity() {
 
                             // Registration Check - Blocks Interaction if Not Registered
                             if (!(application as ShiJiaoQiApp).bag.loggedIn) {
-                                (application as ShiJiaoQiApp).serial = viewModel.machineCode
                                 Box(
                                     modifier = Modifier
                                         .fillMaxSize()
@@ -456,11 +465,7 @@ class MultiLayerActivity : ComponentActivity() {
                                         .zIndex(200f),
                                     contentAlignment = Alignment.Center
                                 ) {
-                                    LoginGate(
-                                        bag = (application as ShiJiaoQiApp).bag,
-                                        serial = viewModel.machineCode,
-                                        onRefreshSerial = { viewModel.checkRegistration() },
-                                    )
+                                    LoginGate(bag = (application as ShiJiaoQiApp).bag)
                                  }
                              }
                              

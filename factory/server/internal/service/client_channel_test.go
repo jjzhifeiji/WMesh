@@ -39,6 +39,24 @@ func (r *recDown) last() []byte {
 	return r.msgs[len(r.msgs)-1]
 }
 
+func (r *recDown) latestFor(pub []byte, factoryID, clientID uuid.UUID) (clientmqtt.Intent, []byte, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i := len(r.msgs) - 1; i >= 0; i-- {
+		in, err := clientmqtt.Verify(pub, factoryID, clientID, r.msgs[i])
+		if err == nil {
+			return in, r.msgs[i], nil
+		}
+	}
+	return clientmqtt.Intent{}, nil, errNoDown
+}
+
+var errNoDown = errDown("no matching down intent")
+
+type errDown string
+
+func (e errDown) Error() string { return string(e) }
+
 func TestClientChannelPullAndPolicyFanout(t *testing.T) {
 	ctx := context.Background()
 	h := New(t)
@@ -159,18 +177,23 @@ func TestClientChannelPullAndPolicyFanout(t *testing.T) {
 	}
 
 	pol, err := fac.SetClientPolicy(ctx, sa, factory.ClientPolicy{
-		MaxCachedProjects: 3, CacheScope: factory.CacheScopeAll, PersistUnwrapKey: false, KeyTTLSeconds: 0,
+		MaxCachedProjects: 3, CacheScope: factory.CacheScopeAll, PersistUnwrapKey: true, KeyTTLSeconds: 60,
 	})
 	if err != nil || pol.Revision < 1 {
 		t.Fatalf("policy %v %v", pol, err)
 	}
-	raw := down.last()
-	if len(raw) == 0 || clientmqtt.HasBody(raw) {
-		t.Fatalf("policy mqtt %s", raw)
+	in, raw, err := down.latestFor(sess.SigningPublicKey, fac.Store().FactoryID(), cid)
+	if err != nil || clientmqtt.HasBody(raw) || in.Typ != clientmqtt.TypPolicy || in.Revision != pol.Revision ||
+		in.MaxCachedProjects != 3 || in.CacheScope != factory.CacheScopeAll || !in.PersistUnwrapKey || in.KeyTTLSeconds != 60 {
+		t.Fatalf("policy intent %+v %v %s", in, err, raw)
 	}
-	in, err := clientmqtt.Verify(sess.SigningPublicKey, fac.Store().FactoryID(), cid, raw)
-	if err != nil || in.Typ != clientmqtt.TypPolicy || in.Revision != pol.Revision {
-		t.Fatalf("policy intent %+v %v", in, err)
+	if err := fac.SetCacheLimit(ctx, sa, 4); err != nil {
+		t.Fatal(err)
+	}
+	in, raw, err = down.latestFor(sess.SigningPublicKey, fac.Store().FactoryID(), cid)
+	if err != nil || clientmqtt.HasBody(raw) || in.Typ != clientmqtt.TypPolicy || in.Revision != pol.Revision+1 ||
+		in.MaxCachedProjects != 4 || !in.PersistUnwrapKey || in.KeyTTLSeconds != 60 {
+		t.Fatalf("limit fanout %+v %v %s", in, err, raw)
 	}
 
 	nb, na := time.Now().UTC().Add(-time.Hour), time.Now().UTC().Add(24*time.Hour)
