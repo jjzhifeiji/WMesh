@@ -23,6 +23,7 @@ type Handler struct {
 	WANURL         string                      // WAN 根地址，厂出站认领用；空则不能认领
 	Version        string                      // 构建版本，随探活返回，便于核对升级是否生效
 	OSSProbe       func(context.Context) error // 探对象存储是否在线；空表示本厂未接 OSS
+	ClientMQTTURL  string                      // 回给平板的 MQTT 地址；空则登录不带
 }
 
 // New 组装厂内 HTTP 适配器。
@@ -46,6 +47,7 @@ func (h *Handler) Router() http.Handler {
 	h.mountTemplate(mux)
 	h.mountUpdate(mux)
 	h.mountPolicy(mux)
+	h.mountChannel(mux)
 	return mux
 }
 

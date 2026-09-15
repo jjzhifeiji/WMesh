@@ -68,9 +68,16 @@ func run(ctx context.Context, log *slog.Logger) error {
 	if cfg.WANURL != "" {
 		h.StartChannel(ctx, cfg.WANURL, cfg.WANMQTT)
 	}
+	if err := h.StartClientBroker(cfg.ClientMQTTAddr); err != nil {
+		return fmt.Errorf("client mqtt: %w", err)
+	}
 
 	api := httpapi.New(h, cfg.BootstrapToken, cfg.WANURL)
 	api.Version = version
+	api.ClientMQTTURL = cfg.ClientMQTTURL
+	if api.ClientMQTTURL == "" && h.ClientMQTTAddr() != "" {
+		api.ClientMQTTURL = "tcp://" + h.ClientMQTTAddr()
+	}
 	if cfg.OSS.Enabled() {
 		store := oss.New(cfg.OSS.Endpoint, cfg.OSS.Bucket, cfg.OSS.AccessKey, cfg.OSS.SecretKey)
 		// 探活顺带保证桶在：对象存储晚起或被清空后能自愈，不用重启应用。
@@ -106,7 +113,7 @@ func run(ctx context.Context, log *slog.Logger) error {
 	}
 	errCh := make(chan error, 1)
 	go func() {
-		log.Info("factory http listening", "addr", cfg.HTTPAddr, "version", version, "web", cfg.WebDir != "", "oss", cfg.OSS.Enabled())
+		log.Info("factory http listening", "addr", cfg.HTTPAddr, "version", version, "web", cfg.WebDir != "", "oss", cfg.OSS.Enabled(), "clientMqtt", h.ClientMQTTAddr())
 		errCh <- srv.ListenAndServe()
 	}()
 	select {

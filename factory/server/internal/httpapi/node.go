@@ -14,6 +14,8 @@ func (h *Handler) mountNode(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/factories/{id}/clients", h.listClients)
 	mux.HandleFunc("POST /v1/factories/{id}/clients", h.registerClient)
 	mux.HandleFunc("PATCH /v1/factories/{id}/clients/{clientId}", h.renameClient)
+	mux.HandleFunc("POST /v1/factories/{id}/clients/{clientId}/device", h.registerDevice)
+	mux.HandleFunc("POST /v1/factories/{id}/clients/{clientId}/login", h.loginOnClient)
 	mux.HandleFunc("POST /v1/factories/{id}/clients/{clientId}/void", h.voidClient)
 	mux.HandleFunc("POST /v1/factories/{id}/clients/{clientId}/runtime", h.issueRuntime)
 	mux.HandleFunc("POST /v1/factories/{id}/clients/{clientId}/runtime/revoke", h.revokeRuntime)
@@ -35,6 +37,16 @@ type renameClientReq struct {
 type issueWindowReq struct {
 	NotBefore string `json:"notBefore"` // RFC3339
 	NotAfter  string `json:"notAfter"`  // RFC3339
+}
+
+type deviceSerialReq struct {
+	DeviceSerial string `json:"deviceSerial"` // 从设备读到的机械臂识别号
+}
+
+type clientLoginReq struct {
+	DeviceSerial string `json:"deviceSerial"` // 本次读到的机械臂识别号
+	LoginName    string `json:"loginName"`    // 本厂登录名
+	Password     string `json:"password"`     // 日常密码，不进审计
 }
 
 type signingKeyResp struct {
@@ -78,6 +90,51 @@ func (h *Handler) registerClient(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusCreated, row)
+	})
+}
+
+// 把读到的机械臂号钉到已绑定 Client；空号拒绝。
+func (h *Handler) registerDevice(w http.ResponseWriter, r *http.Request) {
+	h.withFactory(w, r, func(svc *service.Service) {
+		clientID, err := uuid.Parse(r.PathValue("clientId"))
+		if err != nil {
+			writeBadRequest(w, errInvalidID)
+			return
+		}
+		var req deviceSerialReq
+		if err := decodeJSON(r, &req); err != nil {
+			writeBadRequest(w, err)
+			return
+		}
+		row, err := svc.Node.RegisterDevice(r.Context(), clientID, req.DeviceSerial)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, row)
+	})
+}
+
+// 本厂账号在已钉设备号的本机登录并领取解封钥。
+func (h *Handler) loginOnClient(w http.ResponseWriter, r *http.Request) {
+	h.withFactory(w, r, func(svc *service.Service) {
+		clientID, err := uuid.Parse(r.PathValue("clientId"))
+		if err != nil {
+			writeBadRequest(w, errInvalidID)
+			return
+		}
+		var req clientLoginReq
+		if err := decodeJSON(r, &req); err != nil {
+			writeBadRequest(w, err)
+			return
+		}
+		sess, err := svc.Node.LoginOnClient(r.Context(), clientID, req.DeviceSerial, req.LoginName, req.Password)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		sess.MqttURL = h.ClientMQTTURL
+		writeJSON(w, http.StatusOK, sess)
 	})
 }
 

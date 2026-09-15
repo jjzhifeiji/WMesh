@@ -137,6 +137,28 @@ func TransitAAD(factoryID, assetID uuid.UUID, rev int64) []byte {
 	return out
 }
 
+// ClientTransitAAD 厂→本机过站信封绑本厂、本机和该成员，防贴到他机。
+func ClientTransitAAD(factoryID, clientID, assetID uuid.UUID, rev int64) []byte {
+	var revb [8]byte
+	binary.BigEndian.PutUint64(revb[:], uint64(rev))
+	out := make([]byte, 0, 16+16+16+8+14)
+	out = append(out, factoryID[:]...)
+	out = append(out, clientID[:]...)
+	out = append(out, assetID[:]...)
+	out = append(out, revb[:]...)
+	out = append(out, "client-transit"...)
+	return out
+}
+
+// ClientTransitDEKAAD 过站 DEK 包装只绑本厂本机。
+func ClientTransitDEKAAD(factoryID, clientID uuid.UUID) []byte {
+	out := make([]byte, 0, 16+16+18)
+	out = append(out, factoryID[:]...)
+	out = append(out, clientID[:]...)
+	out = append(out, "client-transit-dek"...)
+	return out
+}
+
 // kekHint 信封上的 KEK 指纹，解包时不靠它验钥。
 func kekHint(kek []byte) []byte {
 	sum := sha256.Sum256(kek)

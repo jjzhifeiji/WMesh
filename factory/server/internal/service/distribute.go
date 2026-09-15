@@ -221,7 +221,11 @@ func (s *Closure) DistributeToClient(ctx context.Context, token string, projectI
 		_ = s.audit(ctx, &acc.ID, nil, "distribute_closure", target, audit.Deny)
 		return err
 	}
-	return s.audit(ctx, &acc.ID, nil, "distribute_closure", closureTarget(snap), audit.Allow)
+	if err := s.audit(ctx, &acc.ID, nil, "distribute_closure", closureTarget(snap), audit.Allow); err != nil {
+		return err
+	}
+	s.publishClosureReady(ctx, clientID, snap)
+	return nil
 }
 
 // assertClientRuntime 当前最高修订须仍允许运行且未过期。

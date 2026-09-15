@@ -36,6 +36,7 @@ type updateTemplateReq struct {
 }
 
 type createProjectTemplateReq struct {
+	ID     string          `json:"id"`     // 可选；空库种子身份用于补建
 	Name   string          `json:"name"`   // 名称
 	Schema json.RawMessage `json:"schema"` // 对象字段表，可空
 }
@@ -110,14 +111,23 @@ func (h *Handler) listProjectTemplates(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// 新建一份工程模版。
+// 新建一份工程模版；可带空库种子身份补建缺失份。
 func (h *Handler) createProjectTemplate(w http.ResponseWriter, r *http.Request) {
 	var req createProjectTemplateReq
 	if err := decodeJSON(r, &req); err != nil {
 		writeBadRequest(w, err)
 		return
 	}
-	row, err := h.svc.Templates.CreateProjectTemplate(r.Context(), bearer(r), req.Name, req.Schema)
+	var id uuid.UUID
+	if req.ID != "" {
+		parsed, err := uuid.Parse(req.ID)
+		if err != nil {
+			writeBadRequest(w, errInvalidID)
+			return
+		}
+		id = parsed
+	}
+	row, err := h.svc.Templates.CreateProjectTemplate(r.Context(), bearer(r), id, req.Name, req.Schema)
 	if err != nil {
 		writeErr(w, err)
 		return

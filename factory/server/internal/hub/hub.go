@@ -39,6 +39,8 @@ type Hub struct {
 	mqttURL    string                                    // WAN MQTT 地址
 	run        context.Context                           // 进程生命周期，给通道重连用
 	installer  service.FactoryInstaller                  // 超管确认后换 Docker；空则测试用空实现
+	clientMu   sync.Mutex                                // 护着本厂 Client Broker
+	clientBus  clientBroker                              // 厂→Client MQTT；未起则为空
 }
 
 // New 连维护库（用来建厂库），不预先打开任何厂库。
@@ -131,6 +133,7 @@ func (h *Hub) ensure(factoryID uuid.UUID) (*service.Service, error) {
 	if h.installer != nil {
 		svc.Updates.SetFactoryInstaller(h.installer)
 	}
+	svc.SetClientDown(h)
 	h.tenants[factoryID] = &tenant{db: db, svc: svc}
 	return svc, nil
 }
@@ -244,6 +247,12 @@ func (h *Hub) Close() {
 		delete(h.presence, id)
 	}
 	h.presenceMu.Unlock()
+	h.clientMu.Lock()
+	if h.clientBus != nil {
+		_ = h.clientBus.Close()
+		h.clientBus = nil
+	}
+	h.clientMu.Unlock()
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for id, t := range h.tenants {

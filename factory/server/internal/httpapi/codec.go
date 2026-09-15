@@ -74,11 +74,13 @@ func statusOf(err error) int {
 		errors.Is(err, domain.ErrAlreadyActivated), errors.Is(err, domain.ErrDuplicateAssignment),
 		errors.Is(err, domain.ErrDuplicateRoleGrant), errors.Is(err, domain.ErrDuplicateSession),
 		errors.Is(err, domain.ErrReferenced), errors.Is(err, domain.ErrRevisionConflict),
-		errors.Is(err, domain.ErrSigningKeyExists), errors.Is(err, domain.ErrSoftwareInstallFailed):
+		errors.Is(err, domain.ErrSigningKeyExists), errors.Is(err, domain.ErrSoftwareInstallFailed),
+		errors.Is(err, domain.ErrDeviceSerialTaken):
 		return http.StatusConflict
 	case errors.Is(err, domain.ErrStaleRevision), errors.Is(err, domain.ErrBindingVoid),
 		errors.Is(err, domain.ErrInvalidKey), errors.Is(err, domain.ErrClientKeyMismatch),
 		errors.Is(err, domain.ErrInvalidName),
+		errors.Is(err, domain.ErrDeviceSerialRequired), errors.Is(err, domain.ErrDeviceSerialMismatch),
 		isDomain(err), errors.Is(err, errInvalidID):
 		return http.StatusBadRequest
 	default:

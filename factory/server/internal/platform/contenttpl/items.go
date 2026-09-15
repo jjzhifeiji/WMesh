@@ -57,6 +57,16 @@ func SeedProjectItems() []ProjectItemSchema {
 	}
 }
 
+// SeedProjectItem 按空库身份取一份明细；没有则 false。
+func SeedProjectItem(id string) (ProjectItemSchema, bool) {
+	for _, it := range SeedProjectItems() {
+		if it.ID == id {
+			return it, true
+		}
+	}
+	return ProjectItemSchema{}, false
+}
+
 // LegacyProjectItems 已有库拆行用的三份，不含 T 排。
 func LegacyProjectItems() []ProjectItemSchema {
 	var out []ProjectItemSchema

@@ -13,6 +13,8 @@ import (
 	"wmesh/global/internal/platform/domain"
 	"wmesh/global/internal/platform/id"
 	global "wmesh/global/internal/service"
+
+	"github.com/google/uuid"
 )
 
 const seedSingleID = "11111111-1111-4111-8111-111111111111"
@@ -179,7 +181,7 @@ func TestProjectProcessRefs(t *testing.T) {
 	if _, err := h.WAN.UpdateProjectTemplate(ctx, tok, renamed.ID, renamed.Revision, "", renamed.Schema); !errors.Is(err, domain.ErrTemplateInvalid) {
 		t.Fatalf("empty name %v", err)
 	}
-	created, err := h.WAN.CreateProjectTemplate(ctx, tok, "坡口", nil)
+	created, err := h.WAN.CreateProjectTemplate(ctx, tok, uuid.Nil, "坡口", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -265,5 +267,19 @@ func TestExistingProjectTemplatesKeepThree(t *testing.T) {
 		if row.ID.String() == contenttpl.SeedTplTBar {
 			t.Fatal("auto reinserted tbar")
 		}
+	}
+	seedID, err := uuid.Parse(contenttpl.SeedTplTBar)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := h.WAN.CreateProjectTemplate(ctx, tok, seedID, "T排对接", nil)
+	if err != nil || got.ID != seedID {
+		t.Fatalf("rebuild %+v %v", got, err)
+	}
+	if !bytes.Contains(got.Schema, []byte("gapBands")) {
+		t.Fatalf("seed fields %s", got.Schema)
+	}
+	if _, err := h.WAN.CreateProjectTemplate(ctx, tok, seedID, "T排对接", nil); !errors.Is(err, domain.ErrTemplateInvalid) {
+		t.Fatalf("dup seed %v", err)
 	}
 }

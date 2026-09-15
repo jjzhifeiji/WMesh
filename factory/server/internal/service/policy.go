@@ -54,7 +54,11 @@ func (s *Closure) SetClientPolicy(ctx context.Context, token string, in ClientPo
 		_ = s.audit(ctx, &acc.ID, nil, "set_client_policy", target, audit.Deny)
 		return ClientPolicy{}, err
 	}
-	return got, s.audit(ctx, &acc.ID, nil, "set_client_policy", policyAuditTarget(old, got), audit.Allow)
+	if err := s.audit(ctx, &acc.ID, nil, "set_client_policy", policyAuditTarget(old, got), audit.Allow); err != nil {
+		return ClientPolicy{}, err
+	}
+	s.fanoutPolicy(ctx, got)
+	return got, nil
 }
 
 // 审计对象只记键名与新旧修订，不含钥原文或扩展值。

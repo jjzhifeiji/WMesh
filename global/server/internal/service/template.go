@@ -299,12 +299,38 @@ func (s *Templates) ListProjectTemplates(ctx context.Context, token string) ([]C
 	return rows, nil
 }
 
-// CreateProjectTemplate 新建一份工程模版，字段从空或所给对象表起。
-func (s *Templates) CreateProjectTemplate(ctx context.Context, token, name string, schemaJSON []byte) (ContentTemplate, error) {
+// CreateProjectTemplate 新建一份工程模版；可带空库种子身份补建缺失份。
+func (s *Templates) CreateProjectTemplate(ctx context.Context, token string, id uuid.UUID, name string, schemaJSON []byte) (ContentTemplate, error) {
 	admin, err := s.RequireAdmin(ctx, token)
 	if err != nil {
 		_ = s.audit(ctx, nil, nil, nil, "update_template", KindProject, audit.Deny)
 		return ContentTemplate{}, err
+	}
+	if id != uuid.Nil {
+		seed, ok := contenttpl.SeedProjectItem(id.String())
+		if !ok {
+			_ = s.audit(ctx, &admin.ID, nil, nil, "update_template", KindProject, audit.Deny)
+			return ContentTemplate{}, domain.ErrTemplateInvalid
+		}
+		_, err = s.store.TemplateByID(ctx, id)
+		if err == nil {
+			_ = s.audit(ctx, &admin.ID, nil, nil, "update_template", seed.Name, audit.Deny)
+			return ContentTemplate{}, domain.ErrTemplateInvalid
+		}
+		if !errors.Is(err, domain.ErrNotFound) {
+			_ = s.audit(ctx, &admin.ID, nil, nil, "update_template", seed.Name, audit.Deny)
+			return ContentTemplate{}, err
+		}
+		if strings.TrimSpace(name) == "" {
+			name = seed.Name
+		}
+		if len(bytes.TrimSpace(schemaJSON)) == 0 {
+			schemaJSON, err = contenttpl.Marshal(contenttpl.ObjectSchema(seed.Fields))
+			if err != nil {
+				_ = s.audit(ctx, &admin.ID, nil, nil, "update_template", name, audit.Deny)
+				return ContentTemplate{}, domain.ErrTemplateInvalid
+			}
+		}
 	}
 	name, err = normalizeProjectName(name)
 	if err != nil {
@@ -326,7 +352,7 @@ func (s *Templates) CreateProjectTemplate(ctx context.Context, token, name strin
 		return ContentTemplate{}, domain.ErrTemplateInvalid
 	}
 	row, err := s.store.InsertTemplate(ctx, ContentTemplate{
-		Kind: KindProject, Name: name, Schema: canon, Digest: digest.Sum(canon),
+		ID: id, Kind: KindProject, Name: name, Schema: canon, Digest: digest.Sum(canon),
 	})
 	if err != nil {
 		_ = s.audit(ctx, &admin.ID, nil, nil, "update_template", name, audit.Deny)

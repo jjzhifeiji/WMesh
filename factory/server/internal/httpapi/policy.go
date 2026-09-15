@@ -33,7 +33,7 @@ func (h *Handler) getClientPolicy(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// 超管改本厂一行策略并升高修订；MQTT 推送不在本圈。
+// 超管改本厂一行策略并升高修订；成功后推给已绑定 Client。
 func (h *Handler) putClientPolicy(w http.ResponseWriter, r *http.Request) {
 	h.withFactory(w, r, func(svc *service.Service) {
 		var req clientPolicyPutReq

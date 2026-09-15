@@ -349,6 +349,32 @@ func (s *Store) ClientRecord(ctx context.Context, projectID uuid.UUID, revision 
 	return clientRecordFromRow(row), nil
 }
 
+// ListActiveGrantsForClient 列出该机仍有效的工程接收授权。
+func (s *Store) ListActiveGrantsForClient(ctx context.Context, clientID uuid.UUID) ([]ClientDistributionGrant, error) {
+	var rows []clientGrantRow
+	if err := s.db.WithContext(ctx).Where("client_id = ? AND active = ?", clientID, true).Order("updated_at DESC").Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	out := make([]ClientDistributionGrant, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, clientGrantFromRow(row))
+	}
+	return out, nil
+}
+
+// LatestClientRecord 取该工程对该机最近一次下发记录。
+func (s *Store) LatestClientRecord(ctx context.Context, projectID, clientID uuid.UUID) (ClientDistributionRecord, error) {
+	var row clientRecordRow
+	err := s.db.WithContext(ctx).Where("project_id = ? AND client_id = ?", projectID, clientID).Order("revision DESC").First(&row).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ClientDistributionRecord{}, domain.ErrNotFound
+		}
+		return ClientDistributionRecord{}, err
+	}
+	return clientRecordFromRow(row), nil
+}
+
 // 库行收成平台级副本视图。
 func replicaFromRow(row replicaRow) AssetReplica {
 	out := AssetReplica{

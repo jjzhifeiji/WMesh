@@ -14,9 +14,15 @@ import (
 
 // kernel 是各域共用的本厂库与审计；不对外当业务入口。
 type kernel struct {
-	store     *Store
-	blobs     blob.Store       // 上传正文与软件包；不进库、不进审计
-	installer FactoryInstaller // 厂服务确认后安装；测试可注入失败
+	store      *Store
+	blobs      blob.Store       // 上传正文与软件包；不进库、不进审计
+	installer  FactoryInstaller // 厂服务确认后安装；测试可注入失败
+	clientDown ClientDown       // 厂→Client MQTT；空则只留下发记录
+}
+
+// ClientDown 向指定本机投控制面小信封，不含正文。
+type ClientDown interface {
+	PublishDown(factoryID, clientID uuid.UUID, payload []byte)
 }
 
 // Auth 管登录、激活、会话、停用和密码重置。
@@ -76,6 +82,11 @@ func NewService(st *Store) *Service {
 
 // Store 取出本厂库连接，给验收夹具用。
 func (k *kernel) Store() *Store { return k.store }
+
+// SetClientDown 注入厂→Client 下行；测试可假实现。
+func (s *Service) SetClientDown(p ClientDown) {
+	s.kernel.clientDown = p
+}
 
 // Account 是对外可见的账号视图，不含密码或激活码。
 type Account struct {

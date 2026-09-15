@@ -17,6 +17,8 @@ type Config struct {
 	BootstrapToken  string        // 建厂引导共享密码，只用于 /internal/bootstrap；空则关闭该入口
 	WANURL          string        // WAN HTTP 根地址，厂出站认领；空则不能认领
 	WANMQTT         string        // WAN MQTT 地址，空则按 HTTP 主机拼 :52183
+	ClientMQTTAddr  string        // 本厂 Client MQTT 监听；空则 :1884
+	ClientMQTTURL   string        // 回给平板的 MQTT URL；空则登录不带
 	OSS             OSS           // 厂内对象存储；点云/图片本体落这里，不进 WAN
 	ShutdownTimeout time.Duration // 优雅退出最长等待
 	DockerUpdate    bool          // 超管确认后由帮手 docker load 换本容器
@@ -47,6 +49,8 @@ func Load() (Config, error) {
 		BootstrapToken: os.Getenv("WMESH_BOOTSTRAP_TOKEN"),
 		WANURL:         strings.TrimSpace(os.Getenv("WMESH_WAN_URL")),
 		WANMQTT:        strings.TrimSpace(os.Getenv("WMESH_WAN_MQTT_URL")),
+		ClientMQTTAddr: envOr("WMESH_CLIENT_MQTT_ADDR", ":1884"),
+		ClientMQTTURL:  strings.TrimSpace(os.Getenv("WMESH_CLIENT_MQTT_URL")),
 		OSS: OSS{
 			Endpoint:  strings.TrimRight(strings.TrimSpace(os.Getenv("WMESH_OSS_ENDPOINT")), "/"),
 			Bucket:    strings.TrimSpace(os.Getenv("WMESH_OSS_BUCKET")),

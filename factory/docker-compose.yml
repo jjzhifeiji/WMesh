@@ -14,6 +14,8 @@ services:
       WMESH_DSN: postgres://wmesh:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/postgres?sslmode=disable
       WMESH_WAN_URL: ${WMESH_WAN_URL:-http://host.docker.internal:52080}
       WMESH_WAN_MQTT_URL: ${WMESH_WAN_MQTT_URL:-tcp://host.docker.internal:52183}
+      WMESH_CLIENT_MQTT_ADDR: :1884
+      WMESH_CLIENT_MQTT_URL: ${WMESH_CLIENT_MQTT_URL:-}
       WMESH_BOOTSTRAP_TOKEN: ${WMESH_BOOTSTRAP_TOKEN:-}
       WMESH_OSS_ENDPOINT: http://oss:9000
       WMESH_OSS_BUCKET: ${OSS_BUCKET:-wmesh-factory}
@@ -29,6 +31,7 @@ services:
       - update:/var/lib/wmesh/update
     ports:
       - "${HTTP_PORT:-52081}:8080"
+      - "${CLIENT_MQTT_PORT:-52184}:1884"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:

@@ -3,6 +3,7 @@ package store
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"database/sql"
 	"errors"
 	"strings"
@@ -41,7 +42,9 @@ type Client struct {
 	BoundAt         time.Time  `gorm:"not null" json:"boundAt"`               // 最近一次接受为 bound 的时间
 	VoidedAt        *time.Time `json:"voidedAt"`                              // 作废时间；bound 必须为空
 	OperatorID      *uuid.UUID `gorm:"type:uuid" json:"operatorId,omitempty"` // 当前在本机登录的本厂账号；无人则为空
-	ShortCode       string     `json:"shortCode,omitempty"`                 // Client 短码，随绑定补齐
+	ShortCode       string     `json:"shortCode,omitempty"`                   // Client 短码，随绑定补齐
+	DeviceSerial    string     `json:"deviceSerial,omitempty"`                // 从设备读到的机械臂识别号；未登记为空
+	UnwrapKey       []byte     `json:"-"`                                     // 到站重封解封钥；不进 JSON
 }
 
 func (Client) TableName() string { return "clients" }
@@ -254,6 +257,63 @@ func (s *Store) SetClientOperator(ctx context.Context, clientID, personID uuid.U
 		return res.Error
 	}
 	return nil
+}
+
+// ClearOperatorForPersonExcept 同一人只留这一台设备的登录标记。
+func (s *Store) ClearOperatorForPersonExcept(ctx context.Context, personID, keepClient uuid.UUID) error {
+	return s.db.WithContext(ctx).Model(&Client{}).
+		Where("operator_id = ? AND id <> ?", personID, keepClient).
+		Update("operator_id", nil).Error
+}
+
+// PinDeviceSerial 把机械臂号钉到已绑定 Client；换臂覆盖本机旧号。本厂未作废号不得重复。
+func (s *Store) PinDeviceSerial(ctx context.Context, clientID uuid.UUID, serial string) (Client, error) {
+	serial = strings.TrimSpace(serial)
+	if serial == "" {
+		return Client{}, domain.ErrDeviceSerialRequired
+	}
+	var out Client
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var row Client
+		if err := tx.First(&row, "id = ?", clientID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return domain.ErrNotFound
+			}
+			return err
+		}
+		if row.Status != ClientStatusBound {
+			return domain.ErrBindingVoid
+		}
+		var taken int64
+		if err := tx.Model(&Client{}).
+			Where("status = ? AND device_serial = ? AND id <> ?", ClientStatusBound, serial, clientID).
+			Count(&taken).Error; err != nil {
+			return err
+		}
+		if taken > 0 {
+			return domain.ErrDeviceSerialTaken
+		}
+		patch := map[string]any{"device_serial": serial}
+		if len(row.UnwrapKey) != 32 {
+			key := make([]byte, 32)
+			if _, err := rand.Read(key); err != nil {
+				return err
+			}
+			patch["unwrap_key"] = key
+		}
+		if err := tx.Model(&Client{}).Where("id = ?", clientID).Updates(patch).Error; err != nil {
+			if domain.IsUniqueViolation(err) {
+				return domain.ErrDeviceSerialTaken
+			}
+			return err
+		}
+		if err := tx.First(&row, "id = ?", clientID).Error; err != nil {
+			return err
+		}
+		out = row
+		return nil
+	})
+	return out, err
 }
 
 // ListClients 列出本厂已接受的 Client，按接受时间从新到旧。

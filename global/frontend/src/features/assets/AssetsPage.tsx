@@ -229,7 +229,7 @@ export function AssetsPage({ kind }: { kind: AssetKind }) {
           <Button size="small" type="primary" onClick={() => setEditFor(row)}>
             编辑
           </Button>
-          {isProcess && row.status === "draft" ? (
+          {row.status === "draft" ? (
             <Button
               size="small"
               onClick={() =>
@@ -532,10 +532,9 @@ export function AssetsPage({ kind }: { kind: AssetKind }) {
         row={editing}
         schema={schema}
         processes={processes.data ?? []}
-        availableProcesses={availableProcesses}
         saving={rename.isPending || updateContent.isPending || setAssetDeps.isPending}
         onClose={() => setEditFor(null)}
-        onSave={async (name, content, originalContent, processIds) => {
+        onSave={async (name, content, originalContent) => {
           if (!editing) return;
           try {
             let expected = editing.revision;
@@ -545,7 +544,7 @@ export function AssetsPage({ kind }: { kind: AssetKind }) {
             }
             if (editing.kind === "project") {
               const oldIds = (editing.deps ?? []).map((d) => d.id);
-              const nextIds = uniqueIds([...(processIds ?? []), ...processIdsFromContent(content, schema)]);
+              const nextIds = uniqueIds(processIdsFromContent(content, schema));
               const added = nextIds.filter((id) => !oldIds.includes(id));
               const toDep = (id: string): AssetDep => {
                 const pinned = (editing.deps ?? []).find((d) => d.id === id);
@@ -587,23 +586,6 @@ export function AssetsPage({ kind }: { kind: AssetKind }) {
                 loading={setCopyable.isPending && setCopyable.variables?.id === editing.id}
                 onToggle={(next) => toggleCopyable(editing, next)}
               />
-              {!isProcess && editing.status === "draft" ? (
-                <Button
-                  onClick={() =>
-                    modal.confirm({
-                      title: `发布「${editing.name}」？`,
-                      content: "发布后可被平台级工程依赖，并下到在线工厂。可复制仍可改。",
-                      onOk: () =>
-                        publish.mutate(
-                          { id: editing.id, expected: editing.revision },
-                          { onSuccess: () => message.success("已发布"), onError: onErr },
-                        ),
-                    })
-                  }
-                >
-                  发布
-                </Button>
-              ) : null}
             </Space>
           ) : null
         }
@@ -718,7 +700,6 @@ function EditModal({
   row,
   schema,
   processes,
-  availableProcesses,
   saving,
   extra,
   onClose,
@@ -727,18 +708,17 @@ function EditModal({
   row: Asset | null;
   schema: ContentSchema | null;
   processes: Asset[];
-  availableProcesses: Asset[];
   saving: boolean;
   extra: ReactNode;
   onClose: () => void;
-  onSave: (name: string, content: string, originalContent: string, processIds?: string[]) => Promise<void>;
+  onSave: (name: string, content: string, originalContent: string) => Promise<void>;
 }) {
   const q = useAssetContent(row?.id ?? null);
-  const [form] = Form.useForm<{ name: string; content: string; processIds?: string[] }>();
+  const [form] = Form.useForm<{ name: string; content: string }>();
   const locked = row?.status === "disabled";
   useEffect(() => {
     if (!row) return;
-    form.setFieldsValue({ name: row.name, processIds: (row.deps ?? []).map((d) => d.id) });
+    form.setFieldsValue({ name: row.name });
     if (!q.isFetching) form.setFieldsValue({ content: q.data?.content ?? "" });
   }, [row, q.data, q.isFetching, form]);
   return (
@@ -755,13 +735,13 @@ function EditModal({
     >
       {q.isError ? <Typography.Text type="danger">{errorMessage(q.error)}</Typography.Text> : null}
       {extra ? <div style={{ marginBottom: 8 }}>{extra}</div> : null}
-      <Form<{ name: string; content: string; processIds?: string[] }>
+      <Form<{ name: string; content: string }>
         form={form}
         layout="vertical"
         size="small"
         requiredMark={false}
         onFinish={(values) =>
-          onSave(values.name, values.content, q.data?.content ?? "", values.processIds).catch(() => undefined)
+          onSave(values.name, values.content, q.data?.content ?? "").catch(() => undefined)
         }
       >
         {row?.kind === "process" ? (
@@ -772,11 +752,6 @@ function EditModal({
         <Form.Item name="name" label="显示名" extra="显示名不是身份。" rules={[{ required: true, message: "请输入显示名" }]}>
           <Input autoComplete="off" disabled={locked} />
         </Form.Item>
-        {row?.kind === "project" ? (
-          <Form.Item name="processIds" label="依赖工艺" extra="焊道里按名称选工艺即可；这里可多带组包要用、焊道未引用的。">
-            <Select mode="multiple" optionFilterProp="label" disabled={locked} options={availableProcesses.map((p) => ({ value: p.id, label: `${p.name} · r${p.revision}` }))} />
-          </Form.Item>
-        ) : null}
         <Form.Item name="content" label="参数">
           <ContentEditor
             schema={schema}

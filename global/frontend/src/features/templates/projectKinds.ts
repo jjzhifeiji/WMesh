@@ -30,10 +30,16 @@ export const CATALOG_KINDS: { key: ProjectItemKind; label: string; root: boolean
   { key: ITEM_EXTRA, label: "附加工艺", root: false },
 ];
 
+export const SEED_TPL_SINGLE = "11111111-1111-4111-8111-111111111111";
+export const SEED_TPL_MULTI = "22222222-2222-4222-8222-222222222222";
+export const SEED_TPL_CORNER = "33333333-3333-4333-8333-333333333333";
+export const SEED_TPL_TBAR = "44444444-4444-4444-8444-444444444444";
+
 export const DEFAULT_TEMPLATES: ProjectItemTemplate[] = [
-  { id: "11111111-1111-4111-8111-111111111111", name: "单层焊道", kind: ITEM_SINGLE, extra: true },
-  { id: "22222222-2222-4222-8222-222222222222", name: "多层焊缝", kind: ITEM_MULTI, extra: false },
-  { id: "33333333-3333-4333-8333-333333333333", name: "包角", kind: ITEM_CORNER, extra: true },
+  { id: SEED_TPL_SINGLE, name: "单层焊道", kind: ITEM_SINGLE, extra: true },
+  { id: SEED_TPL_MULTI, name: "多层焊缝", kind: ITEM_MULTI, extra: false },
+  { id: SEED_TPL_CORNER, name: "包角", kind: ITEM_CORNER, extra: true },
+  { id: SEED_TPL_TBAR, name: "T排对接", kind: ITEM_TBAR, extra: false },
 ];
 
 export function isProjectItemKind(v: string): v is ProjectItemKind {

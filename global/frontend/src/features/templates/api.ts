@@ -35,7 +35,7 @@ export function useProjectTemplates() {
 export function useCreateProjectTemplate() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (input: { name: string; schema: ContentSchema }) => http.post<ContentTemplate>("/v1/project-templates", input),
+    mutationFn: (input: { id?: string; name: string; schema: ContentSchema }) => http.post<ContentTemplate>("/v1/project-templates", input),
     onSuccess: async () => {
       await qc.invalidateQueries({ queryKey: templateKeys.all });
     },
