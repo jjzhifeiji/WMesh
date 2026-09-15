@@ -37,13 +37,13 @@
         </activity>
 
         <activity
-            android:name=".ui.multilayer.MultiLayerActivity"
+            android:name=".ui.welding.multilayer.MultiLayerActivity"
             android:exported="false"
             android:theme="@style/Theme.ShiJiaoQi"
             android:screenOrientation="landscape" />
 
         <activity
-            android:name=".ui.tbar.TBarActivity"
+            android:name=".ui.welding.tbar.TBarActivity"
             android:exported="false"
             android:theme="@style/Theme.ShiJiaoQi"
             android:screenOrientation="landscape" />
