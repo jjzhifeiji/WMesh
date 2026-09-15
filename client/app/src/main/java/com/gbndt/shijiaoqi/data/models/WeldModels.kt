@@ -3,7 +3,7 @@ package com.gbndt.shijiaoqi.data.models
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.snapshots.SnapshotStateList
 import kotlinx.serialization.Serializable
-import java.io.File
+import kotlinx.serialization.Transient
 
 @Serializable
 enum class WeldPointType {
@@ -129,14 +129,25 @@ data class CornerGroupParams(
     val torchRx: Double? = null,
     val torchRy: Double? = null,
     val torchRz: Double? = null,
+    val processId: String = "",
     val processPath: String = ""
 )
 
 data class WeldPathProcessSlot(
     val id: String,
     var process: WeldProcess,
+    var processId: String = "",
     var processPath: String = "",
     var isEnabled: Boolean = true
+)
+
+@Serializable
+data class GapBand(
+    val minGap: Double = 0.0,
+    val maxGap: Double = 0.0,
+    val layer: Int = 1,
+    val rootProcessId: String = "",
+    val capProcessId: String = "",
 )
 
 data class WeldPath(
@@ -144,42 +155,48 @@ data class WeldPath(
     var name: String,
     val points: SnapshotStateList<WeldPoint>,
     var process: WeldProcess,
-    var processPath: String = "", // Relative path to process file
+    var processId: String = "",
+    var processPath: String = "",
     var selectedPointIndex: Int = 0,
     var isEnabled: Boolean = true,
     var cornerGroupParams: CornerGroupParams? = null,
-    val extraProcesses: SnapshotStateList<WeldPathProcessSlot> = mutableStateListOf()
+    val extraProcesses: SnapshotStateList<WeldPathProcessSlot> = mutableStateListOf(),
+    var gapBands: List<GapBand> = emptyList(),
 )
 
 @Serializable
 data class WeldPathProcessSlotSurrogate(
     val id: String,
-    val processPath: String,
+    val processId: String = "",
+    val processPath: String = "",
     val isEnabled: Boolean = true
 )
 
 @Serializable
 data class WeldPathSurrogate(
-    val id: String,
-    val name: String,
-    val points: List<WeldPoint>,
-    val processPath: String,
-    val selectedPointIndex: Int,
+    val id: String = "",
+    val name: String = "",
+    val points: List<WeldPoint> = emptyList(),
+    val processId: String = "",
+    val processPath: String = "",
+    val selectedPointIndex: Int = 0,
     val isEnabled: Boolean = true,
     val cornerGroupParams: CornerGroupParams? = null,
-    val extraProcesses: List<WeldPathProcessSlotSurrogate> = emptyList()
+    val extraProcesses: List<WeldPathProcessSlotSurrogate> = emptyList(),
+    val gapBands: List<GapBand> = emptyList(),
 )
 
 @Serializable
 data class WeldPassOffset(
-    val id: String,
-    var name: String,
+    val id: String = "",
+    var name: String = "",
     var valX: Double = 0.0,
     var valYLeft: Double = 0.0,
     var valYRight: Double = 0.0,
     var valZ: Double = 0.0,
     var valR: Double = 0.0,
-    var process: WeldProcess,
+    var processId: String = "",
+    @Transient var process: WeldProcess = WeldProcess(),
     var processPath: String = "",
     var isEnabled: Boolean = true,
     var isCompleted: Boolean = false
@@ -207,10 +224,10 @@ data class MultiLayerWeldPath(
 
 @Serializable
 data class MultiLayerWeldPathSurrogate(
-    val id: String,
-    val name: String,
-    val basePath: WeldPathSurrogate,
-    val passes: List<WeldPassOffset>,
+    val id: String = "",
+    val name: String = "",
+    val basePath: WeldPathSurrogate = WeldPathSurrogate(),
+    val passes: List<WeldPassOffset> = emptyList(),
     val refPointX1: RefPoint? = null,
     val refPointZ1: RefPoint? = null,
     val refPointXMiddle: RefPoint? = null,
@@ -227,15 +244,19 @@ fun MultiLayerWeldPath.toSurrogate() = MultiLayerWeldPathSurrogate(
 fun MultiLayerWeldPathSurrogate.toMultiLayerWeldPath(): MultiLayerWeldPath {
     val passList = mutableStateListOf<WeldPassOffset>()
     passList.addAll(passes)
-    // Reload process for each pass if needed, similar to WeldPath
-    passes.forEachIndexed { index, pass ->
-        if (pass.processPath.isNotEmpty()) {
-            val processName = File(pass.processPath).nameWithoutExtension
-            passList[index] = pass.copy(process = pass.process.copy(name = processName))
-        }
-    }
-    
-    return MultiLayerWeldPath(id, name, basePath.toWeldPath(), passList, refPointX1, refPointZ1, refPointXMiddle, refPointZMiddle, refPointXEnd, refPointZEnd, isBaseCompleted)
+    return MultiLayerWeldPath(
+        id = id.ifBlank { java.util.UUID.randomUUID().toString() },
+        name = name,
+        basePath = basePath.toWeldPath(),
+        passes = passList,
+        refPointX1 = refPointX1,
+        refPointZ1 = refPointZ1,
+        refPointXMiddle = refPointXMiddle,
+        refPointZMiddle = refPointZMiddle,
+        refPointXEnd = refPointXEnd,
+        refPointZEnd = refPointZEnd,
+        isBaseCompleted = isBaseCompleted,
+    )
 }
 
 @Serializable
@@ -267,43 +288,52 @@ data class AppSettings(
 )
 
 fun WeldPath.toSurrogate() = WeldPathSurrogate(
-    id,
-    name,
-    points,
-    processPath,
-    selectedPointIndex,
-    isEnabled,
-    cornerGroupParams,
-    extraProcesses.map { WeldPathProcessSlotSurrogate(it.id, it.processPath, it.isEnabled) }
+    id = id.ifBlank { java.util.UUID.randomUUID().toString() },
+    name = name,
+    points = points,
+    processId = processId,
+    selectedPointIndex = selectedPointIndex,
+    isEnabled = isEnabled,
+    cornerGroupParams = cornerGroupParams,
+    extraProcesses = extraProcesses.map {
+        WeldPathProcessSlotSurrogate(id = it.id, processId = it.processId, isEnabled = it.isEnabled)
+    },
+    gapBands = gapBands,
 )
 
 fun WeldPathSurrogate.toWeldPath(): WeldPath {
     val stateList = mutableStateListOf<WeldPoint>()
     stateList.addAll(points)
-    // Create a dummy/default process with the saved name.
-    // The actual data must be loaded from the file system by the ViewModel/Manager.
-    val process = WeldProcess(name = File(processPath).nameWithoutExtension)
-    
-    // Validate selectedPointIndex to prevent crashes
+    val process = WeldProcess()
     var validIndex = selectedPointIndex
     if (validIndex < 0 || (stateList.isNotEmpty() && validIndex >= stateList.size)) {
         validIndex = 0
     }
     if (stateList.isEmpty()) {
-        validIndex = -1 // Or 0, depending on how empty lists are handled. 0 is safer usually.
+        validIndex = -1
     }
-
     val extras = mutableStateListOf<WeldPathProcessSlot>()
     extraProcesses.forEach { slot ->
         extras.add(
             WeldPathProcessSlot(
-                id = slot.id,
-                process = WeldProcess(name = File(slot.processPath).nameWithoutExtension),
-                processPath = slot.processPath,
+                id = slot.id.ifBlank { java.util.UUID.randomUUID().toString() },
+                process = WeldProcess(),
+                processId = slot.processId,
                 isEnabled = slot.isEnabled
             )
         )
     }
-    
-    return WeldPath(id, name, stateList, process, processPath, validIndex, isEnabled, cornerGroupParams, extras)
+    val group = cornerGroupParams?.copy(processPath = "")
+    return WeldPath(
+        id = id.ifBlank { java.util.UUID.randomUUID().toString() },
+        name = name,
+        points = stateList,
+        process = process,
+        processId = processId.ifBlank { group?.processId.orEmpty() },
+        selectedPointIndex = validIndex,
+        isEnabled = isEnabled,
+        cornerGroupParams = group,
+        extraProcesses = extras,
+        gapBands = gapBands,
+    )
 }

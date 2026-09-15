@@ -10,6 +10,8 @@ data class ClientLoginResult(
     val policy: PolicyMeta,
     val mqttUrl: String = "",
     val signingPublicKey: ByteArray = ByteArray(0),
+    val clientShortCode: String = "",
+    val roles: List<String> = emptyList(),
 )
 
 data class ClosureRef(

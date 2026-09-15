@@ -24,6 +24,7 @@ data class TransitMember(
     val status: String = "",
     val digest: ByteArray = ByteArray(0),
     val deps: List<AssetDep> = emptyList(),
+    val code: String = "",
 )
 
 data class TransitClosure(
@@ -54,6 +55,13 @@ class Pouch {
     private var cacheScope = SCOPE_ALL
     private var activeId: UUID? = null
     private var activeRev = 0L
+    private var origin: String? = null
+    private val nextN = mutableMapOf(KIND_PROCESS to 1L, KIND_PROJECT to 1L)
+    private val codes = LinkedHashMap<UUID, String>()
+    private val byCode = LinkedHashMap<String, UUID>()
+    private val facts = ArrayList<PendingFact>()
+    private val uploads = ArrayList<HeldUpload>()
+    private var roles: Set<String> = emptySet()
 
     fun login(unwrapKey: ByteArray, personId: UUID, persistUnwrapKey: Boolean) {
         require(unwrapKey.size == Wm2.KEY_SIZE)
@@ -83,6 +91,7 @@ class Pouch {
             material = null
             persistPerson = null
         }
+        roles = emptySet()
     }
 
     fun hasUnwrapKey(): Boolean = unwrap?.size == Wm2.KEY_SIZE
@@ -113,9 +122,21 @@ class Pouch {
 
     fun exportClosures(): List<CachedClosure> = closures.values.map { it.copy(members = it.members.toList()) }
 
+    /** 当前激活闭包里的工艺成员，列表不解开正文。 */
+    fun listProcessMembers(): List<CachedMember> {
+        val aid = activeId ?: return emptyList()
+        val cl = closures[aid] ?: return emptyList()
+        return cl.members.filter { it.kind == KIND_PROCESS }
+    }
+
     fun restoreClosures(list: List<CachedClosure>) {
         closures.clear()
         list.forEach { closures[it.assetId] = it }
+        list.forEach { c ->
+            c.members.forEach { m ->
+                if (m.code.isNotBlank()) bindCode(m.id, m.code)
+            }
+        }
     }
 
     fun restoreActive(id: UUID?, revision: Long) {
@@ -189,6 +210,7 @@ class Pouch {
                         digest = dig,
                         deps = m.deps,
                         ownerId = m.ownerId,
+                        code = m.code,
                     ),
                 )
             }
@@ -221,6 +243,7 @@ class Pouch {
         val held = closures[snap.assetId]
         if (held != null && held.revision >= snap.revision) return
         if (held == null && projectCount() >= maxCached) throw PouchRejected(ERR_CACHE_FULL)
+        bindMemberCodes(snap.members)
         val old = held?.members.orEmpty()
         for (m in snap.members) {
             putPlain(m.id, m.level, m.name, m.revision, m.ownerId, m.content)
@@ -282,6 +305,105 @@ class Pouch {
         list.forEach { items[it.id] = it.copy(blob = it.blob.copyOf()) }
     }
 
+    fun setOrigin(code: String) {
+        val t = code.trim()
+        if (!AssetCode.validClientOrigin(t)) throw PouchRejected(ERR_CODE_MISSING)
+        origin = t
+    }
+
+    fun origin(): String? = origin
+
+    fun setRoles(values: Collection<String>) {
+        roles = values.toSet()
+    }
+
+    fun seedSeq(kind: String, next: Long) {
+        if (kind != KIND_PROCESS && kind != KIND_PROJECT) throw PouchRejected(ERR_CODE_CONFLICT)
+        nextN[kind] = next
+    }
+
+    fun issuePersonal(kind: String, name: String, content: ByteArray): IssuedAsset {
+        if (!loggedIn()) throw PouchRejected(ERR_UNAUTHORIZED)
+        val short = origin ?: throw PouchRejected(ERR_CODE_MISSING)
+        val n = nextN[kind] ?: 1L
+        val code = AssetCode.format(kind, short, n)
+        val id = UUID.randomUUID()
+        bindCode(id, code)
+        nextN[kind] = n + 1
+        putPlain(id, LEVEL_PERSONAL, name, 1, person, content)
+        return IssuedAsset(id, kind, code, LEVEL_PERSONAL)
+    }
+
+    fun bindCode(id: UUID, code: String) {
+        if (!AssetCode.valid(code)) throw PouchRejected(ERR_CODE_CONFLICT)
+        val have = codes[id]
+        if (have != null) {
+            if (have != code) throw PouchRejected(ERR_CODE_CONFLICT)
+            return
+        }
+        val owner = byCode[code]
+        if (owner != null && owner != id) throw PouchRejected(ERR_CODE_CONFLICT)
+        codes[id] = code
+        byCode[code] = id
+    }
+
+    fun codeOf(id: UUID): String? = codes[id]
+
+    fun enqueueFact(): PendingFact {
+        if (!loggedIn()) throw PouchRejected(ERR_UNAUTHORIZED)
+        if (!canEnqueue()) throw PouchRejected(ERR_FORBIDDEN)
+        val item = PendingFact(UUID.randomUUID(), person!!)
+        facts.add(item)
+        return item
+    }
+
+    fun enqueueUpload(kind: String, content: ByteArray): PendingUploadRecord {
+        if (!loggedIn()) throw PouchRejected(ERR_UNAUTHORIZED)
+        if (kind != KIND_POINT_CLOUD && kind != KIND_IMAGE) throw PouchRejected(ERR_FORBIDDEN)
+        if (!canEnqueue()) throw PouchRejected(ERR_FORBIDDEN)
+        val cid = clientId ?: throw PouchRejected(ERR_FORBIDDEN)
+        val body = content.copyOf()
+        val rec = PendingUploadRecord(UUID.randomUUID(), kind, Digest.sum(body), person!!, cid)
+        uploads.add(HeldUpload(rec, body))
+        return rec
+    }
+
+    fun pendingFacts(): List<PendingFact> = facts.toList()
+
+    fun pendingUploads(): List<PendingUploadRecord> = uploads.map { it.rec }
+
+    fun openPendingUpload(id: UUID): ByteArray {
+        if (!loggedIn()) throw PouchRejected(ERR_UNAUTHORIZED)
+        val held = uploads.firstOrNull { it.rec.id == id } ?: throw PouchRejected(ERR_NOT_FOUND)
+        return held.content.copyOf()
+    }
+
+    fun exportLedger(): String = LedgerCodec.encode(
+        origin = origin.orEmpty(),
+        nextProcess = nextN[KIND_PROCESS] ?: 1L,
+        nextProject = nextN[KIND_PROJECT] ?: 1L,
+        codes = codes,
+        facts = facts,
+        uploads = uploads,
+    )
+
+    fun restoreLedger(raw: String) {
+        val state = LedgerCodec.decode(raw)
+        origin = state.origin.ifBlank { null }
+        nextN[KIND_PROCESS] = state.nextProcess
+        nextN[KIND_PROJECT] = state.nextProject
+        codes.clear()
+        byCode.clear()
+        state.codes.forEach { (id, code) ->
+            codes[id] = code
+            byCode[code] = id
+        }
+        facts.clear()
+        facts.addAll(state.facts)
+        uploads.clear()
+        uploads.addAll(state.uploads)
+    }
+
     fun currentPerson(): UUID? = person
 
     fun relockFromMaterial() {
@@ -292,6 +414,27 @@ class Pouch {
     }
 
     private fun loggedIn(): Boolean = hasUnwrapKey() && person != null
+
+    private fun canEnqueue(): Boolean =
+        ROLE_OPERATOR in roles || ROLE_PROCESS_ENGINEER in roles
+
+    private fun bindMemberCodes(members: List<ClosureMemberPlain>) {
+        val seen = HashMap<String, UUID>()
+        for (m in members) {
+            if (m.code.isBlank()) continue
+            if (!AssetCode.valid(m.code)) throw PouchRejected(ERR_CODE_CONFLICT)
+            val have = codes[m.id]
+            if (have != null && have != m.code) throw PouchRejected(ERR_CODE_CONFLICT)
+            val owner = byCode[m.code]
+            if (owner != null && owner != m.id) throw PouchRejected(ERR_CODE_CONFLICT)
+            val dup = seen[m.code]
+            if (dup != null && dup != m.id) throw PouchRejected(ERR_CODE_CONFLICT)
+            seen[m.code] = m.id
+        }
+        for (m in members) {
+            if (m.code.isNotBlank()) bindCode(m.id, m.code)
+        }
+    }
 
     private fun projectCount(): Int = closures.values.count { it.kind == KIND_PROJECT }
 
@@ -328,7 +471,7 @@ class Pouch {
             }
             ClosureMemberPlain(
                 id = m.id, kind = m.kind, level = m.level, name = m.name, status = m.status,
-                revision = m.revision, content = plain, digest = m.digest, deps = m.deps, ownerId = m.ownerId,
+                revision = m.revision, content = plain, digest = m.digest, deps = m.deps, ownerId = m.ownerId, code = m.code,
             )
         }
         return ClosureSnapshotPlain(
@@ -349,7 +492,7 @@ class Pouch {
         members = snap.members.map {
             CachedMember(
                 id = it.id, kind = it.kind, level = it.level, name = it.name, status = it.status,
-                revision = it.revision, digest = it.digest.copyOf(), deps = it.deps, ownerId = it.ownerId,
+                revision = it.revision, digest = it.digest.copyOf(), deps = it.deps, ownerId = it.ownerId, code = it.code,
             )
         },
     )
@@ -399,6 +542,13 @@ class Pouch {
         const val ERR_MISMATCH = "closure revision mismatch"
         const val ERR_INTEGRITY = "asset integrity check failed"
         const val ERR_NOT_AVAILABLE = "asset is not available"
+        const val ERR_CODE_MISSING = AssetCode.ERR_MISSING
+        const val ERR_CODE_CONFLICT = AssetCode.ERR_CONFLICT
+        const val ERR_CODE_EXHAUSTED = AssetCode.ERR_EXHAUSTED
+        const val KIND_POINT_CLOUD = "point_cloud"
+        const val KIND_IMAGE = "image"
+        const val ROLE_OPERATOR = "operator"
+        const val ROLE_PROCESS_ENGINEER = "process_engineer"
 
         fun uuidBytes(id: UUID): ByteArray {
             val buf = ByteArray(16)

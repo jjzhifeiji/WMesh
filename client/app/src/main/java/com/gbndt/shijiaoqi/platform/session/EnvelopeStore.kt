@@ -35,6 +35,8 @@ interface EnvelopeStore {
     fun loadClosures(): List<CachedClosure>
     fun saveActive(id: UUID?, revision: Long)
     fun loadActive(): Pair<UUID?, Long>
+    fun saveLedger(raw: String)
+    fun loadLedger(): String
 }
 
 class MemoryEnvelopeStore : EnvelopeStore {
@@ -44,6 +46,7 @@ class MemoryEnvelopeStore : EnvelopeStore {
     private var policy: PolicyMeta? = null
     private var closures = ""
     private var active = ""
+    private var ledger = ""
 
     override fun open(passphrase: ByteArray) {
         require(passphrase.size == 32)
@@ -108,6 +111,16 @@ class MemoryEnvelopeStore : EnvelopeStore {
         check(open)
         return parseActive(active)
     }
+
+    override fun saveLedger(raw: String) {
+        check(open)
+        ledger = raw
+    }
+
+    override fun loadLedger(): String {
+        check(open)
+        return ledger
+    }
 }
 
 fun persistPouch(store: EnvelopeStore, pouch: Pouch) {
@@ -118,6 +131,7 @@ fun persistPouch(store: EnvelopeStore, pouch: Pouch) {
     kept.values.forEach { store.upsert(it) }
     store.saveClosures(pouch.exportClosures())
     store.saveActive(pouch.activeProject(), pouch.activeRevision())
+    store.saveLedger(pouch.exportLedger())
 }
 
 internal fun parseActive(raw: String): Pair<UUID?, Long> {
@@ -131,10 +145,12 @@ interface IdentityStore {
     var factoryUrl: String
     var factoryId: String
     var clientId: String
+    var clientShortCode: String
 }
 
 class MemoryIdentityStore : IdentityStore {
     override var factoryUrl: String = ""
     override var factoryId: String = ""
     override var clientId: String = ""
+    override var clientShortCode: String = ""
 }

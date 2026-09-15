@@ -25,6 +25,7 @@ data class ClosureMemberPlain(
     val digest: ByteArray,
     val deps: List<AssetDep> = emptyList(),
     val ownerId: UUID? = null,
+    val code: String = "",
 )
 
 data class ClosureSnapshotPlain(
@@ -48,6 +49,7 @@ data class CachedMember(
     val digest: ByteArray,
     val deps: List<AssetDep> = emptyList(),
     val ownerId: UUID? = null,
+    val code: String = "",
 )
 
 data class CachedClosure(
@@ -87,6 +89,7 @@ internal object ClosureCodec {
         val digest: String = "",
         val deps: List<DepDto> = emptyList(),
         val ownerId: String? = null,
+        val code: String = "",
     )
 
     @Serializable
@@ -122,6 +125,7 @@ internal object ClosureCodec {
                 digest = b64(it.digest),
                 deps = it.deps.map { d -> DepDto(d.id.toString(), d.revision, b64(d.digest)) },
                 ownerId = it.ownerId?.toString(),
+                code = it.code,
             )
         },
     )
@@ -146,6 +150,7 @@ internal object ClosureCodec {
                 digest = unb64(it.digest),
                 deps = it.deps.map { d -> AssetDep(UUID.fromString(d.id), d.revision, unb64(d.digest)) },
                 ownerId = it.ownerId?.let(UUID::fromString),
+                code = it.code,
             )
         },
     )

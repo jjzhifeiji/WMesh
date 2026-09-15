@@ -56,6 +56,7 @@ fun MultiLayerScreen(
     var showDeleteDialog by remember { mutableStateOf(false) }
     var show3DViewer by remember { mutableStateOf(false) }
     var weldPathToDeleteIndex by remember { mutableStateOf(-1) }
+    var showProcessPicker by remember { mutableStateOf(false) }
 
     if (show3DViewer) {
         Path3DViewerDialog(
@@ -116,29 +117,14 @@ fun MultiLayerScreen(
                             onProcessBase = {
                                 viewModel.selectedMultiLayerPathIndex = index
                                 viewModel.selectedPassIndex = -1
-                                
-                                // Navigate to Process Path
-                                if (multiPath.basePath.processPath.isNotEmpty()) {
-                                    val parentPath = java.io.File(multiPath.basePath.processPath).parent?.replace("\\", "/") ?: ""
-                                    viewModel.processCurrentPath = parentPath
-                                    viewModel.refreshProcessExplorer()
-                                }
-                                
-                                onNavigateToProcessManagement(true)
+                                viewModel.refreshPouchLists()
+                                showProcessPicker = true
                             },
                             onProcessPass = { passIndex ->
                                 viewModel.selectedMultiLayerPathIndex = index
                                 viewModel.selectedPassIndex = passIndex
-                                
-                                // Navigate to Process Path
-                                val pass = multiPath.passes[passIndex]
-                                if (pass.processPath.isNotEmpty()) {
-                                    val parentPath = java.io.File(pass.processPath).parent?.replace("\\", "/") ?: ""
-                                    viewModel.processCurrentPath = parentPath
-                                    viewModel.refreshProcessExplorer()
-                                }
-                                
-                                onNavigateToProcessManagement(true)
+                                viewModel.refreshPouchLists()
+                                showProcessPicker = true
                             },
                             onRename = {
                                 viewModel.selectedMultiLayerPathIndex = index
@@ -449,11 +435,21 @@ fun MultiLayerScreen(
         )
     }
 
+    ClosureProcessPicker(
+        visible = showProcessPicker,
+        processes = viewModel.pouchProcesses,
+        onPick = { id ->
+            viewModel.bindProcessFromPouch(id)
+            showProcessPicker = false
+        },
+        onDismiss = { showProcessPicker = false },
+    )
+
     // Missing Process Dialog
     if (viewModel.isMissingProcessDialogVisible) {
         AlertDialog(
             onDismissRequest = { viewModel.isMissingProcessDialogVisible = false },
-            title = { Text("工艺文件缺失") },
+            title = { Text("闭包里没有这条工艺") },
             text = { Text(viewModel.missingProcessMessage) },
             confirmButton = {
                 Button(

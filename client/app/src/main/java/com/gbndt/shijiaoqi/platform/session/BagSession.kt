@@ -50,12 +50,16 @@ class BagSession(
             pouch.login(sess.unwrapKey, sess.person.id, sess.policy.persistUnwrapKey)
             store.open(sess.unwrapKey)
             pouch.restoreEnvelopes(store.loadEnvelopes())
+            pouch.restoreLedger(store.loadLedger())
             pouch.restoreClosures(store.loadClosures())
             pouch.bindClient(UUID.fromString(identity.clientId))
             pouch.setOnline(true)
             val saved = store.loadActive()
             pouch.restoreActive(saved.first, saved.second)
             pouch.setPolicy(sess.policy.maxCachedProjects, sess.policy.cacheScope)
+            if (sess.clientShortCode.isNotBlank()) identity.clientShortCode = sess.clientShortCode.trim()
+            if (identity.clientShortCode.isNotBlank()) pouch.setOrigin(identity.clientShortCode)
+            pouch.setRoles(sess.roles)
             persistPouch(store, pouch)
             store.savePerson(sess.person)
             store.savePolicy(sess.policy)
@@ -110,6 +114,20 @@ class BagSession(
     }
 
     fun open(id: UUID): ByteArray = pouch.open(id)
+
+    fun issuePersonal(kind: String, name: String, content: ByteArray) =
+        pouch.issuePersonal(kind, name, content).also { persistPouch(store, pouch) }
+
+    fun enqueueFact() = pouch.enqueueFact().also { persistPouch(store, pouch) }
+
+    fun enqueueUpload(kind: String, content: ByteArray) =
+        pouch.enqueueUpload(kind, content).also { persistPouch(store, pouch) }
+
+    fun pendingFacts() = pouch.pendingFacts()
+
+    fun pendingUploads() = pouch.pendingUploads()
+
+    fun openPendingUpload(id: UUID): ByteArray = pouch.openPendingUpload(id)
 
     fun logout() {
         logoutMemory()

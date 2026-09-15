@@ -39,7 +39,6 @@ import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.launch
 import com.gbndt.shijiaoqi.ui.components.CustomStatusBar
 import com.gbndt.shijiaoqi.ui.components.ProcessManagementScreen
-import com.gbndt.shijiaoqi.ui.components.ProjectManagementScreen
 import com.gbndt.shijiaoqi.ui.components.ToolEditDialog
 import com.gbndt.shijiaoqi.ui.components.ToolListDialog
 import com.gbndt.shijiaoqi.ui.components.PositionSelectionDialog
@@ -366,6 +365,10 @@ class MultiLayerActivity : ComponentActivity() {
                             Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
                         }
                     }
+                    val bag = (application as ShiJiaoQiApp).bag
+                    LaunchedEffect(bag.loggedIn) {
+                        if (bag.loggedIn) viewModel.syncFromPouch()
+                    }
 
                     var currentScreen by remember { mutableStateOf<AppScreen>(AppScreen.WeldPath) }
 
@@ -415,8 +418,13 @@ class MultiLayerActivity : ComponentActivity() {
                                             )
                                         }
                                         is AppScreen.ProjectManagement -> {
-                                            ProjectManagementScreen(
-                                                viewModel = viewModel,
+                                            PouchProjectScreen(
+                                                projects = viewModel.pouchProjects,
+                                                onRefresh = { viewModel.refreshPouchLists() },
+                                                onOpen = {
+                                                    viewModel.activatePouchProject(it)
+                                                    currentScreen = AppScreen.WeldPath
+                                                },
                                                 onBack = { currentScreen = AppScreen.WeldPath }
                                             )
                                         }

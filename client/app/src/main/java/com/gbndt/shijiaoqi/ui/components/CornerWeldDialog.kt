@@ -18,9 +18,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
-import com.gbndt.shijiaoqi.data.models.WeldProcess
 import com.gbndt.shijiaoqi.ui.viewmodel.WeldPathViewModel
-import java.io.File
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -51,18 +49,9 @@ fun CornerWeldDialog(
             weldPaths.firstOrNull { it.cornerGroupParams?.groupId == gid }
         }
     }
-    val initProcessPath = existingPath?.processPath?.takeIf { it.isNotEmpty() }
-        ?: initialParams?.processPath.orEmpty()
-    var selectedProcessPath by remember(initialParams) { mutableStateOf(initProcessPath) }
-    var selectedProcess by remember(initialParams) {
-        mutableStateOf<WeldProcess?>(
-            if (initProcessPath.isNotEmpty()) {
-                viewModel.loadProcess(initProcessPath) ?: existingPath?.process
-            } else {
-                existingPath?.process
-            }
-        )
-    }
+    val initProcessId = existingPath?.processId?.takeIf { it.isNotEmpty() }
+        ?: initialParams?.processId.orEmpty()
+    var selectedProcessId by remember(initialParams) { mutableStateOf(initProcessId) }
 
     var errorMessage by remember { mutableStateOf("") }
     var showProcessPicker by remember { mutableStateOf(false) }
@@ -71,19 +60,15 @@ fun CornerWeldDialog(
     var passwordError by remember { mutableStateOf("") }
 
     val processLabel = when {
-        selectedProcess != null -> selectedProcess!!.name
-        selectedProcessPath.isNotEmpty() -> File(selectedProcessPath).nameWithoutExtension
+        selectedProcessId.isNotEmpty() ->
+            viewModel.pouchProcesses.firstOrNull { it.id.toString() == selectedProcessId }?.name
+                ?: existingPath?.process?.name?.takeIf { it.isNotBlank() }
+                ?: selectedProcessId
         else -> "未选择（将使用参考焊道 A 的工艺）"
     }
 
     Dialog(
-        onDismissRequest = {
-            if (showProcessPicker) {
-                showProcessPicker = false
-            } else {
-                onDismiss()
-            }
-        },
+        onDismissRequest = onDismiss,
         properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)
     ) {
         Surface(
@@ -91,37 +76,6 @@ fun CornerWeldDialog(
             color = MaterialTheme.colorScheme.surface,
             modifier = Modifier.width(800.dp)
         ) {
-            if (showProcessPicker) {
-                Column(modifier = Modifier.height(520.dp)) {
-                    FileExplorer(
-                        currentPath = viewModel.processCurrentPath,
-                        items = viewModel.processItems,
-                        onNavigate = { item -> viewModel.navigateProcess(item) },
-                        onBack = {
-                            if (viewModel.processCurrentPath.isEmpty()) {
-                                showProcessPicker = false
-                            } else {
-                                viewModel.navigateProcessBack()
-                            }
-                        },
-                        onSelectItem = { item ->
-                            if (item.isProcess) {
-                                val process = viewModel.loadProcess(item.path)
-                                if (process != null) {
-                                    selectedProcess = process
-                                    selectedProcessPath = item.path
-                                    showProcessPicker = false
-                                    errorMessage = ""
-                                } else {
-                                    errorMessage = "无法加载工艺文件"
-                                    showProcessPicker = false
-                                }
-                            }
-                        },
-                        title = "选择工艺"
-                    )
-                }
-            } else {
             Column(
                 modifier = Modifier.padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
@@ -206,8 +160,7 @@ fun CornerWeldDialog(
                                 modifier = Modifier
                                     .matchParentSize()
                                     .clickable {
-                                        viewModel.processCurrentPath = ""
-                                        viewModel.refreshProcessExplorer()
+                                        viewModel.refreshPouchLists()
                                         showProcessPicker = true
                                     }
                             )
@@ -380,8 +333,7 @@ fun CornerWeldDialog(
                                 torchRx = capturedRx,
                                 torchRy = capturedRy,
                                 torchRz = capturedRz,
-                                process = selectedProcess,
-                                processPath = selectedProcessPath.takeIf { it.isNotEmpty() }
+                                processId = selectedProcessId.takeIf { it.isNotEmpty() }
                             )
                             onDismiss()
                         } catch (e: Exception) {
@@ -392,9 +344,19 @@ fun CornerWeldDialog(
                     }
                 }
             }
-            }
         }
     }
+
+    ClosureProcessPicker(
+        visible = showProcessPicker,
+        processes = viewModel.pouchProcesses,
+        onPick = { id ->
+            selectedProcessId = id?.toString().orEmpty()
+            showProcessPicker = false
+            errorMessage = ""
+        },
+        onDismiss = { showProcessPicker = false },
+    )
 
     if (showPasswordDialog) {
         AlertDialog(

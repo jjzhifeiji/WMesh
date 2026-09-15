@@ -142,5 +142,11 @@ class RoomEnvelopeStore(private val context: Context) : EnvelopeStore {
         return parseActive(dao().getKv("active")?.v.orEmpty())
     }
 
+    override fun saveLedger(raw: String) {
+        dao().putKv(KvRow("ledger", raw))
+    }
+
+    override fun loadLedger(): String = dao().getKv("ledger")?.v.orEmpty()
+
     private fun dao(): PouchDao = db?.dao() ?: error("unauthorized")
 }

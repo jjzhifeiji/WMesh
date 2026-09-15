@@ -155,15 +155,8 @@ fun MultiLayerWeldPathItem(
                         // Process Info
                         val process = multiPath.basePath.process
                          val processInfo = buildAnnotatedString {
-                            if (multiPath.basePath.processPath.isNotEmpty()) {
-                                val pathWithoutExtension = multiPath.basePath.processPath.substringBeforeLast(".json")
-                                withStyle(style = SpanStyle(color = Color(0xFF2196F3), fontWeight = FontWeight.Bold)) {
-                                    append(pathWithoutExtension)
-                                }
-                            } else {
-                                withStyle(style = SpanStyle(color = Color(0xFF2196F3), fontWeight = FontWeight.Bold)) {
-                                    append(process.name)
-                                }
+                            withStyle(style = SpanStyle(color = Color(0xFF2196F3), fontWeight = FontWeight.Bold)) {
+                                append(process.name)
                             }
                             append(" | ")
                             withStyle(style = SpanStyle(color = Color(0xFF2196F3), fontWeight = FontWeight.Bold)) {
@@ -356,15 +349,8 @@ fun MultiLayerWeldPathItem(
                                     
                                     // Process Info
                                     val processInfo = buildAnnotatedString {
-                                        if (pass.processPath.isNotEmpty()) {
-                                            val pathWithoutExtension = pass.processPath.substringBeforeLast(".json")
-                                            withStyle(style = SpanStyle(color = Color(0xFF2196F3), fontWeight = FontWeight.Bold)) {
-                                                append(pathWithoutExtension)
-                                            }
-                                        } else {
-                                            withStyle(style = SpanStyle(color = Color(0xFF2196F3), fontWeight = FontWeight.Bold)) {
-                                                append(pass.process.name)
-                                            }
+                                        withStyle(style = SpanStyle(color = Color(0xFF2196F3), fontWeight = FontWeight.Bold)) {
+                                            append(pass.process.name)
                                         }
                                         append(" | ")
                                         withStyle(style = SpanStyle(color = Color(0xFF2196F3), fontWeight = FontWeight.Bold)) {

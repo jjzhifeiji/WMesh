@@ -44,6 +44,8 @@ class HttpFactoryGateway : FactoryGateway {
             ),
             mqttUrl = dto.mqttUrl,
             signingPublicKey = decodeB64(dto.signingPublicKey),
+            clientShortCode = dto.clientShortCode,
+            roles = dto.roles,
         )
     }
 
@@ -82,6 +84,7 @@ class HttpFactoryGateway : FactoryGateway {
                         decodeB64(d.digest),
                     )
                 },
+                code = m.code,
             )
         }
         return TransitClosure(
@@ -168,6 +171,8 @@ class HttpFactoryGateway : FactoryGateway {
         val policy: PolicyDto,
         val mqttUrl: String = "",
         val signingPublicKey: String = "",
+        val clientShortCode: String = "",
+        val roles: List<String> = emptyList(),
     )
 
     @Serializable
@@ -230,6 +235,7 @@ class HttpFactoryGateway : FactoryGateway {
         val digest: String = "",
         val creatorId: String? = null,
         val deps: List<DepDto> = emptyList(),
+        val code: String = "",
     )
 
     @Serializable

@@ -60,6 +60,7 @@ fun WeldPathScreen(
     var cornerWeldInitialParams by remember { mutableStateOf<com.gbndt.shijiaoqi.data.models.CornerGroupParams?>(null) }
     var show3DViewer by remember { mutableStateOf(false) }
     var weldPathToDeleteIndex by remember { mutableStateOf(-1) }
+    var showProcessPicker by remember { mutableStateOf(false) }
 
     if (show3DViewer) {
         Path3DViewerDialog(
@@ -112,27 +113,19 @@ fun WeldPathScreen(
                             onProcess = { 
                                 viewModel.cancelAddProcessVariant()
                                 viewModel.selectedWeldPathIndex = index
-                                if (weldPath.processPath.isNotEmpty()) {
-                                    val parentPath = java.io.File(weldPath.processPath).parent?.replace("\\", "/") ?: ""
-                                    viewModel.processCurrentPath = parentPath
-                                    viewModel.refreshProcessExplorer()
-                                }
-                                onNavigateToProcessManagement(true) 
+                                viewModel.refreshPouchLists()
+                                showProcessPicker = true
                             },
                             onAddProcessVariant = {
                                 viewModel.selectedWeldPathIndex = index
                                 viewModel.beginAddProcessVariant(index)
-                                onNavigateToProcessManagement(true)
+                                viewModel.refreshPouchLists()
+                                showProcessPicker = true
                             },
                             onReplaceExtraProcess = { extraIdx ->
                                 viewModel.beginReplaceExtraProcess(index, extraIdx)
-                                val extraPath = weldPath.extraProcesses.getOrNull(extraIdx)?.processPath.orEmpty()
-                                if (extraPath.isNotEmpty()) {
-                                    val parentPath = java.io.File(extraPath).parent?.replace("\\", "/") ?: ""
-                                    viewModel.processCurrentPath = parentPath
-                                    viewModel.refreshProcessExplorer()
-                                }
-                                onNavigateToProcessManagement(true)
+                                viewModel.refreshPouchLists()
+                                showProcessPicker = true
                             },
                             onToggleExtraEnabled = { extraIdx -> viewModel.toggleExtraProcessEnabled(index, extraIdx) },
                             onDeleteExtraProcess = { extraIdx -> viewModel.deleteExtraProcess(index, extraIdx) },
@@ -454,11 +447,24 @@ fun WeldPathScreen(
         )
     }
 
+    ClosureProcessPicker(
+        visible = showProcessPicker,
+        processes = viewModel.pouchProcesses,
+        onPick = { id ->
+            viewModel.bindProcessFromPouch(id)
+            showProcessPicker = false
+        },
+        onDismiss = {
+            viewModel.cancelAddProcessVariant()
+            showProcessPicker = false
+        },
+    )
+
     // Missing Process Dialog
     if (viewModel.isMissingProcessDialogVisible) {
         AlertDialog(
             onDismissRequest = { viewModel.isMissingProcessDialogVisible = false },
-            title = { Text("工艺文件缺失") },
+            title = { Text("闭包里没有这条工艺") },
             text = { Text(viewModel.missingProcessMessage) },
             confirmButton = {
                 Button(
@@ -618,15 +624,8 @@ fun WeldPathItem(
                             modifier = Modifier.clickable { onRename() }
                         )
                         val processInfo = buildAnnotatedString {
-                            if (weldPath.processPath.isNotEmpty()) {
-                                val pathWithoutExtension = weldPath.processPath.substringBeforeLast(".json")
-                                withStyle(style = SpanStyle(color = Color(0xFF2196F3), fontWeight = FontWeight.Bold)) {
-                                    append(pathWithoutExtension)
-                                }
-                            } else {
-                                withStyle(style = SpanStyle(color = Color(0xFF2196F3), fontWeight = FontWeight.Bold)) {
-                                    append(weldPath.process.name)
-                                }
+                            withStyle(style = SpanStyle(color = Color(0xFF2196F3), fontWeight = FontWeight.Bold)) {
+                                append(weldPath.process.name)
                             }
                             append(" | ")
                             withStyle(style = SpanStyle(color = Color(0xFF2196F3), fontWeight = FontWeight.Bold)) {
@@ -786,11 +785,7 @@ private fun ExtraProcessRow(
     onToggleEnabled: () -> Unit,
     onDelete: () -> Unit
 ) {
-    val processLabel = if (slot.processPath.isNotEmpty()) {
-        slot.processPath.substringBeforeLast(".json")
-    } else {
-        slot.process.name
-    }
+    val processLabel = slot.process.name.ifBlank { "未选工艺" }
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(6.dp),

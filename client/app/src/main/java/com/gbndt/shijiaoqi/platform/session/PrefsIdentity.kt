@@ -16,4 +16,8 @@ class PrefsIdentity(context: Context) : IdentityStore {
     override var clientId: String
         get() = prefs.getString("clientId", "") ?: ""
         set(value) { prefs.edit().putString("clientId", value).apply() }
+
+    override var clientShortCode: String
+        get() = prefs.getString("clientShortCode", "") ?: ""
+        set(value) { prefs.edit().putString("clientShortCode", value).apply() }
 }

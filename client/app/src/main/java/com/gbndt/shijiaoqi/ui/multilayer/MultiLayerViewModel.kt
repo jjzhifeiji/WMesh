@@ -20,6 +20,20 @@ import kotlinx.coroutines.flow.asSharedFlow
 import com.gbndt.shijiaoqi.data.manager.ProcessManager
 import com.gbndt.shijiaoqi.data.manager.ProjectManager
 import com.gbndt.shijiaoqi.data.manager.SocketManager
+import com.gbndt.shijiaoqi.robot.RobotCommands
+import com.gbndt.shijiaoqi.ShiJiaoQiApp
+import com.gbndt.shijiaoqi.platform.crypt.Wm2
+import com.gbndt.shijiaoqi.platform.pouch.Pouch
+import com.gbndt.shijiaoqi.platform.session.BagSession
+import com.gbndt.shijiaoqi.weld.Capture
+import com.gbndt.shijiaoqi.weld.MultiLayerProject
+import com.gbndt.shijiaoqi.weld.MultiLayerRun
+import com.gbndt.shijiaoqi.weld.PouchProcessSource
+import com.gbndt.shijiaoqi.weld.ProcessBind
+import com.gbndt.shijiaoqi.weld.ProcessChoice
+import com.gbndt.shijiaoqi.weld.ProcessRef
+import com.gbndt.shijiaoqi.weld.ProjectChoice
+import com.gbndt.shijiaoqi.weld.WeldRun
 import com.gbndt.shijiaoqi.data.models.FileSystemItem
 import com.gbndt.shijiaoqi.data.models.Pose
 import com.gbndt.shijiaoqi.data.models.AppSettings
@@ -206,6 +220,9 @@ class MultiLayerViewModel(application: Application) : AndroidViewModel(applicati
     
     // Multi-Layer State
     val multiLayerWeldPaths = mutableStateListOf<MultiLayerWeldPath>()
+    val pouchProjects = mutableStateListOf<ProjectChoice>()
+    val pouchProcesses = mutableStateListOf<ProcessChoice>()
+    private var pouchProjectId: UUID? = null
     var selectedMultiLayerPathIndex by mutableStateOf(0)
     var selectedPassIndex by mutableStateOf(-1) // -1 means Base Path, 0..N means Pass index
 
@@ -396,42 +413,29 @@ class MultiLayerViewModel(application: Application) : AndroidViewModel(applicati
                 val allCommands = currentSb.toString()
                 
                 viewModelScope.launch {
-                    // 1. 发送 105 指令 (Lua文件名)
-                    val luaName = "/fruser/111.lua"
                     val id105 = globalCommandId++
-                    val msg105 = "/f/bIII${id105}III105III${luaName.length}III${luaName}III/b/f"
-                    socketManager.sendBatchCommandSync(msg105)
-                    
-                    delay(50) // Small delay to ensure sequential processing
-                    
-                    // 2. 发送 106 指令 (全部组合指令)
                     val id106 = globalCommandId++
-                    val msg106 = "/f/bIII${id106}III106III${allCommands.length}III${allCommands}III/b/f"
-                    
+                    val plan = WeldRun.batch(id105, id106, allCommands)
+                    socketManager.sendBatchCommandSync(plan.fileName)
+                    delay(WeldRun.AFTER_FILENAME_MS)
                     val responseJob = async(Dispatchers.Default) {
                         withTimeoutOrNull(8000) {
                             kotlinx.coroutines.flow.merge(socketManager.receivedText8082, socketManager.receivedText)
                                 .first { it.contains(id106.toString()) || it.contains("106") }
                         }
                     }
-                    delay(100) // Ensure the flow is actively collecting before sending
-                    socketManager.sendBatchCommandSync(msg106)
-                    
+                    delay(100)
+                    socketManager.sendBatchCommandSync(plan.body)
                     val ack = responseJob.await()
                     if (ack == null) {
                         Log.e("BatchCommand", "Timeout waiting for 106 ACK!")
                     } else {
                         Log.d("BatchCommand", "Received 106 ACK: $ack")
                     }
-                    
-                    // 3. 切换成自动模式并启动
-                    delay(500)
-                    val modeMsg = "/f/bIII20III303III7IIIMode(0)III/b/f"
-                    socketManager.sendControlCommand(modeMsg)
-                    
-                    delay(100)
-                    val startMsg = "/f/bIII77III101III5IIIStartIII/b/f"
-                    socketManager.sendControlCommand(startMsg)
+                    delay(WeldRun.AFTER_BODY_ACK_MS)
+                    socketManager.sendControlCommand(plan.modeAuto)
+                    delay(WeldRun.AFTER_MODE_MS)
+                    socketManager.sendControlCommand(plan.start)
                 }
                 
                 // Keep for tracking or legacy if needed
@@ -678,6 +682,7 @@ class MultiLayerViewModel(application: Application) : AndroidViewModel(applicati
                             isSimulating = false
                             isExecutingBatch = false
                             weldingTimerJob?.cancel()
+                            markPouchWelding(false)
                         }
                     }
                 }
@@ -905,19 +910,8 @@ class MultiLayerViewModel(application: Application) : AndroidViewModel(applicati
         savedCurrent = settings.weldingCurrent
         savedVoltage = settings.weldingVoltage
 
-        // Open Last Project if exists
-        if (!settings.lastOpenedProjectPath.isNullOrEmpty()) {
-             try {
-                 openProject(settings.lastOpenedProjectPath)
-             } catch (e: Exception) {
-                 Log.e("MultiLayerViewModel", "Failed to open last project: ${settings.lastOpenedProjectPath}", e)
-                 currentProjectName = null
-                 multiLayerWeldPaths.clear()
-                 addLinearWeldPath()
-             }
-        } else {
-            addLinearWeldPath()
-        }
+        syncFromPouch()
+        if (multiLayerWeldPaths.isEmpty()) addLinearWeldPath()
 
         // Start Socket Manager
         // socketManager.start() - Moved to init
@@ -1005,27 +999,15 @@ class MultiLayerViewModel(application: Application) : AndroidViewModel(applicati
             else -> 0
         }
 
-        val (baseX, baseY, baseRx, baseRy) = when (positionMode) {
-            "前" -> Quad(joyFwd, joyLeft, -rotLeft, rotFwd)
-            "左" -> Quad(-joyLeft, joyFwd, -rotFwd, -rotLeft)
-            "后" -> Quad(-joyFwd, -joyLeft, rotLeft, -rotFwd)
-            else -> Quad(joyLeft, -joyFwd, rotFwd, rotLeft)
-        }
-
-        val baseSpeedS = if (btnL1) 10.0 else 1.0
-        val baseSpeedR = if (btnL1) 1.0 else 0.2
-        
-        val speed_s = baseSpeedS
-        val speed_r = baseSpeedR
-
+        val speed_s = if (btnL1) 10.0 else 1.0
+        val speed_r = if (btnL1) 1.0 else 0.2
         val ext1 = when {
             btnR2 -> -5
             btnL2 -> 5
             else -> 0
         }
 
-        val isZeroCommand = baseX == 0 && baseY == 0 && z == 0 && baseRx == 0 && baseRy == 0 && rz == 0 && ext1 == 0
-
+        val isZeroCommand = joyFwd == 0 && joyLeft == 0 && z == 0 && rotFwd == 0 && rotLeft == 0 && rz == 0 && ext1 == 0
         if (isZeroCommand) {
             if (isLastCommandZero) return
             isLastCommandZero = true
@@ -1033,30 +1015,25 @@ class MultiLayerViewModel(application: Application) : AndroidViewModel(applicati
             isLastCommandZero = false
         }
 
-        val cmd = "ServoCart(1,{$baseX,$baseY,$z,$baseRx,$baseRy,$rz},{$speed_s,$speed_s,$speed_s,$speed_r,$speed_r,$speed_r},{$ext1,0,0,0},0,0,0.2,0,0)"
-        val msg = "/f/bIII18III201III${cmd.length}III${cmd}III/b/f"
-        
-        socketManager.sendControlCommand(msg)
+        socketManager.sendControlCommand(
+            RobotCommands.servoCart(positionMode, joyFwd, joyLeft, z, rotFwd, rotLeft, rz, speed_s, speed_r, ext1),
+        )
     }
     
     fun enableExtAxisServo() {
         val cmd = "ExtAxisServoOn(1,1)"
-        sendManualCommand(296, cmd)
+        sendManualCommand(RobotCommands.TYPE_EXT_SERVO, cmd)
     }
 
     fun startExtAxisJog(direction: Int) {
         if (!isControllerActive) return
-        val cmd = "ExtAxisStartJog(6,1,$direction,100,100,2000)"
-        sendManualCommand(292, cmd)
+        sendManualCommand(RobotCommands.TYPE_EXT_JOG, "ExtAxisStartJog(6,1,$direction,100,100,2000)")
     }
 
     fun stopExtAxisJog(direction: Int) {
         if (!isControllerActive) return
-        val cmd = "StopExtAxisJog"
-        sendManualCommand(240, cmd)
+        sendManualCommand(RobotCommands.TYPE_EXT_JOG_STOP, "StopExtAxisJog")
     }
-
-    data class Quad(val v1: Int, val v2: Int, val v3: Int, val v4: Int)
 
     // 发送MoveL直线运动指令
     fun sendMoveLCommand() {
@@ -1114,12 +1091,6 @@ class MultiLayerViewModel(application: Application) : AndroidViewModel(applicati
         }
 
         // Validate Process
-        if (currentPath.processPath.isNotEmpty() && !processManager.checkProcessExists(currentPath.processPath)) {
-            missingProcessMessage = "当前焊道工艺文件未找到：\n${currentPath.processPath}\n请重新选择。"
-            isMissingProcessDialogVisible = true
-            return
-        }
-        
         val point = currentPath.points.getOrNull(currentPath.selectedPointIndex) ?: return
         
         var targetPose = point.pose
@@ -1924,18 +1895,16 @@ class MultiLayerViewModel(application: Application) : AndroidViewModel(applicati
                      // But for now, let's keep the old behavior for "Simple Offset" but utilizing executionOffsets?
                      // Or just absolute. The user specifically asked for "duocengduodao" which applies to the main segment.
                      
-                     val offsetY = when (currentIdx) {
-                         startIdx -> pass.valYLeft
-                         endIdx -> pass.valYRight
-                         else -> 0.0
-                     }
-
-                     newPose = newPose.copy(
-                         x = newPose.x + signedPassX(pass.valX),
-                         y = newPose.y + offsetY,
-                         z = newPose.z + pass.valZ
+                     newPose = MultiLayerRun.simpleOffset(
+                         newPose,
+                         point.type,
+                         currentIdx == startIdx,
+                         currentIdx == endIdx,
+                         signedPassX(pass.valX),
+                         pass.valYLeft,
+                         pass.valYRight,
+                         pass.valZ,
                      )
-                     // No execution offsets, absolute move
                      val newPoint = point.copy(pose = newPose, executionOffsets = null)
                      return@mapIndexed newPoint
                  }
@@ -1950,7 +1919,7 @@ class MultiLayerViewModel(application: Application) : AndroidViewModel(applicati
             name = "${basePath.name} - ${pass.name}",
             points = mutableStateListOf<WeldPoint>().apply { addAll(newPoints) },
             process = pass.process,
-            processPath = pass.processPath
+            processId = pass.processId
         )
     }
 
@@ -1984,23 +1953,15 @@ class MultiLayerViewModel(application: Application) : AndroidViewModel(applicati
         viewModelScope.launch {
             isResuming = true
             isPaused = false
-            
             sendManualCommand(303, "Mode(0)")
             kotlinx.coroutines.delay(50)
-
             if (weldingBreakOffState == "中断") {
-                val reWeldMsg = "/f/bIII4III806III33IIIWeldingStartReWeldAfterBreakOff()III/b/f"
-                socketManager.sendControlCommand(reWeldMsg)
-                
+                socketManager.sendControlCommand(WeldRun.reWeldAfterBreak())
                 kotlinx.coroutines.delay(100)
-                val msg = "/f/bIII77III104III6IIIRESUMEIII/b/f"
-                socketManager.sendControlCommand(msg)
+                socketManager.sendControlCommand(WeldRun.resume())
             } else {
-                val msg = "/f/bIII77III104III6IIIRESUMEIII/b/f"
-                socketManager.sendControlCommand(msg)
+                socketManager.sendControlCommand(WeldRun.resume())
             }
-            
-            // Give hardware time to transition to running state
             kotlinx.coroutines.delay(2000)
             isResuming = false
         }
@@ -2089,11 +2050,9 @@ class MultiLayerViewModel(application: Application) : AndroidViewModel(applicati
         if (!isWelding && !isSimulating) return
 
         viewModelScope.launch {
-            val msg = "/f/bIII77III103III5IIIPauseIII/b/f"
-            socketManager.sendControlCommand(msg)
-            
-            kotlinx.coroutines.delay(1000)
-            sendManualCommand(303, "Mode(1)")
+            socketManager.sendControlCommand(WeldRun.pause())
+            kotlinx.coroutines.delay(WeldRun.AFTER_PAUSE_MS)
+            socketManager.sendControlCommand(RobotCommands.modeManual())
         }
 
         isPaused = true
@@ -2122,19 +2081,16 @@ class MultiLayerViewModel(application: Application) : AndroidViewModel(applicati
         isPaused = false
         programHasStarted = false
         weldingTimerJob?.cancel()
+        markPouchWelding(false)
         
-        // Send Stop Command and switch to Manual Mode
         viewModelScope.launch {
-            val msg = "/f/bIII7III102III4IIISTOPIII/b/f"
-            socketManager.sendControlCommand(msg)
-            
+            socketManager.sendControlCommand(WeldRun.stop())
             kotlinx.coroutines.delay(1000)
-            sendManualCommand(303, "Mode(1)")
+            socketManager.sendControlCommand(RobotCommands.modeManual())
         }
 
         if (weldingBreakOffState == "中断") {
-            val abortMsg = "/f/bIII4III807III31IIIWeldingAbortWeldAfterBreakOff()III/b/f"
-            socketManager.sendControlCommand(abortMsg)
+            socketManager.sendControlCommand(WeldRun.abortAfterBreak())
         }
         
         // Arc End
@@ -2894,42 +2850,26 @@ class MultiLayerViewModel(application: Application) : AndroidViewModel(applicati
     // Return: List<Triple<WeldPath, MultiPathIndex, PassIndex>>
     // PassIndex: -1 for Base, 0..N for Pass
     private fun getAllInterleavedExecutionPaths(): List<Triple<WeldPath, Int, Int>> {
-        val paths = mutableListOf<Triple<WeldPath, Int, Int>>()
-        if (multiLayerWeldPaths.isEmpty()) return paths
-        
-        // Calculate max passes
-        var maxPasses = 0
-        multiLayerWeldPaths.forEach { p ->
-            if (p.passes.size > maxPasses) maxPasses = p.passes.size
+        val counts = multiLayerWeldPaths.map { it.passes.size }
+        val steps = MultiLayerRun.interleave(counts) { mIndex, layer ->
+            val p = multiLayerWeldPaths[mIndex]
+            if (layer == -1) p.basePath.isEnabled else p.passes[layer].isEnabled
         }
-        
-        // Loop from -1 (Base) to maxPasses
-        // Layer -1: Base Paths
-        // Layer 0: Pass 1 (Index 0)
-        // Layer 1: Pass 2 (Index 1)
-        // ...
-        for (layer in -1 until maxPasses) {
-            multiLayerWeldPaths.forEachIndexed { mIndex, mPath ->
-                if (layer == -1) {
-                    if (mPath.basePath.isEnabled) {
-                         paths.add(Triple(mPath.basePath, mIndex, -1))
-                    }
-                } else {
-                    if (layer < mPath.passes.size && mPath.passes[layer].isEnabled) {
-                        val passPath = generatePassPath(mPath.basePath, mPath.passes[layer], mPath)
-                        if (passPath != null) {
-                             paths.add(Triple(passPath, mIndex, layer))
-                        }
-                    }
-                }
+        return steps.mapNotNull { step ->
+            val p = multiLayerWeldPaths[step.pathIndex]
+            if (step.passIndex == -1) {
+                Triple(p.basePath, step.pathIndex, -1)
+            } else {
+                val passPath = generatePassPath(p.basePath, p.passes[step.passIndex], p) ?: return@mapNotNull null
+                Triple(passPath, step.pathIndex, step.passIndex)
             }
         }
-        return paths
     }
 
     // 发送多层批量指令
     fun sendMultiLayerBatchCommands(resumeMultiPathIndex: Int = -1, resumePassIndex: Int = -1, resumePointIndex: Int = -1, isResumeFromStop: Boolean = false) {
         if (multiLayerWeldPaths.isEmpty()) return
+        if (!bindPouchProcesses()) return
         
         executionQueue.clear()
         commandIdMap.clear()
@@ -2985,7 +2925,9 @@ class MultiLayerViewModel(application: Application) : AndroidViewModel(applicati
     // 开始模拟
     override fun startSimulation() {
         if (isWelding || isSimulating) return
+        if (!bindPouchProcesses()) return
         isSimulating = true
+        markPouchWelding(true)
         programHasStarted = false
         fineTune.resetOffsets()
         
@@ -3011,7 +2953,9 @@ class MultiLayerViewModel(application: Application) : AndroidViewModel(applicati
     // 开始起弧焊接
     override fun startArcWelding() {
         if (isWelding || isSimulating) return
+        if (!bindPouchProcesses()) return
         isWelding = true
+        markPouchWelding(true)
         isWeldingStatsActive = false 
         programHasStarted = false
         fineTune.resetOffsets()
@@ -3110,70 +3054,133 @@ class MultiLayerViewModel(application: Application) : AndroidViewModel(applicati
     
     // 打开工程
     override fun openProject(path: String) {
-        viewModelScope.launch {
-            try {
-                Log.d("MultiLayerViewModel", "Opening project: $path")
-                val loadedMultiLayerPaths = projectManager.loadMultiLayerProject(path)
-                Log.d("MultiLayerViewModel", "Project loaded. Multi: ${loadedMultiLayerPaths.size}")
-                
-                currentProjectName = path
-                
-                // Clear and Load Multi-Layer Paths
-                multiLayerWeldPaths.clear()
-                multiLayerWeldPaths.addAll(loadedMultiLayerPaths)
-                selectedMultiLayerPathIndex = 0
-                
-                // Validate Process Files
-                for (i in multiLayerWeldPaths.indices) {
-                    val mp = multiLayerWeldPaths[i]
-                    var basePathChanged = false
-                    var newBasePath = mp.basePath
+        viewModelScope.launch { _toastEvent.emit("请从本机袋打开工程") }
+    }
 
-                    // Validate Base Path
-                    if (newBasePath.processPath.isNotEmpty()) {
-                        val process = processManager.loadProcess(newBasePath.processPath)
-                        if (process != null) {
-                             newBasePath = newBasePath.copy(process = process)
-                             basePathChanged = true
-                        }
-                    }
-                    
-                    // Validate Passes
-                    mp.passes.forEach { pass ->
-                         if (pass.processPath.isNotEmpty()) {
-                             val loadedProcess = processManager.loadProcess(pass.processPath)
-                             if (loadedProcess != null) {
-                                 pass.process = loadedProcess
-                             }
-                         }
-                    }
-                    
-                    if (basePathChanged) {
-                        multiLayerWeldPaths[i] = mp.copy(basePath = newBasePath)
-                    }
-                }
+    private fun bag(): BagSession = (getApplication() as ShiJiaoQiApp).bag
 
-                if (multiLayerWeldPaths.isEmpty()) {
-                    addLinearWeldPath()
-                }
+    private fun markPouchWelding(on: Boolean) {
+        runCatching { bag().setWelding(on) }
+    }
 
-                // Save as last opened project
-                saveAppSettings()
-                Log.d("MultiLayerViewModel", "Project opened successfully")
-            } catch (e: Exception) {
-                Log.e("MultiLayerViewModel", "Failed to open project: $path", e)
-                val errorMsg = e.message ?: e.toString()
-                _toastEvent.emit("无法打开工程: $errorMsg")
-                // Reset state
-                currentProjectName = null
-                multiLayerWeldPaths.clear()
-                addLinearWeldPath()
+    private fun processSource(): PouchProcessSource = PouchProcessSource(bag().pouch)
+
+    private fun String.toUuidOrNull(): UUID? = try {
+        UUID.fromString(trim())
+    } catch (_: Exception) {
+        null
+    }
+
+    private fun refsOf(): List<ProcessRef> {
+        val out = mutableListOf<ProcessRef>()
+        multiLayerWeldPaths.forEach { mp ->
+            out.add(ProcessRef("${mp.name} 基准", mp.basePath.processId, mp.basePath.isEnabled))
+            mp.passes.forEach { pass ->
+                out.add(ProcessRef("${mp.name} ${pass.name}", pass.processId, pass.isEnabled))
             }
+        }
+        return out
+    }
+
+    private fun applyLoaded(loaded: Map<UUID, WeldProcess>) {
+        multiLayerWeldPaths.forEachIndexed { i, mp ->
+            mp.basePath.processId.toUuidOrNull()?.let { id ->
+                loaded[id]?.let { mp.basePath.process = it }
+            }
+            mp.passes.forEachIndexed { j, pass ->
+                pass.processId.toUuidOrNull()?.let { id ->
+                    loaded[id]?.let { mp.passes[j] = pass.copy(process = it) }
+                }
+            }
+            multiLayerWeldPaths[i] = mp.copy(basePath = mp.basePath)
         }
     }
 
-    // 保存当前工程
+    private fun bindPouchProcesses(): Boolean {
+        val outcome = ProcessBind.resolve(refsOf(), processSource())
+        applyLoaded(outcome.loaded)
+        if (outcome.missing.isNotEmpty()) {
+            missingProcessMessage = "以下焊道的工艺不在当前闭包：\n" + outcome.missing.joinToString("\n")
+            isMissingProcessDialogVisible = true
+            return false
+        }
+        return true
+    }
+
+    fun syncFromPouch() {
+        refreshPouchLists()
+        val bag = bag()
+        val id = bag.pouch.activeProject() ?: return
+        val bytes = try {
+            bag.open(id)
+        } catch (_: Exception) {
+            return
+        }
+        try {
+            val loaded = try {
+                MultiLayerProject.parse(bytes)
+            } catch (e: Exception) {
+                Log.e("MultiLayerViewModel", "active project parse failed", e)
+                emptyList()
+            }
+            multiLayerWeldPaths.clear()
+            multiLayerWeldPaths.addAll(loaded)
+            if (multiLayerWeldPaths.isEmpty()) addLinearWeldPath()
+            selectedMultiLayerPathIndex = 0
+            selectedPassIndex = -1
+            pouchProjectId = id
+            currentProjectName = bag.pouch.exportClosures().firstOrNull { it.assetId == id }?.name
+            bindPouchProcesses()
+        } finally {
+            Wm2.zero(bytes)
+        }
+        refreshPouchLists()
+    }
+
+    fun activatePouchProject(id: UUID) {
+        try {
+            bag().activate(id)
+            syncFromPouch()
+        } catch (e: Exception) {
+            viewModelScope.launch { _toastEvent.emit(e.message ?: "无法激活工程") }
+        }
+    }
+
+    fun refreshPouchLists() {
+        val bag = runCatching { bag() }.getOrNull() ?: return
+        val active = bag.pouch.activeProject()
+        pouchProjects.clear()
+        bag.pouch.exportClosures().filter { it.kind == Pouch.KIND_PROJECT }.forEach {
+            pouchProjects.add(ProjectChoice(it.assetId, it.name, it.revision, it.assetId == active))
+        }
+        pouchProcesses.clear()
+        pouchProcesses.addAll(PouchProcessSource(bag.pouch).list())
+    }
+
+    fun bindProcessFromPouch(processId: UUID?) {
+        if (selectedMultiLayerPathIndex !in multiLayerWeldPaths.indices) return
+        val multiPath = multiLayerWeldPaths[selectedMultiLayerPathIndex]
+        val process = if (processId == null) WeldProcess() else {
+            processSource().open(processId) ?: run {
+                missingProcessMessage = "闭包里没有这条工艺"
+                isMissingProcessDialogVisible = true
+                return
+            }
+        }
+        val idStr = processId?.toString().orEmpty()
+        if (selectedPassIndex == -1) {
+            multiLayerWeldPaths[selectedMultiLayerPathIndex] = multiPath.copy(
+                basePath = multiPath.basePath.copy(process = process, processId = idStr)
+            )
+        } else if (selectedPassIndex in multiPath.passes.indices) {
+            val pass = multiPath.passes[selectedPassIndex]
+            multiPath.passes[selectedPassIndex] = pass.copy(process = process, processId = idStr)
+        }
+        saveCurrentProject()
+    }
+
     fun saveCurrentProject() {
+        if (pouchProjectId != null) return
         val path = currentProjectName ?: return
         projectManager.saveMultiLayerProject(path, multiLayerWeldPaths)
     }
@@ -3554,11 +3561,12 @@ class MultiLayerViewModel(application: Application) : AndroidViewModel(applicati
         
         // 2. Handle Weld Point Recording
         val point = currentPath.points.getOrNull(currentPath.selectedPointIndex) ?: return
-        val currentPose = operationPosition
-        val currentJoints = socketManager.robotJoints.value
-        
-        // Update Point Data
-        val newPoint = point.copy(pose = currentPose, jointAngles = currentJoints)
+        val snap = Capture.snapshot(operationPosition, socketManager.robotJoints.value)
+        val newPoint = if (snap != null) {
+            point.copy(pose = snap.first, jointAngles = snap.second)
+        } else {
+            point.copy(pose = operationPosition, jointAngles = socketManager.robotJoints.value)
+        }
         currentPath.points[currentPath.selectedPointIndex] = newPoint
         
         // Auto-advance logic for WeldPoints (Check if we need to enter RefPoint sequence)

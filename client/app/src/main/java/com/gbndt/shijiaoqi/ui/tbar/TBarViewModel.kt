@@ -18,7 +18,13 @@ import kotlinx.coroutines.flow.asSharedFlow
 import com.gbndt.shijiaoqi.data.manager.ProcessManager
 import com.gbndt.shijiaoqi.data.manager.ProjectManager
 import com.gbndt.shijiaoqi.data.manager.SocketManager
+import com.gbndt.shijiaoqi.robot.RobotCommands
+import com.gbndt.shijiaoqi.ShiJiaoQiApp
+import com.gbndt.shijiaoqi.platform.crypt.Wm2
+import com.gbndt.shijiaoqi.platform.pouch.Pouch
+import com.gbndt.shijiaoqi.platform.session.BagSession
 import com.gbndt.shijiaoqi.data.models.FileSystemItem
+import com.gbndt.shijiaoqi.data.models.GapBand
 import com.gbndt.shijiaoqi.data.models.Pose
 import com.gbndt.shijiaoqi.data.models.AppSettings
 import com.gbndt.shijiaoqi.data.models.WeldPath
@@ -29,12 +35,22 @@ import com.gbndt.shijiaoqi.data.models.WeldProcess
 import com.gbndt.shijiaoqi.ui.components.FineTuneSupport
 import com.gbndt.shijiaoqi.ui.viewmodel.WeldViewModelInterface
 import com.gbndt.shijiaoqi.utils.TBarGeometry
-import com.gbndt.shijiaoqi.utils.TBarGapFolder
 import com.gbndt.shijiaoqi.utils.TBarPass
 import com.gbndt.shijiaoqi.data.models.isTBarCollectable
-import java.io.File
+import com.gbndt.shijiaoqi.weld.PouchProcessSource
+import com.gbndt.shijiaoqi.weld.ProcessBind
+import com.gbndt.shijiaoqi.weld.ProcessChoice
+import com.gbndt.shijiaoqi.weld.ProcessRef
+import com.gbndt.shijiaoqi.weld.ProjectChoice
+import com.gbndt.shijiaoqi.weld.ScriptPoint
+import com.gbndt.shijiaoqi.weld.TBarLua
+import com.gbndt.shijiaoqi.weld.TBarProject
+import com.gbndt.shijiaoqi.weld.TBarRun
+import com.gbndt.shijiaoqi.weld.TBarScriptPath
+import com.gbndt.shijiaoqi.weld.WeldRun
 import java.util.UUID
 import java.util.Locale
+import java.io.File
 
 import kotlin.math.sqrt
 import kotlin.math.abs
@@ -162,6 +178,10 @@ class TBarViewModel(application: Application) : AndroidViewModel(application), W
     private var tts: TextToSpeech? = null
     
     val weldPaths = mutableStateListOf<WeldPath>()
+    val pouchProjects = mutableStateListOf<ProjectChoice>()
+    val pouchProcesses = mutableStateListOf<ProcessChoice>()
+    private var pouchProjectId: UUID? = null
+    private var boundProcesses = emptyMap<UUID, WeldProcess>()
     var selectedWeldPathIndex by mutableStateOf(0)
     // -1 覆盖主工艺；-2 新增附加工艺；>=0 替换对应附加工艺
     var extraProcessEditIndex by mutableStateOf(-1)
@@ -205,7 +225,7 @@ class TBarViewModel(application: Application) : AndroidViewModel(application), W
     override val projectItems = mutableStateListOf<FileSystemItem>()
 
     // Process Explorer State
-    override var processCurrentPath by mutableStateOf(TBarGeometry.PROCESS_FOLDER)
+    override var processCurrentPath by mutableStateOf("")
     override val processItems = mutableStateListOf<FileSystemItem>()
 
     // Status Bar State
@@ -349,42 +369,29 @@ class TBarViewModel(application: Application) : AndroidViewModel(application), W
                 val allCommands = currentSb.toString()
                 
                 viewModelScope.launch {
-                    // 1. 发送 105 指令 (Lua文件名)
-                    val luaName = "/fruser/111.lua"
                     val id105 = globalCommandId++
-                    val msg105 = "/f/bIII${id105}III105III${luaName.length}III${luaName}III/b/f"
-                    socketManager.sendBatchCommandSync(msg105)
-                    
-                    delay(50) // Small delay to ensure sequential processing
-                    
-                    // 2. 发送 106 指令 (全部组合指令)
                     val id106 = globalCommandId++
-                    val msg106 = "/f/bIII${id106}III106III${allCommands.length}III${allCommands}III/b/f"
-                    
+                    val plan = WeldRun.batch(id105, id106, allCommands)
+                    socketManager.sendBatchCommandSync(plan.fileName)
+                    delay(WeldRun.AFTER_FILENAME_MS)
                     val responseJob = async(Dispatchers.Default) {
                         withTimeoutOrNull(8000) {
                             kotlinx.coroutines.flow.merge(socketManager.receivedText8082, socketManager.receivedText)
                                 .first { it.contains(id106.toString()) || it.contains("106") }
                         }
                     }
-                    delay(100) // Ensure the flow is actively collecting before sending
-                    socketManager.sendBatchCommandSync(msg106)
-                    
+                    delay(100)
+                    socketManager.sendBatchCommandSync(plan.body)
                     val ack = responseJob.await()
                     if (ack == null) {
                         Log.e("BatchCommand", "Timeout waiting for 106 ACK!")
                     } else {
                         Log.d("BatchCommand", "Received 106 ACK: $ack")
                     }
-                    
-                    // 3. 切换成自动模式并启动
-                    delay(500)
-                    val modeMsg = "/f/bIII20III303III7IIIMode(0)III/b/f"
-                    socketManager.sendControlCommand(modeMsg)
-                    
-                    delay(100)
-                    val startMsg = "/f/bIII77III101III5IIIStartIII/b/f"
-                    socketManager.sendControlCommand(startMsg)
+                    delay(WeldRun.AFTER_BODY_ACK_MS)
+                    socketManager.sendControlCommand(plan.modeAuto)
+                    delay(WeldRun.AFTER_MODE_MS)
+                    socketManager.sendControlCommand(plan.start)
                 }
                 
                 val groupDesc = "$description (All in one)"
@@ -870,31 +877,15 @@ class TBarViewModel(application: Application) : AndroidViewModel(application), W
             else -> 0
         }
 
-        // Transform based on Position Mode
-        // "Right" is default/original behavior
-        // joyFwd = x, joyLeft = y in original
-        // Original: X=y (joyLeft), Y=-x (-joyFwd), Rx=rx (rotFwd), Ry=ry (rotLeft)
-        val (baseX, baseY, baseRx, baseRy) = when (positionMode) {
-            "前" -> Quad(joyFwd, joyLeft, -rotLeft, rotFwd)
-            "左" -> Quad(-joyLeft, joyFwd, -rotFwd, -rotLeft)
-            "后" -> Quad(-joyFwd, -joyLeft, rotLeft, -rotFwd)
-            else -> Quad(joyLeft, -joyFwd, rotFwd, rotLeft) // "右"
-        }
-
-        val baseSpeedS = if (btnL1) 10.0 else 1.0
-        val baseSpeedR = if (btnL1) 1.0 else 0.2
-
-        val speed_s = baseSpeedS
-        val speed_r = baseSpeedR
-
+        val speed_s = if (btnL1) 10.0 else 1.0
+        val speed_r = if (btnL1) 1.0 else 0.2
         val ext1 = when {
             btnR2 -> -5
             btnL2 -> 5
             else -> 0
         }
 
-        val isZeroCommand = baseX == 0 && baseY == 0 && z == 0 && baseRx == 0 && baseRy == 0 && rz == 0 && ext1 == 0
-
+        val isZeroCommand = joyFwd == 0 && joyLeft == 0 && z == 0 && rotFwd == 0 && rotLeft == 0 && rz == 0 && ext1 == 0
         if (isZeroCommand) {
             if (isLastCommandZero) return
             isLastCommandZero = true
@@ -902,31 +893,25 @@ class TBarViewModel(application: Application) : AndroidViewModel(application), W
             isLastCommandZero = false
         }
 
-        // Construct Command
-        val cmd = "ServoCart(1,{$baseX,$baseY,$z,$baseRx,$baseRy,$rz},{$speed_s,$speed_s,$speed_s,$speed_r,$speed_r,$speed_r},{$ext1,0,0,0},0,0,0.2,0,0)"
-        val msg = "/f/bIII18III201III${cmd.length}III${cmd}III/b/f"
-        
-        socketManager.sendControlCommand(msg)
+        socketManager.sendControlCommand(
+            RobotCommands.servoCart(positionMode, joyFwd, joyLeft, z, rotFwd, rotLeft, rz, speed_s, speed_r, ext1),
+        )
     }
     
     fun enableExtAxisServo() {
         val cmd = "ExtAxisServoOn(1,1)"
-        sendManualCommand(296, cmd)
+        sendManualCommand(RobotCommands.TYPE_EXT_SERVO, cmd)
     }
 
     fun startExtAxisJog(direction: Int) {
         if (!isControllerActive) return
-        val cmd = "ExtAxisStartJog(6,1,$direction,100,100,2000)"
-        sendManualCommand(292, cmd)
+        sendManualCommand(RobotCommands.TYPE_EXT_JOG, "ExtAxisStartJog(6,1,$direction,100,100,2000)")
     }
 
     fun stopExtAxisJog(direction: Int) {
         if (!isControllerActive) return
-        val cmd = "StopExtAxisJog"
-        sendManualCommand(240, cmd)
+        sendManualCommand(RobotCommands.TYPE_EXT_JOG_STOP, "StopExtAxisJog")
     }
-
-    data class Quad(val v1: Int, val v2: Int, val v3: Int, val v4: Int)
 
     fun sendMoveLCommand() {
         val currentPath = currentActiveWeldPath ?: return
@@ -1056,67 +1041,118 @@ class TBarViewModel(application: Application) : AndroidViewModel(application), W
     // ... existing init ...
     
     override fun openProject(path: String) {
-        viewModelScope.launch {
-            try {
-                Log.d("WeldPathViewModel", "Opening project: $path")
-                val loadedWeldPaths = projectManager.loadStandardProject(path, "tbar")
-                Log.d("WeldPathViewModel", "Project loaded. Paths: ${loadedWeldPaths.size}")
+        viewModelScope.launch { _toastEvent.emit("请从本机袋打开工程") }
+    }
 
-                currentProjectName = path
-                weldPaths.clear()
-                weldPaths.addAll(loadedWeldPaths)
-                if (weldPaths.isEmpty()) {
-                    addWeldPath()
-                }
-                selectedWeldPathIndex = 0
+    private fun bag(): BagSession = (getApplication() as ShiJiaoQiApp).bag
 
-                Log.d("WeldPathViewModel", "Validating process files...")
-                validateProcessFiles(weldPaths)
+    private fun markPouchWelding(on: Boolean) {
+        runCatching { bag().setWelding(on) }
+    }
 
-                saveAppSettings()
-                Log.d("WeldPathViewModel", "Project opened successfully")
-            } catch (e: Exception) {
-                Log.e("WeldPathViewModel", "Failed to open project: $path", e)
-                val errorMsg = e.message ?: e.toString()
-                _toastEvent.emit("无法打开工程: $errorMsg")
+    private fun processSource(): PouchProcessSource = PouchProcessSource(bag().pouch)
+
+    private fun refsOf(paths: List<WeldPath>): List<ProcessRef> {
+        val out = mutableListOf<ProcessRef>()
+        paths.forEach { path ->
+            path.gapBands.forEach { band ->
+                val label = TBarRun.bandLabel(band)
+                out.add(ProcessRef("${path.name} $label 打底", band.rootProcessId, path.isEnabled))
+                out.add(ProcessRef("${path.name} $label 盖面", band.capProcessId, path.isEnabled))
             }
         }
+        return out
+    }
+
+    private fun bindPouchProcesses(paths: List<WeldPath>): Boolean {
+        val outcome = ProcessBind.resolve(refsOf(paths), processSource())
+        boundProcesses = outcome.loaded
+        if (outcome.missing.isNotEmpty()) {
+            missingProcessMessage = "以下焊道的工艺不在当前闭包：\n" + outcome.missing.joinToString("\n")
+            isMissingProcessDialogVisible = true
+            return false
+        }
+        return true
+    }
+
+    fun syncFromPouch() {
+        refreshPouchLists()
+        val bag = bag()
+        val id = bag.pouch.activeProject() ?: return
+        val bytes = try {
+            bag.open(id)
+        } catch (_: Exception) {
+            return
+        }
+        try {
+            val loaded = try {
+                TBarProject.parse(bytes)
+            } catch (e: Exception) {
+                Log.e("TBarViewModel", "active project parse failed", e)
+                emptyList()
+            }
+            weldPaths.clear()
+            weldPaths.addAll(loaded)
+            if (weldPaths.isEmpty()) addWeldPath()
+            selectedWeldPathIndex = 0
+            pouchProjectId = id
+            currentProjectName = bag.pouch.exportClosures().firstOrNull { it.assetId == id }?.name
+            bindPouchProcesses(weldPaths)
+        } finally {
+            Wm2.zero(bytes)
+        }
+        refreshPouchLists()
+    }
+
+    fun activatePouchProject(id: UUID) {
+        try {
+            bag().activate(id)
+            syncFromPouch()
+        } catch (e: Exception) {
+            viewModelScope.launch { _toastEvent.emit(e.message ?: "无法激活工程") }
+        }
+    }
+
+    fun refreshPouchLists() {
+        val bag = runCatching { bag() }.getOrNull() ?: return
+        val active = bag.pouch.activeProject()
+        pouchProjects.clear()
+        bag.pouch.exportClosures().filter { it.kind == Pouch.KIND_PROJECT }.forEach {
+            pouchProjects.add(ProjectChoice(it.assetId, it.name, it.revision, it.assetId == active))
+        }
+        pouchProcesses.clear()
+        pouchProcesses.addAll(PouchProcessSource(bag.pouch).list())
+    }
+
+    fun currentGapBands(): List<GapBand> =
+        (currentActiveWeldPath?.gapBands ?: emptyList()).sortedWith(compareBy({ it.layer }, { it.minGap }))
+
+    fun bindGapBandProcess(bandIndex: Int, pass: TBarPass, processId: UUID?) {
+        val path = currentActiveWeldPath ?: return
+        val bands = path.gapBands.toMutableList()
+        if (bandIndex !in bands.indices) return
+        val idStr = processId?.toString().orEmpty()
+        if (processId != null && processSource().open(processId) == null) {
+            missingProcessMessage = "闭包里没有这条工艺"
+            isMissingProcessDialogVisible = true
+            return
+        }
+        val old = bands[bandIndex]
+        bands[bandIndex] = if (pass == TBarPass.ROOT) {
+            old.copy(rootProcessId = idStr)
+        } else {
+            old.copy(capProcessId = idStr)
+        }
+        weldPaths[selectedWeldPathIndex] = path.copy(gapBands = bands)
+        saveCurrentProject()
     }
 
     private fun validateProcessFiles(paths: List<WeldPath>) {
-        val missingPaths = mutableListOf<String>()
-        // Use a copy to iterate to avoid ConcurrentModificationException when modifying weldPaths
-        val pathsCopy = paths.toList()
-        pathsCopy.forEachIndexed { index, weldPath ->
-            if (weldPath.processPath.isNotEmpty()) {
-                val process = processManager.loadProcess(weldPath.processPath)
-                if (process != null) {
-                    if (paths === weldPaths) {
-                        weldPaths[index] = weldPath.copy(process = process)
-                    }
-                } else {
-                    missingPaths.add("焊道 ${weldPath.name}: ${weldPath.processPath}")
-                }
-            }
-            weldPath.extraProcesses.forEachIndexed { extraIdx, slot ->
-                if (slot.processPath.isNotEmpty()) {
-                    val extraProcess = processManager.loadProcess(slot.processPath)
-                    if (extraProcess != null) {
-                        weldPath.extraProcesses[extraIdx] = slot.copy(process = extraProcess)
-                    } else {
-                        missingPaths.add("焊道 ${weldPath.name} 附加工艺: ${slot.processPath}")
-                    }
-                }
-            }
-        }
-        
-        if (missingPaths.isNotEmpty()) {
-            missingProcessMessage = "以下工艺文件未找到，请重新选择：\n" + missingPaths.joinToString("\n")
-            isMissingProcessDialogVisible = true
-        }
+        bindPouchProcesses(paths)
     }
 
     fun saveCurrentProject() {
+        if (pouchProjectId != null) return
         val path = currentProjectName ?: return
         projectManager.saveStandardProject(path, weldPaths, "tbar")
     }
@@ -1447,7 +1483,7 @@ class TBarViewModel(application: Application) : AndroidViewModel(application), W
             WeldPoint(UUID.randomUUID().toString(), WeldPointType.END_SAFE)
         )
         val process = WeldProcess()
-        val weldPath = WeldPath(id, name, points, process)
+        val weldPath = WeldPath(id, name, points, process, gapBands = weldPaths.firstOrNull()?.gapBands.orEmpty())
         weldPaths.add(weldPath)
         selectedWeldPathIndex = weldPaths.lastIndex
         saveCurrentProject()
@@ -1501,7 +1537,7 @@ class TBarViewModel(application: Application) : AndroidViewModel(application), W
         val refPathA = weldPaths.getOrNull(refPathAIndex) ?: return
         val refPathB = weldPaths.getOrNull(refPathBIndex) ?: return
         val baseProcess = process ?: refPathA.process
-        val baseProcessPath = processPath?.takeIf { it.isNotEmpty() } ?: refPathA.processPath
+        val baseProcessId = refPathA.processId
 
         val cornerPose: Pose
         
@@ -1563,7 +1599,7 @@ class TBarViewModel(application: Application) : AndroidViewModel(application), W
 
         val newPaths = com.gbndt.shijiaoqi.utils.CornerWeldGenerator.generateCornerPaths(
             baseProcess = baseProcess,
-            baseProcessPath = baseProcessPath,
+            processId = baseProcessId,
             cornerPose = cornerPose,
             safeStartPose = safeStartPose,
             safeEndPose = safeEndPose,
@@ -1756,72 +1792,13 @@ class TBarViewModel(application: Application) : AndroidViewModel(application), W
         if (aL == null || bL == null || aU == null || bU == null) return "坡口点未采齐"
         val g0 = TBarGeometry.gapAt(aL, aU, bL, bU, 0.0)
         val g1 = TBarGeometry.gapAt(aL, aU, bL, bU, 1.0)
-        val folders = try { loadTBarGapFolders() } catch (e: Exception) { emptyList() }
-        val f0 = TBarGeometry.matchFolder(g0, folders, 1)?.name ?: "无匹配"
-        val f1 = TBarGeometry.matchFolder(g1, folders, 1)?.name ?: "无匹配"
+        val bands = path.gapBands
+        val f0 = TBarRun.matchBand(g0, bands, 1)?.let { TBarRun.bandLabel(it) } ?: "无匹配"
+        val f1 = TBarRun.matchBand(g1, bands, 1)?.let { TBarRun.bandLabel(it) } ?: "无匹配"
         return "起点间隙 ${"%.1f".format(g0)} mm($f0)  终点间隙 ${"%.1f".format(g1)} mm($f1)  先打底后盖面"
     }
 
-    fun resolveTBarProcessFolder(): String {
-        val candidates = listOf(
-            TBarGeometry.PROCESS_FOLDER,
-            "standard/${TBarGeometry.PROCESS_FOLDER_NAME}",
-            TBarGeometry.PROCESS_FOLDER_NAME,
-            "Standard",
-            "standard"
-        )
-        for (path in candidates) {
-            if (hasTBarGapFolders(path)) return path
-        }
-        listOf("Standard", "standard").forEach { root ->
-            processManager.listContents(root).filter { it.isDirectory }.forEach { folder ->
-                if (hasTBarGapFolders(folder.path)) return folder.path
-            }
-        }
-        return TBarGeometry.PROCESS_FOLDER
-    }
-
-    private fun hasTBarGapFolders(path: String): Boolean {
-        return processManager.listContents(path).any { it.isDirectory && TBarGeometry.parseGapProcessName(it.name) != null }
-    }
-
-    fun loadTBarGapFolders(): List<TBarGapFolder> {
-        val items = processManager.listContents(resolveTBarProcessFolder())
-        val result = mutableListOf<TBarGapFolder>()
-        items.filter { it.isDirectory }.forEach { folder ->
-            val parsed = TBarGeometry.parseGapProcessName(folder.name) ?: return@forEach
-            val children = processManager.listContents(folder.path).filter { it.isProcess }
-            val rootItem = children.firstOrNull { it.name.contains("打底") } ?: return@forEach
-            val capItem = children.firstOrNull { it.name.contains("盖面") } ?: return@forEach
-            val rootProcess = processManager.loadProcess(rootItem.path) ?: return@forEach
-            val capProcess = processManager.loadProcess(capItem.path) ?: return@forEach
-            result.add(
-                TBarGapFolder(
-                    name = folder.name,
-                    layer = parsed.first,
-                    minGap = parsed.second,
-                    maxGap = parsed.third,
-                    folderPath = folder.path,
-                    rootProcess = rootProcess,
-                    rootPath = rootItem.path,
-                    capProcess = capProcess,
-                    capPath = capItem.path
-                )
-            )
-        }
-        return result
-    }
-
-    fun saveTBarPass(folder: TBarGapFolder, pass: TBarPass, process: WeldProcess) {
-        val srcPath = if (pass == TBarPass.ROOT) folder.rootPath else folder.capPath
-        val file = File(srcPath)
-        val dir = file.parent?.replace("\\", "/") ?: TBarGeometry.PROCESS_FOLDER
-        val fileName = file.nameWithoutExtension
-        processManager.saveProcess(dir, process.copy(name = fileName))
-        viewModelScope.launch {
-            _toastEvent.emit("已保存 $fileName")
-        }
-    }
+    fun resolveTBarProcessFolder(): String = ""
 
     private fun rebuildTBarComputedPoints(path: WeldPath) {
         val startSafe = path.points.firstOrNull { it.type == WeldPointType.START_SAFE }?.pose
@@ -2626,92 +2603,44 @@ class TBarViewModel(application: Application) : AndroidViewModel(application), W
             ?: throw IllegalStateException("请先采集B上")
         val startPose = start.pose ?: throw IllegalStateException("起点未计算，请采齐坡口点和安全点")
         val endPose = end.pose ?: throw IllegalStateException("终点未计算，请采齐坡口点和安全点")
-        val folders = loadTBarGapFolders()
-        if (folders.none { it.layer == 1 }) {
-            throw IllegalStateException("未找到工艺 ${resolveTBarProcessFolder()} 下的 1H-最小-最大 文件夹")
+        if (weldPath.gapBands.none { it.layer == 1 }) {
+            throw IllegalStateException("当前工程没有 1H 间隙带")
         }
-        val rootSegments = TBarGeometry.buildSegments(aL, bL, aU, bU, startPose, endPose, folders, TBarPass.ROOT, 1)
-        val capSegments = TBarGeometry.buildSegments(aL, bL, aU, bU, startPose, endPose, folders, TBarPass.CAP, 1)
-        if (rootSegments.isEmpty() || capSegments.isEmpty()) {
-            throw IllegalStateException("未能生成打底/盖面焊接段")
-        }
-
         val startSafeIdx = weldPath.points.indexOfFirst { it.type == WeldPointType.START_SAFE }
         val startIdx = weldPath.points.indexOfFirst { it.type == WeldPointType.START }
-        val endIdx = weldPath.points.indexOfFirst { it.type == WeldPointType.END }
         val endSafeIdx = weldPath.points.indexOfFirst { it.type == WeldPointType.END_SAFE }
-
-        var id = globalCommandId++
-        commandIdMap[id] = Triple(pathIndexForMap, startSafeIdx, -1)
-        appendTaughtMoveL(builder, startSafe, toolIndex, 100, id)
-
-        appendTBarPass(builder, rootSegments, pathIndexForMap, toolIndex, startIdx, endIdx, returnToStart = true)
-        appendTBarPass(builder, capSegments, pathIndexForMap, toolIndex, startIdx, endIdx, returnToStart = false)
-
-        id = globalCommandId++
-        commandIdMap[id] = Triple(pathIndexForMap, endSafeIdx, -1)
-        appendTaughtMoveL(builder, endSafe, toolIndex, 100, id)
-
-        weldPath.process = capSegments.first().process
-        weldPath.processPath = capSegments.first().processPath
-    }
-
-    private fun weldMoveSpeed(process: com.gbndt.shijiaoqi.data.models.WeldProcess): Int {
-        return if (isSimulating) {
-            val multiplier = when (speedMode) {
-                "3倍" -> 3
-                "5倍" -> 5
-                else -> 1
+        fun scriptPt(pt: WeldPoint) = ScriptPoint(pt.type, pt.pose!!, pt.jointAngles.orEmpty())
+        val lines = TBarLua.job(
+            listOf(
+                TBarScriptPath(
+                    startSafe = scriptPt(startSafe),
+                    endSafe = scriptPt(endSafe),
+                    aLower = aL,
+                    bLower = bL,
+                    aUpper = aU,
+                    bUpper = bU,
+                    startPose = startPose,
+                    endPose = endPose,
+                    bands = weldPath.gapBands,
+                    enabled = true,
+                )
+            ),
+            boundProcesses.mapKeys { it.key.toString() },
+            welding = isWelding,
+            simulating = isSimulating,
+            speedMode = speedMode,
+            toolIndex = toolIndex,
+            extAxis = isExtAxisEnabled,
+        )
+        lines.forEach { line ->
+            val id = globalCommandId++
+            val pointIdx = when {
+                line.contains("ARCStart") || line.contains("WeaveStart") -> startIdx
+                line.contains("ARCEnd") || line.contains("WeaveEnd") -> endSafeIdx
+                else -> startSafeIdx
             }
-            (process.speed * multiplier).toInt().coerceAtLeast(1)
-        } else {
-            process.speed.toInt().coerceAtLeast(1)
-        }
-    }
-
-    private fun appendTBarPass(
-        builder: BatchCommandBuilder,
-        segments: List<com.gbndt.shijiaoqi.utils.TBarSegment>,
-        pathIndexForMap: Int,
-        toolIndex: Int,
-        startIdx: Int,
-        endIdx: Int,
-        returnToStart: Boolean
-    ) {
-        val first = segments.first()
-        applyProcessParams(builder, first.process, onlineWeave = false)
-
-        var id = globalCommandId++
-        commandIdMap[id] = Triple(pathIndexForMap, startIdx, -1)
-        appendIkMoveL(builder, first.startPose, toolIndex, 100, id)
-
-        if (isWelding) {
-            builder.appendCmd("ARCStart(0,2,10000)", globalCommandId++)
-        }
-        if (first.process.oscillation.type != "无摆动") {
-            builder.appendCmd("WeaveStart(3)", globalCommandId++)
-        }
-
-        segments.forEachIndexed { segIndex, seg ->
-            if (segIndex > 0) {
-                applyProcessParams(builder, seg.process, onlineWeave = true)
-            }
-            id = globalCommandId++
-            commandIdMap[id] = Triple(pathIndexForMap, if (segIndex == segments.lastIndex) endIdx else startIdx, -1)
-            appendIkMoveL(builder, seg.endPose, toolIndex, weldMoveSpeed(seg.process), id)
-        }
-
-        if (isWelding) {
-            builder.appendCmd("ARCEnd(0,2,10000)", globalCommandId++)
-        }
-        if (segments.any { it.process.oscillation.type != "无摆动" }) {
-            builder.appendCmd("WeaveEnd(0)", globalCommandId++)
-        }
-
-        if (returnToStart) {
-            id = globalCommandId++
-            commandIdMap[id] = Triple(pathIndexForMap, startIdx, -1)
-            appendIkMoveL(builder, first.startPose, toolIndex, 100, id)
+            commandIdMap[id] = Triple(pathIndexForMap, pointIdx, -1)
+            builder.appendCmd(line, id)
         }
     }
 
@@ -2720,77 +2649,31 @@ class TBarViewModel(application: Application) : AndroidViewModel(application), W
         stopControllerActive()
         if (weldPaths.isEmpty()) return
 
-        // Validate Processes for ALL enabled paths
-        val missingPaths = mutableListOf<String>()
-        weldPaths.forEach { weldPath ->
-            if (weldPath.isEnabled && weldPath.processPath.isNotEmpty()) {
-                if (!processManager.checkProcessExists(weldPath.processPath)) {
-                    missingPaths.add("焊道 ${weldPath.name}: ${weldPath.processPath}")
-                }
-            }
-            weldPath.extraProcesses.forEach { slot ->
-                if (slot.isEnabled && slot.processPath.isNotEmpty()) {
-                    if (!processManager.checkProcessExists(slot.processPath)) {
-                        missingPaths.add("焊道 ${weldPath.name} 附加工艺: ${slot.processPath}")
-                    }
-                }
-            }
-        }
-        
-        if (missingPaths.isNotEmpty()) {
-            missingProcessMessage = "以下启用焊道的工艺文件未找到，无法发送指令：\n" + missingPaths.joinToString("\n")
-            isMissingProcessDialogVisible = true
-            return
-        }
+        if (!bindPouchProcesses(weldPaths)) return
 
         val toolIndex = try {
             toolCoordinateSystem.removePrefix("工具").toInt()
         } catch (e: Exception) { 1 }
 
         executionQueue.clear()
-        
-        // Clear previous mapping
         commandIdMap.clear()
         commandLineMap.clear()
-        
-        // --- Global Speed Command ---
-        // SetSpeed(10) - Fixed command at the start
-        val globalSpeedCmd = "SetSpeed(10)"
-        
-        // Use a single BatchCommandBuilder for all paths
+
         val batchBuilder = BatchCommandBuilder("All Paths")
-        batchBuilder.appendCmd(globalSpeedCmd)
-        
+
         weldPaths.forEachIndexed { pathIndex, weldPath ->
-            val runMain = weldPath.isEnabled
-            val runExtras = weldPath.extraProcesses.any { it.isEnabled && it.processPath.isNotEmpty() }
-            if (!runMain && !runExtras) {
-                return@forEachIndexed
-            }
-
-            if (resumePathIndex != -1 && pathIndex < resumePathIndex) {
-                return@forEachIndexed
-            }
-
-            val startIndex = if (resumePathIndex != -1 && pathIndex == resumePathIndex && resumePointIndex != -1) {
-                resumePointIndex
-            } else {
-                0
-            }
-
-            if (runMain) {
-                try {
-                    appendTBarCommandsForPath(weldPath, batchBuilder, pathIndex, toolIndex)
-                } catch (e: Exception) {
-                    missingProcessMessage = "焊道 ${weldPath.name}: ${e.message}"
-                    isMissingProcessDialogVisible = true
-                    return
-                }
+            if (!weldPath.isEnabled) return@forEachIndexed
+            if (resumePathIndex != -1 && pathIndex < resumePathIndex) return@forEachIndexed
+            try {
+                appendTBarCommandsForPath(weldPath, batchBuilder, pathIndex, toolIndex)
+            } catch (e: Exception) {
+                missingProcessMessage = "焊道 ${weldPath.name}: ${e.message}"
+                isMissingProcessDialogVisible = true
+                return
             }
         }
-        
-        batchBuilder.flush()
 
+        batchBuilder.flush()
         startBatchExecution()
     }
 
@@ -3149,6 +3032,7 @@ class TBarViewModel(application: Application) : AndroidViewModel(application), W
         stopPointJoints = null
         stopPointPathIndex = -1
         stopPointIndex = -1
+        markPouchWelding(true)
         
         sendBatchMoveLCommands()
     }
@@ -3204,6 +3088,7 @@ class TBarViewModel(application: Application) : AndroidViewModel(application), W
             }
         }
 
+        markPouchWelding(true)
         sendBatchMoveLCommands()
     }
 
@@ -3214,11 +3099,9 @@ class TBarViewModel(application: Application) : AndroidViewModel(application), W
         if (!isWelding && !isSimulating) return
 
         viewModelScope.launch {
-            val msg = "/f/bIII77III103III5IIIPauseIII/b/f"
-            socketManager.sendControlCommand(msg)
-            
-            kotlinx.coroutines.delay(1000)
-            sendManualCommand(303, "Mode(1)")
+            socketManager.sendControlCommand(WeldRun.pause())
+            kotlinx.coroutines.delay(WeldRun.AFTER_PAUSE_MS)
+            socketManager.sendControlCommand(RobotCommands.modeManual())
         }
 
         isPaused = true
@@ -3356,15 +3239,11 @@ class TBarViewModel(application: Application) : AndroidViewModel(application), W
             kotlinx.coroutines.delay(50)
 
             if (weldingBreakOffState == "中断") {
-                val reWeldMsg = "/f/bIII4III806III33IIIWeldingStartReWeldAfterBreakOff()III/b/f"
-                socketManager.sendControlCommand(reWeldMsg)
-                
+                socketManager.sendControlCommand(WeldRun.reWeldAfterBreak())
                 kotlinx.coroutines.delay(100)
-                val msg = "/f/bIII77III104III6IIIRESUMEIII/b/f"
-                socketManager.sendControlCommand(msg)
+                socketManager.sendControlCommand(WeldRun.resume())
             } else {
-                val msg = "/f/bIII77III104III6IIIRESUMEIII/b/f"
-                socketManager.sendControlCommand(msg)
+                socketManager.sendControlCommand(WeldRun.resume())
             }
             
             // Give hardware time to transition to running state
@@ -3403,19 +3282,17 @@ class TBarViewModel(application: Application) : AndroidViewModel(application), W
         programHasStarted = false
         pauseState = null
         weldingTimerJob?.cancel()
+        markPouchWelding(false)
         
         // Send STOP and switch to Manual Mode
         viewModelScope.launch {
-            val msg = "/f/bIII7III102III4IIISTOPIII/b/f"
-            socketManager.sendControlCommand(msg)
-            
+            socketManager.sendControlCommand(WeldRun.stop())
             kotlinx.coroutines.delay(1000)
-            sendManualCommand(303, "Mode(1)")
+            socketManager.sendControlCommand(RobotCommands.modeManual())
         }
         
         if (weldingBreakOffState == "中断") {
-            val abortMsg = "/f/bIII4III807III31IIIWeldingAbortWeldAfterBreakOff()III/b/f"
-            socketManager.sendControlCommand(abortMsg)
+            socketManager.sendControlCommand(WeldRun.abortAfterBreak())
         }
         
         saveAppSettings()
