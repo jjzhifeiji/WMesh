@@ -36,18 +36,6 @@
             </intent-filter>
         </activity>
 
-        <activity
-            android:name=".ui.welding.multilayer.MultiLayerActivity"
-            android:exported="false"
-            android:theme="@style/Theme.ShiJiaoQi"
-            android:screenOrientation="landscape" />
-
-        <activity
-            android:name=".ui.welding.tbar.TBarActivity"
-            android:exported="false"
-            android:theme="@style/Theme.ShiJiaoQi"
-            android:screenOrientation="landscape" />
-
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"

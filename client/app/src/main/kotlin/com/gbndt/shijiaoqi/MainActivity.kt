@@ -10,25 +10,14 @@ import android.util.Log
 import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.MotionEvent
-import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.material3.Button
-import androidx.compose.material3.Text
-import androidx.compose.ui.unit.sp
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -36,54 +25,24 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
-import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.launch
-import com.gbndt.shijiaoqi.ui.component.CustomStatusBar
-import com.gbndt.shijiaoqi.ui.project.PouchProcessScreen
-import com.gbndt.shijiaoqi.ui.project.PouchProjectScreen
-import com.gbndt.shijiaoqi.ui.welding.ToolEditDialog
-import com.gbndt.shijiaoqi.ui.welding.ToolListDialog
-import com.gbndt.shijiaoqi.ui.welding.PositionSelectionDialog
-import com.gbndt.shijiaoqi.ui.welding.SpeedSelectionDialog
-import com.gbndt.shijiaoqi.ui.welding.InstallPosSelectionDialog
-import com.gbndt.shijiaoqi.ui.welding.single.WeldPathScreen
-import com.gbndt.shijiaoqi.ui.login.LoginGate
-import com.gbndt.shijiaoqi.ui.login.SplashScreen
-import com.gbndt.shijiaoqi.ui.component.UpdateDialog
-import com.gbndt.shijiaoqi.ui.robottest.RobotTestScreen
-import com.gbndt.shijiaoqi.ui.robottest.RobotTestViewModel
 import com.gbndt.shijiaoqi.data.repository.SessionRepository
 import com.gbndt.shijiaoqi.data.session.DeviceSerialHolder
+import com.gbndt.shijiaoqi.ui.login.LoginGate
+import com.gbndt.shijiaoqi.ui.navigation.LocalWeldInput
+import com.gbndt.shijiaoqi.ui.navigation.WMeshNavHost
 import com.gbndt.shijiaoqi.ui.theme.ShiJiaoQiTheme
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.hilt.navigation.compose.hiltViewModel
+import com.gbndt.shijiaoqi.ui.welding.WeldViewModelInterface
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
-import com.gbndt.shijiaoqi.ui.welding.single.WeldPathViewModel
 
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.ui.text.font.FontWeight
-
-sealed class AppScreen {
-    object SplashScreen : AppScreen()
-    object ModeSelection : AppScreen()
-    object WeldPath : AppScreen()
-    object ProjectManagement : AppScreen()
-    data class ProcessManagement(val isSelectionMode: Boolean = false) : AppScreen()
-    object RobotTest : AppScreen()
-}
-
+/** 唯一的 Activity：权限、全屏、手柄按键，其余都交给导航图。 */
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
     @Inject
@@ -117,46 +76,48 @@ class MainActivity : ComponentActivity() {
     // Long press handling for Button Y
     private val longPressHandler = android.os.Handler(android.os.Looper.getMainLooper())
     private val longPressRunnable = Runnable {
-        if (::viewModel.isInitialized) {
+        if (activeWeld != null) {
             Log.d("GameController", "Button Y Long Pressed - Executing MoveL")
-            viewModel.sendMoveLCommand()
+            activeWeld?.sendMoveLCommand()
         }
     }
     private var isLongPressTriggered = false
 
     // Long press handling for Button B (simulate welding)
     private val longPressBRunnable = Runnable {
-        if (::viewModel.isInitialized && 按钮R1 == 0) {
+        if (activeWeld != null && 按钮R1 == 0) {
             Log.d("GameController", "Long Press B - Simulate Welding")
-            viewModel.startSimulation()
+            activeWeld?.startSimulation()
         }
     }
 
     // Long press handling for Button B + R1 (arc welding)
     private val longPressBR1Runnable = Runnable {
-        if (::viewModel.isInitialized && 按钮R1 == 1) {
+        if (activeWeld != null && 按钮R1 == 1) {
             Log.d("GameController", "Long Press B + R1 - Arc Welding")
-            viewModel.stopControllerActive()
-            viewModel.startArcWelding()
+            activeWeld?.stopControllerActive()
+            activeWeld?.startArcWelding()
         }
     }
 
-    private lateinit var viewModel: WeldPathViewModel
+    /** 当前在屏的焊接 ViewModel；手柄按键只发给它。 */
+    @Volatile
+    var activeWeld: WeldViewModelInterface? = null
 
     private fun updateViewModelInput() {
-        if (::viewModel.isInitialized) {
-            viewModel.joyX1 = joy_X1
-            viewModel.joyY1 = joy_Y1
-            viewModel.joyX2 = joy_X2
-            viewModel.joyY2 = joy_Y2
+        if (activeWeld != null) {
+            activeWeld?.joyX1 = joy_X1
+            activeWeld?.joyY1 = joy_Y1
+            activeWeld?.joyX2 = joy_X2
+            activeWeld?.joyY2 = joy_Y2
             
-            viewModel.btnUp = 按钮上 == 1
-            viewModel.btnDown = 按钮下 == 1
-            viewModel.btnLeft = 按钮左 == 1
-            viewModel.btnRight = 按钮右 == 1
-            viewModel.btnL1 = 按钮L1 == 1
-            viewModel.btnL2 = 按钮L2 == 1
-            viewModel.btnR2 = 按钮R2 == 1
+            activeWeld?.btnUp = 按钮上 == 1
+            activeWeld?.btnDown = 按钮下 == 1
+            activeWeld?.btnLeft = 按钮左 == 1
+            activeWeld?.btnRight = 按钮右 == 1
+            activeWeld?.btnL1 = 按钮L1 == 1
+            activeWeld?.btnL2 = 按钮L2 == 1
+            activeWeld?.btnR2 = 按钮R2 == 1
         }
     }
 
@@ -186,8 +147,8 @@ class MainActivity : ComponentActivity() {
                         KeyEvent.KEYCODE_BUTTON_A -> { 
                             按钮A = 1
                             buttonName = "A" 
-                            if (::viewModel.isInitialized) {
-                                viewModel.stopWelding(true)
+                            if (activeWeld != null) {
+                                activeWeld?.stopWelding(true)
                             }
                         }
                         KeyEvent.KEYCODE_BUTTON_B -> { 
@@ -200,8 +161,8 @@ class MainActivity : ComponentActivity() {
                         KeyEvent.KEYCODE_BUTTON_X -> { 
                             按钮X = 1
                             buttonName = "X"
-                            if (::viewModel.isInitialized) {
-                                viewModel.collectData()
+                            if (activeWeld != null) {
+                                activeWeld?.collectData()
                             }
                         }
                         KeyEvent.KEYCODE_BUTTON_Y -> { 
@@ -224,18 +185,18 @@ class MainActivity : ComponentActivity() {
                         KeyEvent.KEYCODE_BUTTON_START -> { 
                             按钮Start = 1
                             buttonName = "Start"
-                            if (::viewModel.isInitialized) {
-                                viewModel.toggleControllerActive()
+                            if (activeWeld != null) {
+                                activeWeld?.toggleControllerActive()
                             }
                         }
                         KeyEvent.KEYCODE_BUTTON_SELECT -> {
                             按钮Select = 1
                             buttonName = "Select"
-                            if (::viewModel.isInitialized) {
+                            if (activeWeld != null) {
                                 this@MainActivity.lifecycleScope.launch {
-                                    viewModel.sendManualCommand(303, "Mode(1)")
+                                    activeWeld?.sendManualCommand(303, "Mode(1)")
                                     kotlinx.coroutines.delay(50)
-                                    viewModel.sendManualCommand(302, "RobotEnable(1)")
+                                    activeWeld?.sendManualCommand(302, "RobotEnable(1)")
                                 }
                             }
                         }
@@ -398,290 +359,43 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        // Hide system bars and enable full screen
+        // 全屏、隐藏系统栏
+        WindowCompat.setDecorFitsSystemWindows(window, false)
         val windowInsetsController = WindowCompat.getInsetsController(window, window.decorView)
         windowInsetsController.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         windowInsetsController.hide(WindowInsetsCompat.Type.systemBars())
 
         setContent {
             ShiJiaoQiTheme {
-                // A surface container using the 'background' color from the theme
                 Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-                    viewModel = hiltViewModel<WeldPathViewModel>()
-                    val robotTestViewModel = hiltViewModel<RobotTestViewModel>()
-                    val context = LocalContext.current
-                    
-                    LaunchedEffect(Unit) {
-                        viewModel.toastEvent.collect { message ->
-                            Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
-                        }
-                    }
                     val session by sessionRepository.state.collectAsStateWithLifecycle()
-                    LaunchedEffect(viewModel.machineCode, session.loggedIn) {
-                        deviceSerial.set(viewModel.machineCode)
-                        if (session.loggedIn && viewModel.machineCode.isNotBlank()) {
-                            runCatching { sessionRepository.matchArm(viewModel.machineCode) }
-                                .onFailure {
-                                    Toast.makeText(context, sessionRepository.state.value.error ?: it.message ?: "设备不匹配", Toast.LENGTH_SHORT).show()
-                                }
-                            viewModel.syncFromPouch()
-                        }
-                    }
-                    LaunchedEffect(session.loggedIn, session.armMatched) {
-                        if (session.loggedIn) viewModel.syncFromPouch()
-                    }
-
-                    var currentScreen by remember { mutableStateOf<AppScreen>(AppScreen.SplashScreen) }
-
-                    if (session.loggedIn) {
-                        ToolListDialog(
-                            viewModel = viewModel,
-                            onDismiss = { viewModel.isToolListDialogVisible = false }
-                        )
-                        ToolEditDialog(viewModel = viewModel)
-                        PositionSelectionDialog(
-                            viewModel = viewModel,
-                            onDismiss = { viewModel.isPositionDialogVisible = false }
-                        )
-                        SpeedSelectionDialog(
-                            viewModel = viewModel,
-                            onDismiss = { viewModel.isSpeedDialogVisible = false }
-                        )
-                        InstallPosSelectionDialog(
-                            viewModel = viewModel,
-                            onDismiss = { viewModel.isInstallPosDialogVisible = false }
-                        )
-                    }
+                    var splashDone by remember { mutableStateOf(false) }
+                    val register = remember { { vm: WeldViewModelInterface? -> activeWeld = vm } }
 
                     Box(modifier = Modifier.fillMaxSize()) {
-                        if (currentScreen is AppScreen.SplashScreen) {
-                            SplashScreen(onSplashFinished = { currentScreen = AppScreen.ModeSelection })
-                        } else if (!session.loggedIn) {
-                            LoginGate()
-                        } else if (currentScreen is AppScreen.ModeSelection) {
-                            ModeSelectionScreen(
-                                onSingleLayerClick = { currentScreen = AppScreen.WeldPath },
-                                onMultiLayerClick = {
-                                    val intent = Intent(this@MainActivity, com.gbndt.shijiaoqi.ui.welding.multilayer.MultiLayerActivity::class.java)
-                                    startActivity(intent)
-                                },
-                                onTBarClick = {
-                                    val intent = Intent(this@MainActivity, com.gbndt.shijiaoqi.ui.welding.tbar.TBarActivity::class.java)
-                                    startActivity(intent)
-                                },
-                                onRobotTestClick = { currentScreen = AppScreen.RobotTest }
+                        CompositionLocalProvider(LocalWeldInput provides register) {
+                            WMeshNavHost(
+                                session = sessionRepository,
+                                deviceSerial = deviceSerial,
+                                onSplashFinished = { splashDone = true },
                             )
-                        } else if (currentScreen is AppScreen.RobotTest) {
-                            androidx.activity.compose.BackHandler {
-                                currentScreen = AppScreen.ModeSelection
-                            }
-                            RobotTestScreen(
-                                viewModel = robotTestViewModel,
-                                onBack = { currentScreen = AppScreen.ModeSelection }
-                            )
-                        } else {
-                            Column(modifier = Modifier.fillMaxSize()) {
-                                // Custom Status Bar at the top
-                                CustomStatusBar(
-                                    viewModel = viewModel,
-                                    onProjectClick = { currentScreen = AppScreen.ProjectManagement }
-                                )
-                                
-                                // Screen content takes the rest of the space
-                                Box(modifier = Modifier.weight(1f)) {
-                                    when (val screen = currentScreen) {
-                                        is AppScreen.WeldPath -> {
-                                            androidx.activity.compose.BackHandler {
-                                                currentScreen = AppScreen.ModeSelection
-                                            }
-                                            WeldPathScreen(
-                                                viewModel = viewModel,
-                                                onNavigateToProjectManagement = { currentScreen = AppScreen.ProjectManagement },
-                                                onNavigateToProcessManagement = { isSelectionMode -> 
-                                                    currentScreen = AppScreen.ProcessManagement(isSelectionMode) 
-                                                }
-                                            )
-                                        }
-                                        is AppScreen.ProjectManagement -> {
-                                            PouchProjectScreen(
-                                                projects = viewModel.pouchProjects,
-                                                onRefresh = { viewModel.refreshPouchLists() },
-                                                onOpen = {
-                                                    viewModel.activatePouchProject(it)
-                                                    currentScreen = AppScreen.WeldPath
-                                                },
-                                                onBack = { currentScreen = AppScreen.WeldPath }
-                                            )
-                                        }
-                                        is AppScreen.ProcessManagement -> {
-                                            PouchProcessScreen(
-                                                processes = viewModel.pouchProcesses,
-                                                picking = screen.isSelectionMode,
-                                                onRefresh = { viewModel.refreshPouchLists() },
-                                                onPick = { id ->
-                                                    if (screen.isSelectionMode) viewModel.bindProcessFromPouch(id)
-                                                    currentScreen = AppScreen.WeldPath
-                                                },
-                                                onBack = {
-                                                    viewModel.cancelAddProcessVariant()
-                                                    currentScreen = AppScreen.WeldPath
-                                                },
-                                            )
-                                        }
-                                        else -> {}
-                                    }
-                                }
-                            }
+                        }
 
-                             // Update Dialog
-                             if (viewModel.isUpdateDialogVisible && viewModel.updateInfo != null) {
-                                 UpdateDialog(
-                                     updateInfo = viewModel.updateInfo!!,
-                                     onConfirm = { viewModel.startUpdateDownload() },
-                                     onDismiss = { viewModel.isUpdateDialogVisible = false }
-                                 )
-                             }
-                         }
-
-                        // Controller Active Indicator (Red Border)
-                        if (viewModel.isControllerActive) {
+                        // 未登录就盖住整屏，开屏动画期间不盖
+                        if (splashDone && !session.loggedIn) {
                             Box(
                                 modifier = Modifier
                                     .fillMaxSize()
-                                    .border(8.dp, Color.Red)
-                                    .zIndex(100f) // Ensure it's on top
-                            )
+                                    .background(Color.Black.copy(alpha = 0.5f))
+                                    .zIndex(200f),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                LoginGate()
+                            }
                         }
                     }
                 }
             }
-        }
-    }
-}
-
-@Composable
-fun ModeSelectionScreen(
-    onSingleLayerClick: () -> Unit,
-    onMultiLayerClick: () -> Unit,
-    onTBarClick: () -> Unit,
-    onRobotTestClick: () -> Unit
-) {
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(
-                brush = androidx.compose.ui.graphics.Brush.verticalGradient(
-                    colors = listOf(
-                        Color(0xFFF5F7FA),
-                        Color(0xFFC3CFE2)
-                    )
-                )
-            ),
-        contentAlignment = Alignment.Center
-    ) {
-        Column(
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center
-        ) {
-            Text(
-                text = "焊接作业模式选择",
-                fontSize = 32.sp,
-                fontWeight = FontWeight.Bold,
-                color = Color(0xFF2C3E50),
-                modifier = Modifier.padding(bottom = 48.dp)
-            )
-
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(32.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                ModeCard(
-                    title = "单层单道",
-                    subtitle = "基础焊接示教",
-                    color = Color(0xFF4CAF50),
-                    onClick = onSingleLayerClick
-                )
-                
-                ModeCard(
-                    title = "多层多道",
-                    subtitle = "复杂堆焊示教",
-                    color = Color(0xFF2196F3),
-                    onClick = onMultiLayerClick
-                )
-
-                ModeCard(
-                    title = "T排对接",
-                    subtitle = "坡口对接焊接",
-                    color = Color(0xFF00897B),
-                    onClick = onTBarClick
-                )
-
-                // 发布时隐藏指令测试入口，需要时再打开
-                // ModeCard(
-                //     title = "指令测试",
-                //     subtitle = "机械臂指令调试",
-                //     color = Color(0xFFFF9800),
-                //     onClick = onRobotTestClick
-                // )
-            }
-        }
-    }
-}
-
-@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
-@Composable
-fun ModeCard(
-    title: String,
-    subtitle: String,
-    color: Color,
-    onClick: () -> Unit
-) {
-    Card(
-        onClick = onClick,
-        modifier = Modifier
-            .size(220.dp, 180.dp),
-        elevation = CardDefaults.cardElevation(defaultElevation = 6.dp),
-        colors = CardDefaults.cardColors(containerColor = Color.White),
-        shape = RoundedCornerShape(16.dp)
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(16.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center
-        ) {
-            // Icon placeholder - Circle with letter
-            Box(
-                modifier = Modifier
-                    .size(64.dp)
-                    .background(color.copy(alpha = 0.1f), androidx.compose.foundation.shape.CircleShape),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    text = title.take(1),
-                    fontSize = 32.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = color
-                )
-            }
-            
-            Spacer(modifier = Modifier.height(16.dp))
-            
-            Text(
-                text = title,
-                fontSize = 20.sp,
-                fontWeight = FontWeight.Bold,
-                color = Color(0xFF333333)
-            )
-            
-            Spacer(modifier = Modifier.height(4.dp))
-            
-            Text(
-                text = subtitle,
-                fontSize = 12.sp,
-                color = Color.Gray
-            )
         }
     }
 }

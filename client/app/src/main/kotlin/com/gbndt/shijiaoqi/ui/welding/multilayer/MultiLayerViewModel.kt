@@ -229,8 +229,8 @@ class MultiLayerViewModel @Inject constructor(
     
     // Multi-Layer State
     val multiLayerWeldPaths = mutableStateListOf<MultiLayerWeldPath>()
-    val pouchProjects = mutableStateListOf<ProjectChoice>()
-    val pouchProcesses = mutableStateListOf<ProcessChoice>()
+    override val pouchProjects = mutableStateListOf<ProjectChoice>()
+    override val pouchProcesses = mutableStateListOf<ProcessChoice>()
     private var pouchProjectId: UUID? = null
     var selectedMultiLayerPathIndex by mutableStateOf(0)
     var selectedPassIndex by mutableStateOf(-1) // -1 means Base Path, 0..N means Pass index
@@ -270,7 +270,7 @@ class MultiLayerViewModel @Inject constructor(
     
     // UI Events
     private val _toastEvent = MutableSharedFlow<String>()
-    val toastEvent = _toastEvent.asSharedFlow()
+    override val toastEvent = _toastEvent.asSharedFlow()
 
     private val _scrollToIndexEvent = MutableSharedFlow<Int>()
     val scrollToIndexEvent = _scrollToIndexEvent.asSharedFlow()
@@ -330,17 +330,17 @@ class MultiLayerViewModel @Inject constructor(
 
     // Joystick States
     override var isControllerActive by mutableStateOf(false)
-    var joyX1 by mutableStateOf(0f)
-    var joyY1 by mutableStateOf(0f)
-    var joyX2 by mutableStateOf(0f)
-    var joyY2 by mutableStateOf(0f)
-    var btnUp by mutableStateOf(false)
-    var btnDown by mutableStateOf(false)
-    var btnLeft by mutableStateOf(false)
-    var btnRight by mutableStateOf(false)
-    var btnL1 by mutableStateOf(false)
-    var btnL2 by mutableStateOf(false)
-    var btnR2 by mutableStateOf(false)
+    override var joyX1 by mutableStateOf(0f)
+    override var joyY1 by mutableStateOf(0f)
+    override var joyX2 by mutableStateOf(0f)
+    override var joyY2 by mutableStateOf(0f)
+    override var btnUp by mutableStateOf(false)
+    override var btnDown by mutableStateOf(false)
+    override var btnLeft by mutableStateOf(false)
+    override var btnRight by mutableStateOf(false)
+    override var btnL1 by mutableStateOf(false)
+    override var btnL2 by mutableStateOf(false)
+    override var btnR2 by mutableStateOf(false)
 
     // Welding State
     var isWelding by mutableStateOf(false)
@@ -1045,7 +1045,7 @@ class MultiLayerViewModel @Inject constructor(
     }
 
     // 发送MoveL直线运动指令
-    fun sendMoveLCommand() {
+    override fun sendMoveLCommand() {
         val currentPath = currentActiveWeldPath ?: return
         
         // Handle Reference Point Moving for Multi-Layer
@@ -3116,7 +3116,7 @@ class MultiLayerViewModel @Inject constructor(
         return true
     }
 
-    fun syncFromPouch() {
+    override fun syncFromPouch() {
         refreshPouchLists()
         val bag = bag()
         val id = bag.pouch.activeProject() ?: return
@@ -3146,7 +3146,7 @@ class MultiLayerViewModel @Inject constructor(
         refreshPouchLists()
     }
 
-    fun activatePouchProject(id: UUID) {
+    override fun activatePouchProject(id: UUID) {
         try {
             bag().activate(id)
             syncFromPouch()
@@ -3155,7 +3155,7 @@ class MultiLayerViewModel @Inject constructor(
         }
     }
 
-    fun refreshPouchLists() {
+    override fun refreshPouchLists() {
         val bag = runCatching { bag() }.getOrNull() ?: return
         val active = bag.pouch.activeProject()
         pouchProjects.clear()
@@ -3167,7 +3167,7 @@ class MultiLayerViewModel @Inject constructor(
         pouchProcesses.addAll(PouchProcessSource(bag.pouch).list())
     }
 
-    fun bindProcessFromPouch(processId: UUID?) {
+    override fun bindProcessFromPouch(processId: UUID?) {
         if (selectedMultiLayerPathIndex !in multiLayerWeldPaths.indices) return
         val multiPath = multiLayerWeldPaths[selectedMultiLayerPathIndex]
         val process = if (processId == null) WeldProcess() else {
@@ -3497,7 +3497,7 @@ class MultiLayerViewModel @Inject constructor(
     }
 
     // 采集数据
-    fun collectData() {
+    override fun collectData() {
         if (selectedPassIndex >= 0) return
 
         val currentPath = currentActiveWeldPath ?: return

@@ -185,9 +185,9 @@ abstract class WeldingViewModel(
 
     val weldPaths = mutableStateListOf<WeldPath>()
 
-    val pouchProjects = mutableStateListOf<ProjectChoice>()
+    override val pouchProjects = mutableStateListOf<ProjectChoice>()
 
-    val pouchProcesses = mutableStateListOf<ProcessChoice>()
+    override val pouchProcesses = mutableStateListOf<ProcessChoice>()
 
     protected var pouchProjectId: UUID? = null
 
@@ -264,7 +264,7 @@ abstract class WeldingViewModel(
 
     protected val _toastEvent = MutableSharedFlow<String>()
 
-    val toastEvent = _toastEvent.asSharedFlow()
+    override val toastEvent = _toastEvent.asSharedFlow()
 
     protected val _scrollToIndexEvent = MutableSharedFlow<Int>()
 
@@ -356,27 +356,27 @@ abstract class WeldingViewModel(
 
     override var isControllerActive by mutableStateOf(false)
 
-    var joyX1 by mutableStateOf(0f)
+    override var joyX1 by mutableStateOf(0f)
 
-    var joyY1 by mutableStateOf(0f)
+    override var joyY1 by mutableStateOf(0f)
 
-    var joyX2 by mutableStateOf(0f)
+    override var joyX2 by mutableStateOf(0f)
 
-    var joyY2 by mutableStateOf(0f)
+    override var joyY2 by mutableStateOf(0f)
 
-    var btnUp by mutableStateOf(false)
+    override var btnUp by mutableStateOf(false)
 
-    var btnDown by mutableStateOf(false)
+    override var btnDown by mutableStateOf(false)
 
-    var btnLeft by mutableStateOf(false)
+    override var btnLeft by mutableStateOf(false)
 
-    var btnRight by mutableStateOf(false)
+    override var btnRight by mutableStateOf(false)
 
-    var btnL1 by mutableStateOf(false)
+    override var btnL1 by mutableStateOf(false)
 
-    var btnL2 by mutableStateOf(false)
+    override var btnL2 by mutableStateOf(false)
 
-    var btnR2 by mutableStateOf(false)
+    override var btnR2 by mutableStateOf(false)
 
     // Welding State
 
@@ -1002,7 +1002,7 @@ abstract class WeldingViewModel(
         sendManualCommand(RobotCommands.TYPE_EXT_JOG_STOP, "StopExtAxisJog")
     }
 
-    open fun sendMoveLCommand() {
+    override fun sendMoveLCommand() {
         val currentPath = currentActiveWeldPath ?: return
         val point = currentPath.points.getOrNull(currentPath.selectedPointIndex) ?: return
         
@@ -1179,7 +1179,7 @@ abstract class WeldingViewModel(
         return true
     }
 
-    open fun syncFromPouch() {
+    override fun syncFromPouch() {
         refreshPouchLists()
         val bag = bag()
         val id = bag.pouch.activeProject() ?: return
@@ -1208,7 +1208,7 @@ abstract class WeldingViewModel(
         refreshPouchLists()
     }
 
-    fun activatePouchProject(id: UUID) {
+    override fun activatePouchProject(id: UUID) {
         try {
             bag().activate(id)
             syncFromPouch()
@@ -1217,7 +1217,7 @@ abstract class WeldingViewModel(
         }
     }
 
-    fun refreshPouchLists() {
+    override fun refreshPouchLists() {
         val bag = runCatching { bag() }.getOrNull() ?: return
         val active = bag.pouch.activeProject()
         pouchProjects.clear()
@@ -1229,7 +1229,7 @@ abstract class WeldingViewModel(
         pouchProcesses.addAll(PouchProcessSource(bag.pouch).list())
     }
 
-    fun bindProcessFromPouch(processId: UUID?) {
+    override fun bindProcessFromPouch(processId: UUID?) {
         if (weldPaths.isEmpty() || selectedWeldPathIndex !in weldPaths.indices) {
             extraProcessEditIndex = -1
             return
@@ -1421,7 +1421,7 @@ abstract class WeldingViewModel(
         selectedWeldPathIndex = pathIndex
     }
 
-    fun cancelAddProcessVariant() {
+    override fun cancelAddProcessVariant() {
         extraProcessEditIndex = -1
     }
 
@@ -1832,7 +1832,7 @@ abstract class WeldingViewModel(
         }
     }
 
-    open fun collectData() {
+    override fun collectData() {
         if (connectionStatus == "未连接") {
             viewModelScope.launch {
                 _toastEvent.emit("设备未连接")

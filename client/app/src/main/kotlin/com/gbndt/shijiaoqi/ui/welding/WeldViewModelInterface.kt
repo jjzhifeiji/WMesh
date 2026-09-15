@@ -1,7 +1,11 @@
 package com.gbndt.shijiaoqi.ui.welding
 
 import com.gbndt.shijiaoqi.model.Pose
+import com.gbndt.shijiaoqi.domain.weld.ProcessChoice
+import com.gbndt.shijiaoqi.domain.weld.ProjectChoice
 import androidx.compose.runtime.snapshots.SnapshotStateList
+import kotlinx.coroutines.flow.SharedFlow
+import java.util.UUID
 
 interface WeldViewModelInterface {
     // Tool Dialogs
@@ -117,4 +121,32 @@ interface WeldViewModelInterface {
 
     // Function to show toast
     fun showToast(message: String)
+
+    // 手柄：Activity 收键，写进当前在屏的焊接 ViewModel
+    var joyX1: Float
+    var joyY1: Float
+    var joyX2: Float
+    var joyY2: Float
+    var btnUp: Boolean
+    var btnDown: Boolean
+    var btnLeft: Boolean
+    var btnRight: Boolean
+    var btnL1: Boolean
+    var btnL2: Boolean
+    var btnR2: Boolean
+    fun collectData()
+    fun sendMoveLCommand()
+
+    // 本机袋：工程/工艺列表与激活，三个模式共用一套外壳
+    val pouchProjects: SnapshotStateList<ProjectChoice>
+    val pouchProcesses: SnapshotStateList<ProcessChoice>
+    fun refreshPouchLists()
+    fun activatePouchProject(id: UUID)
+    fun bindProcessFromPouch(processId: UUID?)
+    /** 取消挑工艺；多层没有附加工艺槽，默认什么都不做 */
+    fun cancelAddProcessVariant() {}
+    fun syncFromPouch()
+
+    /** 一次性提示，界面收了就弹 */
+    val toastEvent: SharedFlow<String>
 }
