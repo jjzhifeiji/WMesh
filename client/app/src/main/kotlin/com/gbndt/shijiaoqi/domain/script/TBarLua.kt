@@ -22,6 +22,19 @@ data class TBarScriptPath(
     val enabled: Boolean = true,
 )
 
+/** 一条 T 排指令到达的示教点；点位反馈按它回填，非运动指令为 null。 */
+enum class TBarPoint { START_SAFE, START, END, END_SAFE }
+
+/**
+ * 一行 T 排指令。`point` 非空表示这行 MoveL 到达该示教点，要挂可映射的指令号；
+ * `withId` 为假的行（求逆解）不挂号，与老项目一致。
+ */
+data class TBarLine(
+    val text: String,
+    val point: TBarPoint? = null,
+    val withId: Boolean = true,
+)
+
 /** T 排 Lua：起安 → 打底 → 空走回起点 → 盖面 → 终安；段切换 WeaveOnlineSetPara。 */
 object TBarLua {
     const val GLOBAL_SPEED = "SetSpeed(10)"
@@ -34,8 +47,8 @@ object TBarLua {
         speedMode: String = "1倍",
         toolIndex: Int = 1,
         extAxis: Boolean = false,
-    ): List<String> {
-        val out = mutableListOf(GLOBAL_SPEED)
+    ): List<TBarLine> {
+        val out = mutableListOf(TBarLine(GLOBAL_SPEED))
         val isWeld = welding && !simulating
         for (path in paths) {
             if (!path.enabled) continue
@@ -50,10 +63,10 @@ object TBarLua {
             if (root.isEmpty() || cap.isEmpty()) {
                 throw IllegalStateException("未能生成打底/盖面焊接段")
             }
-            out += taughtMoveL(path.startSafe, 100, toolIndex, extAxis)
+            out += taughtMoveL(path.startSafe, 100, toolIndex, extAxis, TBarPoint.START_SAFE)
             out += passLines(root, processes, isWeld, simulating, speedMode, toolIndex, extAxis, returnToStart = true)
             out += passLines(cap, processes, isWeld, simulating, speedMode, toolIndex, extAxis, returnToStart = false)
-            out += taughtMoveL(path.endSafe, 100, toolIndex, extAxis)
+            out += taughtMoveL(path.endSafe, 100, toolIndex, extAxis, TBarPoint.END_SAFE)
         }
         return out
     }
@@ -67,24 +80,26 @@ object TBarLua {
         toolIndex: Int,
         extAxis: Boolean,
         returnToStart: Boolean,
-    ): List<String> {
+    ): List<TBarLine> {
         val first = segments.first()
         val firstProc = processOf(first, processes)
-        val out = mutableListOf<String>()
-        out += processParams(firstProc, onlineWeave = false)
-        out += ikMoveL(first.startPose, 100, toolIndex, extAxis)
-        if (isWelding) out += "ARCStart(0,2,10000)"
-        if (firstProc.oscillation.type != "无摆动") out += "WeaveStart(3)"
+        val out = mutableListOf<TBarLine>()
+        out += processParams(firstProc, onlineWeave = false).map { TBarLine(it) }
+        out += ikMoveL(first.startPose, 100, toolIndex, extAxis, TBarPoint.START)
+        if (isWelding) out += TBarLine("ARCStart(0,2,10000)")
+        if (firstProc.oscillation.type != "无摆动") out += TBarLine("WeaveStart(3)")
         segments.forEachIndexed { index, seg ->
             val proc = processOf(seg, processes)
-            if (index > 0) out += processParams(proc, onlineWeave = true)
-            out += ikMoveL(seg.endPose, weldSpeed(proc, simulating, speedMode), toolIndex, extAxis)
+            if (index > 0) out += processParams(proc, onlineWeave = true).map { TBarLine(it) }
+            // 最后一段走到终点，其余段的落点仍算在起点上，与老项目的点位回填一致
+            val reached = if (index == segments.lastIndex) TBarPoint.END else TBarPoint.START
+            out += ikMoveL(seg.endPose, weldSpeed(proc, simulating, speedMode), toolIndex, extAxis, reached)
         }
-        if (isWelding) out += "ARCEnd(0,2,10000)"
+        if (isWelding) out += TBarLine("ARCEnd(0,2,10000)")
         if (segments.any { processOf(it, processes).oscillation.type != "无摆动" }) {
-            out += "WeaveEnd(0)"
+            out += TBarLine("WeaveEnd(0)")
         }
-        if (returnToStart) out += ikMoveL(first.startPose, 100, toolIndex, extAxis)
+        if (returnToStart) out += ikMoveL(first.startPose, 100, toolIndex, extAxis, TBarPoint.START)
         return out
     }
 
@@ -149,21 +164,36 @@ object TBarLua {
         return (process.speed * multiplier).toInt().coerceAtLeast(1)
     }
 
-    private fun taughtMoveL(point: ScriptPoint, speed: Int, toolIndex: Int, extAxis: Boolean): List<String> {
+    private fun taughtMoveL(
+        point: ScriptPoint,
+        speed: Int,
+        toolIndex: Int,
+        extAxis: Boolean,
+        reached: TBarPoint?,
+    ): List<TBarLine> {
         if (point.joints.size >= 6) {
             val pose = point.pose
             val joints = point.joints.take(6).joinToString(",") { fmt(it) }
             val pos = "$joints,${fmt(pose.x)},${fmt(pose.y)},${fmt(pose.z)},${fmt(pose.rx)},${fmt(pose.ry)},${fmt(pose.rz)}"
             val ext1 = fmt(pose.ext1)
-            val out = mutableListOf<String>()
-            if (extAxis) out += "ExtAxisMoveJ(1,$ext1,0.000,0.000,0.000,$speed,-1)"
-            out += "MoveL($pos,$toolIndex,0,100,100,$speed,-1,0,$ext1,0.000,0.000,0.000,0,0,0,0,0,0,0,0,100,0)"
+            val out = mutableListOf<TBarLine>()
+            if (extAxis) out += TBarLine("ExtAxisMoveJ(1,$ext1,0.000,0.000,0.000,$speed,-1)")
+            out += TBarLine(
+                "MoveL($pos,$toolIndex,0,100,100,$speed,-1,0,$ext1,0.000,0.000,0.000,0,0,0,0,0,0,0,0,100,0)",
+                point = reached,
+            )
             return out
         }
-        return ikMoveL(point.pose, speed, toolIndex, extAxis)
+        return ikMoveL(point.pose, speed, toolIndex, extAxis, reached)
     }
 
-    private fun ikMoveL(pose: Pose, speed: Int, toolIndex: Int, extAxis: Boolean): List<String> {
+    private fun ikMoveL(
+        pose: Pose,
+        speed: Int,
+        toolIndex: Int,
+        extAxis: Boolean,
+        reached: TBarPoint?,
+    ): List<TBarLine> {
         val nx = fmt(pose.x)
         val ny = fmt(pose.y)
         val nz = fmt(pose.z)
@@ -171,10 +201,17 @@ object TBarLua {
         val ry = fmt(pose.ry)
         val rz = fmt(pose.rz)
         val ext1 = fmt(pose.ext1)
-        val out = mutableListOf<String>()
-        if (extAxis) out += "ExtAxisMoveJ(1,$ext1,0.000,0.000,0.000,$speed,-1)"
-        out += "j1,j2,j3,j4,j5,j6=GetInverseKinExaxis(0,{$nx,$ny,$nz,$rx,$ry,$rz},{$ext1,0.000,0.000,0.000},$toolIndex,0)"
-        out += "MoveL(j1,j2,j3,j4,j5,j6,$nx,$ny,$nz,$rx,$ry,$rz,$toolIndex,0,100,100,$speed,-1,0,$ext1,0.000,0.000,0.000,0,0,0,0,0,0,0,0,100,0)"
+        val out = mutableListOf<TBarLine>()
+        if (extAxis) out += TBarLine("ExtAxisMoveJ(1,$ext1,0.000,0.000,0.000,$speed,-1)")
+        // 求逆解那行老项目不挂指令号
+        out += TBarLine(
+            "j1,j2,j3,j4,j5,j6=GetInverseKinExaxis(0,{$nx,$ny,$nz,$rx,$ry,$rz},{$ext1,0.000,0.000,0.000},$toolIndex,0)",
+            withId = false,
+        )
+        out += TBarLine(
+            "MoveL(j1,j2,j3,j4,j5,j6,$nx,$ny,$nz,$rx,$ry,$rz,$toolIndex,0,100,100,$speed,-1,0,$ext1,0.000,0.000,0.000,0,0,0,0,0,0,0,0,100,0)",
+            point = reached,
+        )
         return out
     }
 

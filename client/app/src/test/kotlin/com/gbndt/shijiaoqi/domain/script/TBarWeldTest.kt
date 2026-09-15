@@ -120,8 +120,8 @@ class TBarWeldTest {
             GapBand(minGap = 4.0, maxGap = 6.0, layer = 1, rootProcessId = root2, capProcessId = cap2),
         )
         val path = samplePath(bands)
-        val weld = TBarLua.job(listOf(path), processes, welding = true, simulating = false)
-        val sim = TBarLua.job(listOf(path), processes, welding = true, simulating = true)
+        val weld = TBarLua.job(listOf(path), processes, welding = true, simulating = false).map { it.text }
+        val sim = TBarLua.job(listOf(path), processes, welding = true, simulating = true).map { it.text }
         assertEquals(TBarLua.GLOBAL_SPEED, weld.first())
         val arcStarts = weld.withIndex().filter { it.value.startsWith("ARCStart") }.map { it.index }
         assertEquals(2, arcStarts.size)
@@ -149,5 +149,35 @@ class TBarWeldTest {
             endPose = p(2.75, 10.0),
             bands = bands,
         )
+    }
+
+    /** 点位回填按老项目：只有 MoveL 带示教点，求逆解那行不挂指令号。 */
+    @Test
+    fun onlyMoveLCarriesPointAndInverseKinHasNoId() {
+        val root1 = UUID.randomUUID().toString()
+        val cap1 = UUID.randomUUID().toString()
+        val processes = mapOf(
+            root1 to WeldProcess(name = "r1", speed = 10.0),
+            cap1 to WeldProcess(name = "c1", speed = 8.0),
+        )
+        val bands = listOf(
+            GapBand(minGap = 3.0, maxGap = 6.0, layer = 1, rootProcessId = root1, capProcessId = cap1),
+        )
+        val lines = TBarLua.job(listOf(samplePath(bands)), processes, welding = true, simulating = false)
+
+        // 求逆解不挂号，其余都挂
+        assertTrue(lines.filter { !it.withId }.all { it.text.contains("GetInverseKinExaxis") })
+        assertTrue(lines.none { it.text.contains("GetInverseKinExaxis") && it.withId })
+
+        // 带示教点的只有 MoveL
+        assertTrue(lines.filter { it.point != null }.all { it.text.startsWith("MoveL(") })
+        // 起安开头、终安结尾
+        assertEquals(TBarPoint.START_SAFE, lines.first { it.point != null }.point)
+        assertEquals(TBarPoint.END_SAFE, lines.last { it.point != null }.point)
+        // 打底与盖面各有一次走到终点
+        assertEquals(2, lines.count { it.point == TBarPoint.END })
+        // 起弧、摆动、工艺参数不占点位
+        assertTrue(lines.filter { it.text.startsWith("ARC") || it.text.startsWith("Weave") || it.text.startsWith("Welding") }
+            .all { it.point == null })
     }
 }

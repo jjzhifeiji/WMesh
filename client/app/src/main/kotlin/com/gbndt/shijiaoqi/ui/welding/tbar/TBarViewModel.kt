@@ -45,6 +45,7 @@ import com.gbndt.shijiaoqi.domain.weld.ProcessRef
 import com.gbndt.shijiaoqi.domain.weld.ProjectChoice
 import com.gbndt.shijiaoqi.domain.script.ScriptPoint
 import com.gbndt.shijiaoqi.domain.script.TBarLua
+import com.gbndt.shijiaoqi.domain.script.TBarPoint
 import com.gbndt.shijiaoqi.domain.weld.TBarProject
 import com.gbndt.shijiaoqi.domain.weld.TBarRun
 import com.gbndt.shijiaoqi.domain.script.TBarScriptPath
@@ -1078,6 +1079,7 @@ class TBarViewModel @Inject constructor(
         }
         val startSafeIdx = weldPath.points.indexOfFirst { it.type == WeldPointType.START_SAFE }
         val startIdx = weldPath.points.indexOfFirst { it.type == WeldPointType.START }
+        val endIdx = weldPath.points.indexOfFirst { it.type == WeldPointType.END }
         val endSafeIdx = weldPath.points.indexOfFirst { it.type == WeldPointType.END_SAFE }
         fun scriptPt(pt: WeldPoint) = ScriptPoint(pt.type, pt.pose!!, pt.jointAngles.orEmpty())
         val lines = TBarLua.job(
@@ -1102,15 +1104,22 @@ class TBarViewModel @Inject constructor(
             toolIndex = toolIndex,
             extAxis = isExtAxisEnabled,
         )
+        // 点位回填按老项目：只有 MoveL 挂可映射的指令号，求逆解那行不挂号
         lines.forEach { line ->
-            val id = globalCommandId++
-            val pointIdx = when {
-                line.contains("ARCStart") || line.contains("WeaveStart") -> startIdx
-                line.contains("ARCEnd") || line.contains("WeaveEnd") -> endSafeIdx
-                else -> startSafeIdx
+            if (!line.withId) {
+                builder.appendCmd(line.text)
+                return@forEach
             }
-            commandIdMap[id] = Triple(pathIndexForMap, pointIdx, -1)
-            builder.appendCmd(line, id)
+            val id = globalCommandId++
+            val pointIdx = when (line.point) {
+                TBarPoint.START_SAFE -> startSafeIdx
+                TBarPoint.START -> startIdx
+                TBarPoint.END -> endIdx
+                TBarPoint.END_SAFE -> endSafeIdx
+                null -> null
+            }
+            if (pointIdx != null) commandIdMap[id] = Triple(pathIndexForMap, pointIdx, -1)
+            builder.appendCmd(line.text, id)
         }
     }
 
