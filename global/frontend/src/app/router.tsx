@@ -6,6 +6,7 @@ import { ClientsPage } from "@/features/clients/ClientsPage";
 import { AssetsPage } from "@/features/assets/AssetsPage";
 import { TemplatesPage } from "@/features/templates/TemplatesPage";
 import { ProjectTemplatesPage } from "@/features/templates/ProjectTemplatesPage";
+import { UpdatesPage } from "@/features/updates/UpdatesPage";
 import { AccountPage } from "@/features/account/AccountPage";
 import { AdminLayout } from "@/layouts/AdminLayout";
 import { AuthLayout } from "@/layouts/AuthLayout";
@@ -35,6 +36,7 @@ export const router = createBrowserRouter([
       { path: paths.projects, element: <AssetsPage kind="project" /> },
       { path: paths.templates, element: <TemplatesPage /> },
       { path: paths.projectTemplates, element: <ProjectTemplatesPage /> },
+      { path: paths.updates, element: <UpdatesPage /> },
       { path: paths.account, element: <AccountPage /> },
       ...placeholderPaths.map((path) => ({ path, element: <PlaceholderPage /> })),
       { path: "*", element: <NotFoundPage /> },

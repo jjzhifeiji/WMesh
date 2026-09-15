@@ -73,6 +73,7 @@ type Bag struct {
 	PendingFacts     []PendingFact     // 待汇聚运行事实，未成功前不进厂库
 	PendingUploads   []PendingUpload   // 待汇聚点云/图片，正文只在袋内
 	FailFlush        bool              // 夹具：本次汇聚失败，队列不动
+	SoftwareVersion  int64             // 已确认安装的客户端包版本；0 表示未装
 }
 
 // PendingFact 是本机待汇聚的一条运行事实。

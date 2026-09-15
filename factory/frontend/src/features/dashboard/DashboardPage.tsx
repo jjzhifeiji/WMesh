@@ -1,5 +1,6 @@
 import { Card, Col, Descriptions, Row, Space, Statistic, Tag } from "antd";
 import { useCatalog, useIsSuperAdmin, unitName } from "@/features/catalog/api";
+import { useCurrentFactorySoftware } from "@/features/updates/api";
 import { roleLabel, scopeLabel } from "@/shared/labels";
 import { PageHeader } from "@/shared/ui/PageHeader";
 import { useHealth } from "./api";
@@ -16,6 +17,7 @@ export function DashboardPage() {
   const catalog = useCatalog();
   const isSA = useIsSuperAdmin();
   const health = useHealth();
+  const software = useCurrentFactorySoftware();
   const c = catalog.data;
   const count = (status: string) => c?.people.filter((p) => p.status === status).length ?? 0;
 
@@ -64,12 +66,14 @@ export function DashboardPage() {
           </Card>
         </Col>
         <Col xs={24} lg={12}>
-          <Card title="服务状态" loading={health.isLoading}>
+          <Card title="服务状态" loading={health.isLoading || software.isLoading}>
             <Descriptions
               column={1}
               size="small"
               items={[
-                { key: "version", label: "版本", children: health.data?.version ?? "—" },
+                { key: "version", label: "版本号", children: software.data && software.data.version > 0 ? software.data.version : "—" },
+                { key: "versionName", label: "版本名", children: software.data?.versionName || "—" },
+                { key: "build", label: "构建", children: health.data?.version ?? "—" },
                 { key: "db", label: "数据库", children: healthTag(health.data?.db) },
                 { key: "oss", label: "对象存储", children: healthTag(health.data?.oss) },
               ]}

@@ -16,8 +16,12 @@ type Config struct {
 	WebDir          string        // 已构建管理端目录；空表示只提供 API
 	BootstrapToken  string        // 建厂引导共享密码，只用于 /internal/bootstrap；空则关闭该入口
 	WANURL          string        // WAN HTTP 根地址，厂出站认领；空则不能认领
+	WANMQTT         string        // WAN MQTT 地址，空则按 HTTP 主机拼 :52183
 	OSS             OSS           // 厂内对象存储；点云/图片本体落这里，不进 WAN
 	ShutdownTimeout time.Duration // 优雅退出最长等待
+	DockerUpdate    bool          // 超管确认后由帮手 docker load 换本容器
+	DockerHost      string        // Docker 套接字，默认 unix:///var/run/docker.sock
+	DockerUpdateDir string        // 与帮手共用的 tar 目录
 }
 
 // OSS 是 S3 兼容对象存储的接入参数；Endpoint 为空表示本厂暂未接 OSS。
@@ -42,6 +46,7 @@ func Load() (Config, error) {
 		WebDir:         strings.TrimSpace(os.Getenv("WMESH_WEB_DIR")),
 		BootstrapToken: os.Getenv("WMESH_BOOTSTRAP_TOKEN"),
 		WANURL:         strings.TrimSpace(os.Getenv("WMESH_WAN_URL")),
+		WANMQTT:        strings.TrimSpace(os.Getenv("WMESH_WAN_MQTT_URL")),
 		OSS: OSS{
 			Endpoint:  strings.TrimRight(strings.TrimSpace(os.Getenv("WMESH_OSS_ENDPOINT")), "/"),
 			Bucket:    strings.TrimSpace(os.Getenv("WMESH_OSS_BUCKET")),
@@ -49,6 +54,9 @@ func Load() (Config, error) {
 			SecretKey: os.Getenv("WMESH_OSS_SECRET_KEY"),
 		},
 		ShutdownTimeout: 10 * time.Second,
+		DockerUpdate:    envTruthy("WMESH_DOCKER_UPDATE"),
+		DockerHost:      envOr("WMESH_DOCKER_HOST", "unix:///var/run/docker.sock"),
+		DockerUpdateDir: envOr("WMESH_DOCKER_UPDATE_DIR", "/var/lib/wmesh/update"),
 	}
 	if v := os.Getenv("WMESH_SHUTDOWN_TIMEOUT"); v != "" {
 		d, err := time.ParseDuration(v)
@@ -73,6 +81,16 @@ func (c Config) validate() error {
 		errs = append(errs, errors.New("WMESH_OSS_BUCKET, WMESH_OSS_ACCESS_KEY and WMESH_OSS_SECRET_KEY are required with WMESH_OSS_ENDPOINT"))
 	}
 	return errors.Join(errs...)
+}
+
+// envTruthy 1/true/yes/on 视为打开。
+func envTruthy(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 // envOr 空则用开发默认。

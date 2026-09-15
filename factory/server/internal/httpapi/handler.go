@@ -1,5 +1,5 @@
 // Package httpapi 把厂内应用服务适配成 JSON HTTP。不绕过 Service，不把 SQL 原文抛给前端。
-// 文件按域拆：auth / site / org / node / asset / template；本文件只装配路由、探活和建厂引导。
+// 文件按域拆：auth / site / org / node / asset / template / update；本文件只装配路由、探活和建厂引导。
 package httpapi
 
 import (
@@ -43,6 +43,7 @@ func (h *Handler) Router() http.Handler {
 	h.mountNode(mux)
 	h.mountAsset(mux)
 	h.mountTemplate(mux)
+	h.mountUpdate(mux)
 	return mux
 }
 

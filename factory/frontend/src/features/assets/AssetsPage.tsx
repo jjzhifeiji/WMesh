@@ -1,6 +1,7 @@
 import { PlusOutlined } from "@ant-design/icons";
 import { App, Button, Card, Descriptions, Empty, Form, Input, Modal, Radio, Select, Space, Switch, Table, Tag, Typography, type TableColumnsType } from "antd";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { personName, useCatalog, type Catalog } from "@/features/catalog/api";
 import { errorMessage, ApiError } from "@/shared/api/client";
 import { formatTime } from "@/shared/format";
@@ -9,7 +10,7 @@ import { IdText } from "@/shared/ui/IdText";
 import { PageHeader } from "@/shared/ui/PageHeader";
 import { ContentEditor } from "@/features/templates/ContentFields";
 import { collectProcessIds, defaultValue, projectContentSchema } from "@/features/templates/schema";
-import { useProjectTemplates, useTemplate } from "@/features/templates/api";
+import { useProjectTemplates, useTemplate, syncTemplates, templateKeys } from "@/features/templates/api";
 import type { ContentSchema } from "@/features/templates/schema";
 import {
   useAssetContent,
@@ -25,6 +26,8 @@ import {
   useSetAssetCopyable,
   useSetAssetDeps,
   useUpdateAssetContent,
+  syncAssets,
+  assetKeys,
   type Asset,
   type AssetDep,
   type AssetKind,
@@ -102,6 +105,7 @@ export function AssetsPage({ kind }: { kind: AssetKind }) {
   const enable = useEnableAsset();
   const remove = useDeleteAsset();
   const promote = usePromoteAsset();
+  const qc = useQueryClient();
   const { message, modal } = App.useApp();
   const meId = catalog.data?.me.id;
   const [levelFilter, setLevelFilter] = useState<"all" | AssetLevel>("all");
@@ -114,6 +118,18 @@ export function AssetsPage({ kind }: { kind: AssetKind }) {
   const [form] = Form.useForm<CreateForm>();
   const [copyForm] = Form.useForm<{ name: string }>();
   const createLevel = Form.useWatch("level", form) as AssetLevel | undefined;
+
+  useEffect(() => {
+    let cancelled = false;
+    void Promise.all([syncAssets(kind).catch(() => undefined), syncTemplates(kind).catch(() => undefined)]).then(() => {
+      if (cancelled) return;
+      void qc.invalidateQueries({ queryKey: assetKeys.all });
+      void qc.invalidateQueries({ queryKey: templateKeys.all });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [kind, qc]);
 
   const rows = useMemo(() => {
     const needle = query.trim().toLowerCase();

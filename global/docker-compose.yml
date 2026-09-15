@@ -21,6 +21,7 @@ services:
       WMESH_OSS_SECRET_KEY: ${OSS_SECRET_KEY:?set OSS_SECRET_KEY in .env}
     ports:
       - "${HTTP_PORT:-52080}:8080"
+      - "${MQTT_PORT:-52183}:1883"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:

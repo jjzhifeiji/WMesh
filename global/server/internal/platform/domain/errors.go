@@ -38,8 +38,10 @@ var (
 	ErrInvalidKey          = errors.New("invalid key material")       // 公钥/私钥长度不对
 	ErrClientKeyTaken      = errors.New("client public key already registered") // 该公钥已被别的 Client 占用
 	ErrFactoryKeyExists    = errors.New("factory public key already registered") // 该厂公钥已登记，不能改绑
+	ErrSigningKeyExists    = errors.New("wan signing key already set")           // 云端一把签发钥，不能换
 	ErrClientBound         = errors.New("client already bound to a factory")      // 已属一厂，不能再绑到另一厂
 	ErrUnbound             = errors.New("client is not bound")                    // 未绑定不能改绑
+	ErrStaleRevision       = errors.New("revision is not strictly newer")         // 只接受更高软件版本或节点修订
 	ErrRevisionConflict    = errors.New("revision does not match")                // 资产期望修订对不上
 	ErrIntegrity           = errors.New("asset integrity check failed")           // 正文与摘要不一致或摘要长度不对
 	ErrContentLeaseExpired = errors.New("content lease expired")                    // 厂侧解包租约到期或尚未签发

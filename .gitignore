@@ -8,3 +8,13 @@ node_modules/
 dist/
 docs/device-date/projects/license.key
 
+# Android Client
+client/.gradle/
+client/.idea/
+client/local.properties
+client/**/build/
+client/**/*.apk
+client/**/*.iml
+client/captures/
+client/.cxx/
+

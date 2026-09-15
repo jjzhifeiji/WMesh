@@ -17,7 +17,7 @@ factory/
     ├── internal/hub      按工厂身份建/开厂库并组装应用服务
     ├── internal/service  应用服务：认证、权限、归属、审计
     ├── internal/store    本厂库读写（GORM，仅结构体对齐，禁 AutoMigrate）
-    ├── internal/wanchannel 厂出站连 WAN 的 WSS 认领
+    ├── internal/wanchannel 厂出站连 WAN：HTTPS 认领，日常 MQTT + HTTPS 拉正文
     ├── internal/web      托管已构建的管理端静态页
     ├── internal/platform 底座：config / provision / oss / id / secret / audit / domain / migrate / testpg
     ├── migrations/       只向前的版本化 SQL，新厂库首次打开时自动套用

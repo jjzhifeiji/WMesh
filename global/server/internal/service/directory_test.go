@@ -64,7 +64,7 @@ func TestFactoryLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := h.WAN.RequireFactoryKey(ctx, a.Factory.ID); err != nil {
-		t.Fatalf("hello while disabled: %v", err)
+		t.Fatalf("key while disabled: %v", err)
 	}
 	retired, err := h.WAN.DeleteFactory(ctx, tok, a.Factory.ID)
 	if err != nil || retired == nil || retired.Status != service.FactoryRetired {
@@ -74,7 +74,7 @@ func TestFactoryLifecycle(t *testing.T) {
 		t.Fatalf("enable retired: %v", err)
 	}
 	if err := h.WAN.RequireFactoryKey(ctx, a.Factory.ID); !errors.Is(err, domain.ErrFactoryRetired) {
-		t.Fatalf("hello retired: %v", err)
+		t.Fatalf("key retired: %v", err)
 	}
 	dir, err := h.WAN.Directory(ctx, tok)
 	if err != nil {
@@ -111,6 +111,6 @@ func TestFactoryLifecycle(t *testing.T) {
 		}
 	}
 	if err := h.WAN.RequireFactoryKey(ctx, b.Factory.ID); !errors.Is(err, domain.ErrFactoryRetired) {
-		t.Fatalf("hello after delete: %v", err)
+		t.Fatalf("key after delete: %v", err)
 	}
 }

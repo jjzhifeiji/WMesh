@@ -59,6 +59,7 @@ func (s *Clients) RegisterClient(ctx context.Context, token, name string, client
 	if err := s.audit(ctx, &admin.ID, nil, c.FactoryID, "register_client", c.ID.String(), audit.Allow); err != nil {
 		return Client{}, err
 	}
+	s.notifyClient(c, nil)
 	return c, nil
 }
 
@@ -106,6 +107,7 @@ func (s *Clients) BindClient(ctx context.Context, token string, clientID, factor
 	if err := s.audit(ctx, &admin.ID, nil, &factoryID, "bind_client", clientID.String()+" "+factoryID.String(), audit.Allow); err != nil {
 		return Client{}, err
 	}
+	s.notifyClient(bound, nil)
 	return bound, nil
 }
 
@@ -158,6 +160,7 @@ func (s *Clients) AssignClient(ctx context.Context, token string, clientID, fact
 	if err := s.audit(ctx, &admin.ID, nil, &factoryID, "bind_client", clientID.String()+" "+factoryID.String(), audit.Allow); err != nil {
 		return Client{}, err
 	}
+	s.notifyClient(bound, nil)
 	return bound, nil
 }
 
@@ -183,6 +186,7 @@ func (s *Clients) RenameClient(ctx context.Context, token string, clientID uuid.
 	if err := s.audit(ctx, &admin.ID, nil, row.FactoryID, "rename_client", clientID.String(), audit.Allow); err != nil {
 		return Client{}, err
 	}
+	s.notifyClient(row, nil)
 	return row, nil
 }
 
@@ -194,6 +198,7 @@ func (s *Clients) RebindClient(ctx context.Context, token string, clientID, fact
 		_ = s.audit(ctx, nil, nil, &factoryID, "rebind_client", clientID.String(), audit.Deny)
 		return Client{}, err
 	}
+	prev, _ := s.store.ClientByID(ctx, clientID)
 	// 已绑定才能改到另一厂，修订必须升高。
 	bound, err := s.store.RebindClient(ctx, clientID, factoryID)
 	if err != nil {
@@ -203,6 +208,7 @@ func (s *Clients) RebindClient(ctx context.Context, token string, clientID, fact
 	if err := s.audit(ctx, &admin.ID, nil, &factoryID, "rebind_client", clientID.String()+" "+factoryID.String(), audit.Allow); err != nil {
 		return Client{}, err
 	}
+	s.notifyClient(bound, prev.FactoryID)
 	return bound, nil
 }
 

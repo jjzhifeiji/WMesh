@@ -18,9 +18,12 @@ import (
 	"wmesh/global/internal/httpapi"
 	"wmesh/global/internal/platform/contenttpl"
 	"wmesh/global/internal/platform/id"
+	"wmesh/global/internal/platform/nodekey"
 	"wmesh/global/internal/platform/testpg"
 	"wmesh/global/internal/service"
 	"wmesh/global/internal/store"
+
+	"github.com/google/uuid"
 )
 
 func TestWANHTTP(t *testing.T) {
@@ -270,4 +273,54 @@ func appliedProcess(raw string) string {
 		panic(err)
 	}
 	return string(out)
+}
+
+func TestWANSoftwareHTTP(t *testing.T) {
+	admin := testpg.Open(t)
+	_, dsn := testpg.CreateDB(t, admin, "wmesh_wan_sw")
+	svc := service.NewService(store.Open(testpg.OpenMigrated(t, dsn)))
+	if err := svc.BootstrapAdmin(context.Background(), "w", "wan-secret"); err != nil {
+		t.Fatalf("bootstrap: %v", err)
+	}
+	srv := httptest.NewServer(httpapi.New(svc, "test").Router())
+	t.Cleanup(srv.Close)
+
+	code, body := do(t, srv, "POST", "/v1/login", "", `{"loginName":"w","password":"wan-secret"}`)
+	if code != http.StatusOK {
+		t.Fatalf("login %d %s", code, body)
+	}
+	tok := gjson(t, body, "token")
+	code, body = do(t, srv, "GET", "/v1/software", "", "")
+	if code != http.StatusUnauthorized {
+		t.Fatalf("anon software %d %s", code, body)
+	}
+	code, body = do(t, srv, "POST", "/v1/factories", tok, `{"name":"厂A","saLogin":"sa-a","saDisplay":"超管"}`)
+	if code != http.StatusCreated {
+		t.Fatalf("create factory %d %s", code, body)
+	}
+	fid := gjson(t, body, "factory.id")
+	pkg := base64.StdEncoding.EncodeToString([]byte("svc-1"))
+	code, body = do(t, srv, "POST", "/v1/software", tok, `{"kind":"factory_service","version":1,"versionName":"1.0.0","content":"`+pkg+`"}`)
+	if code != http.StatusCreated || gjson(t, body, "version") != "1" {
+		t.Fatalf("publish %d %s", code, body)
+	}
+	code, body = do(t, srv, "GET", "/v1/software", tok, "")
+	if code != http.StatusOK || !strings.Contains(body, `"versionName":"1.0.0"`) {
+		t.Fatalf("list %d %s", code, body)
+	}
+	code, body = do(t, srv, "POST", "/v1/software/distribute", tok, `{"kind":"factory_service","version":1,"factoryId":"`+fid+`"}`)
+	if code != http.StatusForbidden {
+		t.Fatalf("unclaimed distribute %d %s", code, body)
+	}
+	pub, _, err := nodekey.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.ConfirmEnroll(context.Background(), uuid.MustParse(fid), pub); err != nil {
+		t.Fatalf("enroll: %v", err)
+	}
+	code, body = do(t, srv, "POST", "/v1/software/distribute", tok, `{"kind":"factory_service","version":1,"factoryId":"`+fid+`"}`)
+	if code != http.StatusOK || gjson(t, body, "version") != "1" {
+		t.Fatalf("distribute %d %s", code, body)
+	}
 }

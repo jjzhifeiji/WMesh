@@ -340,6 +340,7 @@ func (s *Templates) CreateProjectTemplate(ctx context.Context, token, name strin
 	if err := s.audit(ctx, &admin.ID, nil, nil, "update_template", projectTemplateTarget(row.Name, row.Revision), audit.Allow); err != nil {
 		return ContentTemplate{}, err
 	}
+	s.notifyTemplate(ctx, row.ID, row.Kind, row.Revision)
 	return row, nil
 }
 
@@ -397,6 +398,7 @@ func (s *Templates) UpdateProjectTemplate(ctx context.Context, token string, id 
 	if err := s.audit(ctx, &admin.ID, nil, nil, "update_template", projectTemplateTarget(row.Name, row.Revision), audit.Allow); err != nil {
 		return ContentTemplate{}, err
 	}
+	s.notifyTemplate(ctx, row.ID, row.Kind, row.Revision)
 	return row, nil
 }
 
@@ -420,7 +422,11 @@ func (s *Templates) DeleteProjectTemplate(ctx context.Context, token string, id 
 		_ = s.audit(ctx, &admin.ID, nil, nil, "update_template", projectTemplateTarget(cur.Name, cur.Revision), audit.Deny)
 		return err
 	}
-	return s.audit(ctx, &admin.ID, nil, nil, "update_template", projectTemplateTarget(cur.Name, cur.Revision), audit.Allow)
+	if err := s.audit(ctx, &admin.ID, nil, nil, "update_template", projectTemplateTarget(cur.Name, cur.Revision), audit.Allow); err != nil {
+		return err
+	}
+	s.notifyRemainingTemplates(ctx)
+	return nil
 }
 
 // UpdateTemplate 保存工艺字段表并下发；不改已有正文。
@@ -477,6 +483,7 @@ func (s *Templates) UpdateTemplate(ctx context.Context, token, kind string, expe
 	if err := s.audit(ctx, &admin.ID, nil, nil, "update_template", templateTarget(row.Kind, row.Revision), audit.Allow); err != nil {
 		return ContentTemplate{}, err
 	}
+	s.notifyTemplate(ctx, row.ID, row.Kind, row.Revision)
 	return row, nil
 }
 
@@ -503,4 +510,21 @@ func (s *Templates) SnapshotsForFactory(ctx context.Context, factoryID uuid.UUID
 		})
 	}
 	return out, nil
+}
+
+// SnapshotForFactory 组这一份模版给该厂，修订升高时只推这一条。
+func (s *Templates) SnapshotForFactory(ctx context.Context, factoryID, templateID uuid.UUID) (TemplateSnapshot, error) {
+	row, err := s.store.TemplateByID(ctx, templateID)
+	if err != nil {
+		return TemplateSnapshot{}, err
+	}
+	opened, err := openTemplate(row)
+	if err != nil {
+		return TemplateSnapshot{}, err
+	}
+	fid := factoryID
+	return TemplateSnapshot{
+		ID: opened.ID, Kind: opened.Kind, Name: opened.Name, Revision: opened.Revision,
+		Schema: json.RawMessage(opened.Schema), Digest: opened.Digest, TargetFactoryID: &fid,
+	}, nil
 }

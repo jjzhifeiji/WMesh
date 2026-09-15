@@ -1,6 +1,6 @@
 // Package service 是厂内应用入口：认证、允许/拒绝和审计。
 // 不管 WAN 管理员，也不直连 SQL，不把本厂密码送到 WAN。
-// 按域分类型：Auth / Org / Attr / Node / Assets / Templates / Closure / Sync；本文件只组装。
+// 按域分类型：Auth / Org / Attr / Node / Assets / Templates / Closure / Sync / Updates；本文件只组装。
 package service
 
 import (
@@ -14,8 +14,9 @@ import (
 
 // kernel 是各域共用的本厂库与审计；不对外当业务入口。
 type kernel struct {
-	store *Store
-	blobs blob.Store // 上传正文；不进库、不进审计
+	store     *Store
+	blobs     blob.Store       // 上传正文与软件包；不进库、不进审计
+	installer FactoryInstaller // 厂服务确认后安装；测试可注入失败
 }
 
 // Auth 管登录、激活、会话、停用和密码重置。
@@ -53,11 +54,12 @@ type Service struct {
 	*Templates
 	*Closure
 	*Sync
+	*Updates
 }
 
 // NewService 组装厂内应用服务；调用方先打开这一家厂库。
 func NewService(st *Store) *Service {
-	k := &kernel{store: st, blobs: blob.NewMemory()}
+	k := &kernel{store: st, blobs: blob.NewMemory(), installer: okInstaller{}}
 	return &Service{
 		kernel:    k,
 		Auth:      &Auth{k},
@@ -68,6 +70,7 @@ func NewService(st *Store) *Service {
 		Templates: &Templates{k},
 		Closure:   &Closure{k},
 		Sync:      &Sync{k},
+		Updates:   &Updates{k},
 	}
 }
 

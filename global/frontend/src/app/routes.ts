@@ -8,6 +8,7 @@ export const paths = {
   projects: "/assets/projects",
   templates: "/assets/templates",
   projectTemplates: "/assets/project-templates",
+  updates: "/updates",
   auditEvents: "/audit/events",
   auditStats: "/audit/stats",
   reports: "/reports",

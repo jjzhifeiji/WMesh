@@ -6,6 +6,7 @@ import { breadcrumbItems, menuItems, openGroupFor } from "@/app/navigation";
 import { paths } from "@/app/routes";
 import { useLogout } from "@/features/auth/api";
 import { useCatalog, useIsSuperAdmin } from "@/features/catalog/api";
+import { FactoryUpdatePrompt } from "@/features/updates/FactoryUpdatePrompt";
 import { useSession } from "@/shared/auth/session";
 import { IdText } from "@/shared/ui/IdText";
 
@@ -55,6 +56,7 @@ export function AdminLayout() {
         </Layout.Header>
         <Layout.Content className="admin-content">
           <Outlet />
+          <FactoryUpdatePrompt enabled={isSA} />
         </Layout.Content>
       </Layout>
     </Layout>

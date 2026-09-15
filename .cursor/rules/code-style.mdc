@@ -8,7 +8,7 @@ alwaysApply: true
 
 编辑本仓 Go 时遵循下列规范。分库与账号边界见 `docs/平台架构核心需求.md`。
 
-工程目录：`global/`、`factory/` 各自只有 `frontend/`（React）和 `server/`（Go）两个子目录，外加本工程的部署与说明文件（`Dockerfile`、`docker-compose.yml`、`Makefile`、`.env.example`、`README.md`）。`go.mod`、`migrations/` 只放在 `server/` 里；`server/docker-compose.yml` 只起测试库。仓库根不放部署文件。底座在 `internal/platform/`，业务在 `internal/service` 与 `internal/store`，验收测试与应用服务同目录。禁止把业务 Go 放在工程根下。禁止 WAN 查询厂内人员、组织、角色、日常密码。表结构只走本工程 `migrations/` 向前 SQL；禁止 GORM AutoMigrate；禁止改写已落库路径快照或审计原文。标识符与错误字符串用英文；业务对错用本侧 `internal/platform/domain`，不把 SQL 原文抛给调用方。矩阵验收走应用服务和 `go test`；HTTP 只做会话与 JSON 适配，不得绕过 Service，也不得把 SQL 原文抛给前端。
+工程目录：`global/`、`factory/` 各自只有 `frontend/`（React）和 `server/`（Go）两个子目录，外加本工程的部署与说明文件（`Dockerfile`、`docker-compose.yml`、`Makefile`、`.env.example`、`README.md`）。`go.mod`、`migrations/` 只放在 `server/` 里；`server/docker-compose.yml` 只起测试库。仓库根不放部署文件。底座在 `internal/platform/`，业务在 `internal/service` 与 `internal/store`，验收测试与应用服务同目录。禁止把业务 Go 放在工程根下。禁止 WAN 查询厂内人员、组织、角色、日常密码。表结构只走本工程 `migrations/` 向前 SQL，按 Flyway 记入 `flyway_schema_history`；禁止 down、禁止 GORM AutoMigrate；禁止改写已落库路径快照或审计原文。标识符与错误字符串用英文；业务对错用本侧 `internal/platform/domain`，不把 SQL 原文抛给调用方。矩阵验收走应用服务和 `go test`；HTTP 只做会话与 JSON 适配，不得绕过 Service，也不得把 SQL 原文抛给前端。
 
 ## 1. 注释
 
@@ -77,6 +77,7 @@ cmd/server → internal/httpapi → internal/service → Store → 本侧库
 | node / client | Client 绑定、离线授权 | `node.go`、`node_eval.go`、`node_query.go`、`node_person.go` | `client.go` |
 | asset | 工艺/工程治理 | `asset.go` | `asset.go` |
 | closure | 组包、下发、副本 | `closure.go`、`distribute.go` | `closure.go` |
+| update | 厂服务包与客户端包 | `update.go` | `update.go` |
 | sync | 上传汇聚 | `sync.go` | — |
 
 `httpapi` 另有 `codec.go`（JSON/错误适配）。`types.go` 只做 store 类型别名，按域分组。新能力加对应域文件，不要写回 `service.go` / `models.go`。

@@ -16,9 +16,12 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 
+	"github.com/google/uuid"
+
 	"wmesh/global/internal/httpapi"
 	"wmesh/global/internal/platform/config"
 	"wmesh/global/internal/platform/migrate"
+	"wmesh/global/internal/platform/mqttbroker"
 	"wmesh/global/internal/platform/oss"
 	"wmesh/global/internal/service"
 	"wmesh/global/internal/store"
@@ -66,6 +69,25 @@ func run(ctx context.Context, log *slog.Logger) error {
 	if err := svc.ResetChannelPresence(ctx); err != nil {
 		return fmt.Errorf("reset channel presence: %w", err)
 	}
+	bus, err := mqttbroker.Listen(cfg.MQTTAddr, mqttbroker.Hooks{
+		Auth: func(factoryID uuid.UUID, unix int64, sig []byte) error {
+			return svc.Channel.VerifyFactoryProof(context.Background(), factoryID, unix, sig)
+		},
+		Online: func(factoryID uuid.UUID) {
+			_ = svc.MarkChannelOnline(context.Background(), factoryID)
+		},
+		Offline: func(factoryID uuid.UUID) {
+			_ = svc.MarkChannelOffline(context.Background(), factoryID)
+		},
+		Up: func(factoryID uuid.UUID, payload []byte) {
+			svc.Channel.HandleFactoryUp(context.Background(), factoryID, payload)
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("mqtt: %w", err)
+	}
+	defer bus.Close()
+	svc.SetBus(bus)
 	if err := bootstrapAdmin(ctx, log, svc, cfg); err != nil {
 		return err
 	}
@@ -100,7 +122,7 @@ func run(ctx context.Context, log *slog.Logger) error {
 	}
 	errCh := make(chan error, 1)
 	go func() {
-		log.Info("global http listening", "addr", cfg.HTTPAddr, "version", version, "web", cfg.WebDir != "", "oss", cfg.OSS.Enabled())
+		log.Info("global http listening", "addr", cfg.HTTPAddr, "mqtt", cfg.MQTTAddr, "version", version, "web", cfg.WebDir != "", "oss", cfg.OSS.Enabled())
 		errCh <- srv.ListenAndServe()
 	}()
 	select {

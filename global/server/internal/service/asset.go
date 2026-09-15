@@ -206,7 +206,11 @@ func (s *Assets) DeletePlatformAsset(ctx context.Context, token string, assetID 
 		return err
 	}
 	// 删除成功才记允许。
-	return s.audit(ctx, &admin.ID, nil, nil, "delete_asset", assetTarget(assetID, cur.Revision), audit.Allow)
+	if err := s.audit(ctx, &admin.ID, nil, nil, "delete_asset", assetTarget(assetID, cur.Revision), audit.Allow); err != nil {
+		return err
+	}
+	s.notifyRetract(ctx, assetID)
+	return nil
 }
 
 // SetPlatformCopyable 未停用即可改可复制，发布后也能改回是或否。新建默认否。
@@ -618,5 +622,7 @@ func (s *kernel) mutatePlatform(ctx context.Context, token string, assetID uuid.
 	if err := s.audit(ctx, &admin.ID, nil, nil, action, assetTarget(row.ID, row.Revision), audit.Allow); err != nil {
 		return Asset{}, err
 	}
-	return stripContent(row), nil
+	out := stripContent(row)
+	s.notifyAsset(ctx, out)
+	return out, nil
 }

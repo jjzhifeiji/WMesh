@@ -5,6 +5,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"wmesh/factory/internal/platform/domain"
 	"wmesh/factory/internal/service"
 )
 
@@ -26,6 +27,7 @@ func (h *Handler) mountAsset(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/factories/{id}/assets/{assetId}/copy", h.copyAsset)
 	mux.HandleFunc("POST /v1/factories/{id}/assets/{assetId}/promote", h.promoteAsset)
 	mux.HandleFunc("POST /v1/factories/{id}/assets/{assetId}/deps", h.setAssetDeps)
+	mux.HandleFunc("POST /v1/factories/{id}/assets/sync", h.syncAssets)
 }
 
 type createAssetReq struct {
@@ -91,6 +93,28 @@ func (h *Handler) listAssets(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, rows)
+	})
+}
+
+// 进工艺/工程页时异步向 WAN 要当前平台级快照；通道不在也立刻返回。
+func (h *Handler) syncAssets(w http.ResponseWriter, r *http.Request) {
+	h.withFactory(w, r, func(svc *service.Service) {
+		if _, err := svc.Auth.RequireActive(r.Context(), bearer(r)); err != nil {
+			writeErr(w, err)
+			return
+		}
+		kind := r.URL.Query().Get("kind")
+		if kind != "" && kind != service.KindProcess && kind != service.KindProject {
+			writeErr(w, domain.ErrNotFound)
+			return
+		}
+		fid, err := uuid.Parse(r.PathValue("id"))
+		if err != nil {
+			writeBadRequest(w, errInvalidID)
+			return
+		}
+		h.Hub.RequestWANSync(fid, "sync_closures", kind)
+		writeJSON(w, http.StatusAccepted, map[string]string{"ok": "true"})
 	})
 }
 

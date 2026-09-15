@@ -82,4 +82,7 @@ type (
 	ClosureSnapshot = store.ClosureSnapshot
 
 	UploadRecord = store.UploadRecord
+
+	SoftwareReplica = store.SoftwareReplica
+	WANTrust        = store.WANTrust
 )

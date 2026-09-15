@@ -12,6 +12,7 @@ import (
 // Config 是 WAN 进程一次启动用到的全部外部配置。
 type Config struct {
 	HTTPAddr        string        // 监听地址
+	MQTTAddr        string        // MQTT Broker 监听地址
 	DSN             string        // WAN 库连接串；只连 WAN 库，不连任何厂库
 	WebDir          string        // 已构建管理端目录；空表示只提供 API
 	AdminLogin      string        // 首次启动写入的唯一 WAN 管理员登录名；空则跳过引导
@@ -39,6 +40,7 @@ const devDSN = "postgres://wmesh:wmesh@127.0.0.1:55432/wmesh?sslmode=disable"
 func Load() (Config, error) {
 	c := Config{
 		HTTPAddr:      envOr("WMESH_HTTP_ADDR", ":8080"),
+		MQTTAddr:      envOr("WMESH_MQTT_ADDR", ":1883"),
 		DSN:           envOr("WMESH_DSN", devDSN),
 		WebDir:        strings.TrimSpace(os.Getenv("WMESH_WEB_DIR")),
 		AdminLogin:    strings.TrimSpace(os.Getenv("WMESH_ADMIN_LOGIN")),

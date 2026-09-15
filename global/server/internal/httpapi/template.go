@@ -93,7 +93,6 @@ func (h *Handler) updateTemplate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	h.fanoutTemplates(r.Context()) // 改模版后立刻推给在线厂
 	writeJSON(w, http.StatusOK, templateJSON(row))
 }
 
@@ -123,7 +122,6 @@ func (h *Handler) createProjectTemplate(w http.ResponseWriter, r *http.Request) 
 		writeErr(w, err)
 		return
 	}
-	h.fanoutTemplates(r.Context())
 	writeJSON(w, http.StatusCreated, templateJSON(row))
 }
 
@@ -144,7 +142,6 @@ func (h *Handler) updateProjectTemplate(w http.ResponseWriter, r *http.Request) 
 		writeErr(w, err)
 		return
 	}
-	h.fanoutTemplates(r.Context())
 	writeJSON(w, http.StatusOK, templateJSON(row))
 }
 
@@ -159,6 +156,5 @@ func (h *Handler) deleteProjectTemplate(w http.ResponseWriter, r *http.Request) 
 		writeErr(w, err)
 		return
 	}
-	h.fanoutTemplates(r.Context())
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }

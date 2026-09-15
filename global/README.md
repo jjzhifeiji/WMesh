@@ -83,7 +83,8 @@ make dev-web     # Vite 开发服务器 :5173，/v1 与 /healthz 代理到 :5208
 - `POST /v1/login` `POST /v1/logout` `GET /v1/me`
 - `GET /v1/directory` 工厂名录 + 各厂初始超管身份（不含密码）
 - `POST /v1/factories` 建厂并返回一次性建厂码（只出现这一次，不落 WAN 库原文）
-- `GET /v1/channel` 厂出站 WSS：用建厂码认领并登记厂签发公钥
+- `POST /v1/channel/enroll` 用建厂码换待认领身份（不消耗建厂码）
+- `POST /v1/channel/claim` 交厂钥并作废建厂码
 - `GET /v1/clients` `POST /v1/clients` `POST /v1/clients/{id}/rebind` 节点公钥与一机一厂绑定
 - `GET /v1/assets` `POST /v1/assets` 平台级工艺/工程；`assets/{id}/rename|publish`；`POST /v1/assets/promote` 收厂级快照升档
 - `GET /v1/templates` `POST /v1/templates` 工艺/工程当前字段模版；保存后下发工厂，不改已有正文；仅新建套用

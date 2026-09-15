@@ -54,8 +54,32 @@ func (s *Node) VoidBinding(ctx context.Context, clientID uuid.UUID) error {
 	return s.audit(ctx, nil, nil, "void_binding", clientID.String(), audit.Allow)
 }
 
+// ReconcileBindings 按 WAN 当前绑定作废本厂漏掉的；没有名单时清空有效绑定。
+func (s *Node) ReconcileBindings(ctx context.Context, keep []uuid.UUID) error {
+	want := make(map[uuid.UUID]struct{}, len(keep))
+	for _, id := range keep {
+		want[id] = struct{}{}
+	}
+	rows, err := s.store.ListClients(ctx)
+	if err != nil {
+		return err
+	}
+	for _, row := range rows {
+		if row.Status != ClientStatusBound {
+			continue
+		}
+		if _, ok := want[row.ID]; ok {
+			continue
+		}
+		if err := s.VoidBinding(ctx, row.ID); err != nil && !errors.Is(err, domain.ErrNotFound) {
+			return err
+		}
+	}
+	return nil
+}
+
 // ensureSigningKey 没有签发钥则当场生成一对，私钥不外送。
-func (s *Node) ensureSigningKey(ctx context.Context) (SigningKey, error) {
+func (s *kernel) ensureSigningKey(ctx context.Context) (SigningKey, error) {
 	k, err := s.store.SigningKey(ctx)
 	if err == nil {
 		return k, nil

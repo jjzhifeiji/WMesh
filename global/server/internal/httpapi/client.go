@@ -80,7 +80,6 @@ func (h *Handler) registerClient(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	h.pushClientToFactory(row, nil) // 登记后立刻推给已分配的厂
 	writeJSON(w, http.StatusCreated, row)
 }
 
@@ -101,7 +100,6 @@ func (h *Handler) renameClient(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	h.pushClientToFactory(row, nil)
 	writeJSON(w, http.StatusOK, row)
 }
 
@@ -127,7 +125,6 @@ func (h *Handler) assignClient(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	h.pushClientToFactory(row, nil)
 	writeJSON(w, http.StatusOK, row)
 }
 
@@ -148,17 +145,11 @@ func (h *Handler) rebindClient(w http.ResponseWriter, r *http.Request) {
 		writeBadRequest(w, errInvalidID)
 		return
 	}
-	prev, _ := h.svc.Clients.ClientByID(r.Context(), cid) // 记下旧厂，改分后通知作废
 	row, err := h.svc.Clients.RebindClient(r.Context(), bearer(r), cid, fid)
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
-	var old *uuid.UUID
-	if prev.FactoryID != nil {
-		old = prev.FactoryID
-	}
-	h.pushClientToFactory(row, old)
 	writeJSON(w, http.StatusOK, row)
 }
 

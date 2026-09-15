@@ -31,6 +31,7 @@ export function useTemplate(kind: AssetKind) {
       }
     },
     retry: false,
+    refetchInterval: 8000,
   });
 }
 
@@ -46,5 +47,10 @@ export function useProjectTemplates() {
       }
     },
     retry: false,
+    refetchInterval: 8000,
   });
+}
+
+export function syncTemplates(kind: AssetKind) {
+  return http.post<{ ok: string }>(fpath(`/templates/sync?kind=${kind}`));
 }

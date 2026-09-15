@@ -240,8 +240,35 @@ func (s *Closure) deliverToFactory(ctx context.Context, assetID, factoryID uuid.
 	return snap, nil
 }
 
+// PackAssetForFactory 把这一条平台级授权并组包给该厂；草稿不组。可用条自动授权，停用条只补已授权厂。
+func (s *Closure) PackAssetForFactory(ctx context.Context, assetID, factoryID uuid.UUID) (ClosureSnapshot, error) {
+	fac, err := s.store.FactoryByID(ctx, factoryID)
+	if err != nil {
+		return ClosureSnapshot{}, err
+	}
+	// 只给有效厂组包；停用厂上线前不推。
+	if fac.Status != FactoryActive {
+		return ClosureSnapshot{}, nil
+	}
+	a, err := s.loadChecked(ctx, assetID)
+	if err != nil {
+		return ClosureSnapshot{}, err
+	}
+	return s.packOneForFactory(ctx, a, factoryID)
+}
+
 // PackAvailableForFactory 把当前可用平台级授权并组包给该厂；离线厂上线回放也走这里。已授权的停用条一并补送。
 func (s *Closure) PackAvailableForFactory(ctx context.Context, factoryID uuid.UUID) ([]ClosureSnapshot, error) {
+	return s.packAvailable(ctx, factoryID, "")
+}
+
+// PackKindForFactory 只组该类型当前该给本厂的平台级，供厂端进页补拉。
+func (s *Closure) PackKindForFactory(ctx context.Context, factoryID uuid.UUID, kind string) ([]ClosureSnapshot, error) {
+	return s.packAvailable(ctx, factoryID, kind)
+}
+
+// 按类型列出当前该给该厂的平台级并组包；kind 空则工艺和工程都组。
+func (s *Closure) packAvailable(ctx context.Context, factoryID uuid.UUID, kind string) ([]ClosureSnapshot, error) {
 	fac, err := s.store.FactoryByID(ctx, factoryID)
 	if err != nil {
 		return nil, err
@@ -257,33 +284,73 @@ func (s *Closure) PackAvailableForFactory(ctx context.Context, factoryID uuid.UU
 	}
 	out := []ClosureSnapshot{}
 	for _, a := range rows {
-		switch a.Status {
-		case AssetAvailable:
-			// 可用条自动授权。
-			if _, err := s.store.UpsertFactoryGrant(ctx, a.ID, factoryID); err != nil {
-				return nil, err
-			}
-		case AssetDisabled:
-			// 停用条只补送已授权的。
-			grant, err := s.store.FactoryGrant(ctx, a.ID, factoryID)
-			if err != nil || !grant.Active {
-				continue
-			}
-		default:
+		if kind != "" && a.Kind != kind {
 			continue
 		}
-		snap, err := s.deliverToFactory(ctx, a.ID, factoryID)
+		snap, err := s.packOneForFactory(ctx, a, factoryID)
 		if err != nil {
-			_ = s.audit(ctx, nil, nil, &factoryID, "distribute_closure", a.ID.String()+" factory="+factoryID.String(), audit.Deny)
-			continue
-		}
-		// 这条下发成功才记允许。
-		if err := s.audit(ctx, nil, nil, &factoryID, "distribute_closure", closureTarget(snap), audit.Allow); err != nil {
 			return nil, err
+		}
+		if snap.AssetID == uuid.Nil {
+			continue
 		}
 		out = append(out, snap)
 	}
 	return out, nil
+}
+
+// 组这一条给该厂；草稿跳过，组失败不打断其它条。
+func (s *Closure) packOneForFactory(ctx context.Context, a Asset, factoryID uuid.UUID) (ClosureSnapshot, error) {
+	switch a.Status {
+	case AssetAvailable:
+		// 可用条自动授权。
+		if _, err := s.store.UpsertFactoryGrant(ctx, a.ID, factoryID); err != nil {
+			return ClosureSnapshot{}, err
+		}
+	case AssetDisabled:
+		// 停用条只补送已授权的。
+		grant, err := s.store.FactoryGrant(ctx, a.ID, factoryID)
+		if err != nil || !grant.Active {
+			return ClosureSnapshot{}, nil
+		}
+	default:
+		return ClosureSnapshot{}, nil
+	}
+	_, recErr := s.store.DistributionRecord(ctx, a.ID, a.Revision, factoryID)
+	if recErr != nil && !errors.Is(recErr, domain.ErrNotFound) {
+		return ClosureSnapshot{}, recErr
+	}
+	root, err := s.loadChecked(ctx, a.ID)
+	if err != nil {
+		_ = s.audit(ctx, nil, nil, &factoryID, "distribute_closure", a.ID.String()+" factory="+factoryID.String(), audit.Deny)
+		return ClosureSnapshot{}, nil
+	}
+	snap, err := s.packPlatform(ctx, root)
+	if err != nil {
+		_ = s.audit(ctx, nil, nil, &factoryID, "distribute_closure", a.ID.String()+" factory="+factoryID.String(), audit.Deny)
+		return ClosureSnapshot{}, nil
+	}
+	fid := factoryID
+	snap.TargetFactoryID = &fid
+	// 同一修订再组不插记录、不记新审计，避免进页补拉刷屏。
+	if recErr == nil {
+		return snap, nil
+	}
+	members := make([]AssetDep, 0, len(snap.Members))
+	for _, m := range snap.Members {
+		members = append(members, AssetDep{ID: m.ID, Revision: m.Revision, Digest: m.Digest})
+	}
+	if _, err := s.store.InsertDistributionRecord(ctx, store.DistributionRecord{
+		AssetID: snap.AssetID, Revision: snap.Revision, FactoryID: factoryID,
+		Kind: snap.Kind, ClosureDigest: snap.Digest, Members: members,
+	}); err != nil {
+		_ = s.audit(ctx, nil, nil, &factoryID, "distribute_closure", a.ID.String()+" factory="+factoryID.String(), audit.Deny)
+		return ClosureSnapshot{}, nil
+	}
+	if err := s.audit(ctx, nil, nil, &factoryID, "distribute_closure", closureTarget(snap), audit.Allow); err != nil {
+		return ClosureSnapshot{}, err
+	}
+	return snap, nil
 }
 
 // ListRetractions 列出已删除、须补送给厂的平台级身份。

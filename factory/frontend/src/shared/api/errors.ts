@@ -28,6 +28,7 @@ const zh: Record<string, string> = {
   "invalid name": "名字不能为空，最多 64 个字",
   "invalid key material": "公钥格式不对，需要 32 字节的 base64 或 hex",
   "revision is not strictly newer": "修订号必须比已接受的更大",
+  "software install failed": "安装失败，仍在跑当前版本",
   "revision does not match": "别人已经改过这条，请刷新后再写",
   "asset integrity check failed": "内容与摘要对不上，不能当有效资产用",
   "asset is not available": "草稿或已停用，不能这样用",

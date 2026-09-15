@@ -8,11 +8,10 @@ import (
 
 	"wmesh/global/internal/platform/audit"
 	"wmesh/global/internal/platform/domain"
-	"wmesh/global/internal/platform/nodekey"
 	"wmesh/global/internal/platform/secret"
 )
 
-// Channel 管厂出站认领、验签握手和在线心跳。不判厂内业务对错。
+// Channel 管厂出站认领、MQTT 在线和 HTTPS 拉正文。不判厂内业务对错。
 type Channel struct{ *kernel }
 
 // OfferEnroll 用建厂码换出待认领身份；码不对或已用完则拒绝。
@@ -53,9 +52,9 @@ func (s *Channel) ConfirmEnroll(ctx context.Context, factoryID uuid.UUID, public
 	return s.audit(ctx, nil, nil, &factoryID, "confirm_enroll", factoryID.String(), audit.Allow)
 }
 
-// RequireFactoryKey 已认领工厂才能做日常握手；名录里没了或已注销都当注销。
+// RequireFactoryKey 已认领且未注销；名录里没了或已注销都当注销。
 func (s *Channel) RequireFactoryKey(ctx context.Context, factoryID uuid.UUID) error {
-	// 已认领工厂才能握手；名录没了或已注销都拒绝。
+	// 已认领工厂才算有效；名录没了或已注销都拒绝。
 	fac, err := s.store.FactoryByID(ctx, factoryID)
 	if errors.Is(err, domain.ErrNotFound) {
 		_ = s.audit(ctx, nil, nil, &factoryID, "hello_factory", factoryID.String(), audit.Deny)
@@ -64,7 +63,7 @@ func (s *Channel) RequireFactoryKey(ctx context.Context, factoryID uuid.UUID) er
 	if err != nil {
 		return err
 	}
-	// 停用仍允许握手，才能再推启用；注销则拒绝。
+	// 停用仍算已认领，才能再推启用；注销则拒绝。
 	if fac.Status == FactoryRetired {
 		_ = s.audit(ctx, nil, nil, &factoryID, "hello_factory", factoryID.String(), audit.Deny)
 		return domain.ErrFactoryRetired
@@ -97,31 +96,6 @@ func (s *Channel) guardEnrollable(ctx context.Context, factoryID uuid.UUID) erro
 	}
 }
 
-// AcceptHello 用已登记厂钥验签 nonce；通过后才允许钉死这条连接。
-func (s *Channel) AcceptHello(ctx context.Context, factoryID uuid.UUID, nonce, signature []byte) error {
-	// nonce 太短、没钥或验签失败都记拒绝。
-	if len(nonce) < 16 {
-		_ = s.audit(ctx, nil, nil, &factoryID, "hello_factory", factoryID.String(), audit.Deny)
-		return domain.ErrUnauthorized
-	}
-	// 取已登记厂钥。
-	key, err := s.store.FactoryPublicKey(ctx, factoryID)
-	if err != nil {
-		_ = s.audit(ctx, nil, nil, &factoryID, "hello_factory", factoryID.String(), audit.Deny)
-		if errors.Is(err, domain.ErrNotFound) {
-			return domain.ErrUnauthorized
-		}
-		return err
-	}
-	// 用厂钥验签 nonce，原文必须与厂端一致。
-	if !nodekey.Verify(key.PublicKey, channelHelloPayload(factoryID, nonce), signature) {
-		_ = s.audit(ctx, nil, nil, &factoryID, "hello_factory", factoryID.String(), audit.Deny)
-		return domain.ErrUnauthorized
-	}
-	// 握手成功才记允许。
-	return s.audit(ctx, nil, nil, &factoryID, "hello_factory", factoryID.String(), audit.Allow)
-}
-
 // MarkChannelOnline 名录标在线；心跳不另记审计。
 func (s *Channel) MarkChannelOnline(ctx context.Context, factoryID uuid.UUID) error {
 	// 名录标在线。
@@ -151,15 +125,6 @@ func (s *Channel) MarkChannelOffline(ctx context.Context, factoryID uuid.UUID) e
 // ResetChannelPresence WAN 进程起来时清掉上一轮残留的在线标记。
 func (s *Channel) ResetChannelPresence(ctx context.Context) error {
 	return s.store.ResetChannelPresence(ctx)
-}
-
-// channelHelloPayload 与厂端 wanchannel 签名原文必须字节一致。
-func channelHelloPayload(factoryID uuid.UUID, nonce []byte) []byte {
-	b := make([]byte, 0, 18+16+len(nonce))
-	b = append(b, "wmesh-wan-hello-v1"...)
-	b = append(b, factoryID[:]...)
-	b = append(b, nonce...)
-	return b
 }
 
 // IssueContentLease 给该厂签发或续期内容租约；同一把 L，窗口最多 24 小时。

@@ -16,10 +16,11 @@ import (
 	"wmesh/factory/internal/wanchannel"
 )
 
-// StartChannel 厂出站连 WAN：已认领的厂保持心跳，断了重连。
-func (h *Hub) StartChannel(ctx context.Context, wanURL string) {
+// StartChannel 厂出站连 WAN：已认领的厂保持 MQTT，断了重连。
+func (h *Hub) StartChannel(ctx context.Context, wanURL, mqttURL string) {
 	h.presenceMu.Lock()
 	h.wanURL = wanURL
+	h.mqttURL = mqttURL
 	h.run = ctx
 	h.presenceMu.Unlock()
 	if wanURL == "" {
@@ -48,6 +49,20 @@ func (h *Hub) ensureChannel(factoryID uuid.UUID) {
 	ctx, cancel := context.WithCancel(h.run)
 	h.presence[factoryID] = cancel
 	go h.holdChannel(ctx, factoryID)
+}
+
+// RequestWANSync 经已钉死通道向 WAN 要当前快照；通道不在就丢掉，页面不阻塞。
+func (h *Hub) RequestWANSync(factoryID uuid.UUID, typ, kind string) {
+	h.presenceMu.Lock()
+	ch := h.syncReq[factoryID]
+	h.presenceMu.Unlock()
+	if ch == nil {
+		return
+	}
+	select {
+	case ch <- wanchannel.SyncRequest{Typ: typ, Kind: kind}:
+	default:
+	}
 }
 
 // 取消该厂出站循环，不再重连。
@@ -99,14 +114,14 @@ func (h *Hub) holdChannel(ctx context.Context, factoryID uuid.UUID) {
 	}
 }
 
-// 用本厂签发钥 hello，并把 WAN 推来的状态落到本厂。
+// 用本厂签发钥连 WAN MQTT，并把下行落到本厂。
 func (h *Hub) dialHold(ctx context.Context, factoryID uuid.UUID) error {
 	svc, err := h.Service(ctx, factoryID)
 	if err != nil {
 		return err
 	}
 	var priv []byte
-	// 取出本厂签发私钥做 hello。
+	// 取出本厂签发私钥做 CONNECT。
 	k, err := svc.Store().SigningKey(ctx)
 	if err != nil && !errors.Is(err, domain.ErrNotFound) {
 		return err
@@ -114,13 +129,30 @@ func (h *Hub) dialHold(ctx context.Context, factoryID uuid.UUID) error {
 	if err == nil {
 		priv = k.PrivateKey
 	}
+	if len(priv) == 0 {
+		slog.Info("no factory signing key, skip wan channel", "factory", factoryID)
+		h.stopChannel(factoryID)
+		return domain.ErrNotFound
+	}
 	h.presenceMu.Lock()
 	wanURL := h.wanURL
+	mqttURL := h.mqttURL
 	h.presenceMu.Unlock()
+	out := make(chan wanchannel.SyncRequest, 1)
+	h.presenceMu.Lock()
+	h.syncReq[factoryID] = out
+	h.presenceMu.Unlock()
+	defer func() {
+		h.presenceMu.Lock()
+		if h.syncReq[factoryID] == out {
+			delete(h.syncReq, factoryID)
+		}
+		h.presenceMu.Unlock()
+	}()
 	// 通道连上才允许解厂库正文。
 	svc.Store().SetContentChannelOnline(true)
 	defer svc.Store().SetContentChannelOnline(false)
-	err = wanchannel.Hold(ctx, wanURL, factoryID, priv, func(st wanchannel.State) error {
+	err = wanchannel.Hold(ctx, mqttURL, wanURL, factoryID, priv, func(st wanchannel.State) error {
 		if st.ShortCode != "" {
 			if err := svc.Store().PutFactoryShortCode(ctx, st.ShortCode); err != nil {
 				return err
@@ -152,6 +184,8 @@ func (h *Hub) dialHold(ctx context.Context, factoryID uuid.UUID) error {
 			return svc.Store().PutClientShortCode(ctx, in.ClientID, in.ShortCode)
 		}
 		return nil
+	}, func(keep []uuid.UUID) error {
+		return svc.Node.ReconcileBindings(ctx, keep)
 	}, func(raw json.RawMessage) error {
 		// 已发布平台级：写入只读副本，失败只记日志，不断通道。
 		var snap service.ClosureSnapshot
@@ -177,6 +211,17 @@ func (h *Hub) dialHold(ctx context.Context, factoryID uuid.UUID) error {
 			slog.Warn("accept content template", "factory", factoryID, "err", err)
 		}
 		return nil
+	}, func(raw json.RawMessage) error {
+		// 软件包：先验签再落只读副本，失败只记日志，不断通道。
+		var snap service.SoftwareSnapshot
+		if err := json.Unmarshal(raw, &snap); err != nil {
+			slog.Warn("software update json", "factory", factoryID, "err", err)
+			return nil
+		}
+		if err := svc.Updates.AcceptSoftwareDelivery(ctx, snap); err != nil {
+			slog.Warn("accept software", "factory", factoryID, "err", err)
+		}
+		return nil
 	}, func(assetID uuid.UUID) error {
 		// 云端删除：列表撤回，失败只记日志，不断通道。
 		if err := svc.Closure.RetractPlatformDelivery(ctx, assetID); err != nil {
@@ -188,9 +233,9 @@ func (h *Hub) dialHold(ctx context.Context, factoryID uuid.UUID) error {
 		return svc.ApplyContentLease(ctx, lease.Key, lease.NotAfter)
 	}, func(typ, _, kind, assetID string) (json.RawMessage, json.RawMessage, error) {
 		return h.answerAsset(ctx, svc, typ, kind, assetID)
-	})
+	}, out)
 	if errors.Is(err, domain.ErrFactoryRetired) {
-		// hello 在 ready 之前就拒绝时，也要落到本厂库。
+		// 注销指令在租约之前到达时，也要落到本厂库。
 		if closeErr := svc.Auth.CloseFromWAN(ctx); closeErr != nil {
 			return closeErr
 		}

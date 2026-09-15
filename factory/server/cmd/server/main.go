@@ -15,6 +15,7 @@ import (
 	"wmesh/factory/internal/httpapi"
 	"wmesh/factory/internal/hub"
 	"wmesh/factory/internal/platform/config"
+	"wmesh/factory/internal/platform/dockerupdate"
 	"wmesh/factory/internal/platform/oss"
 	"wmesh/factory/internal/web"
 )
@@ -26,6 +27,14 @@ var version = "dev"
 func main() {
 	log := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(log)
+	if len(os.Args) > 1 && os.Args[1] == "docker-swap" {
+		// 帮手容器入口：load、建新容器、再停旧起新。
+		if err := dockerupdate.Swap(os.Args[2:]); err != nil {
+			log.Error("docker-swap", "err", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if err := run(context.Background(), log); err != nil {
 		log.Error("factory server exit", "err", err)
 		os.Exit(1)
@@ -47,9 +56,17 @@ func run(ctx context.Context, log *slog.Logger) error {
 		return fmt.Errorf("open admin db: %w", err)
 	}
 	defer h.Close()
+	if cfg.DockerUpdate {
+		// 确认后 docker load 换本容器；套接字不在则拒绝启动。
+		inst, err := dockerupdate.New(cfg.DockerHost, cfg.DockerUpdateDir)
+		if err != nil {
+			return fmt.Errorf("docker update: %w", err)
+		}
+		h.SetFactoryInstaller(inst)
+	}
 
 	if cfg.WANURL != "" {
-		h.StartChannel(ctx, cfg.WANURL)
+		h.StartChannel(ctx, cfg.WANURL, cfg.WANMQTT)
 	}
 
 	api := httpapi.New(h, cfg.BootstrapToken, cfg.WANURL)
@@ -74,12 +91,17 @@ func run(ctx context.Context, log *slog.Logger) error {
 	if cfg.WebDir != "" {
 		mux.Handle("/", web.Handler(cfg.WebDir))
 	}
+	writeTimeout := 60 * time.Second
+	if cfg.DockerUpdate {
+		// docker load 大镜像时确认接口还占着这条连接。
+		writeTimeout = 15 * time.Minute
+	}
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
 		Handler:           httpapi.Wrap(log, mux),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      60 * time.Second,
+		WriteTimeout:      writeTimeout,
 		IdleTimeout:       120 * time.Second,
 	}
 	errCh := make(chan error, 1)

@@ -18,8 +18,12 @@ import (
 
 	"wmesh/factory/internal/httpapi"
 	"wmesh/factory/internal/hub"
+	"wmesh/factory/internal/platform/digest"
 	"wmesh/factory/internal/platform/id"
+	"wmesh/factory/internal/platform/nodekey"
+	"wmesh/factory/internal/platform/softwaresign"
 	"wmesh/factory/internal/platform/testpg"
+	"wmesh/factory/internal/service"
 )
 
 func TestFactoryHTTP(t *testing.T) {
@@ -212,6 +216,18 @@ func TestFactoryHTTP(t *testing.T) {
 	if code != http.StatusOK || !strings.Contains(body, pid) || strings.Contains(body, "secret-body") || !strings.Contains(body, "creatorLogin") {
 		t.Fatalf("list process %d %s", code, body)
 	}
+	code, body = do(t, srv, "POST", base+"/assets/sync?kind=process", "", "")
+	if code != http.StatusUnauthorized {
+		t.Fatalf("anon sync assets %d %s", code, body)
+	}
+	code, body = do(t, srv, "POST", base+"/assets/sync?kind=process", tok, "")
+	if code != http.StatusAccepted {
+		t.Fatalf("sync assets %d %s", code, body)
+	}
+	code, body = do(t, srv, "POST", base+"/templates/sync?kind=process", tok, "")
+	if code != http.StatusAccepted {
+		t.Fatalf("sync templates %d %s", code, body)
+	}
 	code, body = do(t, srv, "GET", base+"/assets/"+pid+"/content", tok, "")
 	if code != http.StatusOK || gjson(t, body, "content") != "secret-body" {
 		t.Fatalf("read content %d %s", code, body)
@@ -342,4 +358,86 @@ func gjson(t *testing.T, body, path string) string {
 	}
 	t.Fatalf("%s not string in %s", path, body)
 	return ""
+}
+
+func TestFactorySoftwareHTTP(t *testing.T) {
+	h, err := hub.New(testpg.AdminDSN())
+	if err != nil {
+		t.Fatalf("hub: %v", err)
+	}
+	fid := id.New()
+	t.Cleanup(func() {
+		_ = h.Drop(fid)
+		h.Close()
+	})
+	srv := httptest.NewServer(httpapi.New(h, "boot-secret", "").Router())
+	t.Cleanup(srv.Close)
+	base := "/v1/factories/" + fid.String()
+	code, body := do(t, srv, "POST", "/internal/bootstrap", "boot-secret", `{"factoryId":"`+fid.String()+`","saLogin":"sa","saDisplay":"超管"}`)
+	if code != http.StatusCreated {
+		t.Fatalf("bootstrap %d %s", code, body)
+	}
+	svc, err := h.Service(context.Background(), fid)
+	if err != nil {
+		t.Fatalf("service: %v", err)
+	}
+	if err := svc.Store().GrantLocalLease(context.Background()); err != nil {
+		t.Fatalf("lease: %v", err)
+	}
+	act := gjson(t, body, "activationToken")
+	code, body = do(t, srv, "POST", base+"/activate", "", `{"loginName":"sa","activationToken":"`+act+`","password":"secret"}`)
+	if code != http.StatusNoContent {
+		t.Fatalf("activate %d %s", code, body)
+	}
+	code, body = do(t, srv, "POST", base+"/login", "", `{"loginName":"sa","password":"secret"}`)
+	if code != http.StatusOK {
+		t.Fatalf("login %d %s", code, body)
+	}
+	tok := gjson(t, body, "token")
+	code, body = do(t, srv, "GET", base+"/software/pending", "", "")
+	if code != http.StatusUnauthorized {
+		t.Fatalf("anon pending %d %s", code, body)
+	}
+	code, body = do(t, srv, "GET", base+"/software/current", "", "")
+	if code != http.StatusUnauthorized {
+		t.Fatalf("anon current %d %s", code, body)
+	}
+	code, body = do(t, srv, "GET", base+"/software/current", tok, "")
+	if code != http.StatusOK || gjson(t, body, "version") != "0" {
+		t.Fatalf("empty current %d %s", code, body)
+	}
+	code, body = do(t, srv, "GET", base+"/software/pending", tok, "")
+	if code != http.StatusOK || strings.TrimSpace(body) != "null" {
+		t.Fatalf("empty pending %d %s", code, body)
+	}
+	wanPub, wanPriv, err := nodekey.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkg := []byte("svc-2")
+	sum := digest.Sum(pkg)
+	snap := service.SoftwareSnapshot{
+		Kind: service.SoftwareFactoryService, Version: 2, VersionName: "1.2.0", Digest: sum,
+		Signature:    nodekey.Sign(wanPriv, softwaresign.Message(service.SoftwareFactoryService, 2, sum, fid)),
+		WANPublicKey: wanPub, TargetFactoryID: fid, Body: pkg,
+	}
+	if err := svc.Updates.AcceptSoftwareDelivery(context.Background(), snap); err != nil {
+		t.Fatalf("accept: %v", err)
+	}
+	code, body = do(t, srv, "GET", base+"/software/pending", tok, "")
+	if code != http.StatusOK || gjson(t, body, "version") != "2" || gjson(t, body, "versionName") != "1.2.0" {
+		t.Fatalf("pending %d %s", code, body)
+	}
+	code, body = do(t, srv, "POST", base+"/software/confirm", tok, `{"kind":"factory_service","version":2}`)
+	if code != http.StatusNoContent {
+		t.Fatalf("confirm %d %s", code, body)
+	}
+	code, body = do(t, srv, "GET", base+"/software/pending", tok, "")
+	if code != http.StatusOK || strings.TrimSpace(body) != "null" {
+		t.Fatalf("cleared pending %d %s", code, body)
+	}
+	code, body = do(t, srv, "GET", base+"/software/current", tok, "")
+	if code != http.StatusOK || gjson(t, body, "version") != "2" || gjson(t, body, "versionName") != "1.2.0" {
+		t.Fatalf("installed current %d %s", code, body)
+	}
 }

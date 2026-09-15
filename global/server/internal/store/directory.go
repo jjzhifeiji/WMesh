@@ -26,8 +26,8 @@ type Factory struct {
 	StatusChangedAt       *time.Time `json:"statusChangedAt,omitempty"`         // 最近一次停用、启用或注销
 	EnrollmentTokenHash   *string    `json:"-"`                                 // 一次性建厂码哈希，认领后清空
 	EnrolledAt            *time.Time `json:"enrolledAt,omitempty"`              // 厂端认领成功时间；未认领为空
-	ChannelConnectedAt    *time.Time `json:"channelConnectedAt,omitempty"`      // 当前这条 WSS 连上的时间；空表示离线
-	ChannelLastSeenAt     *time.Time `json:"channelLastSeenAt,omitempty"`       // 最近一次心跳或握手
+	ChannelConnectedAt    *time.Time `json:"channelConnectedAt,omitempty"`      // 当前 MQTT 会话连上的时间；空表示离线
+	ChannelLastSeenAt     *time.Time `json:"channelLastSeenAt,omitempty"`       // 最近一次 MQTT 保活
 	ChannelDisconnectedAt *time.Time `json:"channelDisconnectedAt,omitempty"`   // 最近一次断开；在线时为空
 	ChannelOnline         bool       `gorm:"-" json:"channelOnline"`            // 当前有没有钉死的厂端通道
 	ShortCode             string     `gorm:"not null" json:"shortCode"`        // 本厂短码 F01…F99，创建后不改

@@ -47,8 +47,28 @@ func TestPlatformReplicaSync(t *testing.T) {
 	if !found {
 		t.Fatal("available replica missing")
 	}
+	renamed := m
+	renamed.Revision = 2
+	renamed.Name = "改名工艺"
+	if err := fac.AcceptPlatformDelivery(ctx, sealSnap(factory.KindProcess, renamed, nil, &fid, nil)); err != nil {
+		t.Fatal(err)
+	}
+	listed, err = fac.ListAssets(ctx, tok, factory.KindProcess)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found = false
+	for _, a := range listed {
+		if a.ID == m.ID && a.Name == "改名工艺" && a.Revision == 2 {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("renamed replica missing")
+	}
 	disabled := m
-	disabled.Revision = 2
+	disabled.Revision = 3
 	disabled.Status = factory.AssetDisabled
 	if err := fac.AcceptPlatformDelivery(ctx, sealSnap(factory.KindProcess, disabled, nil, &fid, nil)); err != nil {
 		t.Fatal(err)

@@ -1,6 +1,6 @@
 // Package service 是 WAN 侧入口：唯一管理员、工厂名录、现场设备分配和初始化交付。
 // 不代建厂内普通账号、组织或角色，也不直连 SQL。
-// 按域分类型：Auth / Factories / Channel / Clients / Assets / Templates / Closure；本文件只组装。
+// 按域分类型：Auth / Factories / Channel / Clients / Assets / Templates / Closure / Updates；本文件只组装。
 package service
 
 import (
@@ -9,11 +9,14 @@ import (
 	"github.com/google/uuid"
 
 	"wmesh/global/internal/platform/audit"
+	"wmesh/global/internal/platform/blob"
 )
 
-// kernel 是各域共用的 WAN 库和审计。
+// kernel 是各域共用的 WAN 库、对象存根和审计。
 type kernel struct {
 	store *Store
+	blobs blob.Store // 软件包字节；不进库、不进审计
+	bus   CmdBus      // 厂端 MQTT 指令；测试可不挂
 }
 
 // Auth 管 WAN 管理员登录、会话和改密码。
@@ -46,11 +49,12 @@ type Service struct {
 	*Assets
 	*Templates
 	*Closure
+	*Updates
 }
 
 // NewService 组装 WAN 应用服务。建厂不再反打厂内网。
 func NewService(st *Store) *Service {
-	k := &kernel{store: st}
+	k := &kernel{store: st, blobs: blob.NewMemory()}
 	return &Service{
 		kernel:    k,
 		Auth:      &Auth{k},
@@ -60,6 +64,7 @@ func NewService(st *Store) *Service {
 		Assets:    &Assets{k},
 		Templates: &Templates{k},
 		Closure:   &Closure{k},
+		Updates:   &Updates{k},
 	}
 }
 

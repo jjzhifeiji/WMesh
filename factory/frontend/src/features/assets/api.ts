@@ -52,7 +52,12 @@ export function useAssets(kind: AssetKind) {
   return useQuery({
     queryKey: assetKeys.kind(kind),
     queryFn: ({ signal }) => http.get<Asset[]>(fpath(`/assets?kind=${kind}`), signal),
+    refetchInterval: 8000,
   });
+}
+
+export function syncAssets(kind: AssetKind) {
+  return http.post<{ ok: string }>(fpath(`/assets/sync?kind=${kind}`));
 }
 
 function useAssetMutation<TData, TVars>(mutationFn: (vars: TVars) => Promise<TData>) {

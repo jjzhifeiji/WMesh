@@ -77,7 +77,6 @@ func (h *Handler) disableFactory(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	h.pushLifecycle(id) // 在线则立刻推给厂端
 	writeJSON(w, http.StatusOK, out)
 }
 
@@ -93,7 +92,6 @@ func (h *Handler) enableFactory(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	h.pushLifecycle(id) // 在线则立刻推给厂端
 	writeJSON(w, http.StatusOK, out)
 }
 
@@ -110,12 +108,9 @@ func (h *Handler) deleteFactory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if out == nil {
-		h.live.drop(id) // 名录已拿掉，打断还连着的通道
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	h.pushLifecycle(id) // 注销后通知在线厂端停连
-	h.live.drop(id)
 	writeJSON(w, http.StatusOK, out)
 }
 

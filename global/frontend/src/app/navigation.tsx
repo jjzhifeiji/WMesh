@@ -2,6 +2,7 @@ import {
   AppstoreOutlined,
   AuditOutlined,
   BarChartOutlined,
+  CloudUploadOutlined,
   ClusterOutlined,
   DashboardOutlined,
   ShopOutlined,
@@ -52,6 +53,7 @@ export const navTree: NavEntry[] = [
       { key: paths.projectTemplates, label: "工程模版", description: "独立命名模版，可新建编辑删除。" },
     ],
   },
+  { key: paths.updates, label: "软件更新", icon: <CloudUploadOutlined />, description: "上传厂服务包和客户端包，按已认领工厂下发。" },
   {
     key: "audit",
     label: "审计",

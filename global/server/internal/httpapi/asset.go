@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"time"
 
@@ -209,9 +210,6 @@ func (h *Handler) setAssetCopyable(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	if row.Status == service.AssetAvailable {
-		h.fanoutAvailable(r.Context()) // 改成可复制且已可用时立刻下发
-	}
 	writeJSON(w, http.StatusOK, row)
 }
 
@@ -272,7 +270,6 @@ func (h *Handler) publishAsset(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	h.fanoutAvailable(r.Context()) // 发布后立刻把可用修订推给已授权厂
 	writeJSON(w, http.StatusOK, row)
 }
 
@@ -293,7 +290,6 @@ func (h *Handler) disableAsset(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	h.fanoutAvailable(r.Context()) // 停用修订也要推，厂端按修订只向前
 	writeJSON(w, http.StatusOK, row)
 }
 
@@ -314,7 +310,6 @@ func (h *Handler) enableAsset(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	h.fanoutAvailable(r.Context()) // 重新启用后立刻推给已授权厂
 	writeJSON(w, http.StatusOK, row)
 }
 
@@ -329,7 +324,6 @@ func (h *Handler) deleteAsset(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	h.fanoutRetract(r.Context(), assetID) // 删除后立刻撤回在线厂的展示
 	writeJSON(w, http.StatusOK, map[string]string{"ok": "true"})
 }
 
@@ -348,7 +342,20 @@ func (h *Handler) promoteAsset(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, row)
 }
 
-// 经钉死通道向该厂要升档列表，不含正文。
+// 升档清单元数据，不含正文。
+type promotableAsset struct {
+	ID       string `json:"id"`       // 稳定身份
+	Kind     string `json:"kind"`     // process / project
+	Level    string `json:"level"`    // factory / personal / platform
+	Name     string `json:"name"`     // 显示名
+	Code     string `json:"code"`     // 只读编号
+	Revision int64  `json:"revision"` // 当前修订
+	Digest   []byte `json:"digest"`   // 内容摘要
+	Status   string `json:"status"`   // draft / available / disabled
+	Copyable bool   `json:"copyable"` // 原样带回
+}
+
+// 经 MQTT 向该厂要升档列表，不含正文。
 func (h *Handler) listPromotable(w http.ResponseWriter, r *http.Request) {
 	if _, err := h.svc.RequireAdmin(r.Context(), bearer(r)); err != nil {
 		writeErr(w, err)
@@ -366,20 +373,22 @@ func (h *Handler) listPromotable(w http.ResponseWriter, r *http.Request) {
 	kind := r.URL.Query().Get("kind")
 	ctx, cancel := context.WithTimeout(r.Context(), channelAsk)
 	defer cancel()
-	// 经钉死通道问该厂升档清单。
-	msg, err := h.live.call(ctx, fid, channelMsg{Typ: "asset_list", Kind: kind})
+	msg, err := h.svc.CallFactory(ctx, fid, service.Cmd{Typ: service.CmdAssetList, Kind: kind})
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
-	rows := msg.Assets
-	if rows == nil {
-		rows = []promotableAsset{}
+	rows := []promotableAsset{}
+	if len(msg.Assets) > 0 {
+		if err := json.Unmarshal(msg.Assets, &rows); err != nil {
+			writeErr(w, domain.ErrFactoryOffline)
+			return
+		}
 	}
 	writeJSON(w, http.StatusOK, rows)
 }
 
-// 经通道取该厂快照，再在 WAN 做成平台级。
+// 经 MQTT 取该厂快照，再在 WAN 做成平台级。
 func (h *Handler) promoteFromFactory(w http.ResponseWriter, r *http.Request) {
 	if _, err := h.svc.RequireAdmin(r.Context(), bearer(r)); err != nil {
 		writeErr(w, err)
@@ -405,18 +414,21 @@ func (h *Handler) promoteFromFactory(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), channelAsk)
 	defer cancel()
-	// 经通道取该厂快照（含正文）。
-	msg, err := h.live.call(ctx, fid, channelMsg{Typ: "asset_snapshot", AssetID: req.AssetID})
+	msg, err := h.svc.CallFactory(ctx, fid, service.Cmd{Typ: service.CmdAssetSnapshot, AssetID: req.AssetID})
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
-	if msg.Snapshot == nil {
+	if len(msg.Snapshot) == 0 {
 		writeErr(w, domain.ErrNotFound)
 		return
 	}
-	// 用厂端快照在 WAN 做成平台级，不改厂内原件。
-	row, err := h.svc.Assets.PromoteFromSnapshot(r.Context(), bearer(r), *msg.Snapshot)
+	var snap service.AssetSnapshot
+	if err := json.Unmarshal(msg.Snapshot, &snap); err != nil {
+		writeErr(w, domain.ErrNotFound)
+		return
+	}
+	row, err := h.svc.Assets.PromoteFromSnapshot(r.Context(), bearer(r), snap)
 	if err != nil {
 		writeErr(w, err)
 		return

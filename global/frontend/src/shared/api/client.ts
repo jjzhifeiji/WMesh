@@ -19,19 +19,26 @@ type Method = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 type RequestInitLite = {
   method?: Method;
   body?: unknown;
+  form?: FormData;
   signal?: AbortSignal;
 };
 
 export async function request<T>(path: string, init: RequestInitLite = {}): Promise<T> {
   const headers = new Headers();
-  if (init.body !== undefined) headers.set("Content-Type", "application/json");
+  let body: BodyInit | undefined;
+  if (init.form) {
+    body = init.form;
+  } else if (init.body !== undefined) {
+    headers.set("Content-Type", "application/json");
+    body = JSON.stringify(init.body);
+  }
   const token = session.token;
   if (token) headers.set("Authorization", `Bearer ${token}`);
 
   const res = await fetch(path, {
     method: init.method ?? "GET",
     headers,
-    body: init.body === undefined ? undefined : JSON.stringify(init.body),
+    body,
     signal: init.signal,
   });
   if (res.status === 204) return undefined as T;
@@ -54,6 +61,7 @@ export async function request<T>(path: string, init: RequestInitLite = {}): Prom
 export const http = {
   get: <T>(path: string, signal?: AbortSignal) => request<T>(path, { signal }),
   post: <T>(path: string, body?: unknown) => request<T>(path, { method: "POST", body }),
+  postForm: <T>(path: string, form: FormData, signal?: AbortSignal) => request<T>(path, { method: "POST", form, signal }),
   patch: <T>(path: string, body?: unknown) => request<T>(path, { method: "PATCH", body }),
   del: <T>(path: string) => request<T>(path, { method: "DELETE" }),
 };

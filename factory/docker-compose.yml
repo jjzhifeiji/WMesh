@@ -13,11 +13,20 @@ services:
       # 连维护库；各厂库 wmesh_fac_<id> 由服务按工厂身份在同一实例上创建
       WMESH_DSN: postgres://wmesh:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/postgres?sslmode=disable
       WMESH_WAN_URL: ${WMESH_WAN_URL:-http://host.docker.internal:52080}
+      WMESH_WAN_MQTT_URL: ${WMESH_WAN_MQTT_URL:-tcp://host.docker.internal:52183}
       WMESH_BOOTSTRAP_TOKEN: ${WMESH_BOOTSTRAP_TOKEN:-}
       WMESH_OSS_ENDPOINT: http://oss:9000
       WMESH_OSS_BUCKET: ${OSS_BUCKET:-wmesh-factory}
       WMESH_OSS_ACCESS_KEY: ${OSS_ACCESS_KEY:-wmesh}
       WMESH_OSS_SECRET_KEY: ${OSS_SECRET_KEY:?set OSS_SECRET_KEY in .env}
+      # 超管确认后 docker load 只换本容器；库和 OSS 卷不动
+      WMESH_DOCKER_UPDATE: "1"
+      WMESH_DOCKER_HOST: unix:///var/run/docker.sock
+      WMESH_DOCKER_UPDATE_DIR: /var/lib/wmesh/update
+    user: "0:0"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - update:/var/lib/wmesh/update
     ports:
       - "${HTTP_PORT:-52081}:8080"
     extra_hosts:
@@ -84,3 +93,4 @@ volumes:
   pgdata:
   ossdata:
   osslogs:
+  update:

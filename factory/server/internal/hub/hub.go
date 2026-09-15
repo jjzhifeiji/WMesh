@@ -33,9 +33,12 @@ type Hub struct {
 	adminDSN   string
 	admin      *gorm.DB
 	tenants    map[uuid.UUID]*tenant
-	presence   map[uuid.UUID]context.CancelFunc // 每厂一条出站通道
-	wanURL     string                           // WAN 根地址，空则不连
-	run        context.Context                  // 进程生命周期，给通道重连用
+	presence   map[uuid.UUID]context.CancelFunc          // 每厂一条出站通道
+	syncReq    map[uuid.UUID]chan wanchannel.SyncRequest // 进页补拉，Hold 在线才有
+	wanURL     string                                    // WAN 根地址，空则不连
+	mqttURL    string                                    // WAN MQTT 地址
+	run        context.Context                           // 进程生命周期，给通道重连用
+	installer  service.FactoryInstaller                  // 超管确认后换 Docker；空则测试用空实现
 }
 
 // New 连维护库（用来建厂库），不预先打开任何厂库。
@@ -51,7 +54,14 @@ func New(adminDSN string) (*Hub, error) {
 	if err := sqlDB.Ping(); err != nil {
 		return nil, err
 	}
-	return &Hub{adminDSN: adminDSN, admin: admin, tenants: map[uuid.UUID]*tenant{}, presence: map[uuid.UUID]context.CancelFunc{}}, nil
+	return &Hub{adminDSN: adminDSN, admin: admin, tenants: map[uuid.UUID]*tenant{}, presence: map[uuid.UUID]context.CancelFunc{}, syncReq: map[uuid.UUID]chan wanchannel.SyncRequest{}}, nil
+}
+
+// SetFactoryInstaller 生产注入 docker load；须在打开厂库之前调用。
+func (h *Hub) SetFactoryInstaller(in service.FactoryInstaller) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.installer = in
 }
 
 // Ping 只确认维护库连接可用，给探活用；不打开任何厂库。
@@ -118,6 +128,9 @@ func (h *Hub) ensure(factoryID uuid.UUID) (*service.Service, error) {
 	}
 	// 按工厂身份打开本厂库并组装应用服务。
 	svc := service.NewService(store.Open(db, factoryID))
+	if h.installer != nil {
+		svc.Updates.SetFactoryInstaller(h.installer)
+	}
 	h.tenants[factoryID] = &tenant{db: db, svc: svc}
 	return svc, nil
 }
@@ -161,11 +174,10 @@ func (h *Hub) Claim(ctx context.Context, wanURL, enrollmentCode, password string
 	if wanURL == "" {
 		return SiteFactory{}, domain.ErrWANUnreachable
 	}
-	sess, offer, err := wanchannel.Enroll(ctx, wanURL, enrollmentCode)
+	offer, err := wanchannel.Enroll(ctx, wanURL, enrollmentCode)
 	if err != nil {
 		return SiteFactory{}, err
 	}
-	defer sess.Close()
 
 	svc, err := h.ensure(offer.FactoryID)
 	if err != nil {
@@ -183,7 +195,7 @@ func (h *Hub) Claim(ctx context.Context, wanURL, enrollmentCode, password string
 	if err != nil {
 		return SiteFactory{}, err
 	}
-	if err := sess.Confirm(ctx, pub); err != nil {
+	if err := wanchannel.Confirm(ctx, wanURL, enrollmentCode, pub); err != nil {
 		return SiteFactory{}, err
 	}
 	h.ensureChannel(offer.FactoryID)

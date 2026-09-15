@@ -1,4 +1,4 @@
-// Package migrations 嵌入本厂库向前 SQL。新厂套用同一套迁移。
+// Package migrations 嵌入本厂库 Flyway 向前 SQL。新厂套用同一套迁移。
 package migrations
 
 import "embed"

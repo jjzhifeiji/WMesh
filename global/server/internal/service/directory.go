@@ -160,6 +160,8 @@ func (s *Factories) DeleteFactory(ctx context.Context, token string, factoryID u
 		if err := s.audit(ctx, &admin.ID, nil, &factoryID, "retire_factory", factoryID.String(), audit.Allow); err != nil {
 			return nil, err
 		}
+		s.notifyLifecycle(out)
+		s.dropFactory(factoryID)
 		return &out, nil
 	}
 	// 未认领且无引用则从名录删除。
@@ -175,6 +177,8 @@ func (s *Factories) DeleteFactory(ctx context.Context, token string, factoryID u
 			if err := s.audit(ctx, &admin.ID, nil, &factoryID, "retire_factory", factoryID.String(), audit.Allow); err != nil {
 				return nil, err
 			}
+			s.notifyLifecycle(out)
+			s.dropFactory(factoryID)
 			return &out, nil
 		}
 		_ = s.audit(ctx, &admin.ID, nil, &factoryID, "delete_factory", factoryID.String(), audit.Deny)
@@ -184,6 +188,7 @@ func (s *Factories) DeleteFactory(ctx context.Context, token string, factoryID u
 	if err := s.audit(ctx, &admin.ID, nil, &factoryID, "delete_factory", factoryID.String(), audit.Allow); err != nil {
 		return nil, err
 	}
+	s.dropFactory(factoryID)
 	return nil, nil
 }
 
@@ -205,6 +210,7 @@ func (s *Factories) setStatus(ctx context.Context, token string, factoryID uuid.
 	if err := s.audit(ctx, &admin.ID, nil, &factoryID, action, factoryID.String(), audit.Allow); err != nil {
 		return Factory{}, err
 	}
+	s.notifyLifecycle(out)
 	return out, nil
 }
 

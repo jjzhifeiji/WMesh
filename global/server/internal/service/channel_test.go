@@ -1,4 +1,4 @@
-// 建厂码认领、厂钥验签、通道在线与离线。
+// 建厂码认领、厂钥、MQTT 在线与离线。
 package service_test
 
 import (
@@ -81,7 +81,7 @@ func TestChannelPresence(t *testing.T) {
 	if err := h.WAN.RequireFactoryKey(ctx, fid); !errors.Is(err, domain.ErrUnauthorized) {
 		t.Fatalf("before enroll: %v", err)
 	}
-	pub, priv, err := nodekey.Generate()
+	pub, _, err := nodekey.Generate()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,14 +89,6 @@ func TestChannelPresence(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := h.WAN.RequireFactoryKey(ctx, fid); err != nil {
-		t.Fatal(err)
-	}
-	nonce := []byte("0123456789abcdef")
-	if err := h.WAN.AcceptHello(ctx, fid, nonce, []byte("bad")); !errors.Is(err, domain.ErrUnauthorized) {
-		t.Fatalf("bad sig: %v", err)
-	}
-	sig := nodekey.Sign(priv, helloBytes(fid, nonce))
-	if err := h.WAN.AcceptHello(ctx, fid, nonce, sig); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.WAN.MarkChannelOnline(ctx, fid); err != nil {
@@ -135,12 +127,4 @@ func TestChannelPresence(t *testing.T) {
 	if dir.Factories[0].ChannelOnline {
 		t.Fatalf("reset left online: %+v", dir.Factories[0])
 	}
-}
-
-func helloBytes(factoryID [16]byte, nonce []byte) []byte {
-	b := make([]byte, 0, 18+16+len(nonce))
-	b = append(b, "wmesh-wan-hello-v1"...)
-	b = append(b, factoryID[:]...)
-	b = append(b, nonce...)
-	return b
 }

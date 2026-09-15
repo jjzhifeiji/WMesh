@@ -4,6 +4,9 @@ import (
 	"encoding/json"
 	"net/http"
 
+	"github.com/google/uuid"
+
+	"wmesh/factory/internal/platform/domain"
 	"wmesh/factory/internal/service"
 )
 
@@ -11,6 +14,7 @@ import (
 func (h *Handler) mountTemplate(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/factories/{id}/templates", h.getTemplate)
 	mux.HandleFunc("GET /v1/factories/{id}/project-templates", h.listProjectTemplates)
+	mux.HandleFunc("POST /v1/factories/{id}/templates/sync", h.syncTemplates)
 }
 
 type templateResp struct {
@@ -53,5 +57,27 @@ func (h *Handler) listProjectTemplates(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 		writeJSON(w, http.StatusOK, out)
+	})
+}
+
+// 进页时异步向 WAN 要当前模版；通道不在也立刻返回。
+func (h *Handler) syncTemplates(w http.ResponseWriter, r *http.Request) {
+	h.withFactory(w, r, func(svc *service.Service) {
+		if _, err := svc.Auth.RequireActive(r.Context(), bearer(r)); err != nil {
+			writeErr(w, err)
+			return
+		}
+		kind := r.URL.Query().Get("kind")
+		if kind != "" && kind != service.KindProcess && kind != service.KindProject {
+			writeErr(w, domain.ErrNotFound)
+			return
+		}
+		fid, err := uuid.Parse(r.PathValue("id"))
+		if err != nil {
+			writeBadRequest(w, errInvalidID)
+			return
+		}
+		h.Hub.RequestWANSync(fid, "sync_templates", kind)
+		writeJSON(w, http.StatusAccepted, map[string]string{"ok": "true"})
 	})
 }

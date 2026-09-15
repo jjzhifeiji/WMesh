@@ -1,166 +1,214 @@
-// 厂出站 hello 验签、心跳、租约失败不断连、注销停连。
 package wanchannel
 
 import (
 	"context"
-	"crypto/rand"
+	"encoding/json"
 	"errors"
+	"io"
+	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
-	"github.com/coder/websocket"
-	"github.com/coder/websocket/wsjson"
+	mochimqtt "github.com/mochi-mqtt/server/v2"
+	"github.com/mochi-mqtt/server/v2/hooks/auth"
+	"github.com/mochi-mqtt/server/v2/listeners"
 	"github.com/google/uuid"
 
 	"wmesh/factory/internal/platform/domain"
 	"wmesh/factory/internal/platform/nodekey"
 )
 
-func TestHold(t *testing.T) {
-	pingEvery = 20 * time.Millisecond
-	t.Cleanup(func() { pingEvery = 15 * time.Second })
-
+func TestEnrollConfirm(t *testing.T) {
 	fid := uuid.New()
-	pub, priv, err := nodekey.Generate()
+	pid := uuid.New()
+	pub, _, err := nodekey.Generate()
 	if err != nil {
 		t.Fatal(err)
 	}
-	gotPing := make(chan struct{}, 1)
+	var claimed bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		c, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
-		if err != nil {
-			return
-		}
-		defer c.CloseNow()
-		ctx := r.Context()
-		var msg envelope
-		if err := wsjson.Read(ctx, c, &msg); err != nil || msg.Typ != "hello" || msg.FactoryID != fid.String() {
-			return
-		}
-		nonce := make([]byte, 32)
-		if _, err := rand.Read(nonce); err != nil {
-			return
-		}
-		if err := wsjson.Write(ctx, c, envelope{Typ: "challenge", Nonce: nonce}); err != nil {
-			return
-		}
-		if err := wsjson.Read(ctx, c, &msg); err != nil || msg.Typ != "hello_ack" {
-			return
-		}
-		if !nodekey.Verify(pub, helloPayload(fid, nonce), msg.Signature) {
-			_ = wsjson.Write(ctx, c, envelope{Typ: "error", Error: "unauthorized"})
-			return
-		}
-		if err := wsjson.Write(ctx, c, envelope{Typ: "ready"}); err != nil {
-			return
-		}
-		for {
-			if err := wsjson.Read(ctx, c, &msg); err != nil {
-				return
-			}
-			if msg.Typ != "ping" {
-				continue
-			}
-			select {
-			case gotPing <- struct{}{}:
-			default:
-			}
-			if err := wsjson.Write(ctx, c, envelope{Typ: "pong"}); err != nil {
-				return
-			}
+		switch r.URL.Path {
+		case "/v1/channel/enroll":
+			writeJSON(w, map[string]any{
+				"factoryId": fid.String(), "name": "厂A", "factoryShortCode": "F01",
+				"saPersonId": pid.String(), "saLogin": "sa-a", "saDisplay": "超管A",
+			})
+		case "/v1/channel/claim":
+			claimed = true
+			writeJSON(w, map[string]any{"factoryId": fid.String(), "status": "active", "revision": 0, "factoryShortCode": "F01"})
+		default:
+			http.NotFound(w, r)
 		}
 	}))
 	t.Cleanup(srv.Close)
+	ctx := context.Background()
+	offer, err := Enroll(ctx, srv.URL, "code")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if offer.FactoryID != fid || offer.SAPersonID != pid || offer.SALogin != "sa-a" {
+		t.Fatalf("offer %+v", offer)
+	}
+	if err := Confirm(ctx, srv.URL, "code", pub); err != nil {
+		t.Fatal(err)
+	}
+	if !claimed {
+		t.Fatal("claim not posted")
+	}
+}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+func TestEnrollDisabled(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "factory is disabled"})
+	}))
+	t.Cleanup(srv.Close)
+	_, err := Enroll(context.Background(), srv.URL, "code")
+	if !errors.Is(err, domain.ErrFactoryDisabled) {
+		t.Fatalf("enroll: %v", err)
+	}
+}
+
+func TestEnrollRejectsWSURL(t *testing.T) {
+	_, err := Enroll(context.Background(), "ws://127.0.0.1/v1/channel", "code")
+	if !errors.Is(err, domain.ErrWANUnreachable) {
+		t.Fatalf("ws url: %v", err)
+	}
+}
+
+func TestHold(t *testing.T) {
+	fid := uuid.New()
+	_, priv, err := nodekey.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, mqttAddr := startAllowBroker(t)
+	var sawIndex bool
+	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/lease"):
+			writeJSON(w, map[string]any{"typ": "lease", "lease": []byte("lease-key-32-bytes-long-enough!!"), "notAfter": time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano)})
+		case strings.HasSuffix(r.URL.Path, "/index"):
+			sawIndex = true
+			writeJSON(w, map[string]any{"cmds": []any{}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(httpSrv.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	errCh := make(chan error, 1)
-	go func() { errCh <- Hold(ctx, srv.URL, fid, priv, nil, nil, nil, nil, nil, nil, nil) }()
-	select {
-	case <-gotPing:
-	case err := <-errCh:
-		t.Fatalf("hold: %v", err)
-	case <-ctx.Done():
-		t.Fatal("no ping")
+	go func() {
+		errCh <- Hold(ctx, "tcp://"+mqttAddr, httpSrv.URL, fid, priv, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if sawIndex {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !sawIndex {
+		t.Fatal("no index pull")
 	}
 	cancel()
 	<-errCh
 }
 
 func TestHoldLeaseFailKeepsConnection(t *testing.T) {
-	pingEvery = 20 * time.Millisecond
-	t.Cleanup(func() { pingEvery = 15 * time.Second })
-
 	fid := uuid.New()
-	pub, priv, err := nodekey.Generate()
+	_, priv, err := nodekey.Generate()
 	if err != nil {
 		t.Fatal(err)
 	}
-	gotPing := make(chan struct{}, 1)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		c, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
-		if err != nil {
+	_, mqttAddr := startAllowBroker(t)
+	gotIndex := make(chan struct{}, 1)
+	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/lease") {
+			writeJSON(w, map[string]any{"typ": "lease", "lease": []byte("bad-lease"), "notAfter": time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano)})
 			return
 		}
-		defer c.CloseNow()
-		ctx := r.Context()
-		var msg envelope
-		if err := wsjson.Read(ctx, c, &msg); err != nil || msg.Typ != "hello" {
-			return
-		}
-		nonce := make([]byte, 32)
-		if _, err := rand.Read(nonce); err != nil {
-			return
-		}
-		if err := wsjson.Write(ctx, c, envelope{Typ: "challenge", Nonce: nonce}); err != nil {
-			return
-		}
-		if err := wsjson.Read(ctx, c, &msg); err != nil || msg.Typ != "hello_ack" {
-			return
-		}
-		if !nodekey.Verify(pub, helloPayload(fid, nonce), msg.Signature) {
-			return
-		}
-		if err := wsjson.Write(ctx, c, envelope{Typ: "ready"}); err != nil {
-			return
-		}
-		if err := wsjson.Write(ctx, c, envelope{Typ: "content_lease", Lease: make([]byte, 32), NotAfter: time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano)}); err != nil {
-			return
-		}
-		for {
-			if err := wsjson.Read(ctx, c, &msg); err != nil {
-				return
-			}
-			if msg.Typ != "ping" {
-				continue
-			}
+		if strings.HasSuffix(r.URL.Path, "/index") {
 			select {
-			case gotPing <- struct{}{}:
+			case gotIndex <- struct{}{}:
 			default:
 			}
-			if err := wsjson.Write(ctx, c, envelope{Typ: "pong"}); err != nil {
-				return
-			}
+			writeJSON(w, map[string]any{"cmds": []any{}})
+			return
 		}
+		http.NotFound(w, r)
 	}))
-	t.Cleanup(srv.Close)
+	t.Cleanup(httpSrv.Close)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- Hold(ctx, srv.URL, fid, priv, nil, nil, nil, nil, nil, func(Lease) error {
+		errCh <- Hold(ctx, "tcp://"+mqttAddr, httpSrv.URL, fid, priv, nil, nil, nil, nil, nil, nil, nil, func(Lease) error {
 			return domain.ErrContentLeaseExpired
-		}, nil)
+		}, nil, nil)
 	}()
 	select {
-	case <-gotPing:
+	case <-gotIndex:
 	case err := <-errCh:
 		t.Fatalf("hold dropped: %v", err)
 	case <-ctx.Done():
-		t.Fatal("no ping")
+		t.Fatal("no index")
+	}
+	cancel()
+	<-errCh
+}
+
+func TestHoldSoftwareUpdateLargerThanDefaultLimit(t *testing.T) {
+	fid := uuid.New()
+	_, priv, err := nodekey.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, mqttAddr := startAllowBroker(t)
+	body := make([]byte, 40<<10)
+	for i := range body {
+		body[i] = 'x'
+	}
+	got := make(chan json.RawMessage, 1)
+	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/lease"):
+			writeJSON(w, map[string]any{"typ": "lease", "lease": []byte("lease-key-32-bytes-long-enough!!"), "notAfter": time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano)})
+		case strings.HasSuffix(r.URL.Path, "/index"):
+			writeJSON(w, map[string]any{"cmds": []any{map[string]any{"typ": "software", "kind": "factory_service", "version": 1}}})
+		case strings.Contains(r.URL.Path, "/pull/software"):
+			writeJSON(w, map[string]any{"kind": "factory_service", "version": 1, "body": body})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(httpSrv.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- Hold(ctx, "tcp://"+mqttAddr, httpSrv.URL, fid, priv, nil, nil, nil, nil, nil, func(in json.RawMessage) error {
+			got <- in
+			return nil
+		}, nil, nil, nil, nil)
+	}()
+	select {
+	case raw := <-got:
+		if len(raw) < 40<<10 {
+			t.Fatalf("short software %d", len(raw))
+		}
+	case err := <-errCh:
+		t.Fatalf("hold: %v", err)
+	case <-ctx.Done():
+		t.Fatal("no software")
 	}
 	cancel()
 	<-errCh
@@ -168,24 +216,309 @@ func TestHoldLeaseFailKeepsConnection(t *testing.T) {
 
 func TestHoldRetired(t *testing.T) {
 	fid := uuid.New()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		c, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
-		if err != nil {
+	_, priv, err := nodekey.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, mqttAddr := startAllowBroker(t)
+	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/lease") {
+			writeJSON(w, map[string]any{"typ": "lease", "lease": []byte("lease-key-32-bytes-long-enough!!"), "notAfter": time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano)})
 			return
 		}
-		defer c.CloseNow()
-		ctx := r.Context()
-		var msg envelope
-		if err := wsjson.Read(ctx, c, &msg); err != nil {
-			return
-		}
-		_ = wsjson.Write(ctx, c, envelope{Typ: "error", Error: "factory is retired"})
+		writeJSON(w, map[string]any{"cmds": []any{map[string]any{"typ": "factory_state", "status": "retired", "revision": 1}}})
 	}))
-	t.Cleanup(srv.Close)
+	t.Cleanup(httpSrv.Close)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	if err := Hold(ctx, srv.URL, fid, nil, nil, nil, nil, nil, nil, nil, nil); !errors.Is(err, domain.ErrFactoryRetired) {
+	err = Hold(ctx, "tcp://"+mqttAddr, httpSrv.URL, fid, priv, func(State) error {
+		return domain.ErrFactoryRetired
+	}, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	if !errors.Is(err, domain.ErrFactoryRetired) {
 		t.Fatalf("hold: %v", err)
 	}
+}
+
+func TestHoldSendsSync(t *testing.T) {
+	fid := uuid.New()
+	_, priv, err := nodekey.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, mqttAddr := startAllowBroker(t)
+	gotKind := make(chan string, 1)
+	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/lease") {
+			writeJSON(w, map[string]any{"typ": "lease", "lease": []byte("lease-key-32-bytes-long-enough!!"), "notAfter": time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano)})
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/index") {
+			if k := r.URL.Query().Get("kind"); k != "" {
+				select {
+				case gotKind <- k:
+				default:
+				}
+			}
+			writeJSON(w, map[string]any{"cmds": []any{}})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(httpSrv.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	out := make(chan SyncRequest, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- Hold(ctx, "tcp://"+mqttAddr, httpSrv.URL, fid, priv, nil, nil, nil, nil, nil, nil, nil, nil, nil, out)
+	}()
+	time.Sleep(200 * time.Millisecond)
+	out <- SyncRequest{Typ: "sync_closures", Kind: "process"}
+	select {
+	case k := <-gotKind:
+		if k != "process" {
+			t.Fatalf("kind %s", k)
+		}
+	case err := <-errCh:
+		t.Fatalf("hold: %v", err)
+	case <-ctx.Done():
+		t.Fatal("no sync")
+	}
+	cancel()
+	<-errCh
+}
+
+func TestHoldAppliesDownCmds(t *testing.T) {
+	fid := uuid.New()
+	_, priv, err := nodekey.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	assetID := uuid.New()
+	tplID := uuid.New()
+	cid := uuid.New()
+	broker, mqttAddr := startAllowBroker(t)
+	var sawIndex bool
+	pulled := make(chan string, 8)
+	got := struct {
+		closure, template, software chan json.RawMessage
+		retract                    chan uuid.UUID
+		client                     chan ClientIntent
+	}{
+		closure:  make(chan json.RawMessage, 1),
+		template: make(chan json.RawMessage, 1),
+		software: make(chan json.RawMessage, 1),
+		retract:  make(chan uuid.UUID, 1),
+		client:   make(chan ClientIntent, 1),
+	}
+	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/lease"):
+			writeJSON(w, map[string]any{"typ": "lease", "lease": []byte("lease-key-32-bytes-long-enough!!"), "notAfter": time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano)})
+		case strings.HasSuffix(r.URL.Path, "/index"):
+			sawIndex = true
+			writeJSON(w, map[string]any{"cmds": []any{}})
+		case strings.Contains(r.URL.Path, "/pull/closure/"):
+			pulled <- "closure"
+			writeJSON(w, map[string]any{"assetId": assetID.String(), "body": "sealed"})
+		case strings.Contains(r.URL.Path, "/pull/template/"):
+			pulled <- "template"
+			writeJSON(w, map[string]any{"id": tplID.String(), "schema": map[string]any{"root": "object"}})
+		case strings.Contains(r.URL.Path, "/pull/software"):
+			pulled <- "software"
+			writeJSON(w, map[string]any{"kind": "factory_service", "version": 1, "body": []byte("apk-bytes")})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(httpSrv.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- Hold(ctx, "tcp://"+mqttAddr, httpSrv.URL, fid, priv, nil, func(in ClientIntent) error {
+			got.client <- in
+			return nil
+		}, nil, func(in json.RawMessage) error {
+			got.closure <- in
+			return nil
+		}, func(in json.RawMessage) error {
+			got.template <- in
+			return nil
+		}, func(in json.RawMessage) error {
+			got.software <- in
+			return nil
+		}, func(id uuid.UUID) error {
+			got.retract <- id
+			return nil
+		}, nil, nil, nil)
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && !sawIndex {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !sawIndex {
+		t.Fatal("no index")
+	}
+	publishDown(t, broker, fid, Cmd{Typ: CmdClosure, AssetID: assetID.String()})
+	publishDown(t, broker, fid, Cmd{Typ: CmdTemplate, TemplateID: tplID.String()})
+	publishDown(t, broker, fid, Cmd{Typ: CmdSoftware, Kind: "factory_service", Version: 1})
+	publishDown(t, broker, fid, Cmd{Typ: CmdRetract, AssetID: assetID.String()})
+	publishDown(t, broker, fid, Cmd{Typ: CmdClientBind, ClientID: cid.String(), ClientName: "焊机-1", BindingRevision: 1})
+	waitCh(t, ctx, errCh, "closure", got.closure)
+	waitCh(t, ctx, errCh, "template", got.template)
+	waitCh(t, ctx, errCh, "software", got.software)
+	select {
+	case id := <-got.retract:
+		if id != assetID {
+			t.Fatalf("retract %s", id)
+		}
+	case err := <-errCh:
+		t.Fatalf("hold: %v", err)
+	case <-ctx.Done():
+		t.Fatal("no retract")
+	}
+	select {
+	case in := <-got.client:
+		if in.Typ != CmdClientBind || in.ClientID != cid || in.Name != "焊机-1" {
+			t.Fatalf("client %+v", in)
+		}
+	case err := <-errCh:
+		t.Fatalf("hold: %v", err)
+	case <-ctx.Done():
+		t.Fatal("no client")
+	}
+	cancel()
+	<-errCh
+}
+
+func TestHoldSyncClients(t *testing.T) {
+	fid := uuid.New()
+	cid := uuid.New()
+	_, priv, err := nodekey.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, mqttAddr := startAllowBroker(t)
+	got := make(chan []uuid.UUID, 1)
+	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/lease") {
+			writeJSON(w, map[string]any{"typ": "lease", "lease": []byte("lease-key-32-bytes-long-enough!!"), "notAfter": time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano)})
+			return
+		}
+		writeJSON(w, map[string]any{"cmds": []any{
+			map[string]any{"typ": "factory_state", "status": "active", "revision": 1},
+			map[string]any{"typ": "client_bind", "clientId": cid.String(), "clientName": "焊机-1", "bindingRevision": 1},
+		}})
+	}))
+	t.Cleanup(httpSrv.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- Hold(ctx, "tcp://"+mqttAddr, httpSrv.URL, fid, priv, nil, nil, func(keep []uuid.UUID) error {
+			got <- keep
+			return nil
+		}, nil, nil, nil, nil, nil, nil, nil)
+	}()
+	select {
+	case keep := <-got:
+		if len(keep) != 1 || keep[0] != cid {
+			t.Fatalf("keep %+v", keep)
+		}
+	case err := <-errCh:
+		t.Fatalf("hold: %v", err)
+	case <-ctx.Done():
+		t.Fatal("no sync")
+	}
+	cancel()
+	<-errCh
+}
+
+func TestHoldSyncClientsSkipsDisabled(t *testing.T) {
+	fid := uuid.New()
+	_, priv, err := nodekey.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, mqttAddr := startAllowBroker(t)
+	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/lease") {
+			writeJSON(w, map[string]any{"typ": "lease", "lease": []byte("lease-key-32-bytes-long-enough!!"), "notAfter": time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano)})
+			return
+		}
+		writeJSON(w, map[string]any{"cmds": []any{map[string]any{"typ": "factory_state", "status": "disabled", "revision": 1}}})
+	}))
+	t.Cleanup(httpSrv.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- Hold(ctx, "tcp://"+mqttAddr, httpSrv.URL, fid, priv, nil, nil, func([]uuid.UUID) error {
+			t.Error("reconcile while disabled")
+			return nil
+		}, nil, nil, nil, nil, nil, nil, nil)
+	}()
+	time.Sleep(400 * time.Millisecond)
+	select {
+	case err := <-errCh:
+		t.Fatalf("hold: %v", err)
+	default:
+	}
+	cancel()
+	<-errCh
+}
+
+func waitCh[T any](t *testing.T, ctx context.Context, errCh <-chan error, name string, ch <-chan T) {
+	t.Helper()
+	select {
+	case <-ch:
+	case err := <-errCh:
+		t.Fatalf("%s hold: %v", name, err)
+	case <-ctx.Done():
+		t.Fatalf("no %s", name)
+	}
+}
+
+func startAllowBroker(t *testing.T) (*mochimqtt.Server, string) {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := mochimqtt.New(&mochimqtt.Options{
+		InlineClient: true,
+		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err := server.AddHook(new(auth.AllowHook), nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := server.AddListener(listeners.NewNet("t1", ln)); err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = server.Serve() }()
+	t.Cleanup(func() { _ = server.Close() })
+	return server, ln.Addr().String()
+}
+
+// 等 Hold 订上后再往 down 投一条。
+func publishDown(t *testing.T, srv *mochimqtt.Server, fid uuid.UUID, cmd Cmd) {
+	t.Helper()
+	raw, err := json.Marshal(cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Publish("wan/"+fid.String()+"/down", raw, false, 1); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeJSON(w http.ResponseWriter, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(v)
 }

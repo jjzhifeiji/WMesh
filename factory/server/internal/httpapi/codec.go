@@ -74,7 +74,7 @@ func statusOf(err error) int {
 		errors.Is(err, domain.ErrAlreadyActivated), errors.Is(err, domain.ErrDuplicateAssignment),
 		errors.Is(err, domain.ErrDuplicateRoleGrant), errors.Is(err, domain.ErrDuplicateSession),
 		errors.Is(err, domain.ErrReferenced), errors.Is(err, domain.ErrRevisionConflict),
-		errors.Is(err, domain.ErrSigningKeyExists):
+		errors.Is(err, domain.ErrSigningKeyExists), errors.Is(err, domain.ErrSoftwareInstallFailed):
 		return http.StatusConflict
 	case errors.Is(err, domain.ErrStaleRevision), errors.Is(err, domain.ErrBindingVoid),
 		errors.Is(err, domain.ErrInvalidKey), errors.Is(err, domain.ErrClientKeyMismatch),
