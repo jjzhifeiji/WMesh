@@ -59,6 +59,10 @@ func TestProjectProcessRefs(t *testing.T) {
 	if _, err := h.WAN.CreatePlatformProject(ctx, tok, "错引用", bad, []global.AssetDep{dep}); !errors.Is(err, domain.ErrAssetDependency) {
 		t.Fatalf("create mismatch %v", err)
 	}
+	pathBody := []byte(`[{"templateId":"` + seedSingleID + `","processId":"` + proc.ID.String() + `","processPath":"x.json"}]`)
+	if _, err := h.WAN.CreatePlatformProject(ctx, tok, "路径键", pathBody, nil); !errors.Is(err, domain.ErrForbidden) {
+		t.Fatalf("create processPath %v", err)
+	}
 
 	okBody := []byte(`[{"templateId":"` + seedSingleID + `","name":"w","processId":"` + proc.ID.String() + `"}]`)
 	proj, err := h.WAN.CreatePlatformProject(ctx, tok, "对齐", okBody, nil)
@@ -70,6 +74,9 @@ func TestProjectProcessRefs(t *testing.T) {
 	}
 	if _, err := h.WAN.UpdatePlatformAssetContent(ctx, tok, proj.ID, proj.Revision, []byte(`[{"templateId":"`+seedSingleID+`","processId":"`+id.New().String()+`"}]`)); !errors.Is(err, domain.ErrAssetDependency) {
 		t.Fatalf("update mismatch %v", err)
+	}
+	if _, err := h.WAN.UpdatePlatformAssetContent(ctx, tok, proj.ID, proj.Revision, []byte(`[{"templateId":"`+seedSingleID+`","processId":"`+proc.ID.String()+`","processPath":"x.json"}]`)); !errors.Is(err, domain.ErrForbidden) {
+		t.Fatalf("update processPath %v", err)
 	}
 	proj, err = h.WAN.GetPlatformAsset(ctx, tok, proj.ID)
 	if err != nil {

@@ -3,6 +3,8 @@ package com.gbndt.shijiaoqi.weld
 import com.gbndt.shijiaoqi.data.models.MultiLayerWeldPath
 import com.gbndt.shijiaoqi.data.models.MultiLayerWeldPathSurrogate
 import com.gbndt.shijiaoqi.data.models.toMultiLayerWeldPath
+import com.gbndt.shijiaoqi.data.models.toSurrogate
+import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.contentOrNull
@@ -38,4 +40,7 @@ object MultiLayerProject {
             }
         }
     }
+
+    fun encode(paths: List<MultiLayerWeldPath>): ByteArray =
+        json.encodeToString(paths.map { it.toSurrogate() }).encodeToByteArray()
 }

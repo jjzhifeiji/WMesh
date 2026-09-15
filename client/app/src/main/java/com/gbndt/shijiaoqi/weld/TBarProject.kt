@@ -2,16 +2,17 @@ package com.gbndt.shijiaoqi.weld
 
 import com.gbndt.shijiaoqi.data.models.WeldPath
 import com.gbndt.shijiaoqi.data.models.WeldPathSurrogate
+import com.gbndt.shijiaoqi.data.models.toSurrogate
 import com.gbndt.shijiaoqi.data.models.toWeldPath
+import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.decodeFromJsonElement
-import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
-/** 从闭包工程正文解 T 排；只认 gapBands 的工艺身份。 */
+/** 从闭包工程正文解 T 排；只认 T 排模版身份，不把单层 gapBands 当 T 排。 */
 object TBarProject {
     private val json = Json {
         ignoreUnknownKeys = true
@@ -43,14 +44,16 @@ object TBarProject {
         return try {
             val kind = obj["kind"]?.jsonPrimitive?.contentOrNull
             val templateId = obj["templateId"]?.jsonPrimitive?.contentOrNull
-            if (kind == TBarRun.KIND || templateId == TBarRun.TEMPLATE_ID) return true
-            if (obj.containsKey("gapBands")) return true
-            val points = obj["points"] as? JsonArray ?: return false
-            points.any { pt ->
-                pt.jsonObject["type"]?.jsonPrimitive?.contentOrNull == "GROOVE_A_LOWER"
-            }
+            kind == TBarRun.KIND || templateId == TBarRun.TEMPLATE_ID
         } catch (_: Exception) {
             false
         }
     }
+
+    fun encode(paths: List<WeldPath>): ByteArray =
+        json.encodeToString(
+            paths.map {
+                it.toSurrogate().copy(kind = TBarRun.KIND, templateId = TBarRun.TEMPLATE_ID)
+            },
+        ).encodeToByteArray()
 }

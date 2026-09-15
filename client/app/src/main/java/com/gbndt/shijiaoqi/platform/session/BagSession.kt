@@ -5,6 +5,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.gbndt.shijiaoqi.platform.crypt.Wm2
 import com.gbndt.shijiaoqi.platform.pouch.Pouch
+import com.gbndt.shijiaoqi.platform.pouch.PouchRejected
 import java.util.UUID
 
 /** 本机登录会话：解封钥只在内存，信封进袋，默认不把钥落盘。 */
@@ -95,6 +96,12 @@ class BagSession(
     fun cachePlain(id: UUID, level: String, name: String, revision: Long, ownerId: UUID?, plain: ByteArray) {
         pouch.putPlain(id, level, name, revision, ownerId, plain)
         persistPouch(store, pouch)
+    }
+
+    /** 覆盖袋内已有信封，盘上仍是密文。 */
+    fun rewritePlain(id: UUID, plain: ByteArray) {
+        val env = pouch.envelope(id) ?: throw PouchRejected(Pouch.ERR_NOT_FOUND)
+        cachePlain(id, env.level, env.name, env.revision, env.ownerId, plain)
     }
 
     fun cacheClosure(snap: com.gbndt.shijiaoqi.platform.pouch.ClosureSnapshotPlain) {

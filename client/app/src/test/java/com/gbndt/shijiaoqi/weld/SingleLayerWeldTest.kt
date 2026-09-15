@@ -62,13 +62,44 @@ class SingleLayerWeldTest {
     }
 
     @Test
-    fun parseProjectUsesProcessIdNotPath() {
+    fun parseProjectUsesProcessId() {
         val id = UUID.randomUUID()
-        val json = """[{"name":"w","processId":"$id","processPath":"/sdcard/ShiJiaoQi/x.json","points":[]}]"""
+        val json = """[{"name":"w","processId":"$id","points":[]}]"""
         val paths = SingleLayerProject.parse(json.toByteArray())
         assertEquals(1, paths.size)
         assertEquals(id.toString(), paths[0].processId)
-        assertTrue(paths[0].processPath.isEmpty())
+        val encoded = SingleLayerProject.encode(paths)
+        val text = encoded.decodeToString()
+        assertFalse(text.contains("\"processPath\""))
+        assertFalse(text.contains("180.0"))
+        val again = SingleLayerProject.parse(encoded)
+        assertEquals(id.toString(), again[0].processId)
+    }
+
+    @Test
+    fun processEnvelopeHidesPlaintext() {
+        val p = Pouch()
+        val who = UUID.randomUUID()
+        val id = UUID.randomUUID()
+        p.login(Wm2.randomKey(), who, false)
+        val body = ProcessJson.encode(WeldProcess(name = "SECRET_PROCESS_LEAK", current = 180.0))
+        p.putPlain(id, Pouch.LEVEL_FACTORY, "工艺", 1, null, body)
+        Wm2.zero(body)
+        p.diskSnapshot().forEach { env ->
+            val s = String(env.blob, Charsets.ISO_8859_1)
+            assertFalse(s.contains("SECRET_PROCESS_LEAK"))
+            assertTrue(Wm2.isEnvelope(env.blob))
+        }
+        val again = ProcessJson.encode(WeldProcess(name = "AFTER_REWRITE", current = 190.0))
+        p.putPlain(id, Pouch.LEVEL_FACTORY, "工艺", 1, null, again)
+        Wm2.zero(again)
+        p.diskSnapshot().forEach { env ->
+            val s = String(env.blob, Charsets.ISO_8859_1)
+            assertFalse(s.contains("AFTER_REWRITE"))
+            assertTrue(Wm2.isEnvelope(env.blob))
+        }
+        p.logout()
+        assertTrue(runCatching { p.open(id) }.isFailure)
     }
 
     @Test

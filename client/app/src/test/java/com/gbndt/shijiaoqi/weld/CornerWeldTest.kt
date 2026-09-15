@@ -6,6 +6,7 @@ import com.gbndt.shijiaoqi.data.models.WeldProcess
 import com.gbndt.shijiaoqi.utils.CornerWeldGenerator
 import com.gbndt.shijiaoqi.utils.Point3D
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -82,9 +83,7 @@ class CornerWeldTest {
         assertEquals(2, paths.size)
         paths.forEach { path ->
             assertEquals(id, path.processId)
-            assertTrue(path.processPath.isEmpty())
             assertEquals(id, path.cornerGroupParams!!.processId)
-            assertTrue(path.cornerGroupParams!!.processPath.isEmpty())
             assertEquals(CornerRun.POINT_ORDER, path.points.map { it.type })
         }
         assertTrue(paths[0].cornerGroupParams!!.isMaster)
@@ -92,20 +91,19 @@ class CornerWeldTest {
     }
 
     @Test
-    fun parseUsesCornerProcessIdAndDropsPath() {
+    fun parseUsesCornerProcessId() {
         val id = UUID.randomUUID()
         val json = """
-            [{"name":"c","processId":"","processPath":"/sdcard/old.json","points":[],
+            [{"name":"c","processId":"","points":[],
               "cornerGroupParams":{"groupId":"g","refPathAId":"a","refPathBId":"b",
               "layerCount":2,"initialLength":15.0,"upwardOffset":2.0,"lengthReduction":2.0,
-              "processId":"$id","processPath":"/sdcard/old.json"}}]
+              "processId":"$id"}}]
         """.trimIndent()
         val paths = SingleLayerProject.parse(json.toByteArray())
         assertEquals(1, paths.size)
         assertEquals(id.toString(), paths[0].processId)
-        assertTrue(paths[0].processPath.isEmpty())
         assertEquals(id.toString(), paths[0].cornerGroupParams!!.processId)
-        assertTrue(paths[0].cornerGroupParams!!.processPath.isEmpty())
+        assertFalse(SingleLayerProject.encode(paths).decodeToString().contains("\"processPath\""))
     }
 
     @Test

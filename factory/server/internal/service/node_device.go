@@ -20,6 +20,8 @@ type ClientSession struct {
 	Policy           ClientPolicy `json:"policy"`                     // 本厂现行 Client 策略
 	SigningPublicKey []byte       `json:"signingPublicKey,omitempty"` // 本厂签发公钥，验下行 Intent
 	MqttURL          string       `json:"mqttUrl,omitempty"`          // 本厂 Client MQTT 地址；HTTP 层可补
+	ClientShortCode  string       `json:"clientShortCode,omitempty"`  // 本机短码 Cxxxx，未齐则空
+	Roles            []string     `json:"roles,omitempty"`            // 当前登录人有效角色，供本机入队判定
 }
 
 // RegisterDevice 把读到的机械臂号钉到已绑定 Client；空号拒绝，本厂未作废号不得重复。
@@ -112,9 +114,24 @@ func (s *Node) LoginOnClient(ctx context.Context, clientID uuid.UUID, serial, lo
 		_ = s.store.DeleteSessionByTokenHash(ctx, secret.TokenHash(token))
 		return ClientSession{}, err
 	}
+	// 短码与角色只回给这台机，供本机发号和入队。
+	grants, err := s.store.ActiveGrants(ctx, p.ID)
+	if err != nil {
+		_ = s.store.DeleteSessionByTokenHash(ctx, secret.TokenHash(token))
+		return ClientSession{}, err
+	}
+	roles := make([]string, 0, len(grants))
+	seen := map[string]struct{}{}
+	for _, g := range grants {
+		if _, ok := seen[g.Role]; ok {
+			continue
+		}
+		seen[g.Role] = struct{}{}
+		roles = append(roles, g.Role)
+	}
 	key := append([]byte(nil), cli.UnwrapKey...)
 	return ClientSession{
 		Token: token, UnwrapKey: key, Account: accountOf(p), Policy: pol,
-		SigningPublicKey: pub,
+		SigningPublicKey: pub, ClientShortCode: cli.ShortCode, Roles: roles,
 	}, nil
 }

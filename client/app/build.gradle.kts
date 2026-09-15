@@ -47,6 +47,10 @@ android {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
+        jniLibs {
+            // AGP 8.2 不会把未压缩 .so 按 16KB zip 对齐；压缩进包，安装时再抽出。
+            useLegacyPackaging = true
+        }
     }
 }
 

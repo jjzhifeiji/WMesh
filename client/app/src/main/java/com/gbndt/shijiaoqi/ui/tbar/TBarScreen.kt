@@ -115,11 +115,6 @@ fun TBarScreen(
                             onProcess = { 
                                 viewModel.cancelAddProcessVariant()
                                 viewModel.selectedWeldPathIndex = index
-                                if (weldPath.processPath.isNotEmpty()) {
-                                    val parentPath = java.io.File(weldPath.processPath).parent?.replace("\\", "/") ?: ""
-                                    viewModel.processCurrentPath = parentPath
-                                    viewModel.refreshProcessExplorer()
-                                }
                                 onNavigateToProcessManagement(true) 
                             },
                             onAddProcessVariant = {
@@ -129,12 +124,6 @@ fun TBarScreen(
                             },
                             onReplaceExtraProcess = { extraIdx ->
                                 viewModel.beginReplaceExtraProcess(index, extraIdx)
-                                val extraPath = weldPath.extraProcesses.getOrNull(extraIdx)?.processPath.orEmpty()
-                                if (extraPath.isNotEmpty()) {
-                                    val parentPath = java.io.File(extraPath).parent?.replace("\\", "/") ?: ""
-                                    viewModel.processCurrentPath = parentPath
-                                    viewModel.refreshProcessExplorer()
-                                }
                                 onNavigateToProcessManagement(true)
                             },
                             onToggleExtraEnabled = { extraIdx -> viewModel.toggleExtraProcessEnabled(index, extraIdx) },
@@ -587,15 +576,8 @@ fun WeldPathItem(
                             modifier = Modifier.clickable { onRename() }
                         )
                         val processInfo = buildAnnotatedString {
-                            if (weldPath.processPath.isNotEmpty()) {
-                                val pathWithoutExtension = weldPath.processPath.substringBeforeLast(".json")
-                                withStyle(style = SpanStyle(color = Color(0xFF2196F3), fontWeight = FontWeight.Bold)) {
-                                    append(pathWithoutExtension)
-                                }
-                            } else {
-                                withStyle(style = SpanStyle(color = Color(0xFF2196F3), fontWeight = FontWeight.Bold)) {
-                                    append(weldPath.process.name)
-                                }
+                            withStyle(style = SpanStyle(color = Color(0xFF2196F3), fontWeight = FontWeight.Bold)) {
+                                append(weldPath.process.name.ifBlank { "闭包工艺" })
                             }
                             append(" | ")
                             withStyle(style = SpanStyle(color = Color(0xFF2196F3), fontWeight = FontWeight.Bold)) {
@@ -763,11 +745,7 @@ private fun ExtraProcessRow(
     onToggleEnabled: () -> Unit,
     onDelete: () -> Unit
 ) {
-    val processLabel = if (slot.processPath.isNotEmpty()) {
-        slot.processPath.substringBeforeLast(".json")
-    } else {
-        slot.process.name
-    }
+    val processLabel = slot.process.name.ifBlank { slot.processId.ifBlank { "未选工艺" } }
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(6.dp),

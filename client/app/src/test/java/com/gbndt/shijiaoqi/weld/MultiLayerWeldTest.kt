@@ -5,6 +5,7 @@ import com.gbndt.shijiaoqi.data.models.Pose
 import com.gbndt.shijiaoqi.data.models.WeldPointType
 import com.gbndt.shijiaoqi.data.models.WeldProcess
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.util.UUID
@@ -93,7 +94,7 @@ class MultiLayerWeldTest {
         assertEquals(baseId.toString(), paths[0].basePath.processId)
         assertEquals(passId.toString(), paths[0].passes[0].processId)
         assertEquals(1.5, paths[0].passes[0].valX, 0.0)
-        assertTrue(paths[0].basePath.processPath.isEmpty())
+        assertFalse(MultiLayerProject.encode(paths).decodeToString().contains("\"processPath\""))
     }
 
     @Test

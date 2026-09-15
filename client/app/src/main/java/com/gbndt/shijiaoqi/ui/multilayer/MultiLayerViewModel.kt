@@ -29,8 +29,10 @@ import com.gbndt.shijiaoqi.weld.Capture
 import com.gbndt.shijiaoqi.weld.MultiLayerProject
 import com.gbndt.shijiaoqi.weld.MultiLayerRun
 import com.gbndt.shijiaoqi.weld.PouchProcessSource
+import com.gbndt.shijiaoqi.weld.PouchSave
 import com.gbndt.shijiaoqi.weld.ProcessBind
 import com.gbndt.shijiaoqi.weld.ProcessChoice
+import com.gbndt.shijiaoqi.weld.ProcessJson
 import com.gbndt.shijiaoqi.weld.ProcessRef
 import com.gbndt.shijiaoqi.weld.ProjectChoice
 import com.gbndt.shijiaoqi.weld.WeldRun
@@ -3180,9 +3182,10 @@ class MultiLayerViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     fun saveCurrentProject() {
-        if (pouchProjectId != null) return
-        val path = currentProjectName ?: return
-        projectManager.saveMultiLayerProject(path, multiLayerWeldPaths)
+        val id = pouchProjectId ?: return
+        val bag = runCatching { bag() }.getOrNull() ?: return
+        multiLayerWeldPaths.forEach { PouchSave.multi(bag, it) }
+        PouchSave.project(bag, id, MultiLayerProject.encode(multiLayerWeldPaths.toList()))
     }
 
     // 复制当前工程
@@ -3263,26 +3266,16 @@ class MultiLayerViewModel(application: Application) : AndroidViewModel(applicati
 
     // 保存工艺
     override fun saveProcess(process: WeldProcess) {
-        processManager.saveProcess(processCurrentPath, process)
-        refreshProcessExplorer()
-
-        val safeName = process.name.replace(Regex("[^a-zA-Z0-9\\u4e00-\\u9fa5_\\-.\\s()]"), "")
-        val savedPath = if (processCurrentPath.isEmpty()) "$safeName.json" else "$processCurrentPath/$safeName.json"
-
         if (selectedMultiLayerPathIndex in multiLayerWeldPaths.indices) {
             val multiPath = multiLayerWeldPaths[selectedMultiLayerPathIndex]
-            
-            // Check Base Path
-            if (multiPath.basePath.processPath == savedPath || multiPath.basePath.process.name == process.name) {
-                val newBasePath = multiPath.basePath.copy(process = process, processPath = savedPath)
+            if (multiPath.basePath.process.name == process.name) {
+                val newBasePath = multiPath.basePath.copy(process = process)
                 multiLayerWeldPaths[selectedMultiLayerPathIndex] = multiPath.copy(basePath = newBasePath)
             }
-            
-            // Check Passes
             for (i in multiPath.passes.indices) {
                 val pass = multiPath.passes[i]
-                if (pass.processPath == savedPath || pass.process.name == process.name) {
-                    multiPath.passes[i] = pass.copy(process = process, processPath = savedPath)
+                if (pass.process.name == process.name) {
+                    multiPath.passes[i] = pass.copy(process = process)
                 }
             }
             saveCurrentProject()
@@ -3295,31 +3288,7 @@ class MultiLayerViewModel(application: Application) : AndroidViewModel(applicati
     }
     
     // 加载工艺到当前焊道
-    fun loadProcessToCurrentWeldPath(item: FileSystemItem) {
-        if (!item.isProcess) return
-        val process = processManager.loadProcess(item.path) ?: return
-
-        if (selectedMultiLayerPathIndex in multiLayerWeldPaths.indices) {
-            val multiPath = multiLayerWeldPaths[selectedMultiLayerPathIndex]
-            
-            if (selectedPassIndex == -1) {
-                // Update Base Path
-                val newBasePath = multiPath.basePath.copy(
-                    process = process,
-                    processPath = item.path
-                )
-                multiLayerWeldPaths[selectedMultiLayerPathIndex] = multiPath.copy(basePath = newBasePath)
-            } else if (selectedPassIndex in multiPath.passes.indices) {
-                // Update Pass
-                val pass = multiPath.passes[selectedPassIndex]
-                multiPath.passes[selectedPassIndex] = pass.copy(
-                    process = process,
-                    processPath = item.path
-                )
-            }
-            saveCurrentProject()
-        }
-    }
+    fun loadProcessToCurrentWeldPath(item: FileSystemItem) {}
     
     // 删除工艺项
     override fun deleteProcessItem(item: FileSystemItem) {
@@ -3897,19 +3866,20 @@ class MultiLayerViewModel(application: Application) : AndroidViewModel(applicati
     // 创建工艺
     override fun createProcess(name: String, process: WeldProcess) {
         val cleanName = if (name.endsWith(".json")) name.substringBeforeLast(".json") else name
-        processManager.saveProcess(processCurrentPath, process.copy(name = cleanName))
-        refreshProcessExplorer()
+        val bag = runCatching { bag() }.getOrNull() ?: return
+        val body = ProcessJson.encode(process.copy(name = cleanName))
+        try {
+            bag.issuePersonal(Pouch.KIND_PROCESS, cleanName, body)
+            refreshPouchLists()
+        } catch (_: Exception) {
+        } finally {
+            Wm2.zero(body)
+        }
     }
 
     // 更新工艺
     override fun updateProcess(item: FileSystemItem, process: WeldProcess) {
-        if (item.isProcess) {
-            // Overwrite
-            val parentPath = if (item.path.contains("/")) item.path.substringBeforeLast("/") else ""
-            val fileNameWithoutExt = if (item.name.endsWith(".json")) item.name.substringBeforeLast(".json") else item.name
-            processManager.saveProcess(parentPath, process.copy(name = fileNameWithoutExt))
-            refreshProcessExplorer()
-        }
+        saveProcess(process)
     }
 
     // 导入工艺
@@ -3929,32 +3899,13 @@ class MultiLayerViewModel(application: Application) : AndroidViewModel(applicati
     // Update Standard Process Library
     override fun updateStandardProcessLibrary(url: String) {
         viewModelScope.launch {
-            _toastEvent.emit("正在下载标准工艺库...")
-            val success = updateManager.downloadAndExtractStandardProcessLibrary(url)
-            if (success) {
-                _toastEvent.emit("标准工艺库更新成功")
-                refreshProcessExplorer()
-            } else {
-                _toastEvent.emit("标准工艺库更新失败")
-            }
+            _toastEvent.emit("本机不保存标准工艺库文件")
         }
     }
 
-    override fun exportProcess(item: FileSystemItem): File? {
-        if (item.isProcess) {
-            return processManager.getFile(item.path)
-        }
-        return null
-    }
+    override fun exportProcess(item: FileSystemItem): File? = null
 
-    // 导出工艺压缩包
-    override fun exportProcessZip(item: FileSystemItem): File? {
-        val zipFile = File(getApplication<Application>().cacheDir, "${item.name}.zip")
-        if (processManager.zipFileOrFolder(item.path, zipFile)) {
-            return zipFile
-        }
-        return null
-    }
+    override fun exportProcessZip(item: FileSystemItem): File? = null
 
     // 选择工艺
     override fun selectProcess(item: FileSystemItem) {

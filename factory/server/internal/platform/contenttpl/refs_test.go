@@ -42,6 +42,19 @@ func TestCollectProcessIDs(t *testing.T) {
 	}
 }
 
+func TestRejectProcessPath(t *testing.T) {
+	sch := projectSchema(t)
+	if _, err := CollectProcessIDs(sch, []byte(`[{"processId":"A","processPath":"x.json"}]`)); !errors.Is(err, ErrProcessPath) {
+		t.Fatalf("got %v", err)
+	}
+	if err := RejectProcessPath([]byte(`{"basePath":{"processPath":""}}`)); !errors.Is(err, ErrProcessPath) {
+		t.Fatalf("got %v", err)
+	}
+	if err := RejectProcessPath([]byte(`[{"processId":"A"}]`)); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestCollectSkipsUnselectedKind(t *testing.T) {
 	sch, err := Marshal(Schema{Root: RootArray, Kinds: []string{ItemSingle}})
 	if err != nil {

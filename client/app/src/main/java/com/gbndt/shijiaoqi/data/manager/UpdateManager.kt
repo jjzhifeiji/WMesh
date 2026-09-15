@@ -152,47 +152,8 @@ class UpdateManager(private val context: Context) {
         return null
     }
 
-    // Download and extract Standard Process Library
-    suspend fun downloadAndExtractStandardProcessLibrary(zipUrl: String): Boolean {
-        return withContext(Dispatchers.IO) {
-            try {
-                val url = URL(zipUrl)
-                val connection = url.openConnection() as HttpURLConnection
-                connection.requestMethod = "GET"
-                connection.connectTimeout = 10000
-                connection.readTimeout = 10000
-                
-                if (connection.responseCode == HttpURLConnection.HTTP_OK) {
-                    // 1. Download to a temp file
-                    val tempFile = File(context.cacheDir, "StandardProcesses_temp.zip")
-                    connection.inputStream.use { input ->
-                        tempFile.outputStream().use { output ->
-                            input.copyTo(output)
-                        }
-                    }
-                    
-                    // 2. Clear Standard directory
-                    val standardDir = File(Environment.getExternalStorageDirectory(), "ShiJiaoQi/processes/Standard")
-                    if (standardDir.exists()) {
-                        standardDir.deleteRecursively()
-                    }
-                    standardDir.mkdirs()
-                    
-                    // 3. Unzip tempFile into Standard directory
-                    val processManager = ProcessManager(context)
-                    val success = processManager.unzip(Uri.fromFile(tempFile), "Standard")
-                    
-                    // 4. Delete temp file
-                    tempFile.delete()
-                    
-                    return@withContext success
-                }
-            } catch (e: Exception) {
-                Log.e("UpdateManager", "Failed to download standard process library", e)
-            }
-            false
-        }
-    }
+    // 标准工艺库不再解到本机文件树；工艺只从闭包进袋。
+    suspend fun downloadAndExtractStandardProcessLibrary(zipUrl: String): Boolean = false
 
     // Query the actual file path from DownloadManager
     fun queryDownloadedFile(downloadId: Long): File? {

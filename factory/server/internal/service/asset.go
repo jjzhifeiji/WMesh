@@ -376,6 +376,9 @@ func (s *kernel) assertFactoryProcessDeps(ctx context.Context, deps []AssetDep) 
 func (s *kernel) fillProjectDeps(ctx context.Context, acc Account, level string, content []byte, deps []AssetDep) ([]AssetDep, error) {
 	ids, err := s.collectProjectProcessIDs(ctx, content)
 	if err != nil {
+		if errors.Is(err, domain.ErrForbidden) {
+			return nil, err
+		}
 		return nil, domain.ErrAssetDependency
 	}
 	return mergeProjectDeps(deps, ids, func(id uuid.UUID) (AssetDep, error) {
@@ -483,6 +486,9 @@ func mergeProjectDeps(existing []AssetDep, ids []string, lookup func(uuid.UUID) 
 func (s *kernel) assertProjectProcessIDs(ctx context.Context, content []byte, deps []AssetDep) error {
 	ids, err := s.collectProjectProcessIDs(ctx, content)
 	if err != nil {
+		if errors.Is(err, domain.ErrForbidden) {
+			return err
+		}
 		return domain.ErrAssetDependency
 	}
 	allowed := make(map[string]struct{}, len(deps))

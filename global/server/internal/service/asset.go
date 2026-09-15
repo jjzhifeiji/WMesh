@@ -432,8 +432,12 @@ func (s *kernel) fillPlatformProjectDeps(ctx context.Context, content []byte, de
 	if err != nil {
 		return nil, err
 	}
+	// 按当前模版收集引用；路径键直接拒绝。
 	ids, err := contenttpl.CollectProcessIDsFromItems(items, content)
 	if err != nil {
+		if errors.Is(err, contenttpl.ErrProcessPath) {
+			return nil, domain.ErrForbidden
+		}
 		return nil, domain.ErrAssetDependency
 	}
 	return mergeProjectDeps(deps, ids, func(id uuid.UUID) (AssetDep, error) {
@@ -511,8 +515,12 @@ func (s *kernel) assertProjectProcessIDs(ctx context.Context, content []byte, de
 	if err != nil {
 		return err
 	}
+	// 按当前模版收集引用；路径键直接拒绝。
 	ids, err := contenttpl.CollectProcessIDsFromItems(items, content)
 	if err != nil {
+		if errors.Is(err, contenttpl.ErrProcessPath) {
+			return domain.ErrForbidden
+		}
 		return domain.ErrAssetDependency
 	}
 	allowed := make(map[string]struct{}, len(deps))

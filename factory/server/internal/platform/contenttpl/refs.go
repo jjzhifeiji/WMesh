@@ -7,9 +7,44 @@ import (
 )
 
 const processRefKey = "processId" // 旧模版：此键的文本仍当工艺引用
+const processPathKey = "processPath" // 禁止再写的路径键
 
 var errBadProcessID = fmt.Errorf("process id is not an identity string")     // 引用不是字符串身份
 var errUnknownProcessID = fmt.Errorf("process id is not in the rewrite map") // 对照表没有这条
+
+// ErrProcessPath 工程正文不得再写路径键。
+var ErrProcessPath = fmt.Errorf("process path is forbidden")
+
+// RejectProcessPath 正文里出现路径键则拒绝。
+func RejectProcessPath(content []byte) error {
+	v, ok := parseJSON(content)
+	if !ok {
+		return nil
+	}
+	return rejectProcessPath(v)
+}
+
+// 递归扫对象和数组里的路径键。
+func rejectProcessPath(v any) error {
+	switch x := v.(type) {
+	case map[string]any:
+		if _, ok := x[processPathKey]; ok {
+			return ErrProcessPath
+		}
+		for _, child := range x {
+			if err := rejectProcessPath(child); err != nil {
+				return err
+			}
+		}
+	case []any:
+		for _, child := range x {
+			if err := rejectProcessPath(child); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
 
 // CollectProcessIDs 按工程模版收集非空工艺引用；非 JSON 或根类型对不上当没有引用。
 func CollectProcessIDs(schemaJSON, content []byte) ([]string, error) {
@@ -20,6 +55,9 @@ func CollectProcessIDs(schemaJSON, content []byte) ([]string, error) {
 	v, ok := parseJSON(content)
 	if !ok {
 		return nil, nil
+	}
+	if err := rejectProcessPath(v); err != nil {
+		return nil, err
 	}
 	seen := map[string]struct{}{}
 	var ids []string
@@ -41,6 +79,9 @@ func CollectProcessIDsFromItems(items []ProjectItemSchema, content []byte) ([]st
 	v, ok := parseJSON(content)
 	if !ok {
 		return nil, nil
+	}
+	if err := rejectProcessPath(v); err != nil {
+		return nil, err
 	}
 	seen := map[string]struct{}{}
 	var ids []string

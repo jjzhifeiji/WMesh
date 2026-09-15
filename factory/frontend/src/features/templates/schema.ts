@@ -43,11 +43,11 @@ export function kindOf(field: TemplateField): Kind {
   if (field.type === "process") return "process";
   if (field.type === "object" || field.type === "array") return field.type;
   if (field.type === "bool" || (field.options && field.options.length > 0)) return "enum";
-  if ((field.key === "processId" || field.key === "processPath") && field.type === "string") return "process";
+  if (field.key === "processId" && field.type === "string") return "process";
   return "string";
 }
 
-// isProcessRef 类型为工艺即引用；旧模版键 processId / processPath 的文本同样算。
+// isProcessRef 类型为工艺即引用；旧模版键 processId 的文本同样算。
 export function isProcessRef(field: TemplateField): boolean {
   return kindOf(field) === "process";
 }
@@ -137,7 +137,7 @@ function objectFromFields(fields: TemplateField[]): Record<string, unknown> {
   return out;
 }
 
-// collectProcessIds 按模版抽出工艺引用；无模版时仍认 processId / processPath。
+// collectProcessIds 按模版抽出工艺引用；无模版时仍认 processId。
 export function collectProcessIds(value: unknown, schema?: ContentSchema | null): string[] {
   const ids: string[] = [];
   const seen = new Set<string>();
@@ -214,7 +214,7 @@ export function collectProcessIds(value: unknown, schema?: ContentSchema | null)
     }
     if (!v || typeof v !== "object") return;
     for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
-      if ((k === "processId" || k === "processPath" || k === "rootProcessId" || k === "capProcessId") && typeof val === "string") {
+      if ((k === "processId" || k === "rootProcessId" || k === "capProcessId") && typeof val === "string") {
         add(val);
         continue;
       }
@@ -237,7 +237,19 @@ export function parseContent(raw: string | undefined, schema: ContentSchema | nu
 
 export function encodeContent(value: unknown, schema: ContentSchema | null, fallback: string): string {
   if (!schema) return typeof value === "string" ? value : fallback;
-  return JSON.stringify(value ?? defaultValue(schema));
+  return JSON.stringify(dropProcessPath(value ?? defaultValue(schema)));
+}
+
+/** 写出前丢掉路径键。 */
+function dropProcessPath(v: unknown): unknown {
+  if (Array.isArray(v)) return v.map(dropProcessPath);
+  if (!v || typeof v !== "object") return v;
+  const out: Record<string, unknown> = {};
+  for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
+    if (k === "processPath") continue;
+    out[k] = dropProcessPath(val);
+  }
+  return out;
 }
 
 const KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -382,8 +394,8 @@ function inferField(key: string, label: string, value: unknown, depth: number): 
   if (value && typeof value === "object") {
     return { key, label, type: "object", fields: inferFields(value as Record<string, unknown>, depth + 1) };
   }
-  if (key === "processId" || key === "processPath") {
-    return { key, label: key === "processId" ? "工艺" : label, type: "process", default: typeof value === "string" ? value : "" };
+  if (key === "processId") {
+    return { key, label: "工艺", type: "process", default: typeof value === "string" ? value : "" };
   }
   if (typeof value === "boolean") {
     return { key, label, type: "string", options: ["否", "是"], default: value ? "是" : "否" };

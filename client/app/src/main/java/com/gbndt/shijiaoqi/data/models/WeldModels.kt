@@ -130,14 +130,12 @@ data class CornerGroupParams(
     val torchRy: Double? = null,
     val torchRz: Double? = null,
     val processId: String = "",
-    val processPath: String = ""
 )
 
 data class WeldPathProcessSlot(
     val id: String,
     var process: WeldProcess,
     var processId: String = "",
-    var processPath: String = "",
     var isEnabled: Boolean = true
 )
 
@@ -156,7 +154,6 @@ data class WeldPath(
     val points: SnapshotStateList<WeldPoint>,
     var process: WeldProcess,
     var processId: String = "",
-    var processPath: String = "",
     var selectedPointIndex: Int = 0,
     var isEnabled: Boolean = true,
     var cornerGroupParams: CornerGroupParams? = null,
@@ -168,7 +165,6 @@ data class WeldPath(
 data class WeldPathProcessSlotSurrogate(
     val id: String,
     val processId: String = "",
-    val processPath: String = "",
     val isEnabled: Boolean = true
 )
 
@@ -178,12 +174,13 @@ data class WeldPathSurrogate(
     val name: String = "",
     val points: List<WeldPoint> = emptyList(),
     val processId: String = "",
-    val processPath: String = "",
     val selectedPointIndex: Int = 0,
     val isEnabled: Boolean = true,
     val cornerGroupParams: CornerGroupParams? = null,
     val extraProcesses: List<WeldPathProcessSlotSurrogate> = emptyList(),
     val gapBands: List<GapBand> = emptyList(),
+    val kind: String = "",
+    val templateId: String = "",
 )
 
 @Serializable
@@ -197,7 +194,6 @@ data class WeldPassOffset(
     var valR: Double = 0.0,
     var processId: String = "",
     @Transient var process: WeldProcess = WeldProcess(),
-    var processPath: String = "",
     var isEnabled: Boolean = true,
     var isCompleted: Boolean = false
 )
@@ -323,7 +319,7 @@ fun WeldPathSurrogate.toWeldPath(): WeldPath {
             )
         )
     }
-    val group = cornerGroupParams?.copy(processPath = "")
+    val group = cornerGroupParams
     return WeldPath(
         id = id.ifBlank { java.util.UUID.randomUUID().toString() },
         name = name,

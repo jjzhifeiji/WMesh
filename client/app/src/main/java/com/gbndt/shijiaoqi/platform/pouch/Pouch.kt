@@ -300,6 +300,9 @@ class Pouch {
         it.copy(blob = it.blob.copyOf())
     }
 
+    /** 袋内信封元数据；blob 仍是密文。 */
+    fun envelope(id: UUID): CachedEnvelope? = items[id]
+
     fun restoreEnvelopes(list: List<CachedEnvelope>) {
         items.clear()
         list.forEach { items[it.id] = it.copy(blob = it.blob.copyOf()) }

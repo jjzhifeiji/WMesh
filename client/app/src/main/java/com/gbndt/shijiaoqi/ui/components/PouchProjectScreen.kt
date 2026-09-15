@@ -68,6 +68,43 @@ private fun PouchProjectRow(row: ProjectChoice, onOpen: () -> Unit) {
 }
 
 @Composable
+fun PouchProcessScreen(
+    processes: List<ProcessChoice>,
+    picking: Boolean,
+    onRefresh: () -> Unit,
+    onPick: (UUID?) -> Unit,
+    onBack: () -> Unit,
+) {
+    LaunchedEffect(Unit) { onRefresh() }
+    Column(modifier = Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(if (picking) "选择闭包工艺" else "当前闭包工艺", style = MaterialTheme.typography.titleLarge)
+        if (processes.isEmpty()) {
+            Text("当前工程没有工艺成员", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        } else {
+            LazyColumn(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(processes, key = { it.id }) { item ->
+                    Card(
+                        modifier = Modifier.fillMaxWidth().then(
+                            if (picking) Modifier.clickable { onPick(item.id) } else Modifier
+                        ),
+                    ) {
+                        Text(
+                            item.name.ifBlank { item.id.toString() },
+                            modifier = Modifier.padding(12.dp),
+                            fontSize = 16.sp,
+                        )
+                    }
+                }
+            }
+        }
+        if (picking) {
+            TextButton(onClick = { onPick(null) }, modifier = Modifier.fillMaxWidth()) { Text("不选工艺") }
+        }
+        Button(onClick = onBack, modifier = Modifier.fillMaxWidth()) { Text("返回") }
+    }
+}
+
+@Composable
 fun ClosureProcessPicker(
     visible: Boolean,
     processes: List<ProcessChoice>,

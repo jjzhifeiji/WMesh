@@ -76,6 +76,22 @@ func TestRegisterDeviceAndLogin(t *testing.T) {
 	if sess.Policy.PersistUnwrapKey || sess.Policy.CacheScope != factory.CacheScopeAll {
 		t.Fatalf("policy %+v", sess.Policy)
 	}
+	if err := fac.Store().PutClientShortCode(ctx, cid, "C0008"); err != nil {
+		t.Fatal(err)
+	}
+	sess, err = fac.LoginOnClient(ctx, cid, "ARM-1", "op", "op-pass")
+	if err != nil || sess.ClientShortCode != "C0008" {
+		t.Fatalf("short %+v %v", sess, err)
+	}
+	hasOp := false
+	for _, r := range sess.Roles {
+		if r == factory.RoleOperator {
+			hasOp = true
+		}
+	}
+	if !hasOp {
+		t.Fatalf("roles %v", sess.Roles)
+	}
 	if _, err := fac.RequireActive(ctx, sess.Token); err != nil {
 		t.Fatal(err)
 	}

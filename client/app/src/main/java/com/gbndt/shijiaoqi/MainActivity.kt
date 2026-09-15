@@ -46,7 +46,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.launch
 import com.gbndt.shijiaoqi.ui.components.CustomStatusBar
-import com.gbndt.shijiaoqi.ui.components.ProcessManagementScreen
+import com.gbndt.shijiaoqi.ui.components.PouchProcessScreen
 import com.gbndt.shijiaoqi.ui.components.PouchProjectScreen
 import com.gbndt.shijiaoqi.ui.components.ToolEditDialog
 import com.gbndt.shijiaoqi.ui.components.ToolListDialog
@@ -488,13 +488,18 @@ class MainActivity : ComponentActivity() {
                                             )
                                         }
                                         is AppScreen.ProcessManagement -> {
-                                            ProcessManagementScreen(
-                                                viewModel = viewModel,
+                                            PouchProcessScreen(
+                                                processes = viewModel.pouchProcesses,
+                                                picking = screen.isSelectionMode,
+                                                onRefresh = { viewModel.refreshPouchLists() },
+                                                onPick = { id ->
+                                                    if (screen.isSelectionMode) viewModel.bindProcessFromPouch(id)
+                                                    currentScreen = AppScreen.WeldPath
+                                                },
                                                 onBack = {
                                                     viewModel.cancelAddProcessVariant()
                                                     currentScreen = AppScreen.WeldPath
                                                 },
-                                                isSelectionMode = screen.isSelectionMode
                                             )
                                         }
                                         else -> {}

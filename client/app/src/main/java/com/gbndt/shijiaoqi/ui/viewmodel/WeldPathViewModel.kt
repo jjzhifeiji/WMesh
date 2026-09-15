@@ -25,8 +25,10 @@ import com.gbndt.shijiaoqi.platform.pouch.Pouch
 import com.gbndt.shijiaoqi.platform.session.BagSession
 import com.gbndt.shijiaoqi.weld.Capture
 import com.gbndt.shijiaoqi.weld.PouchProcessSource
+import com.gbndt.shijiaoqi.weld.PouchSave
 import com.gbndt.shijiaoqi.weld.ProcessBind
 import com.gbndt.shijiaoqi.weld.ProcessChoice
+import com.gbndt.shijiaoqi.weld.ProcessJson
 import com.gbndt.shijiaoqi.weld.ProcessRef
 import com.gbndt.shijiaoqi.weld.ProjectChoice
 import com.gbndt.shijiaoqi.weld.SingleLayerProject
@@ -49,7 +51,6 @@ import kotlin.math.abs
 
 import com.gbndt.shijiaoqi.data.manager.UpdateManager
 import com.gbndt.shijiaoqi.data.manager.UpdateInfo
-import android.os.Environment
 import android.content.IntentFilter
 import android.content.Intent
 import android.app.DownloadManager
@@ -1169,9 +1170,10 @@ class WeldPathViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun saveCurrentProject() {
-        if (pouchProjectId != null) return
-        val path = currentProjectName ?: return
-        projectManager.saveStandardProject(path, weldPaths)
+        val id = pouchProjectId ?: return
+        val bag = runCatching { bag() }.getOrNull() ?: return
+        weldPaths.forEach { PouchSave.weldPath(bag, it) }
+        PouchSave.project(bag, id, SingleLayerProject.encode(weldPaths.toList()))
     }
 
     fun copyCurrentProject(newName: String) {
@@ -1223,15 +1225,19 @@ class WeldPathViewModel(application: Application) : AndroidViewModel(application
     }
 
     override fun createProcess(name: String, process: WeldProcess) {
-        processManager.saveProcess(processCurrentPath, process)
-        refreshProcessExplorer()
+        val bag = runCatching { bag() }.getOrNull() ?: return
+        val body = ProcessJson.encode(process.copy(name = name))
+        try {
+            bag.issuePersonal(Pouch.KIND_PROCESS, name, body)
+            refreshPouchLists()
+        } catch (_: Exception) {
+        } finally {
+            Wm2.zero(body)
+        }
     }
 
     override fun updateProcess(item: FileSystemItem, process: WeldProcess) {
-        val file = File(item.path)
-        val dir = file.parent ?: processCurrentPath
-        processManager.saveProcess(dir, process)
-        refreshProcessExplorer()
+        saveProcess(process)
     }
 
     override fun importProcess(uri: Uri) {
@@ -1245,32 +1251,13 @@ class WeldPathViewModel(application: Application) : AndroidViewModel(application
     // Update Standard Process Library
     override fun updateStandardProcessLibrary(url: String) {
         viewModelScope.launch {
-            _toastEvent.emit("正在下载标准工艺库...")
-            val success = updateManager.downloadAndExtractStandardProcessLibrary(url)
-            if (success) {
-                _toastEvent.emit("标准工艺库更新成功")
-                refreshProcessExplorer()
-            } else {
-                _toastEvent.emit("标准工艺库更新失败")
-            }
+            _toastEvent.emit("本机不保存标准工艺库文件")
         }
     }
 
-    override fun exportProcess(item: FileSystemItem): File? {
-        if (item.isProcess) {
-            return File(item.path)
-        }
-        return null
-    }
+    override fun exportProcess(item: FileSystemItem): File? = null
 
-    override fun exportProcessZip(item: FileSystemItem): File? {
-        val zipFile = File(Environment.getExternalStorageDirectory(), "ShiJiaoQi/exports/${item.name}.zip")
-        zipFile.parentFile?.mkdirs()
-        if (zipProcessFolder(item.path, zipFile)) {
-            return zipFile
-        }
-        return null
-    }
+    override fun exportProcessZip(item: FileSystemItem): File? = null
 
     override fun selectProcess(item: FileSystemItem) {
         loadProcessToCurrentWeldPath(item)
@@ -1297,29 +1284,19 @@ class WeldPathViewModel(application: Application) : AndroidViewModel(application
     }
 
     override fun saveProcess(process: WeldProcess) {
-        processManager.saveProcess(processCurrentPath, process)
-        refreshProcessExplorer()
-
-        // Sync with current weld path if names match
-        val safeName = process.name.replace(Regex("[^a-zA-Z0-9\\u4e00-\\u9fa5_\\-.\\s()]"), "")
-        val savedPath = if (processCurrentPath.isEmpty()) "$safeName.json" else "$processCurrentPath/$safeName.json"
-
         if (weldPaths.isNotEmpty() && selectedWeldPathIndex in weldPaths.indices) {
             val currentPath = weldPaths[selectedWeldPathIndex]
-            if (currentPath.processPath == savedPath || currentPath.process.name == process.name) {
-                weldPaths[selectedWeldPathIndex] = currentPath.copy(process = process, processPath = savedPath)
-                saveCurrentProject()
+            if (currentPath.process.name == process.name) {
+                weldPaths[selectedWeldPathIndex] = currentPath.copy(process = process)
             } else {
-                val extraIdx = currentPath.extraProcesses.indexOfFirst {
-                    it.processPath == savedPath || it.process.name == process.name
-                }
+                val extraIdx = currentPath.extraProcesses.indexOfFirst { it.process.name == process.name }
                 if (extraIdx >= 0) {
                     val slot = currentPath.extraProcesses[extraIdx]
-                    currentPath.extraProcesses[extraIdx] = slot.copy(process = process, processPath = savedPath)
-                    saveCurrentProject()
+                    currentPath.extraProcesses[extraIdx] = slot.copy(process = process)
                 }
             }
         }
+        saveCurrentProject()
     }
     
     override fun loadProcess(path: String): WeldProcess? {
@@ -1356,43 +1333,6 @@ class WeldPathViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun loadProcessToCurrentWeldPath(item: FileSystemItem) {
-        if (!item.isProcess) return
-        val process = processManager.loadProcess(item.path) ?: return
-
-        if (weldPaths.isEmpty() || selectedWeldPathIndex !in weldPaths.indices) {
-            extraProcessEditIndex = -1
-            return
-        }
-
-        val currentPath = weldPaths[selectedWeldPathIndex]
-        when {
-            extraProcessEditIndex == -2 -> {
-                currentPath.extraProcesses.add(
-                    WeldPathProcessSlot(
-                        id = UUID.randomUUID().toString(),
-                        process = process,
-                        processPath = item.path,
-                        isEnabled = true
-                    )
-                )
-                saveCurrentProject()
-            }
-            extraProcessEditIndex >= 0 && extraProcessEditIndex < currentPath.extraProcesses.size -> {
-                val slot = currentPath.extraProcesses[extraProcessEditIndex]
-                currentPath.extraProcesses[extraProcessEditIndex] = slot.copy(
-                    process = process,
-                    processPath = item.path
-                )
-                saveCurrentProject()
-            }
-            else -> {
-                weldPaths[selectedWeldPathIndex] = currentPath.copy(
-                    process = process,
-                    processPath = item.path
-                )
-                saveCurrentProject()
-            }
-        }
         extraProcessEditIndex = -1
     }
     

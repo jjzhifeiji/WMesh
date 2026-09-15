@@ -7,6 +7,7 @@ import com.gbndt.shijiaoqi.data.models.WeldPointType
 import com.gbndt.shijiaoqi.data.models.WeldProcess
 import com.gbndt.shijiaoqi.utils.TBarPass
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -66,18 +67,24 @@ class TBarWeldTest {
         val cap = UUID.randomUUID()
         val json = """
             [{"name":"单层","processId":"$root","points":[]},
-             {"name":"T","kind":"tbar","processPath":"/sdcard/x.json",
+             {"name":"T","kind":"tbar",
               "gapBands":[{"minGap":3.0,"maxGap":4.0,"layer":1,
-                "rootProcessId":"$root","capProcessId":"$cap","folder":"1H-3-4"}],
+                "rootProcessId":"$root","capProcessId":"$cap"}],
               "points":[]}]
         """.trimIndent()
         val paths = TBarProject.parse(json.toByteArray())
         assertEquals(1, paths.size)
         assertEquals("T", paths[0].name)
-        assertTrue(paths[0].processPath.isEmpty())
         assertEquals(1, paths[0].gapBands.size)
         assertEquals(root.toString(), paths[0].gapBands[0].rootProcessId)
         assertEquals(cap.toString(), paths[0].gapBands[0].capProcessId)
+        val encoded = TBarProject.encode(paths)
+        val text = encoded.decodeToString()
+        assertFalse(text.contains("\"processPath\""))
+        assertTrue(text.contains("\"kind\":\"tbar\"") || text.contains(TBarRun.KIND))
+        val again = TBarProject.parse(encoded)
+        assertEquals(1, again.size)
+        assertEquals(root.toString(), again[0].gapBands[0].rootProcessId)
     }
 
     @Test

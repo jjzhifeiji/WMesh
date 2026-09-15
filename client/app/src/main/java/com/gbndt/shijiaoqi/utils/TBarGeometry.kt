@@ -34,7 +34,6 @@ data class TBarSegment(
     val gapStart: Double,
     val gapEnd: Double,
     val process: WeldProcess,
-    val processPath: String,
     val folderName: String
 )
 
@@ -204,7 +203,6 @@ object TBarGeometry {
                 j++
             }
             val process = if (pass == TBarPass.ROOT) current.folder.rootProcess else current.folder.capProcess
-            val processPath = if (pass == TBarPass.ROOT) current.folder.rootPath else current.folder.capPath
             val t0 = sampled[i].t
             val t1 = sampled[j].t
             segments.add(
@@ -216,7 +214,6 @@ object TBarGeometry {
                     gapStart = sampled[i].gap,
                     gapEnd = sampled[j].gap,
                     process = process,
-                    processPath = processPath,
                     folderName = current.folder.name
                 )
             )

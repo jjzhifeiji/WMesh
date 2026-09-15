@@ -183,6 +183,10 @@ func (s *kernel) projectItemSchemas(ctx context.Context) ([]contenttpl.ProjectIt
 // normalizeContent 新建时按当前模版套正文；没有合法模版则失败。
 func (s *kernel) normalizeContent(ctx context.Context, kind string, content []byte) ([]byte, error) {
 	if kind == KindProject {
+		// 新建工程不得再带路径键。
+		if err := contenttpl.RejectProcessPath(content); err != nil {
+			return nil, domain.ErrForbidden
+		}
 		items, err := s.projectItemSchemas(ctx)
 		if err != nil {
 			return nil, err

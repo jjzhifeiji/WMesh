@@ -52,6 +52,10 @@ func (s *kernel) projectItems(ctx context.Context) ([]contenttpl.ProjectItemSche
 // normalizeContent 新建时按已收模版套正文；尚未收到副本则原样返回。
 func (s *kernel) normalizeContent(ctx context.Context, kind string, content []byte) ([]byte, error) {
 	if kind == KindProject {
+		// 新建工程不得再带路径键。
+		if err := contenttpl.RejectProcessPath(content); err != nil {
+			return nil, domain.ErrForbidden
+		}
 		items, err := s.projectItems(ctx)
 		if err != nil {
 			return nil, err
@@ -94,7 +98,12 @@ func (s *kernel) collectProjectProcessIDs(ctx context.Context, content []byte) (
 	if len(items) == 0 {
 		items = contenttpl.SeedProjectItems()
 	}
-	return contenttpl.CollectProcessIDsFromItems(items, content)
+	// 按当前模版收集引用；路径键直接拒绝。
+	ids, err := contenttpl.CollectProcessIDsFromItems(items, content)
+	if errors.Is(err, contenttpl.ErrProcessPath) {
+		return nil, domain.ErrForbidden
+	}
+	return ids, err
 }
 
 // 审计对象：类型加修订。
