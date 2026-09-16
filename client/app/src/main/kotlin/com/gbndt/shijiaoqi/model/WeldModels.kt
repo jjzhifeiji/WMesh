@@ -254,26 +254,14 @@ fun MultiLayerWeldPathSurrogate.toMultiLayerWeldPath(): MultiLayerWeldPath {
 }
 
 @Serializable
-data class FileSystemItem(
-    val name: String,
-    val path: String, // Relative path from root
-    val isDirectory: Boolean,
-    val isProject: Boolean = false, // True if this folder is a valid project (contains project_data.json)
-    val isMultiLayerProject: Boolean = false, // True if this folder contains multi-layer data
-    val isProcess: Boolean = false  // True if this is a process file
-)
-
-@Serializable
 data class AppSettings(
     val selectedToolIndex: Int = 0,
     val toolCoordinates: List<Pose?> = List(14) { null },
     val toolRemarks: List<String> = List(14) { "" },
     val positionMode: String = "前",
     val speedMode: String = "1倍",
-    val lastOpenedProjectPath: String? = null,
     val totalWeldingLength: Double = 0.0,
     val totalWeldingDuration: Long = 0L,
-    val isRegistered: Boolean = false,
     val lastConnectionTime: Long = 0L,
     val installPos: Int = 0, // 0-平装, 1-侧装, 2-挂装
     val weldingCurrent: Double = 0.0,
