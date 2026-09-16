@@ -1,3 +1,5 @@
+@file:Suppress("DEPRECATION")
+
 package com.gbndt.shijiaoqi.ui.welding.tbar
 
 import android.speech.tts.TextToSpeech
@@ -15,15 +17,14 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
-import com.gbndt.shijiaoqi.data.legacy.ProcessManager
-import com.gbndt.shijiaoqi.data.legacy.ProjectManager
+import com.gbndt.shijiaoqi.data.prefs.DeviceSettingsStore
 import com.gbndt.shijiaoqi.data.repository.PouchRepository
 import com.gbndt.shijiaoqi.data.repository.UpdateRepository
 import com.gbndt.shijiaoqi.data.repository.RobotRepository
 import com.gbndt.shijiaoqi.data.repository.SessionRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
-import com.gbndt.shijiaoqi.domain.robot.RobotCommands
+import com.gbndt.shijiaoqi.data.robot.protocol.RobotCommands
 import com.gbndt.shijiaoqi.model.FileSystemItem
 import com.gbndt.shijiaoqi.model.GapBand
 import com.gbndt.shijiaoqi.model.Pose
@@ -33,6 +34,7 @@ import com.gbndt.shijiaoqi.model.WeldPathProcessSlot
 import com.gbndt.shijiaoqi.model.WeldPoint
 import com.gbndt.shijiaoqi.model.WeldPointType
 import com.gbndt.shijiaoqi.model.WeldProcess
+import com.gbndt.shijiaoqi.ui.teach.TeachSession
 import com.gbndt.shijiaoqi.ui.welding.FineTuneSupport
 import com.gbndt.shijiaoqi.ui.welding.WeldViewModelInterface
 import com.gbndt.shijiaoqi.domain.weld.TBarGeometry
@@ -81,7 +83,8 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.async
 import com.gbndt.shijiaoqi.ui.welding.*
 
-/** T 排：只写与单层不同的地方，其余走公共实现。 */
+/** 对照用，新 T 排屏不要再用这个类。 */
+@Deprecated("对照用：新焊接屏不要再用。算法往 domain/示教搬。")
 @HiltViewModel
 class TBarViewModel @Inject constructor(
     application: Application,
@@ -89,7 +92,9 @@ class TBarViewModel @Inject constructor(
     socketManager: RobotRepository,
     pouch: PouchRepository,
     updateManager: UpdateRepository,
-) : WeldingViewModel(application, session, socketManager, pouch, updateManager) {
+    deviceSettings: DeviceSettingsStore,
+    teach: TeachSession,
+) : WeldingViewModel(application, session, socketManager, pouch, updateManager, deviceSettings, teach) {
 
     private var boundProcesses = emptyMap<UUID, WeldProcess>()
 
@@ -132,13 +137,13 @@ class TBarViewModel @Inject constructor(
 
     override fun refreshProjectExplorer() {
         projectItems.clear()
-        projectItems.addAll(projectManager.listContents(projectCurrentPath, "tbar"))
+        projectItems.addAll(emptyList())
     }
     
     // 导航到工程目录
 
     override fun createProjectFolder(name: String) {
-        if (projectManager.createFolder(projectCurrentPath, name, "tbar")) {
+        if (false) {
             refreshProjectExplorer()
         }
     }
@@ -146,7 +151,7 @@ class TBarViewModel @Inject constructor(
     // 创建新工程
 
     override fun createNewProjectInCurrentPath(name: String) {
-        if (projectManager.createProject(projectCurrentPath, name, "tbar")) {
+        if (false) {
             val fullPath = if (projectCurrentPath.isEmpty()) name else "$projectCurrentPath/$name"
             currentProjectName = fullPath
             
@@ -243,13 +248,13 @@ class TBarViewModel @Inject constructor(
         // 复制到当前所在目录（或者根目录？）
         // 简单起见，复制到同级目录
         val parentPath = File(currentPath).parent?.replace("\\", "/") ?: ""
-        if (projectManager.copyProject(currentPath, parentPath, newName, "tbar")) {
+        if (false) {
             refreshProjectExplorer()
         }
     }
 
     override fun deleteProjectItem(item: FileSystemItem) {
-        if (projectManager.deleteItem(item.path, "tbar")) {
+        if (false) {
             if (currentProjectName == item.path) {
                 currentProjectName = null
                 weldPaths.clear()
@@ -1234,27 +1239,18 @@ class TBarViewModel @Inject constructor(
     // --- Pause/Resume Logic ---
 
     protected override fun saveAppSettings() {
-        val index = try {
-            toolCoordinateSystem.removePrefix("工具").toInt() - 1
-        } catch (e: Exception) { 0 }
-        
-        val settings = AppSettings(
-            selectedToolIndex = index,
-            toolCoordinates = toolCoordinates.toList(),
-            toolRemarks = toolRemarks.toList(),
-            positionMode = positionMode,
-            speedMode = speedMode,
-            lastOpenedProjectPath = projectManager.loadAppSettings().lastOpenedProjectPath,
-            totalWeldingLength = weldingLength,
-            totalWeldingDuration = weldingDuration,
-            isRegistered = isRegistered,
-            lastConnectionTime = lastConnectionTime,
-            installPos = installPos,
-            weldingCurrent = savedCurrent,
-            weldingVoltage = savedVoltage,
-            isExtAxisEnabled = isExtAxisEnabled
+        val cell = deviceSettings.loadAppSettings()
+        deviceSettings.saveAppSettings(
+            cell.copy(
+                lastOpenedProjectPath = cell.lastOpenedProjectPath,
+                totalWeldingLength = weldingLength,
+                totalWeldingDuration = weldingDuration,
+                isRegistered = isRegistered,
+                lastConnectionTime = lastConnectionTime,
+                weldingCurrent = savedCurrent,
+                weldingVoltage = savedVoltage,
+            ),
         )
-        projectManager.saveAppSettings(settings)
     }
 
     // --- Update Methods ---

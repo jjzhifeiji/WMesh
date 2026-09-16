@@ -12,6 +12,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import com.gbndt.shijiaoqi.model.UpdateInfo
 
+/** 发现新版本时的确认框。 */
 @Composable
 fun UpdateDialog(
     updateInfo: UpdateInfo,

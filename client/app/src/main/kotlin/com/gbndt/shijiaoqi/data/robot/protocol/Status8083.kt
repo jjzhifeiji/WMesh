@@ -1,4 +1,4 @@
-package com.gbndt.shijiaoqi.domain.robot
+package com.gbndt.shijiaoqi.data.robot.protocol
 
 import com.gbndt.shijiaoqi.model.Pose
 import java.nio.ByteBuffer

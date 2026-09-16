@@ -1,16 +1,24 @@
 package com.gbndt.shijiaoqi.domain.weld
 
+import com.gbndt.shijiaoqi.model.MultiLayerWeldPath
 import com.gbndt.shijiaoqi.model.Oscillation
 import com.gbndt.shijiaoqi.model.Pose
+import com.gbndt.shijiaoqi.model.RefPoint
+import com.gbndt.shijiaoqi.model.WeldPassOffset
+import com.gbndt.shijiaoqi.model.WeldPath
+import com.gbndt.shijiaoqi.model.WeldPoint
 import com.gbndt.shijiaoqi.model.WeldPointType
 import com.gbndt.shijiaoqi.model.WeldProcess
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.util.UUID
+import com.gbndt.shijiaoqi.domain.script.MultiLayerLua
 import com.gbndt.shijiaoqi.domain.script.ScriptPoint
 import com.gbndt.shijiaoqi.domain.script.SingleLayerLua
+import com.gbndt.shijiaoqi.domain.script.texts
 
 class MultiLayerWeldTest {
     @Test
@@ -72,7 +80,7 @@ class MultiLayerWeldTest {
             )
         }
         val process = WeldProcess(oscillation = Oscillation(type = "三角波摆动"))
-        val lines = SingleLayerLua.pathLines(offset, process, isWelding = true, simulating = false, speedMode = "1倍", toolIndex = 1)
+        val lines = SingleLayerLua.pathLines(offset, process, isWelding = true, simulating = false, speedMode = "1倍", toolIndex = 1).texts()
         val startMove = lines.indexOfFirst { it.startsWith("MoveL(") && it.contains("15.000") }
         val arc = lines.indexOfFirst { it.startsWith("ARCStart") }
         val weave = lines.indexOfFirst { it.startsWith("WeaveStart") }
@@ -111,5 +119,115 @@ class MultiLayerWeldTest {
             src,
         )
         assertEquals(listOf("第1道: $id"), out.missing)
+    }
+
+    @Test
+    fun generateSimpleOffsetWithoutRefs() {
+        val pose = Pose(10.0, 20.0, 30.0, 0.0, 0.0, 0.0)
+        fun pt(type: WeldPointType) = WeldPoint(UUID.randomUUID().toString(), type, pose = pose, jointAngles = List(6) { 0.0 })
+        val base = WeldPath(
+            id = "b",
+            name = "base",
+            points = mutableListOf(
+                pt(WeldPointType.START_SAFE),
+                pt(WeldPointType.START),
+                pt(WeldPointType.END),
+                pt(WeldPointType.END_SAFE),
+            ),
+            process = WeldProcess(),
+        )
+        val pass = WeldPassOffset(valX = 5.0, valYLeft = 1.0, valYRight = 2.0, valZ = 3.0)
+        val mp = MultiLayerWeldPath(id = "m", name = "m", basePath = base, passes = mutableListOf(pass))
+        val pts = MultiLayerPass.generate(base, pass, mp)!!
+        assertEquals(4, pts.size)
+        assertEquals(pose, pts[0].pose)
+        assertEquals(15.0, pts[1].pose.x, 0.0)
+        assertEquals(21.0, pts[1].pose.y, 0.0)
+        assertEquals(33.0, pts[1].pose.z, 0.0)
+        assertEquals(22.0, pts[2].pose.y, 0.0)
+        assertEquals(pose, pts[3].pose)
+        assertTrue(pts[1].offsets.isNullOrEmpty())
+    }
+
+    @Test
+    fun generateWithRefsKeepsOriginAndLuaFlag3() {
+        val start = Pose(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        val end = Pose(100.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        fun pt(type: WeldPointType, pose: Pose) =
+            WeldPoint(UUID.randomUUID().toString(), type, pose = pose, jointAngles = List(6) { 0.0 })
+        fun ref(pose: Pose) = RefPoint(pose, List(6) { 0.0 })
+        val base = WeldPath(
+            id = "b",
+            name = "base",
+            points = mutableListOf(
+                pt(WeldPointType.START_SAFE, start),
+                pt(WeldPointType.START, start),
+                pt(WeldPointType.END, end),
+                pt(WeldPointType.END_SAFE, end),
+            ),
+            process = WeldProcess(),
+        )
+        val pass = WeldPassOffset(valX = 5.0, valYLeft = 1.0, valYRight = 2.0, valZ = 3.0)
+        val mp = MultiLayerWeldPath(
+            id = "m",
+            name = "m",
+            basePath = base,
+            passes = mutableListOf(pass),
+            refPointX1 = ref(Pose(0.0, 10.0, 0.0, 0.0, 0.0, 0.0)),
+            refPointZ1 = ref(Pose(0.0, 0.0, 10.0, 0.0, 0.0, 0.0)),
+            refPointXEnd = ref(Pose(100.0, 10.0, 0.0, 0.0, 0.0, 0.0)),
+            refPointZEnd = ref(Pose(100.0, 0.0, 10.0, 0.0, 0.0, 0.0)),
+        )
+        val pts = MultiLayerPass.generate(base, pass, mp)!!
+        assertEquals(start, pts[1].pose)
+        assertEquals(6, pts[1].offsets!!.size)
+        assertTrue(pts[1].offsets!!.any { kotlin.math.abs(it) >= 1e-5 })
+        assertTrue(pts[1].world() != pts[1].pose)
+        val lines = MultiLayerLua.job(listOf(mp), welding = true, simulating = false)!!.texts()
+        val flagged = lines.filter { it.startsWith("MoveL(") && it.contains("3,") }
+        assertTrue(flagged.isNotEmpty())
+        assertTrue(flagged.any { it.contains("0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000") })
+        assertFalse(lines.any { it.contains("GetInverseKinExaxis") })
+    }
+
+    @Test
+    fun luaInterleavesBaseThenPass() {
+        fun path(name: String): MultiLayerWeldPath {
+            val p = Pose(1.0, 2.0, 3.0, 0.0, 0.0, 0.0)
+            fun pt(t: WeldPointType) = WeldPoint(UUID.randomUUID().toString(), t, pose = p, jointAngles = List(6) { 0.0 })
+            val base = WeldPath(
+                id = name,
+                name = name,
+                points = mutableListOf(
+                    pt(WeldPointType.START_SAFE),
+                    pt(WeldPointType.START),
+                    pt(WeldPointType.END),
+                    pt(WeldPointType.END_SAFE),
+                ),
+                process = WeldProcess(current = 100.0),
+            )
+            val pass = WeldPassOffset(name = "p1", valX = 1.0, process = WeldProcess(current = 200.0))
+            return MultiLayerWeldPath(id = name, name = name, basePath = base, passes = mutableListOf(pass))
+        }
+        val lines = MultiLayerLua.job(listOf(path("a"), path("b")), welding = true, simulating = false)!!.texts()
+        val params = lines.filter { it.startsWith("WeldingSetProcessParam") }
+        assertEquals(4, params.size)
+        assertTrue(params[0].contains(",100.0,"))
+        assertTrue(params[1].contains(",100.0,"))
+        assertTrue(params[2].contains(",200.0,"))
+        assertTrue(params[3].contains(",200.0,"))
+        assertEquals("SetSpeed(10)", lines.first())
+    }
+
+    @Test
+    fun jobNullWhenPoseMissing() {
+        val base = WeldPath(
+            id = "b",
+            name = "b",
+            points = mutableListOf(WeldPoint(UUID.randomUUID().toString(), WeldPointType.START_SAFE)),
+            process = WeldProcess(),
+        )
+        val mp = MultiLayerWeldPath(id = "m", name = "m", basePath = base, passes = mutableListOf())
+        assertNull(MultiLayerLua.job(listOf(mp), welding = true, simulating = false))
     }
 }

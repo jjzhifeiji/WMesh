@@ -22,4 +22,7 @@ class UpdateRepository @Inject constructor(
     fun getDownloadedUri(downloadId: Long): Uri? = manager.getDownloadedUri(downloadId)
 
     fun installApk(uri: Uri) = manager.installApk(uri)
+
+    /** 查询这条下载的状态；没有这条就返回 -1。 */
+    fun downloadStatus(id: Long): Int = manager.downloadStatus(id)
 }

@@ -21,16 +21,16 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.gbndt.shijiaoqi.model.Pose
-import com.gbndt.shijiaoqi.ui.welding.WeldViewModelInterface
+import com.gbndt.shijiaoqi.ui.teach.TeachSession
 import java.util.Locale
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun ToolListDialog(
-    viewModel: WeldViewModelInterface,
+    teach: TeachSession,
     onDismiss: () -> Unit
 ) {
-    if (!viewModel.isToolListDialogVisible) return
+    if (!teach.isToolListDialogVisible) return
 
     Dialog(
         onDismissRequest = onDismiss,
@@ -58,19 +58,19 @@ fun ToolListDialog(
                     modifier = Modifier.weight(1f)
                 ) {
                     items(14) { index ->
-                        val pose = viewModel.toolCoordinates[index]
-                        val remark = viewModel.toolRemarks[index]
-                        val isSelected = viewModel.toolCoordinateSystem == "工具${index + 1}"
+                        val pose = teach.toolCoordinates[index]
+                        val remark = teach.toolRemarks[index]
+                        val isSelected = teach.toolCoordinateSystem == "工具${index + 1}"
                         
                         Card(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(vertical = 2.dp)
                                 .combinedClickable(
-                                    onClick = { viewModel.selectTool(index) },
+                                    onClick = { teach.selectTool(index) },
                                     onLongClick = { 
                                         if (pose != null) {
-                                            viewModel.openToolEdit(index)
+                                            teach.openToolEdit(index)
                                         }
                                     }
                                 ),
@@ -140,10 +140,10 @@ fun ToolListDialog(
 
 @Composable
 fun PositionSelectionDialog(
-    viewModel: WeldViewModelInterface,
+    teach: TeachSession,
     onDismiss: () -> Unit
 ) {
-    if (!viewModel.isPositionDialogVisible) return
+    if (!teach.isPositionDialogVisible) return
 
     val options = listOf("前", "后", "左", "右")
 
@@ -165,9 +165,9 @@ fun PositionSelectionDialog(
                 )
 
                 options.forEach { option ->
-                    val isSelected = viewModel.positionMode == option
+                    val isSelected = teach.positionMode == option
                     Button(
-                        onClick = { viewModel.setPosition(option) },
+                        onClick = { teach.setPosition(option) },
                         modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
                         colors = ButtonDefaults.buttonColors(
                             containerColor = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.secondaryContainer,
@@ -184,10 +184,10 @@ fun PositionSelectionDialog(
 
 @Composable
 fun SpeedSelectionDialog(
-    viewModel: WeldViewModelInterface,
+    teach: TeachSession,
     onDismiss: () -> Unit
 ) {
-    if (!viewModel.isSpeedDialogVisible) return
+    if (!teach.isSpeedDialogVisible) return
 
     val options = listOf("1倍", "3倍", "5倍")
 
@@ -209,9 +209,9 @@ fun SpeedSelectionDialog(
                 )
 
                 options.forEach { option ->
-                    val isSelected = viewModel.speedMode == option
+                    val isSelected = teach.speedMode == option
                     Button(
-                        onClick = { viewModel.setSpeed(option) },
+                        onClick = { teach.setSpeed(option) },
                         modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
                         colors = ButtonDefaults.buttonColors(
                             containerColor = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.secondaryContainer,
@@ -228,10 +228,10 @@ fun SpeedSelectionDialog(
 
 @Composable
 fun InstallPosSelectionDialog(
-    viewModel: WeldViewModelInterface,
+    teach: TeachSession,
     onDismiss: () -> Unit
 ) {
-    if (!viewModel.isInstallPosDialogVisible) return
+    if (!teach.isInstallPosDialogVisible) return
 
     val options = listOf("平装" to 0, "侧装" to 1, "挂装" to 2)
 
@@ -253,9 +253,9 @@ fun InstallPosSelectionDialog(
                 )
 
                 options.forEach { (label, pos) ->
-                    val isSelected = viewModel.installPos == pos
+                    val isSelected = teach.installPos == pos
                     Button(
-                        onClick = { viewModel.updateInstallPos(pos) },
+                        onClick = { teach.updateInstallPos(pos) },
                         modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
                         colors = ButtonDefaults.buttonColors(
                             containerColor = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.secondaryContainer,
@@ -272,20 +272,20 @@ fun InstallPosSelectionDialog(
 
 @Composable
 fun ToolEditDialog(
-    viewModel: WeldViewModelInterface
+    teach: TeachSession
 ) {
-    if (!viewModel.isToolEditDialogVisible) return
+    if (!teach.isToolEditDialogVisible) return
 
-    var x by remember { mutableStateOf(viewModel.editingToolPose.x.toString()) }
-    var y by remember { mutableStateOf(viewModel.editingToolPose.y.toString()) }
-    var z by remember { mutableStateOf(viewModel.editingToolPose.z.toString()) }
-    var rx by remember { mutableStateOf(viewModel.editingToolPose.rx.toString()) }
-    var ry by remember { mutableStateOf(viewModel.editingToolPose.ry.toString()) }
-    var rz by remember { mutableStateOf(viewModel.editingToolPose.rz.toString()) }
-    var remark by remember { mutableStateOf(viewModel.editingToolRemark) }
+    var x by remember { mutableStateOf(teach.editingToolPose.x.toString()) }
+    var y by remember { mutableStateOf(teach.editingToolPose.y.toString()) }
+    var z by remember { mutableStateOf(teach.editingToolPose.z.toString()) }
+    var rx by remember { mutableStateOf(teach.editingToolPose.rx.toString()) }
+    var ry by remember { mutableStateOf(teach.editingToolPose.ry.toString()) }
+    var rz by remember { mutableStateOf(teach.editingToolPose.rz.toString()) }
+    var remark by remember { mutableStateOf(teach.editingToolRemark) }
 
     Dialog(
-        onDismissRequest = { viewModel.cancelToolEdit() },
+        onDismissRequest = { teach.cancelToolEdit() },
         properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
         Card(
@@ -300,7 +300,7 @@ fun ToolEditDialog(
                     .verticalScroll(rememberScrollState())
             ) {
                 Text(
-                    text = "修改工具${viewModel.editingToolIndex + 1}参数",
+                    text = "修改工具${teach.editingToolIndex + 1}参数",
                     style = MaterialTheme.typography.titleLarge,
                     modifier = Modifier.padding(bottom = 16.dp)
                 )
@@ -348,7 +348,7 @@ fun ToolEditDialog(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.End
                 ) {
-                    TextButton(onClick = { viewModel.cancelToolEdit() }) {
+                    TextButton(onClick = { teach.cancelToolEdit() }) {
                         Text("取消")
                     }
                     Spacer(modifier = Modifier.width(8.dp))
@@ -361,7 +361,7 @@ fun ToolEditDialog(
                             ry.toDoubleOrNull() ?: 0.0,
                             rz.toDoubleOrNull() ?: 0.0
                         )
-                        viewModel.saveToolEdit(newPose, remark)
+                        teach.saveToolEdit(newPose, remark)
                     }) {
                         Text("确定")
                     }

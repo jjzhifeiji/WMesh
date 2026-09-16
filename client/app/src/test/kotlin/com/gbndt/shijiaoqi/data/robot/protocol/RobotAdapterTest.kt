@@ -1,4 +1,4 @@
-package com.gbndt.shijiaoqi.domain.robot
+package com.gbndt.shijiaoqi.data.robot.protocol
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse

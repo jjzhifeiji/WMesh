@@ -16,16 +16,16 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asSharedFlow
-import com.gbndt.shijiaoqi.data.legacy.ProcessManager
-import com.gbndt.shijiaoqi.data.legacy.ProjectManager
+import com.gbndt.shijiaoqi.data.prefs.DeviceSettingsStore
 import com.gbndt.shijiaoqi.data.repository.PouchRepository
 import com.gbndt.shijiaoqi.data.repository.UpdateRepository
 import com.gbndt.shijiaoqi.data.repository.RobotRepository
 import com.gbndt.shijiaoqi.data.repository.SessionRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
-import com.gbndt.shijiaoqi.domain.robot.RobotCommands
+import com.gbndt.shijiaoqi.data.robot.protocol.RobotCommands
 import com.gbndt.shijiaoqi.domain.weld.Capture
 import com.gbndt.shijiaoqi.domain.weld.MultiLayerProject
 import com.gbndt.shijiaoqi.domain.weld.MultiLayerRun
@@ -45,6 +45,7 @@ import com.gbndt.shijiaoqi.model.WeldPointType
 import com.gbndt.shijiaoqi.model.WeldProcess
 import com.gbndt.shijiaoqi.model.MultiLayerWeldPath
 import com.gbndt.shijiaoqi.model.WeldPassOffset
+import com.gbndt.shijiaoqi.ui.teach.TeachSession
 import com.gbndt.shijiaoqi.ui.welding.FineTuneSupport
 import java.io.File
 import java.util.UUID
@@ -74,6 +75,10 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.async
 import com.gbndt.shijiaoqi.ui.welding.*
 
+/**
+ * 对照用，新多层屏不要再用这个类。
+ */
+@Deprecated("对照用：新焊接屏不要再用。算法往 domain/示教搬。")
 @HiltViewModel
 class MultiLayerViewModel @Inject constructor(
     application: Application,
@@ -81,6 +86,8 @@ class MultiLayerViewModel @Inject constructor(
     private val socketManager: RobotRepository,
     private val pouch: PouchRepository,
     private val updateManager: UpdateRepository,
+    private val deviceSettings: DeviceSettingsStore,
+    private val teach: TeachSession,
 ) : AndroidViewModel(application), WeldViewModelInterface {
 
     // Helper class for Vector math
@@ -109,10 +116,6 @@ class MultiLayerViewModel @Inject constructor(
         fun dot(other: Vector3) = x * other.x + y * other.y + z * other.z
     }
 
-    private val processManager = ProcessManager(application)
-    private val projectManager = ProjectManager(application)
-
-    
     private fun handleCommandExecuted(id: Int) {
         val mapping = commandIdMap[id]
         if (mapping != null) {
@@ -228,8 +231,19 @@ class MultiLayerViewModel @Inject constructor(
     
     // Multi-Layer State
     val multiLayerWeldPaths = mutableStateListOf<MultiLayerWeldPath>()
-    override val pouchProjects = mutableStateListOf<ProjectChoice>()
-    override val pouchProcesses = mutableStateListOf<ProcessChoice>()
+    val pouchProjects = mutableStateListOf<ProjectChoice>()
+    val pouchProcesses = mutableStateListOf<ProcessChoice>()
+    private val _shellUi = MutableStateFlow(com.gbndt.shijiaoqi.ui.welding.WeldShellUi())
+    override val shellUi: kotlinx.coroutines.flow.StateFlow<com.gbndt.shijiaoqi.ui.welding.WeldShellUi> = _shellUi
+    private fun pushShell() {
+        _shellUi.value = com.gbndt.shijiaoqi.ui.welding.WeldShellUi(
+            currentProjectName = currentProjectName,
+            weldingBreakOffState = weldingBreakOffState,
+            weldArcState = weldArcState,
+            pouchProjects = pouchProjects.toList(),
+            pouchProcesses = pouchProcesses.toList(),
+        )
+    }
     private var pouchProjectId: UUID? = null
     var selectedMultiLayerPathIndex by mutableStateOf(0)
     var selectedPassIndex by mutableStateOf(-1) // -1 means Base Path, 0..N means Pass index
@@ -253,7 +267,7 @@ class MultiLayerViewModel @Inject constructor(
     var missingProcessMessage by mutableStateOf("")
 
     // 工程管理相关状态
-    override var currentProjectName by mutableStateOf<String?>(null) // 存储工程的相对路径
+    var currentProjectName by mutableStateOf<String?>(null) // 存储工程的相对路径
     
     // Project Explorer State
     override var projectCurrentPath by mutableStateOf("")
@@ -264,7 +278,9 @@ class MultiLayerViewModel @Inject constructor(
     override val processItems = mutableStateListOf<FileSystemItem>()
 
     // Status Bar State
-    override var toolCoordinateSystem by mutableStateOf("工具1")
+    override var toolCoordinateSystem: String
+        get() = teach.toolCoordinateSystem
+        set(_) {}
     override var operationPosition by mutableStateOf(Pose(0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
     
     // UI Events
@@ -274,35 +290,55 @@ class MultiLayerViewModel @Inject constructor(
     private val _scrollToIndexEvent = MutableSharedFlow<Int>()
     val scrollToIndexEvent = _scrollToIndexEvent.asSharedFlow()
 
-    override var positionMode by mutableStateOf("右")
+    override var positionMode: String
+        get() = teach.positionMode
+        set(_) {}
     var simulationSpeed by mutableStateOf(100)
-    override var speedMode by mutableStateOf("1倍")
-    override var isInstallPosDialogVisible by mutableStateOf(false)
-    override var installPos by mutableStateOf(0) // 0-平装, 1-侧装, 2-挂装
-    override var alarmStatus by mutableStateOf("无故障")
-    override var connectionStatus by mutableStateOf("已连接")
+    override var speedMode: String
+        get() = teach.speedMode
+        set(_) {}
+    override var isInstallPosDialogVisible: Boolean
+        get() = teach.isInstallPosDialogVisible
+        set(v) { teach.isInstallPosDialogVisible = v }
+    override var installPos: Int
+        get() = teach.installPos
+        set(_) {}
+    override var alarmStatus: String
+        get() = teach.alarmStatus
+        set(_) {}
+    override var connectionStatus: String
+        get() = teach.connectionStatus
+        set(_) {}
     override var weldingLength by mutableStateOf(0.0)
     override var weldingDuration by mutableStateOf(0L)
-    override var weldingBreakOffState by mutableStateOf("正常")
+    var weldingBreakOffState by mutableStateOf("正常")
     private var isResuming = false
-    override var weldArcState by mutableStateOf("正常")
+    var weldArcState by mutableStateOf("正常")
 
-    override var extAxisPos by mutableStateOf(0.0)
-    override var extAxisReady by mutableStateOf(false)
-    override var isExtAxisEnabled by mutableStateOf(true)
+    override var extAxisPos: Double
+        get() = teach.extAxisPos
+        set(_) {}
+    override var extAxisReady: Boolean
+        get() = teach.extAxisReady
+        set(_) {}
+    override var isExtAxisEnabled: Boolean
+        get() = teach.isExtAxisEnabled
+        set(_) {}
 
     override fun toggleExtAxisEnabled() {
-        isExtAxisEnabled = !isExtAxisEnabled
+        teach.toggleExtAxisEnabled()
     }
 
     // Registration State
     override var isRegistered by mutableStateOf(false)
     var lastConnectionTime: Long = 0L
-    override var machineCode by mutableStateOf("")
+    override var machineCode: String
+        get() = teach.machineCode
+        set(_) {}
 
     // Update State
-    override var isUpdateDialogVisible by mutableStateOf(false)
-    override var updateInfo by mutableStateOf<UpdateInfo?>(null)
+    var isUpdateDialogVisible by mutableStateOf(false)
+    var updateInfo by mutableStateOf<UpdateInfo?>(null)
 
     override var isRobotErrorDialogVisible by mutableStateOf(false)
     override val currentRobotErrors = mutableStateListOf<com.gbndt.shijiaoqi.model.RobotError>()
@@ -311,24 +347,35 @@ class MultiLayerViewModel @Inject constructor(
     private var downloadId: Long = -1L
 
     // Dialog Visibility States
-    override var isPositionDialogVisible by mutableStateOf(false)
-    override var isSpeedDialogVisible by mutableStateOf(false)
+    override var isPositionDialogVisible: Boolean
+        get() = teach.isPositionDialogVisible
+        set(v) { teach.isPositionDialogVisible = v }
+    override var isSpeedDialogVisible: Boolean
+        get() = teach.isSpeedDialogVisible
+        set(v) { teach.isSpeedDialogVisible = v }
     
     // Tool Coordinates State
-    override val toolCoordinates = mutableStateListOf<Pose?>().apply {
-        repeat(14) { add(null) }
-    }
-    override val toolRemarks = mutableStateListOf<String>().apply {
-        repeat(14) { add("") }
-    }
-    override var isToolListDialogVisible by mutableStateOf(false)
-    override var isToolEditDialogVisible by mutableStateOf(false)
-    override var editingToolIndex by mutableStateOf(-1) // 0-13
-    override var editingToolPose by mutableStateOf(Pose(0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
-    override var editingToolRemark by mutableStateOf("")
+    override val toolCoordinates get() = teach.toolCoordinates
+    override val toolRemarks get() = teach.toolRemarks
+    override var isToolListDialogVisible: Boolean
+        get() = teach.isToolListDialogVisible
+        set(v) { teach.isToolListDialogVisible = v }
+    override var isToolEditDialogVisible: Boolean
+        get() = teach.isToolEditDialogVisible
+        set(v) { teach.isToolEditDialogVisible = v }
+    override var editingToolIndex: Int
+        get() = teach.editingToolIndex
+        set(_) {}
+    override var editingToolPose: Pose
+        get() = teach.editingToolPose
+        set(v) { teach.editingToolPose = v }
+    override var editingToolRemark: String
+        get() = teach.editingToolRemark
+        set(v) { teach.editingToolRemark = v }
 
-    // Joystick States
-    override var isControllerActive by mutableStateOf(false)
+    override var isControllerActive: Boolean
+        get() = teach.isControllerActive
+        set(v) { if (!v) teach.stopController() }
     override var joyX1 by mutableStateOf(0f)
     override var joyY1 by mutableStateOf(0f)
     override var joyX2 by mutableStateOf(0f)
@@ -464,79 +511,39 @@ class MultiLayerViewModel @Inject constructor(
     // Interface Implementation
     // 选择工具坐标系
     override fun selectTool(index: Int) {
-        if (index in 0 until 14) {
-            val pose = toolCoordinates[index]
-            if (pose == null) {
-                openToolEdit(index)
-            } else {
-                toolCoordinateSystem = "工具${index + 1}"
-                isToolListDialogVisible = false
-                saveAppSettings()
-
-                val cmd = "SetTool($index)"
-                val msg = "/f/bIII1001III200III${cmd.length}III${cmd}III/b/f"
-                socketManager.sendControlCommand(msg)
-            }
-        }
+        teach.selectTool(index)
     }
 
-    // 打开工具编辑对话框
     override fun openToolEdit(index: Int) {
-        editingToolIndex = index
-        editingToolPose = toolCoordinates[index] ?: Pose(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-        editingToolRemark = toolRemarks[index]
-        isToolEditDialogVisible = true
+        teach.openToolEdit(index)
     }
 
-    // 取消工具编辑
     override fun cancelToolEdit() {
-        isToolEditDialogVisible = false
+        teach.cancelToolEdit()
     }
 
-    // 保存工具编辑
     override fun saveToolEdit(pose: Pose, remark: String) {
-        if (editingToolIndex in 0..13) {
-            toolCoordinates[editingToolIndex] = pose
-            toolRemarks[editingToolIndex] = remark
-            saveAppSettings()
-        }
-        isToolEditDialogVisible = false
+        teach.saveToolEdit(pose, remark)
     }
 
-    // 设置位置模式（前/后/左/右）
     override fun setPosition(mode: String) {
-        positionMode = mode
-        isPositionDialogVisible = false
-        saveAppSettings()
+        teach.setPosition(mode)
     }
 
-    // 设置速度倍率
     override fun setSpeed(mode: String) {
-        speedMode = mode
-        isSpeedDialogVisible = false
-        saveAppSettings()
+        teach.setSpeed(mode)
     }
 
-    // 设置安装方式
     override fun updateInstallPos(pos: Int) {
-        installPos = pos
-        isInstallPosDialogVisible = false
-        saveAppSettings()
-        
-        // Send command to robot
-        val cmd = "SetRobotInstallPos($pos)"
-        val msg = "/f/bIII23III337III${cmd.length}III${cmd}III/b/f"
-        socketManager.sendControlCommand(msg)
+        teach.updateInstallPos(pos)
     }
 
-    // 切换手柄控制激活状态
     override fun toggleControllerActive() {
-        isControllerActive = !isControllerActive
+        teach.toggleController()
     }
 
-    // 停止手柄控制
     override fun stopControllerActive() {
-        isControllerActive = false
+        teach.stopController()
     }
     
     // Position History for Pause/Resume
@@ -733,7 +740,7 @@ class MultiLayerViewModel @Inject constructor(
                     machineCode = mac
                     
                     // Auto-login / Verification
-                    val savedLicense = projectManager.loadLicense()
+                    val savedLicense = ""
                     if (savedLicense.isNotEmpty()) {
                         val expectedCode = encryptMac("P${mac}L")
                         if (savedLicense == expectedCode) {
@@ -777,21 +784,13 @@ class MultiLayerViewModel @Inject constructor(
         viewModelScope.launch {
             socketManager.weldingBreakOffState.collect { state ->
                 weldingBreakOffState = state
+                pushShell()
             }
         }
         viewModelScope.launch {
             socketManager.weldArcState.collect { state ->
                 weldArcState = state
-            }
-        }
-        viewModelScope.launch {
-            socketManager.extAxisPos.collect { pos ->
-                extAxisPos = pos
-            }
-        }
-        viewModelScope.launch {
-            socketManager.extAxisReady.collect { ready ->
-                extAxisReady = ready
+                pushShell()
             }
         }
 
@@ -813,22 +812,13 @@ class MultiLayerViewModel @Inject constructor(
                         tts?.stop()
                     }
                 }
-                alarmStatus = status
             }
         }
         
-        // Listen for Robot Input Signal (Custom IO Logic)
+        // 录点仍归焊接；送丝/拖动在示教
         viewModelScope.launch {
             socketManager.robotInputSignal.collect { combined ->
                 when {
-                     combined in 2690..2890 && !isWireFeeding -> {
-                         startWireFeed()
-                         isWireFeeding = true
-                     }
-                     combined > 4096 && isWireFeeding -> {
-                         stopWireFeed()
-                         isWireFeeding = false
-                     }
                      combined in 2048..2248 && !isRecording -> {
                          collectData()
                          isRecording = true
@@ -836,22 +826,12 @@ class MultiLayerViewModel @Inject constructor(
                      combined > 4096 && isRecording -> {
                          isRecording = false
                      }
-                     combined in 754..954 && !isDragEnabled -> {
-                         dragTeachSwitch(true)
-                         isDragEnabled = true
-                     }
-                     combined > 4096 && isDragEnabled -> {
-                         dragTeachSwitch(false)
-                         isDragEnabled = false
-                     }
                 }
             }
         }
 
         // Load app settings
-        val settings = projectManager.loadAppSettings()
-        
-        isExtAxisEnabled = settings.isExtAxisEnabled
+        val settings = deviceSettings.loadAppSettings()
         
         val currentTime = System.currentTimeMillis()
         val threeDaysInMillis = 3L * 24 * 60 * 60 * 1000
@@ -861,7 +841,7 @@ class MultiLayerViewModel @Inject constructor(
         if (lastConnectionTime > 0 && (currentTime - lastConnectionTime) > threeDaysInMillis) {
             // Expired
             isRegistered = false
-            projectManager.clearLicense()
+            Unit
             saveAppSettings()
             viewModelScope.launch {
                 _toastEvent.emit("注册已过期，请重新注册")
@@ -869,48 +849,16 @@ class MultiLayerViewModel @Inject constructor(
         } else {
             isRegistered = settings.isRegistered
             
-            if (!isRegistered && projectManager.hasLicense()) {
+            if (!isRegistered && false) {
                 isRegistered = true
             }
         }
 
         registerDownloadReceiver()
-        
-        startServoCartLoop()
 
         // Initialize Lists
         refreshProjectExplorer()
         refreshProcessExplorer()
-        
-        // Tool Coordinates
-        toolCoordinates.clear()
-        if (settings.toolCoordinates.size == 14) {
-            toolCoordinates.addAll(settings.toolCoordinates)
-        } else {
-            repeat(14) { toolCoordinates.add(null) }
-            settings.toolCoordinates.forEachIndexed { index, pose ->
-                if (index < 14) toolCoordinates[index] = pose
-            }
-        }
-        
-        // Tool Remarks
-        toolRemarks.clear()
-        if (settings.toolRemarks.size == 14) {
-            toolRemarks.addAll(settings.toolRemarks)
-        } else {
-            repeat(14) { toolRemarks.add("") }
-            settings.toolRemarks.forEachIndexed { index, remark ->
-                if (index < 14) toolRemarks[index] = remark
-            }
-        }
-        
-        if (settings.selectedToolIndex in 0 until 14) {
-             toolCoordinateSystem = "工具${settings.selectedToolIndex + 1}"
-        }
-        
-        positionMode = settings.positionMode
-        speedMode = settings.speedMode
-        installPos = settings.installPos
         
         weldingLength = settings.totalWeldingLength
         weldingDuration = settings.totalWeldingDuration
@@ -920,49 +868,10 @@ class MultiLayerViewModel @Inject constructor(
 
         syncFromPouch()
         if (multiLayerWeldPaths.isEmpty()) addLinearWeldPath()
-
-        // Start Socket Manager
-        // socketManager.start() - Moved to init
-
-
-        viewModelScope.launch {
-            socketManager.connectionStatus.collect { status ->
-                val previousStatus = connectionStatus
-                connectionStatus = status
-                
-                if (previousStatus != "已连接" && status == "已连接") {
-                    val toolIndex = try {
-                        toolCoordinateSystem.removePrefix("工具").toInt()
-                    } catch (e: Exception) { 1 }
-                    
-                    if (toolIndex in 1..14) {
-                        val pose = toolCoordinates[toolIndex - 1]
-                        if (pose != null) {
-                            delay(500) 
-                            sendToolCoordCommand(toolIndex, pose)
-                        }
-                    }
-                    
-                    // Auto-send Installation Position
-                    delay(200)
-                    val installCmd = "SetRobotInstallPos($installPos)"
-                    val installMsg = "/f/bIII23III337III${installCmd.length}III${installCmd}III/b/f"
-                    socketManager.sendControlCommand(installMsg)
-                }
-            }
-        }
     }
 
-    // 启动伺服控制循环
     private fun startServoCartLoop() {
-        viewModelScope.launch {
-            while (isActive) {
-                if (isControllerActive) {
-                    sendServoCartCommand()
-                }
-                delay(200)
-            }
-        }
+        // 点动循环在 TeachSession
     }
 
 
@@ -1029,18 +938,15 @@ class MultiLayerViewModel @Inject constructor(
     }
     
     fun enableExtAxisServo() {
-        val cmd = "ExtAxisServoOn(1,1)"
-        sendManualCommand(RobotCommands.TYPE_EXT_SERVO, cmd)
+        teach.enableExtAxisServo()
     }
 
     fun startExtAxisJog(direction: Int) {
-        if (!isControllerActive) return
-        sendManualCommand(RobotCommands.TYPE_EXT_JOG, "ExtAxisStartJog(6,1,$direction,100,100,2000)")
+        teach.startExtAxisJog(direction)
     }
 
     fun stopExtAxisJog(direction: Int) {
-        if (!isControllerActive) return
-        sendManualCommand(RobotCommands.TYPE_EXT_JOG_STOP, "StopExtAxisJog")
+        teach.stopExtAxisJog()
     }
 
     // 发送MoveL直线运动指令
@@ -3012,7 +2918,7 @@ class MultiLayerViewModel @Inject constructor(
     // 刷新工程浏览器
     override fun refreshProjectExplorer() {
         projectItems.clear()
-        projectItems.addAll(projectManager.listContents(projectCurrentPath, "multi"))
+        projectItems.addAll(emptyList())
     }
     
     // 导航到工程目录
@@ -3034,14 +2940,14 @@ class MultiLayerViewModel @Inject constructor(
     
     // 创建工程文件夹
     override fun createProjectFolder(name: String) {
-        if (projectManager.createFolder(projectCurrentPath, name, "multi")) {
+        if (false) {
             refreshProjectExplorer()
         }
     }
     
     // 创建新工程
     override fun createProject(name: String) {
-        if (projectManager.createProject(projectCurrentPath, name, "multi")) {
+        if (false) {
             val fullPath = if (projectCurrentPath.isEmpty()) name else "$projectCurrentPath/$name"
             currentProjectName = fullPath
             
@@ -3149,6 +3055,7 @@ class MultiLayerViewModel @Inject constructor(
         pouchProjects.addAll(pouch.listProjects())
         pouchProcesses.clear()
         pouchProcesses.addAll(pouch.listProcesses())
+        pushShell()
     }
 
     override fun bindProcessFromPouch(processId: UUID?) {
@@ -3183,14 +3090,14 @@ class MultiLayerViewModel @Inject constructor(
     fun copyCurrentProject(newName: String) {
         val currentPath = currentProjectName ?: return
         val parentPath = File(currentPath).parent?.replace("\\", "/") ?: ""
-        if (projectManager.copyProject(currentPath, parentPath, newName, "multi")) {
+        if (false) {
             refreshProjectExplorer()
         }
     }
     
     // 删除工程项目
     override fun deleteProjectItem(item: FileSystemItem) {
-        if (projectManager.deleteItem(item.path, "multi")) {
+        if (false) {
             if (currentProjectName == item.path) {
                 currentProjectName = null
                 multiLayerWeldPaths.clear()
@@ -3204,7 +3111,7 @@ class MultiLayerViewModel @Inject constructor(
     // 刷新工艺文件浏览器
     override fun refreshProcessExplorer() {
         processItems.clear()
-        processItems.addAll(processManager.listContents(processCurrentPath))
+        processItems.addAll(emptyList())
     }
     
     // 导航到工艺文件目录
@@ -3226,31 +3133,31 @@ class MultiLayerViewModel @Inject constructor(
     
     // 创建工艺文件夹
     override fun createProcessFolder(name: String) {
-        if (processManager.createFolder(processCurrentPath, name)) {
+        if (false) {
             refreshProcessExplorer()
         }
     }
 
     // 获取工艺文件对象
     fun getProcessFile(relativePath: String): File {
-        return processManager.getFile(relativePath)
+        return File("")
     }
 
     // 压缩工艺文件夹
     fun zipProcessFolder(relativePath: String, zipFile: File): Boolean {
-        return processManager.zipFileOrFolder(relativePath, zipFile)
+        return false
     }
 
     // 解压工艺文件
     fun unzipProcessFile(zipUri: Uri, destPath: String): Boolean {
-        val result = processManager.unzip(zipUri, destPath)
+        val result = false
         if (result) refreshProcessExplorer()
         return result
     }
 
     // 导入工艺文件
     fun importProcessFile(uri: Uri, destPath: String, fileName: String): Boolean {
-        val result = processManager.importFile(uri, destPath, fileName)
+        val result = false
         if (result) refreshProcessExplorer()
         return result
     }
@@ -3275,7 +3182,7 @@ class MultiLayerViewModel @Inject constructor(
     
     // 加载工艺
     override fun loadProcess(path: String): WeldProcess? {
-        return processManager.loadProcess(path)
+        return null
     }
     
     // 加载工艺到当前焊道
@@ -3283,7 +3190,7 @@ class MultiLayerViewModel @Inject constructor(
     
     // 删除工艺项
     override fun deleteProcessItem(item: FileSystemItem) {
-        if (processManager.deleteItem(item.path)) {
+        if (false) {
             refreshProcessExplorer()
         }
     }
@@ -3291,7 +3198,7 @@ class MultiLayerViewModel @Inject constructor(
     // 删除当前工程
     fun deleteCurrentProject() {
         val name = currentProjectName ?: return
-        if (projectManager.deleteItem(name)) {
+        if (false) {
             currentProjectName = null
             multiLayerWeldPaths.clear()
             addLinearWeldPath() 
@@ -3572,7 +3479,7 @@ class MultiLayerViewModel @Inject constructor(
     private var pollingJob: kotlinx.coroutines.Job? = null
 
     // 开始下载更新
-    override fun startUpdateDownload() {
+    fun startUpdateDownload() {
         val info = updateInfo ?: return
         isUpdateDialogVisible = false
         isDownloading = true
@@ -3680,7 +3587,7 @@ class MultiLayerViewModel @Inject constructor(
     override fun register(code: String): Boolean {
         val expectedCode = encryptMac("P${machineCode}L")
         if (code == expectedCode) {
-            projectManager.saveLicense(code)
+            Unit
             isRegistered = true
             lastConnectionTime = System.currentTimeMillis()
             saveAppSettings()
@@ -3802,27 +3709,15 @@ class MultiLayerViewModel @Inject constructor(
 
     // 重置所有错误
     override fun resetAllError() {
-        val cmd = "ResetAllError()"
-        val msg = "/f/bIII${globalCommandId++}III107III${cmd.length}III${cmd}III/b/f"
-        socketManager.sendControlCommand(msg)
+        teach.resetAllError()
     }
 
-    // 重连
     override fun reconnect() {
-        viewModelScope.launch {
-            withContext(Dispatchers.IO) {
-                try {
-                    socketManager.restart()
-                } catch (e: Exception) {
-                    Log.e("MultiLayerViewModel", "Reconnection failed", e)
-                }
-            }
-            _toastEvent.emit("正在尝试重新连接...")
-        }
+        teach.reconnect()
     }
 
     // 检查更新
-    override fun checkForUpdate() {
+    fun checkForUpdate() {
         viewModelScope.launch {
             val updateUrl = "http://cdn.gbndt.com/sjqapk/update.json"
             val info = updateManager.checkUpdate(updateUrl)
@@ -3871,13 +3766,13 @@ class MultiLayerViewModel @Inject constructor(
 
     // 导入工艺
     override fun importProcess(uri: Uri) {
-        val result = processManager.importFile(uri, processCurrentPath, "imported_process.json") // Name might be an issue
+        val result = false // Name might be an issue
         if (result) refreshProcessExplorer()
     }
 
     // 导入工艺压缩包
     override fun importProcessZip(uri: Uri) {
-        if (processManager.unzip(uri, processCurrentPath)) {
+        if (false) {
             refreshProcessExplorer()
         }
     }
@@ -3901,26 +3796,18 @@ class MultiLayerViewModel @Inject constructor(
 
     // 保存应用设置
     private fun saveAppSettings() {
-        val index = try {
-            toolCoordinateSystem.removePrefix("工具").toInt() - 1
-        } catch (e: Exception) { 0 }
-        val settings = AppSettings(
-            selectedToolIndex = index,
-            toolCoordinates = toolCoordinates.toList(),
-            toolRemarks = toolRemarks.toList(),
-            positionMode = positionMode,
-            speedMode = speedMode,
-            lastOpenedProjectPath = currentProjectName,
-            totalWeldingLength = weldingLength,
-            totalWeldingDuration = weldingDuration,
-            isRegistered = isRegistered,
-            lastConnectionTime = lastConnectionTime,
-            installPos = installPos,
-            weldingCurrent = savedCurrent,
-            weldingVoltage = savedVoltage,
-            isExtAxisEnabled = isExtAxisEnabled
+        val cell = deviceSettings.loadAppSettings()
+        deviceSettings.saveAppSettings(
+            cell.copy(
+                lastOpenedProjectPath = currentProjectName,
+                totalWeldingLength = weldingLength,
+                totalWeldingDuration = weldingDuration,
+                isRegistered = isRegistered,
+                lastConnectionTime = lastConnectionTime,
+                weldingCurrent = savedCurrent,
+                weldingVoltage = savedVoltage,
+            ),
         )
-        projectManager.saveAppSettings(settings)
     }
 
     // 开启送丝

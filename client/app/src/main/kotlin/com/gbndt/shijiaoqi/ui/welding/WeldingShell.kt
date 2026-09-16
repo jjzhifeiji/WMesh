@@ -23,7 +23,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import android.widget.Toast
 import com.gbndt.shijiaoqi.data.repository.SessionRepository
 import com.gbndt.shijiaoqi.ui.component.CustomStatusBar
-import com.gbndt.shijiaoqi.ui.component.UpdateDialog
+import com.gbndt.shijiaoqi.ui.navigation.LocalTeach
 import com.gbndt.shijiaoqi.ui.navigation.LocalWeldInput
 import com.gbndt.shijiaoqi.ui.project.PouchProcessScreen
 import com.gbndt.shijiaoqi.ui.project.PouchProjectScreen
@@ -37,59 +37,72 @@ sealed class WeldPage {
 
 /**
  * 三个焊接模式共用的外壳：状态栏、工具与姿态对话框、工程/工艺子屏、
- * 升级弹窗、点动红框，以及登录后的设备号匹配。模式自己只画焊道那一块。
+ * 点动红框，以及登录后的设备号匹配。模式自己只画焊道那一块。
  */
 @Composable
 fun WeldingShell(
-    viewModel: WeldViewModelInterface,
+    host: WeldShellHost,
+    pad: WeldPad,
     session: SessionRepository,
     onExit: () -> Unit,
     content: @Composable (onProject: () -> Unit, onProcess: (Boolean) -> Unit) -> Unit,
 ) {
     val context = LocalContext.current
     val sessionState by session.state.collectAsStateWithLifecycle()
+    val teach = LocalTeach.current
+    val teachUi by teach.uiState.collectAsStateWithLifecycle()
+    val shell by host.shellUi.collectAsStateWithLifecycle()
     var page by remember { mutableStateOf<WeldPage>(WeldPage.Path) }
 
-    // 手柄按键由 Activity 收，转给当前在屏的这个 ViewModel
     val register = LocalWeldInput.current
-    DisposableEffect(viewModel) {
-        register(viewModel)
+    DisposableEffect(pad) {
+        register(pad)
         onDispose { register(null) }
     }
 
-    LaunchedEffect(viewModel) {
-        viewModel.toastEvent.collect { message ->
+    LaunchedEffect(host) {
+        host.toastEvent.collect { message ->
             Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
         }
     }
 
-    // 读到机械臂识别号后才匹配本机，匹配过再按本机袋装工程
-    LaunchedEffect(viewModel.machineCode, sessionState.loggedIn) {
-        session.setDeviceSerial(viewModel.machineCode)
-        if (sessionState.loggedIn && viewModel.machineCode.isNotBlank()) {
-            runCatching { session.matchArm(viewModel.machineCode) }
+    LaunchedEffect(teachUi.machineCode, sessionState.loggedIn) {
+        session.setDeviceSerial(teachUi.machineCode)
+        if (sessionState.loggedIn && teachUi.machineCode.isNotBlank()) {
+            runCatching { session.matchArm(teach.machineCode) }
                 .onFailure {
                     Toast.makeText(context, session.state.value.error ?: it.message ?: "设备不匹配", Toast.LENGTH_SHORT).show()
                 }
-            viewModel.syncFromPouch()
+            host.syncFromPouch()
         }
     }
     LaunchedEffect(sessionState.loggedIn, sessionState.armMatched) {
-        if (sessionState.loggedIn) viewModel.syncFromPouch()
+        if (sessionState.loggedIn) host.syncFromPouch()
     }
 
     if (sessionState.loggedIn) {
-        ToolListDialog(viewModel = viewModel, onDismiss = { viewModel.isToolListDialogVisible = false })
-        ToolEditDialog(viewModel = viewModel)
-        PositionSelectionDialog(viewModel = viewModel, onDismiss = { viewModel.isPositionDialogVisible = false })
-        SpeedSelectionDialog(viewModel = viewModel, onDismiss = { viewModel.isSpeedDialogVisible = false })
-        InstallPosSelectionDialog(viewModel = viewModel, onDismiss = { viewModel.isInstallPosDialogVisible = false })
+        if (teachUi.isToolListDialogVisible) {
+            ToolListDialog(teach = teach, onDismiss = { teach.isToolListDialogVisible = false })
+        }
+        if (teachUi.isToolEditDialogVisible) {
+            ToolEditDialog(teach = teach)
+        }
+        if (teachUi.isPositionDialogVisible) {
+            PositionSelectionDialog(teach = teach, onDismiss = { teach.isPositionDialogVisible = false })
+        }
+        if (teachUi.isSpeedDialogVisible) {
+            SpeedSelectionDialog(teach = teach, onDismiss = { teach.isSpeedDialogVisible = false })
+        }
+        if (teachUi.isInstallPosDialogVisible) {
+            InstallPosSelectionDialog(teach = teach, onDismiss = { teach.isInstallPosDialogVisible = false })
+        }
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
         Column(modifier = Modifier.fillMaxSize()) {
             CustomStatusBar(
-                viewModel = viewModel,
+                teach = teach,
+                host = host,
                 onProjectClick = { page = WeldPage.Project },
             )
             Box(modifier = Modifier.weight(1f)) {
@@ -104,10 +117,10 @@ fun WeldingShell(
 
                     is WeldPage.Project -> {
                         PouchProjectScreen(
-                            projects = viewModel.pouchProjects,
-                            onRefresh = { viewModel.refreshPouchLists() },
+                            projects = shell.pouchProjects,
+                            onRefresh = { host.refreshPouchLists() },
                             onOpen = {
-                                viewModel.activatePouchProject(it)
+                                host.activatePouchProject(it)
                                 page = WeldPage.Path
                             },
                             onBack = { page = WeldPage.Path },
@@ -116,15 +129,15 @@ fun WeldingShell(
 
                     is WeldPage.Process -> {
                         PouchProcessScreen(
-                            processes = viewModel.pouchProcesses,
+                            processes = shell.pouchProcesses,
                             picking = current.picking,
-                            onRefresh = { viewModel.refreshPouchLists() },
+                            onRefresh = { host.refreshPouchLists() },
                             onPick = { id ->
-                                if (current.picking) viewModel.bindProcessFromPouch(id)
+                                if (current.picking) host.bindProcessFromPouch(id)
                                 page = WeldPage.Path
                             },
                             onBack = {
-                                viewModel.cancelAddProcessVariant()
+                                host.cancelAddProcessVariant()
                                 page = WeldPage.Path
                             },
                         )
@@ -133,18 +146,8 @@ fun WeldingShell(
             }
         }
 
-        viewModel.updateInfo?.let { info ->
-            if (viewModel.isUpdateDialogVisible) {
-                UpdateDialog(
-                    updateInfo = info,
-                    onConfirm = { viewModel.startUpdateDownload() },
-                    onDismiss = { viewModel.isUpdateDialogVisible = false },
-                )
-            }
-        }
-
         // 点动中整屏红框
-        if (viewModel.isControllerActive) {
+        if (teachUi.isControllerActive) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()

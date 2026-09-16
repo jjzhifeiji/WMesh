@@ -2,7 +2,7 @@ package com.gbndt.shijiaoqi.di
 
 import android.content.Context
 import com.gbndt.shijiaoqi.data.db.RoomEnvelopeStore
-import com.gbndt.shijiaoqi.data.prefs.PrefsIdentity
+import com.gbndt.shijiaoqi.data.prefs.DeviceSettingsStore
 import com.gbndt.shijiaoqi.data.remote.DownChannel
 import com.gbndt.shijiaoqi.data.remote.HttpFactoryGateway
 import com.gbndt.shijiaoqi.data.remote.MqttDownChannel
@@ -37,7 +37,7 @@ object AppModule {
 
     @Provides
     @Singleton
-    fun provideIdentityStore(@ApplicationContext context: Context): IdentityStore = PrefsIdentity(context)
+    fun provideIdentityStore(settings: DeviceSettingsStore): IdentityStore = settings
 
     @Provides
     @Singleton

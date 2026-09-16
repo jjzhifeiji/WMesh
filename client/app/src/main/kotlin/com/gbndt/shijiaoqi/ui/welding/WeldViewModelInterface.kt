@@ -1,17 +1,13 @@
 package com.gbndt.shijiaoqi.ui.welding
 
 import com.gbndt.shijiaoqi.model.Pose
-import com.gbndt.shijiaoqi.domain.weld.ProcessChoice
-import com.gbndt.shijiaoqi.domain.weld.ProjectChoice
 import androidx.compose.runtime.snapshots.SnapshotStateList
-import kotlinx.coroutines.flow.SharedFlow
-import java.util.UUID
 
-interface WeldViewModelInterface {
+interface WeldViewModelInterface : WeldPad, WeldShellHost {
     // Tool Dialogs
     var isToolListDialogVisible: Boolean
-    val toolCoordinates: SnapshotStateList<Pose?>
-    val toolRemarks: SnapshotStateList<String>
+    val toolCoordinates: List<Pose?>
+    val toolRemarks: List<String>
     var toolCoordinateSystem: String
     fun selectTool(index: Int)
     fun openToolEdit(index: Int)
@@ -45,9 +41,6 @@ interface WeldViewModelInterface {
     var operationPosition: Pose
     fun toggleControllerActive()
     fun stopControllerActive()
-    
-    // Project Info
-    var currentProjectName: String?
     
     // Project Explorer Interface
     var projectCurrentPath: String
@@ -90,30 +83,18 @@ interface WeldViewModelInterface {
     var isExtAxisEnabled: Boolean // 外部轴切换开关
     fun toggleExtAxisEnabled()
 
-    // Update
-    var isUpdateDialogVisible: Boolean
-    var updateInfo: com.gbndt.shijiaoqi.model.UpdateInfo?
-    fun startUpdateDownload()
-    fun checkForUpdate()
-
     // Control
     fun sendManualCommand(type: Int, command: String)
 
     // Stats & Actions
     var weldingLength: Double
     var weldingDuration: Long
-    var weldingBreakOffState: String
-    var weldArcState: String
     fun clearStats()
     fun resetAllError()
     fun reconnect()
 
-    // Welding Operations
-    fun startSimulation()
-    fun startArcWelding()
     fun pauseWelding()
     fun continueWelding()
-    fun stopWelding(force: Boolean = false)
 
     // Robot Error Dialog
     var isRobotErrorDialogVisible: Boolean
@@ -134,19 +115,4 @@ interface WeldViewModelInterface {
     var btnL1: Boolean
     var btnL2: Boolean
     var btnR2: Boolean
-    fun collectData()
-    fun sendMoveLCommand()
-
-    // 本机袋：工程/工艺列表与激活，三个模式共用一套外壳
-    val pouchProjects: SnapshotStateList<ProjectChoice>
-    val pouchProcesses: SnapshotStateList<ProcessChoice>
-    fun refreshPouchLists()
-    fun activatePouchProject(id: UUID)
-    fun bindProcessFromPouch(processId: UUID?)
-    /** 取消挑工艺；多层没有附加工艺槽，默认什么都不做 */
-    fun cancelAddProcessVariant() {}
-    fun syncFromPouch()
-
-    /** 一次性提示，界面收了就弹 */
-    val toastEvent: SharedFlow<String>
 }

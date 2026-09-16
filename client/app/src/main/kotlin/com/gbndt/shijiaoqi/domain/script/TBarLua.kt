@@ -2,6 +2,8 @@ package com.gbndt.shijiaoqi.domain.script
 
 import com.gbndt.shijiaoqi.model.GapBand
 import com.gbndt.shijiaoqi.model.Pose
+import com.gbndt.shijiaoqi.model.WeldPoint
+import com.gbndt.shijiaoqi.model.WeldPointType
 import com.gbndt.shijiaoqi.model.WeldProcess
 import com.gbndt.shijiaoqi.domain.weld.TBarPass
 import java.util.Locale
@@ -33,7 +35,21 @@ data class TBarLine(
     val text: String,
     val point: TBarPoint? = null,
     val withId: Boolean = true,
+    val pathIndex: Int = -1, // 界面焊道
 )
+
+/** 转成统一行；点号按焊道里该类型的下标。 */
+fun TBarLine.toLuaLine(points: List<WeldPoint> = emptyList()): LuaLine {
+    val type = when (point) {
+        TBarPoint.START_SAFE -> WeldPointType.START_SAFE
+        TBarPoint.START -> WeldPointType.START
+        TBarPoint.END -> WeldPointType.END
+        TBarPoint.END_SAFE -> WeldPointType.END_SAFE
+        null -> null
+    }
+    val idx = if (type == null) -1 else points.indexOfFirst { it.type == type }
+    return LuaLine(text, withId, pathIndex, idx)
+}
 
 /** T 排 Lua：起安 → 打底 → 空走回起点 → 盖面 → 终安；段切换 WeaveOnlineSetPara。 */
 object TBarLua {
@@ -47,10 +63,12 @@ object TBarLua {
         speedMode: String = "1倍",
         toolIndex: Int = 1,
         extAxis: Boolean = false,
+        resume: StopResume? = null,
     ): List<TBarLine> {
         val out = mutableListOf(TBarLine(GLOBAL_SPEED))
         val isWeld = welding && !simulating
-        for (path in paths) {
+        for ((pathIndex, path) in paths.withIndex()) {
+            if (resume != null && resume.pathIndex >= 0 && pathIndex < resume.pathIndex) continue
             if (!path.enabled) continue
             val root = TBarRun.buildSegments(
                 path.aLower, path.bLower, path.aUpper, path.bUpper,
@@ -63,13 +81,23 @@ object TBarLua {
             if (root.isEmpty() || cap.isEmpty()) {
                 throw IllegalStateException("未能生成打底/盖面焊接段")
             }
-            out += taughtMoveL(path.startSafe, 100, toolIndex, extAxis, TBarPoint.START_SAFE)
-            out += passLines(root, processes, isWeld, simulating, speedMode, toolIndex, extAxis, returnToStart = true)
-            out += passLines(cap, processes, isWeld, simulating, speedMode, toolIndex, extAxis, returnToStart = false)
-            out += taughtMoveL(path.endSafe, 100, toolIndex, extAxis, TBarPoint.END_SAFE)
+            val here = resume?.takeIf { it.pathIndex == pathIndex && it.joints.size >= 6 }
+            if (here != null) {
+                out += taughtMoveL(
+                    ScriptPoint(WeldPointType.START, here.pose, here.joints),
+                    100, toolIndex, extAxis, TBarPoint.START,
+                ).onPath(pathIndex)
+            } else {
+                out += taughtMoveL(path.startSafe, 100, toolIndex, extAxis, TBarPoint.START_SAFE).onPath(pathIndex)
+            }
+            out += passLines(root, processes, isWeld, simulating, speedMode, toolIndex, extAxis, returnToStart = true).onPath(pathIndex)
+            out += passLines(cap, processes, isWeld, simulating, speedMode, toolIndex, extAxis, returnToStart = false).onPath(pathIndex)
+            out += taughtMoveL(path.endSafe, 100, toolIndex, extAxis, TBarPoint.END_SAFE).onPath(pathIndex)
         }
         return out
     }
+
+    private fun List<TBarLine>.onPath(pathIndex: Int) = map { it.copy(pathIndex = pathIndex) }
 
     fun passLines(
         segments: List<TBarSeg>,

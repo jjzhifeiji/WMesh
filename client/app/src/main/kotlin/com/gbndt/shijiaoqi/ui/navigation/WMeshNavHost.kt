@@ -1,87 +1,89 @@
 package com.gbndt.shijiaoqi.ui.navigation
 
+import androidx.compose.foundation.layout.Box
 import androidx.compose.runtime.Composable
-import androidx.hilt.navigation.compose.hiltViewModel
-import androidx.navigation.NavHostController
-import androidx.navigation.compose.NavHost
-import androidx.navigation.compose.composable
-import androidx.navigation.compose.rememberNavController
+import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
+import androidx.lifecycle.viewmodel.navigation3.rememberViewModelStoreNavEntryDecorator
+import androidx.navigation3.runtime.NavBackStack
+import androidx.navigation3.runtime.NavKey
+import androidx.navigation3.runtime.entryProvider
+import androidx.navigation3.runtime.rememberNavBackStack
+import androidx.navigation3.runtime.rememberSaveableStateHolderNavEntryDecorator
+import androidx.navigation3.ui.NavDisplay
 import com.gbndt.shijiaoqi.data.repository.SessionRepository
 import com.gbndt.shijiaoqi.ui.login.SplashScreen
 import com.gbndt.shijiaoqi.ui.robottest.RobotTestScreen
 import com.gbndt.shijiaoqi.ui.robottest.RobotTestViewModel
+import com.gbndt.shijiaoqi.ui.update.AppUpdateHost
+import com.gbndt.shijiaoqi.ui.update.AppUpdateViewModel
 import com.gbndt.shijiaoqi.ui.welding.WeldingShell
 import com.gbndt.shijiaoqi.ui.welding.multilayer.MultiLayerScreen
-import com.gbndt.shijiaoqi.ui.welding.multilayer.MultiLayerViewModel
+import com.gbndt.shijiaoqi.ui.welding.multilayer.MultiLayerWeldViewModel
+import com.gbndt.shijiaoqi.ui.welding.single.SingleWeldViewModel
 import com.gbndt.shijiaoqi.ui.welding.single.WeldPathScreen
-import com.gbndt.shijiaoqi.ui.welding.single.WeldPathViewModel
 import com.gbndt.shijiaoqi.ui.welding.tbar.TBarScreen
-import com.gbndt.shijiaoqi.ui.welding.tbar.TBarViewModel
+import com.gbndt.shijiaoqi.ui.welding.tbar.TBarWeldViewModel
 
-/** 顶层去处；焊接屏内部的工程/工艺子页仍由 WeldingShell 自己管。 */
-object Route {
-    const val SPLASH = "splash"
-    const val MODE = "mode"
-    const val SINGLE = "weld/single"
-    const val MULTILAYER = "weld/multilayer"
-    const val TBAR = "weld/tbar"
-    const val ROBOT_TEST = "robot-test"
-}
-
-/** 一个 Activity 一张图：开屏 → 选模式 → 三种焊接或指令测试。 */
+/** 一个 Activity 一张栈：开屏 → 选模式 → 三种焊接或指令测试。 */
 @Composable
 fun WMeshNavHost(
     session: SessionRepository,
     onSplashFinished: () -> Unit,
-    navController: NavHostController = rememberNavController(),
+    backStack: NavBackStack<NavKey> = rememberNavBackStack(SplashKey),
 ) {
-    NavHost(navController = navController, startDestination = Route.SPLASH) {
-        composable(Route.SPLASH) {
-            SplashScreen(
-                onSplashFinished = {
-                    onSplashFinished()
-                    navController.navigate(Route.MODE) {
-                        popUpTo(Route.SPLASH) { inclusive = true }
+    val update: AppUpdateViewModel = hiltViewModel()
+    Box {
+        NavDisplay(
+            backStack = backStack,
+            onBack = { if (backStack.size > 1) backStack.removeLastOrNull() },
+            entryDecorators = listOf(
+                rememberSaveableStateHolderNavEntryDecorator(),
+                rememberViewModelStoreNavEntryDecorator(),
+            ),
+            entryProvider = entryProvider {
+                entry<SplashKey> {
+                    SplashScreen(
+                        onSplashFinished = {
+                            onSplashFinished()
+                            backStack.clear()
+                            backStack.add(ModeKey)
+                        },
+                    )
+                }
+                entry<ModeKey> {
+                    ModeSelectionScreen(
+                        onSingleLayerClick = { backStack.add(SingleWeldKey) },
+                        onMultiLayerClick = { backStack.add(MultiLayerKey) },
+                        onTBarClick = { backStack.add(TBarKey) },
+                        onRobotTestClick = { backStack.add(RobotTestKey) },
+                    )
+                }
+                entry<SingleWeldKey> {
+                    val vm: SingleWeldViewModel = hiltViewModel()
+                    WeldingShell(vm, vm, session, onExit = { backStack.removeLastOrNull() }) { onProject, onProcess ->
+                        WeldPathScreen(vm, onProject, onProcess, onCheckUpdate = update::check)
                     }
-                },
-            )
-        }
-
-        composable(Route.MODE) {
-            ModeSelectionScreen(
-                onSingleLayerClick = { navController.navigate(Route.SINGLE) },
-                onMultiLayerClick = { navController.navigate(Route.MULTILAYER) },
-                onTBarClick = { navController.navigate(Route.TBAR) },
-                onRobotTestClick = { navController.navigate(Route.ROBOT_TEST) },
-            )
-        }
-
-        composable(Route.SINGLE) {
-            val vm: WeldPathViewModel = hiltViewModel()
-            WeldingShell(vm, session, onExit = { navController.popBackStack() }) { onProject, onProcess ->
-                WeldPathScreen(vm, onProject, onProcess)
-            }
-        }
-
-        composable(Route.MULTILAYER) {
-            val vm: MultiLayerViewModel = hiltViewModel()
-            WeldingShell(vm, session, onExit = { navController.popBackStack() }) { onProject, onProcess ->
-                MultiLayerScreen(vm, onProject, onProcess)
-            }
-        }
-
-        composable(Route.TBAR) {
-            val vm: TBarViewModel = hiltViewModel()
-            WeldingShell(vm, session, onExit = { navController.popBackStack() }) { onProject, onProcess ->
-                TBarScreen(vm, onProject, onProcess)
-            }
-        }
-
-        composable(Route.ROBOT_TEST) {
-            RobotTestScreen(
-                viewModel = hiltViewModel<RobotTestViewModel>(),
-                onBack = { navController.popBackStack() },
-            )
-        }
+                }
+                entry<MultiLayerKey> {
+                    val vm: MultiLayerWeldViewModel = hiltViewModel()
+                    WeldingShell(vm, vm, session, onExit = { backStack.removeLastOrNull() }) { onProject, onProcess ->
+                        MultiLayerScreen(vm, onProject, onProcess, onCheckUpdate = update::check)
+                    }
+                }
+                entry<TBarKey> {
+                    val vm: TBarWeldViewModel = hiltViewModel()
+                    WeldingShell(vm, vm, session, onExit = { backStack.removeLastOrNull() }) { onProject, onProcess ->
+                        TBarScreen(vm, onProject, onProcess, onCheckUpdate = update::check)
+                    }
+                }
+                entry<RobotTestKey> {
+                    RobotTestScreen(
+                        viewModel = hiltViewModel<RobotTestViewModel>(),
+                        onBack = { backStack.removeLastOrNull() },
+                    )
+                }
+            },
+        )
+        AppUpdateHost(update)
     }
 }

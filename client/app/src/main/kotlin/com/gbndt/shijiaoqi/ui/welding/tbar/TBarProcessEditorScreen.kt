@@ -39,7 +39,7 @@ import com.gbndt.shijiaoqi.ui.welding.*
 
 @Composable
 fun TBarProcessEditorScreen(
-    viewModel: TBarViewModel,
+    viewModel: TBarWeldViewModel,
     onBack: () -> Unit,
 ) {
     BackHandler { onBack() }

@@ -1,6 +1,5 @@
 package com.gbndt.shijiaoqi.data.repository
 
-import com.gbndt.shijiaoqi.data.pouch.Pouch
 import com.gbndt.shijiaoqi.model.FactoryOffer
 import com.gbndt.shijiaoqi.data.session.BagSession
 import com.gbndt.shijiaoqi.data.session.DeviceSerialHolder
@@ -20,11 +19,6 @@ class SessionRepository @Inject constructor(
     private val io: CoroutineDispatcher,
 ) {
     val state: StateFlow<SessionState> = session.state
-
-    /** 过渡出口：本机袋仍被焊接界面直接读，随 UiState 改造再收进来。 */
-    val pouch: Pouch get() = session.pouch
-
-    val bag: BagSession get() = session
 
     fun savedUrl(): String = session.savedUrl()
     fun savedFactoryId(): String = session.savedFactoryId()

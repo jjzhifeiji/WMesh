@@ -1,3 +1,5 @@
+@file:Suppress("DEPRECATION")
+
 package com.gbndt.shijiaoqi.ui.welding
 
 import androidx.compose.foundation.background
@@ -18,13 +20,13 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
-import com.gbndt.shijiaoqi.ui.welding.single.WeldPathViewModel
+import com.gbndt.shijiaoqi.ui.welding.single.SingleWeldViewModel
 import com.gbndt.shijiaoqi.ui.project.ClosureProcessPicker
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CornerWeldDialog(
-    viewModel: WeldPathViewModel,
+    viewModel: SingleWeldViewModel,
     initialParams: com.gbndt.shijiaoqi.model.CornerGroupParams? = null,
     onDismiss: () -> Unit
 ) {

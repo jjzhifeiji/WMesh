@@ -1,11 +1,6 @@
 package com.gbndt.shijiaoqi
 
-import android.content.Intent
-import android.net.Uri
-import android.os.Build
 import android.os.Bundle
-import android.os.Environment
-import android.provider.Settings
 import android.util.Log
 import android.view.InputDevice
 import android.view.KeyEvent
@@ -34,18 +29,23 @@ import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.launch
 import com.gbndt.shijiaoqi.data.repository.SessionRepository
 import com.gbndt.shijiaoqi.ui.login.LoginGate
+import com.gbndt.shijiaoqi.ui.navigation.LocalTeach
 import com.gbndt.shijiaoqi.ui.navigation.LocalWeldInput
 import com.gbndt.shijiaoqi.ui.navigation.WMeshNavHost
+import com.gbndt.shijiaoqi.ui.teach.TeachSession
 import com.gbndt.shijiaoqi.ui.theme.ShiJiaoQiTheme
-import com.gbndt.shijiaoqi.ui.welding.WeldViewModelInterface
+import com.gbndt.shijiaoqi.ui.welding.WeldPad
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
 
-/** 唯一的 Activity：权限、全屏、手柄按键，其余都交给导航图。 */
+/** 唯一的 Activity：全屏、手柄按键，其余都交给导航图。 */
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
     @Inject
     lateinit var sessionRepository: SessionRepository
+
+    @Inject
+    lateinit var teachSession: TeachSession
 
     var joy_X1: Float = 0f
     var joy_Y1: Float = 0f
@@ -91,30 +91,27 @@ class MainActivity : ComponentActivity() {
     private val longPressBR1Runnable = Runnable {
         if (activeWeld != null && 按钮R1 == 1) {
             Log.d("GameController", "Long Press B + R1 - Arc Welding")
-            activeWeld?.stopControllerActive()
+            teachSession.stopController()
             activeWeld?.startArcWelding()
         }
     }
 
-    /** 当前在屏的焊接 ViewModel；手柄按键只发给它。 */
+    /** 当前在屏的焊接手柄口。 */
     @Volatile
-    var activeWeld: WeldViewModelInterface? = null
+    var activeWeld: WeldPad? = null
 
     private fun updateViewModelInput() {
-        if (activeWeld != null) {
-            activeWeld?.joyX1 = joy_X1
-            activeWeld?.joyY1 = joy_Y1
-            activeWeld?.joyX2 = joy_X2
-            activeWeld?.joyY2 = joy_Y2
-            
-            activeWeld?.btnUp = 按钮上 == 1
-            activeWeld?.btnDown = 按钮下 == 1
-            activeWeld?.btnLeft = 按钮左 == 1
-            activeWeld?.btnRight = 按钮右 == 1
-            activeWeld?.btnL1 = 按钮L1 == 1
-            activeWeld?.btnL2 = 按钮L2 == 1
-            activeWeld?.btnR2 = 按钮R2 == 1
-        }
+        teachSession.joyX1 = joy_X1
+        teachSession.joyY1 = joy_Y1
+        teachSession.joyX2 = joy_X2
+        teachSession.joyY2 = joy_Y2
+        teachSession.btnUp = 按钮上 == 1
+        teachSession.btnDown = 按钮下 == 1
+        teachSession.btnLeft = 按钮左 == 1
+        teachSession.btnRight = 按钮右 == 1
+        teachSession.btnL1 = 按钮L1 == 1
+        teachSession.btnL2 = 按钮L2 == 1
+        teachSession.btnR2 = 按钮R2 == 1
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
@@ -181,19 +178,15 @@ class MainActivity : ComponentActivity() {
                         KeyEvent.KEYCODE_BUTTON_START -> { 
                             按钮Start = 1
                             buttonName = "Start"
-                            if (activeWeld != null) {
-                                activeWeld?.toggleControllerActive()
-                            }
+                            teachSession.toggleController()
                         }
                         KeyEvent.KEYCODE_BUTTON_SELECT -> {
                             按钮Select = 1
                             buttonName = "Select"
-                            if (activeWeld != null) {
-                                this@MainActivity.lifecycleScope.launch {
-                                    activeWeld?.sendManualCommand(303, "Mode(1)")
-                                    kotlinx.coroutines.delay(50)
-                                    activeWeld?.sendManualCommand(302, "RobotEnable(1)")
-                                }
+                            this@MainActivity.lifecycleScope.launch {
+                                teachSession.sendManualCommand(303, "Mode(1)")
+                                kotlinx.coroutines.delay(50)
+                                teachSession.sendManualCommand(302, "RobotEnable(1)")
                             }
                         }
                         KeyEvent.KEYCODE_BUTTON_THUMBR -> { 按钮THUMBR = 1; buttonName = "ThumbR" }
@@ -330,30 +323,6 @@ class MainActivity : ComponentActivity() {
         
         // Keep screen on
         window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        
-        // Request Storage Permissions
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            if (!Environment.isExternalStorageManager()) {
-                try {
-                    val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
-                    intent.addCategory("android.intent.category.DEFAULT")
-                    intent.data = Uri.parse("package:$packageName")
-                    startActivity(intent)
-                } catch (e: Exception) {
-                    val intent = Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)
-                    startActivity(intent)
-                }
-            }
-        } else {
-            if (checkSelfPermission(android.Manifest.permission.WRITE_EXTERNAL_STORAGE) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
-                requestPermissions(
-                    arrayOf(
-                        android.Manifest.permission.WRITE_EXTERNAL_STORAGE,
-                        android.Manifest.permission.READ_EXTERNAL_STORAGE
-                    ), 1001
-                )
-            }
-        }
 
         // 全屏、隐藏系统栏
         WindowCompat.setDecorFitsSystemWindows(window, false)
@@ -366,10 +335,13 @@ class MainActivity : ComponentActivity() {
                 Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
                     val session by sessionRepository.state.collectAsStateWithLifecycle()
                     var splashDone by remember { mutableStateOf(false) }
-                    val register = remember { { vm: WeldViewModelInterface? -> activeWeld = vm } }
+                    val register = remember { { pad: WeldPad? -> activeWeld = pad } }
 
                     Box(modifier = Modifier.fillMaxSize()) {
-                        CompositionLocalProvider(LocalWeldInput provides register) {
+                        CompositionLocalProvider(
+                            LocalWeldInput provides register,
+                            LocalTeach provides teachSession,
+                        ) {
                             WMeshNavHost(
                                 session = sessionRepository,
                                 onSplashFinished = { splashDone = true },

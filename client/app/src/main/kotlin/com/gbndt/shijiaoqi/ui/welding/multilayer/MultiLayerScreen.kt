@@ -48,18 +48,23 @@ import kotlin.math.roundToInt
 import androidx.compose.ui.platform.LocalViewConfiguration
 import androidx.compose.ui.text.input.KeyboardType
 import com.gbndt.shijiaoqi.ui.welding.*
+import com.gbndt.shijiaoqi.ui.navigation.LocalTeach
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun MultiLayerScreen(
-    viewModel: MultiLayerViewModel,
+    viewModel: MultiLayerWeldViewModel,
     onNavigateToProjectManagement: () -> Unit,
-    onNavigateToProcessManagement: (Boolean) -> Unit
+    onNavigateToProcessManagement: (Boolean) -> Unit,
+    onCheckUpdate: () -> Unit,
 ) {
     var showDeleteDialog by remember { mutableStateOf(false) }
     var show3DViewer by remember { mutableStateOf(false) }
     var weldPathToDeleteIndex by remember { mutableStateOf(-1) }
     var showProcessPicker by remember { mutableStateOf(false) }
+    val teach = LocalTeach.current
+    val ui by viewModel.uiState.collectAsStateWithLifecycle()
 
     if (show3DViewer) {
         Path3DViewerDialog(
@@ -137,10 +142,8 @@ fun MultiLayerScreen(
                             onSelectPointBase = { pointIndex -> viewModel.selectPoint(index, pointIndex) },
                             onDeletePointBase = { pointIndex -> viewModel.deletePoint(index, pointIndex) },
                             onToggleEnabledBase = { viewModel.toggleWeldPathEnabled(index) },
-                            onToggleEnabledPass = { passIndex -> 
-                                val pass = multiPath.passes[passIndex]
-                                multiPath.passes[passIndex] = pass.copy(isEnabled = !pass.isEnabled)
-                                viewModel.saveCurrentProject()
+                            onToggleEnabledPass = { passIndex ->
+                                viewModel.togglePassEnabled(index, passIndex)
                             },
                             index = index,
                             totalCount = viewModel.multiLayerWeldPaths.size,
@@ -184,9 +187,9 @@ fun MultiLayerScreen(
                     Divider()
 
                     // 2. 模拟与焊接区
-                    if (viewModel.isWelding || viewModel.isSimulating) {
+                    if (ui.run.isWelding || ui.run.isSimulating) {
                         // Welding/Simulation Mode
-                        if (viewModel.isPaused) {
+                        if (ui.run.isPaused) {
                             // Paused: Continue + Stop
                             Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
                                 ActionButton(
@@ -237,7 +240,7 @@ fun MultiLayerScreen(
                                 "起弧焊接", 
                                 onClick = { }, 
                                 onLongClick = {
-                                    viewModel.stopControllerActive()
+                                    teach.stopController()
                                     viewModel.startArcWelding()
                                 },
                                 modifier = Modifier.weight(1f)
@@ -254,7 +257,7 @@ fun MultiLayerScreen(
                             Spacer(modifier = Modifier.height(2.dp))
                             ActionButton(
                                 "伺服使能",
-                                onClick = { viewModel.enableExtAxisServo() },
+                                onClick = { teach.enableExtAxisServo() },
                                 containerColor = Color(0xFF2196F3),
                                 modifier = Modifier.fillMaxWidth()
                             )
@@ -340,8 +343,8 @@ fun MultiLayerScreen(
                     TwoColumnGrid(
                         spacing = 2.dp,
                         items = listOf(
-                            { m -> HoldButton("送丝", onPress = { viewModel.sendManualCommand(268, "SetForwardWireFeed(0,1)") }, onRelease = { viewModel.sendManualCommand(268, "SetForwardWireFeed(0,0)") }, modifier = m) },
-                            { m -> HoldButton("退丝", onPress = { viewModel.sendManualCommand(269, "SetReverseWireFeed(0,1)") }, onRelease = { viewModel.sendManualCommand(269, "SetReverseWireFeed(0,0)") }, modifier = m) },
+                            { m -> HoldButton("送丝", onPress = { teach.startWireFeed() }, onRelease = { teach.stopWireFeed() }, modifier = m) },
+                            { m -> HoldButton("退丝", onPress = { teach.reverseWireFeed(true) }, onRelease = { teach.reverseWireFeed(false) }, modifier = m) },
                             { m -> HoldButton("送气", onPress = { viewModel.sendManualCommand(270, "SetAspirated(0,1)") }, onRelease = { viewModel.sendManualCommand(270, "SetAspirated(0,0)") }, modifier = m) },
                             { m -> HoldButton("起弧", onPress = { viewModel.sendManualCommand(247, "ARCStart(0,0,10000)") }, onRelease = { viewModel.sendManualCommand(102, "STOP") }, modifier = m) }
                         )
@@ -378,13 +381,13 @@ fun MultiLayerScreen(
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                         Text("焊长:", fontSize = 12.sp, color = Color.Gray)
                         Text(
-                            "%.1f m".format(java.util.Locale.US, viewModel.weldingLength), 
+                            "%.1f m".format(java.util.Locale.US, ui.weldingLength), 
                             fontSize = 12.sp, 
                             fontWeight = FontWeight.Bold,
                             modifier = Modifier.clickable { viewModel.clearStats() }
                         )
                     }
-                    val duration = viewModel.weldingDuration
+                    val duration = ui.weldingDuration
                     val hours = duration / 3600
                     val minutes = (duration % 3600) / 60
                     val seconds = duration % 60
@@ -400,7 +403,7 @@ fun MultiLayerScreen(
                     }
                     ActionButton(
                         text = "系统更新",
-                        onClick = { viewModel.checkForUpdate() },
+                        onClick = { onCheckUpdate() },
                         modifier = Modifier.fillMaxWidth()
                     )
                 }
@@ -449,11 +452,11 @@ fun MultiLayerScreen(
     )
 
     // Missing Process Dialog
-    if (viewModel.isMissingProcessDialogVisible) {
+    if (ui.isMissingProcessDialogVisible) {
         AlertDialog(
             onDismissRequest = { viewModel.isMissingProcessDialogVisible = false },
             title = { Text("闭包里没有这条工艺") },
-            text = { Text(viewModel.missingProcessMessage) },
+            text = { Text(ui.missingProcessMessage) },
             confirmButton = {
                 Button(
                     onClick = { viewModel.isMissingProcessDialogVisible = false }
@@ -465,7 +468,7 @@ fun MultiLayerScreen(
     }
 
     // 重命名对话框
-    if (viewModel.isRenameDialogVisible) {
+    if (ui.isRenameDialogVisible) {
         AlertDialog(
             onDismissRequest = { viewModel.isRenameDialogVisible = false },
             title = { Text("修改焊道名称") },
@@ -474,7 +477,7 @@ fun MultiLayerScreen(
                     Text("请输入新的焊道名称：")
                     Spacer(modifier = Modifier.height(8.dp))
                     TextField(
-                        value = viewModel.newWeldPathName,
+                        value = ui.newWeldPathName,
                         onValueChange = { viewModel.newWeldPathName = it },
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -483,7 +486,7 @@ fun MultiLayerScreen(
             confirmButton = {
                 Button(
                     onClick = {
-                        viewModel.renameWeldPath(viewModel.newWeldPathName)
+                        viewModel.renameWeldPath(ui.newWeldPathName)
                         viewModel.isRenameDialogVisible = false
                     }
                 ) {
@@ -504,21 +507,24 @@ fun MultiLayerScreen(
 
 
     // Set Current/Voltage Dialog
-    if (viewModel.isRobotErrorDialogVisible && viewModel.currentRobotErrors.isNotEmpty()) {
+    if (ui.isRobotErrorDialogVisible && viewModel.currentRobotErrors.isNotEmpty()) {
         RobotErrorDialog(
-            viewModel = viewModel,
-            errors = viewModel.currentRobotErrors
+            errors = viewModel.currentRobotErrors,
+            onDismiss = {
+                viewModel.currentRobotErrors.clear()
+                viewModel.isRobotErrorDialogVisible = false
+            },
         )
     }
 
-    if (viewModel.isCurrentVoltageDialogVisible) {
+    if (ui.isCurrentVoltageDialogVisible) {
         AlertDialog(
             onDismissRequest = { viewModel.isCurrentVoltageDialogVisible = false },
             title = { Text("设置电流电压") },
             text = {
                 Column {
                     OutlinedTextField(
-                        value = viewModel.inputCurrent,
+                        value = ui.inputCurrent,
                         onValueChange = { viewModel.inputCurrent = it },
                         label = { Text("焊接电流 (A) [0-1000]") },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
@@ -526,7 +532,7 @@ fun MultiLayerScreen(
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     OutlinedTextField(
-                        value = viewModel.inputVoltage,
+                        value = ui.inputVoltage,
                         onValueChange = { viewModel.inputVoltage = it },
                         label = { Text("焊接电压 (V) [0-1000]") },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),

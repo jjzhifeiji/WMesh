@@ -10,8 +10,8 @@ import com.gbndt.shijiaoqi.data.pouch.ClosureMemberPlain
 import com.gbndt.shijiaoqi.data.pouch.ClosureSnapshotPlain
 import com.gbndt.shijiaoqi.data.pouch.Digest
 import com.gbndt.shijiaoqi.data.pouch.Pouch
-import com.gbndt.shijiaoqi.domain.robot.FrPacket
-import com.gbndt.shijiaoqi.domain.robot.RobotCommands
+import com.gbndt.shijiaoqi.data.robot.protocol.FrPacket
+import com.gbndt.shijiaoqi.data.robot.protocol.RobotCommands
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -113,8 +113,8 @@ class SingleLayerWeldTest {
     fun arcStartAfterStartMoveAndSimHasNoArc() {
         val pts = linePoints()
         val process = WeldProcess(current = 170.0, voltage = 20.0, speed = 10.0)
-        val weld = SingleLayerLua.job(listOf(ScriptPath(pts, process)), welding = true, simulating = false)
-        val sim = SingleLayerLua.job(listOf(ScriptPath(pts, process)), welding = true, simulating = true)
+        val weld = SingleLayerLua.job(listOf(ScriptPath(pts, process)), welding = true, simulating = false).texts()
+        val sim = SingleLayerLua.job(listOf(ScriptPath(pts, process)), welding = true, simulating = true).texts()
         assertEquals(SingleLayerLua.GLOBAL_SPEED, weld.first())
         val arc = weld.indexOfFirst { it.startsWith("ARCStart") }
         assertTrue(arc > 0)
@@ -135,7 +135,7 @@ class SingleLayerWeldTest {
             listOf(ScriptPath(pts, main, extras = listOf(extra))),
             welding = true,
             simulating = false,
-        )
+        ).texts()
         val params = lines.filter { it.startsWith("WeldingSetProcessParam") }
         assertEquals(2, params.size)
         assertTrue(params[0].contains("170.0"))
@@ -177,6 +177,64 @@ class SingleLayerWeldTest {
     }
 
     @Test
+    fun joinLuaUsesCrlfAndNumberSkipsIk() {
+        assertEquals("A\r\nB\r\n", WeldRun.joinLua(listOf("A", "B")))
+        var next = 100
+        val numbered = WeldRun.number(
+            listOf(
+                LuaLine("SetSpeed(10)", withId = true),
+                LuaLine("GetInverseKinExaxis()", withId = false),
+                LuaLine("MoveL()", withId = true, pathIndex = 0, pointIndex = 1),
+            ),
+        ) { next++ }
+        assertEquals("SetSpeed(10)\r\nGetInverseKinExaxis()\r\nMoveL()\r\n", numbered.body)
+        assertEquals(100, numbered.lineToId[1])
+        assertEquals(101, numbered.lineToId[3])
+        assertEquals(null, numbered.lineToId[2])
+        assertEquals(Triple(0, 1, -1), numbered.idToPoint[101])
+    }
+
+    @Test
+    fun resumeFromStopInsertsCurrentPose() {
+        val pts = linePoints()
+        val process = WeldProcess(current = 170.0, speed = 10.0)
+        val stop = StopResume(
+            pose = Pose(12.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+            joints = List(6) { 1.0 },
+            pathIndex = 0,
+            pointIndex = 1,
+        )
+        val lines = SingleLayerLua.job(
+            listOf(ScriptPath(pts, process)),
+            welding = true,
+            simulating = false,
+            resume = stop,
+        ).texts()
+        assertTrue(lines.any { it.startsWith("MoveL(") && it.contains("12.000") })
+    }
+
+    @Test
+    fun lineFollowCountsLengthBetweenStartAndEnd() {
+        val follow = WeldLineFollow()
+        follow.load(
+            WeldRun.NumberedLua(
+                body = "",
+                lineToId = mapOf(1 to 10, 2 to 11, 3 to 12),
+                idToPoint = mapOf(
+                    10 to Triple(0, 1, -1),
+                    11 to Triple(0, 2, -1),
+                    12 to Triple(0, 3, -1),
+                ),
+            ),
+        )
+        val types = listOf(WeldPointType.START_SAFE, WeldPointType.START, WeldPointType.END, WeldPointType.END_SAFE)
+        val hits = follow.onProgLine(3, busy = true) { _, i -> types.getOrNull(i) }
+        assertTrue(hits.any { it.startStats })
+        assertTrue(hits.any { it.stopStats })
+        assertTrue(hits.any { it.countLength })
+    }
+
+    @Test
     fun captureNeedsPoseAndJoints() {
         assertNull(Capture.snapshot(null, listOf(1.0)))
         assertNull(Capture.snapshot(Pose(1.0, 2.0, 3.0, 0.0, 0.0, 0.0), emptyList()))
@@ -191,12 +249,44 @@ class SingleLayerWeldTest {
         val process = WeldProcess(
             oscillation = Oscillation(type = "三角波摆动"),
         )
-        val lines = SingleLayerLua.pathLines(linePoints(), process, isWelding = true, simulating = false, speedMode = "1倍", toolIndex = 1)
+        val lines = SingleLayerLua.pathLines(linePoints(), process, isWelding = true, simulating = false, speedMode = "1倍", toolIndex = 1).texts()
         val start = lines.indexOfFirst { it.startsWith("ARCStart") }
         val weave = lines.indexOfFirst { it.startsWith("WeaveStart") }
         assertTrue(lines.any { it.startsWith("WeaveSetPara") })
         assertTrue(weave > start)
         assertTrue(lines.any { it.startsWith("WeaveEnd") })
+    }
+
+    @Test
+    fun processOffsetMoveLUsesFlag3NotBaked() {
+        val process = WeldProcess(offsetX = "2")
+        val lines = SingleLayerLua.pathLines(linePoints(), process, true, false, "1倍", 1, false).texts()
+        val start = lines.first { it.startsWith("MoveL(") && it.contains(",10.000,") }
+        assertTrue(start.contains("3,0.000,-2.000,0.000"))
+        assertTrue(start.contains("10.000,0.000,0.000"))
+        assertFalse(lines.any { it.contains("GetInverseKinExaxis") })
+    }
+
+    @Test
+    fun extAxisOffsetBakesAndUsesIk() {
+        val process = WeldProcess(offsetX = "2")
+        val lines = SingleLayerLua.pathLines(linePoints(), process, true, false, "1倍", 1, true).texts()
+        assertTrue(lines.any { it.startsWith("ExtAxisMoveJ") })
+        val ik = lines.first { it.contains("GetInverseKinExaxis") }
+        assertTrue(ik.contains("{10.000,2.000,0.000,"))
+        assertTrue(lines.any { it.startsWith("MoveL(j1,j2,j3,j4,j5,j6,") })
+    }
+
+    @Test
+    fun extrasRecomputeOwnOffset() {
+        val pts = linePoints()
+        val main = WeldProcess(name = "主", current = 170.0, speed = 10.0)
+        val extra = WeldProcess(name = "附加", current = 200.0, speed = 8.0, offsetX = "2")
+        val lines = SingleLayerLua.job(listOf(ScriptPath(pts, main, extras = listOf(extra))), welding = true, simulating = false).texts()
+        val moves = lines.filter { it.startsWith("MoveL(") }
+        assertEquals(8, moves.size)
+        assertTrue(moves[1].contains("0,0,0,0,0,0,0"))
+        assertTrue(moves[5].contains("3,0.000,-2.000,0.000"))
     }
 
     private class RecordingSource : ProcessSource {

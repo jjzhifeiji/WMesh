@@ -1,4 +1,4 @@
-package com.gbndt.shijiaoqi.domain.robot
+package com.gbndt.shijiaoqi.data.robot.protocol
 
 /** 现网点动与探活报文；不生成焊接 Lua。 */
 object RobotCommands {

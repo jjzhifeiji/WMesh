@@ -7,7 +7,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import com.gbndt.shijiaoqi.data.legacy.ProjectManager
+import com.gbndt.shijiaoqi.data.prefs.DeviceSettingsStore
 import com.gbndt.shijiaoqi.data.repository.RobotRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
@@ -27,8 +27,8 @@ import java.util.Locale
 class RobotTestViewModel @Inject constructor(
     application: Application,
     private val socketManager: RobotRepository,
+    private val deviceSettings: DeviceSettingsStore,
 ) : AndroidViewModel(application) {
-    private val projectManager = ProjectManager(application)
     private var commandId = 1000
 
     var connectionStatus by mutableStateOf("未连接")
@@ -62,7 +62,7 @@ class RobotTestViewModel @Inject constructor(
     val toastEvent = _toastEvent.asSharedFlow()
 
     init {
-        val saved = projectManager.loadRobotTestSettings()
+        val saved = deviceSettings.loadRobotTestSettings()
         startPoint = saved.startPoint
         endPoint = saved.endPoint
         oscillation = saved.oscillation
@@ -276,7 +276,7 @@ class RobotTestViewModel @Inject constructor(
     }
 
     private fun persist() {
-        projectManager.saveRobotTestSettings(
+        deviceSettings.saveRobotTestSettings(
             RobotTestSettings(
                 startPoint = startPoint,
                 endPoint = endPoint,

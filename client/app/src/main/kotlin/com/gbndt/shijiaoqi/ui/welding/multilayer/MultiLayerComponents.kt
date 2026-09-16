@@ -46,7 +46,7 @@ fun MultiLayerWeldPathItem(
     multiPath: MultiLayerWeldPath,
     isSelected: Boolean,
     selectedPassIndex: Int, // -1 for Base Path
-    selectedRefPointType: MultiLayerViewModel.RefPointType,
+    selectedRefPointType: MultiLayerWeldViewModel.RefPointType,
     onSelect: () -> Unit,
     onSelectPass: (Int) -> Unit,
     onProcessBase: () -> Unit,
@@ -59,8 +59,8 @@ fun MultiLayerWeldPathItem(
     index: Int,
     totalCount: Int,
     onMove: (Int, Int) -> Unit,
-    onSelectRefPoint: (MultiLayerViewModel.RefPointType) -> Unit,
-    onDeleteRefPoint: (MultiLayerViewModel.RefPointType) -> Unit,
+    onSelectRefPoint: (MultiLayerWeldViewModel.RefPointType) -> Unit,
+    onDeleteRefPoint: (MultiLayerWeldViewModel.RefPointType) -> Unit,
     onUpdatePassOffset: (Int, String, String) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -218,7 +218,7 @@ fun MultiLayerWeldPathItem(
                                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                     MultiLayerPointButton(
                                         point = point,
-                                        isSelected = isSelected && selectedPassIndex == -1 && pointIndex == multiPath.basePath.selectedPointIndex && selectedRefPointType == MultiLayerViewModel.RefPointType.NONE,
+                                        isSelected = isSelected && selectedPassIndex == -1 && pointIndex == multiPath.basePath.selectedPointIndex && selectedRefPointType == MultiLayerWeldViewModel.RefPointType.NONE,
                                         onClick = { 
                                             onSelect() // Ensure base is selected
                                             onSelectPointBase(pointIndex) 
@@ -240,22 +240,22 @@ fun MultiLayerWeldPathItem(
                             RefPointButton(
                                 label = "X1",
                                 isSet = multiPath.refPointX1 != null,
-                                isSelected = isSelected && selectedPassIndex == -1 && selectedRefPointType == MultiLayerViewModel.RefPointType.START_X,
+                                isSelected = isSelected && selectedPassIndex == -1 && selectedRefPointType == MultiLayerWeldViewModel.RefPointType.START_X,
                                 onClick = { 
                                     onSelect()
-                                    onSelectRefPoint(MultiLayerViewModel.RefPointType.START_X) 
+                                    onSelectRefPoint(MultiLayerWeldViewModel.RefPointType.START_X) 
                                 },
-                                onDelete = { onDeleteRefPoint(MultiLayerViewModel.RefPointType.START_X) }
+                                onDelete = { onDeleteRefPoint(MultiLayerWeldViewModel.RefPointType.START_X) }
                             )
                             RefPointButton(
                                 label = "Z1",
                                 isSet = multiPath.refPointZ1 != null,
-                                isSelected = isSelected && selectedPassIndex == -1 && selectedRefPointType == MultiLayerViewModel.RefPointType.START_Z,
+                                isSelected = isSelected && selectedPassIndex == -1 && selectedRefPointType == MultiLayerWeldViewModel.RefPointType.START_Z,
                                 onClick = { 
                                     onSelect()
-                                    onSelectRefPoint(MultiLayerViewModel.RefPointType.START_Z) 
+                                    onSelectRefPoint(MultiLayerWeldViewModel.RefPointType.START_Z) 
                                 },
-                                onDelete = { onDeleteRefPoint(MultiLayerViewModel.RefPointType.START_Z) }
+                                onDelete = { onDeleteRefPoint(MultiLayerWeldViewModel.RefPointType.START_Z) }
                             )
                             
                             // Middle Ref Points
@@ -263,22 +263,22 @@ fun MultiLayerWeldPathItem(
                                 RefPointButton(
                                     label = "X中",
                                     isSet = multiPath.refPointXMiddle != null,
-                                    isSelected = isSelected && selectedPassIndex == -1 && selectedRefPointType == MultiLayerViewModel.RefPointType.MIDDLE_X,
+                                    isSelected = isSelected && selectedPassIndex == -1 && selectedRefPointType == MultiLayerWeldViewModel.RefPointType.MIDDLE_X,
                                     onClick = { 
                                         onSelect()
-                                        onSelectRefPoint(MultiLayerViewModel.RefPointType.MIDDLE_X) 
+                                        onSelectRefPoint(MultiLayerWeldViewModel.RefPointType.MIDDLE_X) 
                                     },
-                                    onDelete = { onDeleteRefPoint(MultiLayerViewModel.RefPointType.MIDDLE_X) }
+                                    onDelete = { onDeleteRefPoint(MultiLayerWeldViewModel.RefPointType.MIDDLE_X) }
                                 )
                                 RefPointButton(
                                     label = "Z中",
                                     isSet = multiPath.refPointZMiddle != null,
-                                    isSelected = isSelected && selectedPassIndex == -1 && selectedRefPointType == MultiLayerViewModel.RefPointType.MIDDLE_Z,
+                                    isSelected = isSelected && selectedPassIndex == -1 && selectedRefPointType == MultiLayerWeldViewModel.RefPointType.MIDDLE_Z,
                                     onClick = { 
                                         onSelect()
-                                        onSelectRefPoint(MultiLayerViewModel.RefPointType.MIDDLE_Z) 
+                                        onSelectRefPoint(MultiLayerWeldViewModel.RefPointType.MIDDLE_Z) 
                                     },
-                                    onDelete = { onDeleteRefPoint(MultiLayerViewModel.RefPointType.MIDDLE_Z) }
+                                    onDelete = { onDeleteRefPoint(MultiLayerWeldViewModel.RefPointType.MIDDLE_Z) }
                                 )
                             }
 
@@ -286,22 +286,22 @@ fun MultiLayerWeldPathItem(
                             RefPointButton(
                                 label = "X2",
                                 isSet = multiPath.refPointXEnd != null,
-                                isSelected = isSelected && selectedPassIndex == -1 && selectedRefPointType == MultiLayerViewModel.RefPointType.END_X,
+                                isSelected = isSelected && selectedPassIndex == -1 && selectedRefPointType == MultiLayerWeldViewModel.RefPointType.END_X,
                                 onClick = { 
                                     onSelect()
-                                    onSelectRefPoint(MultiLayerViewModel.RefPointType.END_X) 
+                                    onSelectRefPoint(MultiLayerWeldViewModel.RefPointType.END_X) 
                                 },
-                                onDelete = { onDeleteRefPoint(MultiLayerViewModel.RefPointType.END_X) }
+                                onDelete = { onDeleteRefPoint(MultiLayerWeldViewModel.RefPointType.END_X) }
                             )
                             RefPointButton(
                                 label = "Z2",
                                 isSet = multiPath.refPointZEnd != null,
-                                isSelected = isSelected && selectedPassIndex == -1 && selectedRefPointType == MultiLayerViewModel.RefPointType.END_Z,
+                                isSelected = isSelected && selectedPassIndex == -1 && selectedRefPointType == MultiLayerWeldViewModel.RefPointType.END_Z,
                                 onClick = { 
                                     onSelect()
-                                    onSelectRefPoint(MultiLayerViewModel.RefPointType.END_Z) 
+                                    onSelectRefPoint(MultiLayerWeldViewModel.RefPointType.END_Z) 
                                 },
-                                onDelete = { onDeleteRefPoint(MultiLayerViewModel.RefPointType.END_Z) }
+                                onDelete = { onDeleteRefPoint(MultiLayerWeldViewModel.RefPointType.END_Z) }
                             )
                         }
                     }

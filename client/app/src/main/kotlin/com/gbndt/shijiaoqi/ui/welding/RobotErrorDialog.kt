@@ -11,18 +11,14 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.DialogProperties
 import com.gbndt.shijiaoqi.model.RobotError
-import com.gbndt.shijiaoqi.ui.welding.WeldViewModelInterface
 
 @Composable
 fun RobotErrorDialog(
-    viewModel: WeldViewModelInterface,
-    errors: List<RobotError>
+    errors: List<RobotError>,
+    onDismiss: () -> Unit,
 ) {
     AlertDialog(
-        onDismissRequest = { 
-            viewModel.currentRobotErrors.clear()
-            viewModel.isRobotErrorDialogVisible = false 
-        },
+        onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false),
         modifier = Modifier.fillMaxWidth(0.8f),
         title = {
@@ -49,10 +45,7 @@ fun RobotErrorDialog(
         },
         confirmButton = {
             Button(
-                onClick = { 
-                    viewModel.currentRobotErrors.clear()
-                    viewModel.isRobotErrorDialogVisible = false 
-                },
+                onClick = onDismiss,
                 colors = ButtonDefaults.buttonColors(containerColor = Color.Red)
             ) {
                 Text("知道了", color = Color.White)

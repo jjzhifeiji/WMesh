@@ -14,16 +14,18 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
-import com.gbndt.shijiaoqi.data.legacy.ProcessManager
-import com.gbndt.shijiaoqi.data.legacy.ProjectManager
+import kotlinx.coroutines.flow.asStateFlow
+import com.gbndt.shijiaoqi.data.prefs.DeviceSettingsStore
 import com.gbndt.shijiaoqi.data.repository.PouchRepository
 import com.gbndt.shijiaoqi.data.repository.UpdateRepository
 import com.gbndt.shijiaoqi.data.repository.RobotRepository
 import com.gbndt.shijiaoqi.data.repository.SessionRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
-import com.gbndt.shijiaoqi.domain.robot.RobotCommands
+import com.gbndt.shijiaoqi.data.robot.protocol.RobotCommands
 import com.gbndt.shijiaoqi.domain.weld.Capture
 import com.gbndt.shijiaoqi.domain.weld.ProcessBind
 import com.gbndt.shijiaoqi.domain.weld.ProcessChoice
@@ -42,6 +44,7 @@ import com.gbndt.shijiaoqi.model.WeldPoint
 import com.gbndt.shijiaoqi.model.WeldPointType
 import com.gbndt.shijiaoqi.model.WeldProcess
 import com.gbndt.shijiaoqi.ui.welding.FineTuneSupport
+import com.gbndt.shijiaoqi.ui.teach.TeachSession
 import java.io.File
 import java.util.UUID
 import java.util.Locale
@@ -75,14 +78,17 @@ import com.gbndt.shijiaoqi.ui.welding.*
 
 /**
  * 路径焊接界面的公共 ViewModel：单层是默认行为，T 排只改差异。
- * 三千行是历史包袱，先把复制粘贴收成一份，再谈拆 UiState。
+ * 对照用，新焊接屏不要继承；算法往 domain/示教搬。
  */
+@Deprecated("对照用：新焊接屏不要继承。算法往 domain/示教搬。")
 abstract class WeldingViewModel(
     application: Application,
     protected val session: SessionRepository,
     protected val socketManager: RobotRepository,
     protected val pouch: PouchRepository,
     protected val updateManager: UpdateRepository,
+    protected val deviceSettings: DeviceSettingsStore,
+    protected val teach: TeachSession,
 ) : AndroidViewModel(application), WeldViewModelInterface {
 
     // ... existing properties ...
@@ -104,12 +110,6 @@ abstract class WeldingViewModel(
         )
         fun dot(other: Vector3) = x * other.x + y * other.y + z * other.z
     }
-
-    protected val processManager = ProcessManager(application)
-
-    protected val projectManager = ProjectManager(application)
-
-
 
     protected fun handleCommandExecuted(id: Int) {
         val mapping = commandIdMap[id]
@@ -184,9 +184,22 @@ abstract class WeldingViewModel(
 
     val weldPaths = mutableStateListOf<WeldPath>()
 
-    override val pouchProjects = mutableStateListOf<ProjectChoice>()
+    val pouchProjects = mutableStateListOf<ProjectChoice>()
 
-    override val pouchProcesses = mutableStateListOf<ProcessChoice>()
+    val pouchProcesses = mutableStateListOf<ProcessChoice>()
+
+    private val _shellUi = MutableStateFlow(WeldShellUi())
+    override val shellUi: StateFlow<WeldShellUi> = _shellUi.asStateFlow()
+
+    protected fun pushShell() {
+        _shellUi.value = WeldShellUi(
+            currentProjectName = currentProjectName,
+            weldingBreakOffState = weldingBreakOffState,
+            weldArcState = weldArcState,
+            pouchProjects = pouchProjects.toList(),
+            pouchProcesses = pouchProcesses.toList(),
+        )
+    }
 
     protected var pouchProjectId: UUID? = null
 
@@ -239,7 +252,7 @@ abstract class WeldingViewModel(
 
     // 工程管理相关状态
 
-    override var currentProjectName by mutableStateOf<String?>(null) // 存储工程的相对路径
+    var currentProjectName by mutableStateOf<String?>(null) // 存储工程的相对路径
     
     // Project Explorer State
 
@@ -255,7 +268,10 @@ abstract class WeldingViewModel(
 
     // Status Bar State
 
-    override var toolCoordinateSystem by mutableStateOf("工具1")
+    // 示教字段以 TeachSession 为准，本类只转发，避免双发点动。
+    override var toolCoordinateSystem: String
+        get() = teach.toolCoordinateSystem
+        set(_) {}
 
     override var operationPosition by mutableStateOf(Pose(0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
     
@@ -269,38 +285,56 @@ abstract class WeldingViewModel(
 
     val scrollToIndexEvent = _scrollToIndexEvent.asSharedFlow()
 
-    override var positionMode by mutableStateOf("右") // New
+    override var positionMode: String
+        get() = teach.positionMode
+        set(_) {}
 
     var simulationSpeed by mutableStateOf(100)
 
-    override var speedMode by mutableStateOf("1倍") // New
+    override var speedMode: String
+        get() = teach.speedMode
+        set(_) {}
 
-    override var isInstallPosDialogVisible by mutableStateOf(false)
+    override var isInstallPosDialogVisible: Boolean
+        get() = teach.isInstallPosDialogVisible
+        set(v) { teach.isInstallPosDialogVisible = v }
 
-    override var installPos by mutableStateOf(0) // 0-平装, 1-侧装, 2-挂装
+    override var installPos: Int
+        get() = teach.installPos
+        set(_) {}
 
-    override var alarmStatus by mutableStateOf("无故障")
+    override var alarmStatus: String
+        get() = teach.alarmStatus
+        set(_) {}
 
-    override var connectionStatus by mutableStateOf("已连接")
+    override var connectionStatus: String
+        get() = teach.connectionStatus
+        set(_) {}
 
     override var weldingLength by mutableStateOf(0.0)
 
     override var weldingDuration by mutableStateOf(0L)
 
-    override var weldingBreakOffState by mutableStateOf("正常")
+    var weldingBreakOffState by mutableStateOf("正常")
 
     protected var isResuming = false
 
-    override var weldArcState by mutableStateOf("正常")
+    var weldArcState by mutableStateOf("正常")
 
-    override var extAxisPos by mutableStateOf(0.0)
+    override var extAxisPos: Double
+        get() = teach.extAxisPos
+        set(_) {}
 
-    override var extAxisReady by mutableStateOf(false)
+    override var extAxisReady: Boolean
+        get() = teach.extAxisReady
+        set(_) {}
 
-    override var isExtAxisEnabled by mutableStateOf(true)
+    override var isExtAxisEnabled: Boolean
+        get() = teach.isExtAxisEnabled
+        set(_) {}
 
     override fun toggleExtAxisEnabled() {
-        isExtAxisEnabled = !isExtAxisEnabled
+        teach.toggleExtAxisEnabled()
     }
 
     // Registration State
@@ -309,13 +343,15 @@ abstract class WeldingViewModel(
 
     var lastConnectionTime: Long = 0L
 
-    override var machineCode by mutableStateOf("")
+    override var machineCode: String
+        get() = teach.machineCode
+        set(_) {}
 
     // Update State
 
-    override var isUpdateDialogVisible by mutableStateOf(false)
+    var isUpdateDialogVisible by mutableStateOf(false)
 
-    override var updateInfo by mutableStateOf<UpdateInfo?>(null)
+    var updateInfo by mutableStateOf<UpdateInfo?>(null)
 
     var isDownloading by mutableStateOf(false)
 
@@ -323,9 +359,13 @@ abstract class WeldingViewModel(
 
     // Dialog Visibility States
 
-    override var isPositionDialogVisible by mutableStateOf(false)
+    override var isPositionDialogVisible: Boolean
+        get() = teach.isPositionDialogVisible
+        set(v) { teach.isPositionDialogVisible = v }
 
-    override var isSpeedDialogVisible by mutableStateOf(false)
+    override var isSpeedDialogVisible: Boolean
+        get() = teach.isSpeedDialogVisible
+        set(v) { teach.isSpeedDialogVisible = v }
 
     override var isRobotErrorDialogVisible by mutableStateOf(false)
 
@@ -333,27 +373,33 @@ abstract class WeldingViewModel(
 
     // Tool Coordinates State
 
-    override val toolCoordinates = mutableStateListOf<Pose?>().apply {
-        repeat(14) { add(null) }
-    }
+    override val toolCoordinates get() = teach.toolCoordinates
 
-    override val toolRemarks = mutableStateListOf<String>().apply {
-        repeat(14) { add("") }
-    }
+    override val toolRemarks get() = teach.toolRemarks
 
-    override var isToolListDialogVisible by mutableStateOf(false)
+    override var isToolListDialogVisible: Boolean
+        get() = teach.isToolListDialogVisible
+        set(v) { teach.isToolListDialogVisible = v }
 
-    override var isToolEditDialogVisible by mutableStateOf(false)
+    override var isToolEditDialogVisible: Boolean
+        get() = teach.isToolEditDialogVisible
+        set(v) { teach.isToolEditDialogVisible = v }
 
-    override var editingToolIndex by mutableStateOf(-1) // 0-13
+    override var editingToolIndex: Int
+        get() = teach.editingToolIndex
+        set(_) {}
 
-    override var editingToolPose by mutableStateOf(Pose(0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
+    override var editingToolPose: Pose
+        get() = teach.editingToolPose
+        set(v) { teach.editingToolPose = v }
 
-    override var editingToolRemark by mutableStateOf("")
+    override var editingToolRemark: String
+        get() = teach.editingToolRemark
+        set(v) { teach.editingToolRemark = v }
 
-    // Joystick States
-
-    override var isControllerActive by mutableStateOf(false)
+    override var isControllerActive: Boolean
+        get() = teach.isControllerActive
+        set(v) { if (!v) teach.stopController() }
 
     override var joyX1 by mutableStateOf(0f)
 
@@ -524,11 +570,11 @@ abstract class WeldingViewModel(
     // Interface Implementation
 
     override fun toggleControllerActive() {
-        isControllerActive = !isControllerActive
+        teach.toggleController()
     }
 
     override fun stopControllerActive() {
-        isControllerActive = false
+        teach.stopController()
     }
 
     // Position History for Pause/Resume
@@ -648,7 +694,7 @@ abstract class WeldingViewModel(
                     machineCode = mac
                     
                     // Auto-login / Verification
-                    val savedLicense = projectManager.loadLicense()
+                    val savedLicense = ""
                     if (savedLicense.isNotEmpty()) {
                         val expectedCode = encryptMac("P${mac}L")
                         if (savedLicense == expectedCode) {
@@ -698,40 +744,7 @@ abstract class WeldingViewModel(
         addWeldPath()
 
         // Load app settings
-        val settings = projectManager.loadAppSettings()
-        
-        isExtAxisEnabled = settings.isExtAxisEnabled
-        
-        // Tool Coordinates
-        toolCoordinates.clear()
-        if (settings.toolCoordinates.size == 14) {
-            toolCoordinates.addAll(settings.toolCoordinates)
-        } else {
-            repeat(14) { toolCoordinates.add(null) }
-            settings.toolCoordinates.forEachIndexed { index, pose ->
-                if (index < 14) toolCoordinates[index] = pose
-            }
-        }
-        
-        // Tool Remarks
-        toolRemarks.clear()
-        if (settings.toolRemarks.size == 14) {
-            toolRemarks.addAll(settings.toolRemarks)
-        } else {
-            repeat(14) { toolRemarks.add("") }
-            settings.toolRemarks.forEachIndexed { index, remark ->
-                if (index < 14) toolRemarks[index] = remark
-            }
-        }
-        
-        if (settings.selectedToolIndex in 0 until 14) {
-             toolCoordinateSystem = "工具${settings.selectedToolIndex + 1}"
-        }
-        
-        // Position and Speed
-        positionMode = settings.positionMode
-        speedMode = settings.speedMode
-        installPos = settings.installPos
+        val settings = deviceSettings.loadAppSettings()
         
         // Load Welding Stats
         weldingLength = settings.totalWeldingLength
@@ -745,37 +758,6 @@ abstract class WeldingViewModel(
 
         // Start Socket Manager
         // socketManager.start() - Moved to init
-
-
-        viewModelScope.launch {
-            socketManager.connectionStatus.collect { status ->
-                val previousStatus = connectionStatus
-                connectionStatus = status
-                
-                // When status changes from "未连接" to "已连接", send current tool coordinate command
-                if (previousStatus != "已连接" && status == "已连接") {
-                    val toolIndex = try {
-                        toolCoordinateSystem.removePrefix("工具").toInt()
-                    } catch (e: Exception) { 1 }
-                    
-                    if (toolIndex in 1..14) {
-                        val pose = toolCoordinates[toolIndex - 1]
-                        if (pose != null) {
-                            Log.d("WeldPathViewModel", "Connection established, auto-sending Tool $toolIndex")
-                            // Wait a bit to ensure socket is fully ready
-                            delay(500) 
-                            sendToolCoordCommand(toolIndex, pose)
-                        }
-                    }
-                    
-                    // Auto-send Installation Position
-                    delay(200)
-                    val installCmd = "SetRobotInstallPos($installPos)"
-                    val installMsg = "/f/bIII23III337III${installCmd.length}III${installCmd}III/b/f"
-                    socketManager.sendControlCommand(installMsg)
-                }
-            }
-        }
         
         // Listen for Robot Data
         viewModelScope.launch {
@@ -799,21 +781,13 @@ abstract class WeldingViewModel(
         viewModelScope.launch {
             socketManager.weldingBreakOffState.collect { state ->
                 weldingBreakOffState = state
+                pushShell()
             }
         }
         viewModelScope.launch {
             socketManager.weldArcState.collect { state ->
                 weldArcState = state
-            }
-        }
-        viewModelScope.launch {
-            socketManager.extAxisPos.collect { pos ->
-                extAxisPos = pos
-            }
-        }
-        viewModelScope.launch {
-            socketManager.extAxisReady.collect { ready ->
-                extAxisReady = ready
+                pushShell()
             }
         }
 
@@ -838,42 +812,19 @@ abstract class WeldingViewModel(
                         tts?.stop()
                     }
                 }
-                alarmStatus = status
             }
         }
         
-        // Listen for Robot Input Signal (Custom IO Logic)
+        // 录点仍归焊接；送丝/拖动在示教
         viewModelScope.launch {
             socketManager.robotInputSignal.collect { combined ->
                 when {
-                     // 2690 < combined < 2890 且当前未在送丝
-                     combined in 2690..2890 && !isWireFeeding -> {
-                         startWireFeed()
-                         isWireFeeding = true
-                     }
-                     // combined > 4096 且当前正在送丝
-                     combined > 4096 && isWireFeeding -> {
-                         stopWireFeed()
-                         isWireFeeding = false
-                     }
-                     // 2048 < combined < 2248 且当前未在录点
                      combined in 2048..2248 && !isRecording -> {
                          collectData()
                          isRecording = true
                      }
-                     // combined > 4096 且当前正在录点
                      combined > 4096 && isRecording -> {
                          isRecording = false
-                     }
-                     // 754 < combined < 954 且当前未在拖动
-                     combined in 754..954 && !isDragEnabled -> {
-                         dragTeachSwitch(true)
-                         isDragEnabled = true
-                     }
-                     // combined > 4096 且当前正在拖动
-                     combined > 4096 && isDragEnabled -> {
-                         dragTeachSwitch(false)
-                         isDragEnabled = false
                      }
                 }
             }
@@ -887,7 +838,7 @@ abstract class WeldingViewModel(
         if (lastConnectionTime > 0 && (currentTime - lastConnectionTime) > threeDaysInMillis) {
             // Expired
             isRegistered = false
-            projectManager.clearLicense()
+            Unit
             saveAppSettings()
             viewModelScope.launch {
                 _toastEvent.emit("注册已过期，请重新注册")
@@ -896,27 +847,17 @@ abstract class WeldingViewModel(
             isRegistered = settings.isRegistered
             // Optimistic Registration: If license exists, assume registered temporarily
             // Verification will happen asynchronously when MAC is received.
-            if (!isRegistered && projectManager.hasLicense()) {
+            if (!isRegistered && false) {
                 isRegistered = true
             }
         }
 
         // Register Update Receiver
         registerDownloadReceiver()
-        
-        // Start Servo Cart Loop
-        startServoCartLoop()
     }
 
     protected fun startServoCartLoop() {
-        viewModelScope.launch {
-            while (isActive) {
-                if (isControllerActive) {
-                    sendServoCartCommand()
-                }
-                delay(200)
-            }
-        }
+        // 点动循环在 TeachSession
     }
 
     protected var isLastCommandZero = false
@@ -987,18 +928,15 @@ abstract class WeldingViewModel(
     }
 
     fun enableExtAxisServo() {
-        val cmd = "ExtAxisServoOn(1,1)"
-        sendManualCommand(RobotCommands.TYPE_EXT_SERVO, cmd)
+        teach.enableExtAxisServo()
     }
 
     fun startExtAxisJog(direction: Int) {
-        if (!isControllerActive) return
-        sendManualCommand(RobotCommands.TYPE_EXT_JOG, "ExtAxisStartJog(6,1,$direction,100,100,2000)")
+        teach.startExtAxisJog(direction)
     }
 
     fun stopExtAxisJog(direction: Int) {
-        if (!isControllerActive) return
-        sendManualCommand(RobotCommands.TYPE_EXT_JOG_STOP, "StopExtAxisJog")
+        teach.stopExtAxisJog()
     }
 
     override fun sendMoveLCommand() {
@@ -1038,8 +976,7 @@ abstract class WeldingViewModel(
     }
 
     override fun resetAllError() {
-        val msg = "/f/bIII7III107III15IIIResetAllError()III/b/f"
-        socketManager.sendControlCommand(msg)
+        teach.resetAllError()
     }
 
     override fun clearStats() {
@@ -1057,7 +994,7 @@ abstract class WeldingViewModel(
 
     override fun refreshProjectExplorer() {
         projectItems.clear()
-        projectItems.addAll(projectManager.listContents(projectCurrentPath, "single"))
+        projectItems.addAll(emptyList())
     }
     
     // 导航到工程目录
@@ -1082,7 +1019,7 @@ abstract class WeldingViewModel(
     // 创建工程文件夹
 
     override fun createProjectFolder(name: String) {
-        if (projectManager.createFolder(projectCurrentPath, name, "single")) {
+        if (false) {
             refreshProjectExplorer()
         }
     }
@@ -1094,7 +1031,7 @@ abstract class WeldingViewModel(
     }
 
     open fun createNewProjectInCurrentPath(name: String) {
-        if (projectManager.createProject(projectCurrentPath, name, "single")) {
+        if (false) {
             val fullPath = if (projectCurrentPath.isEmpty()) name else "$projectCurrentPath/$name"
             currentProjectName = fullPath
             
@@ -1211,6 +1148,7 @@ abstract class WeldingViewModel(
         pouchProjects.addAll(pouch.listProjects())
         pouchProcesses.clear()
         pouchProcesses.addAll(pouch.listProcesses())
+        pushShell()
     }
 
     override fun bindProcessFromPouch(processId: UUID?) {
@@ -1270,13 +1208,13 @@ abstract class WeldingViewModel(
         // 复制到当前所在目录（或者根目录？）
         // 简单起见，复制到同级目录
         val parentPath = File(currentPath).parent?.replace("\\", "/") ?: ""
-        if (projectManager.copyProject(currentPath, parentPath, newName, "single")) {
+        if (false) {
             refreshProjectExplorer()
         }
     }
 
     override fun deleteProjectItem(item: FileSystemItem) {
-        if (projectManager.deleteItem(item.path, "single")) {
+        if (false) {
             if (currentProjectName == item.path) {
                 currentProjectName = null
                 weldPaths.clear()
@@ -1290,7 +1228,7 @@ abstract class WeldingViewModel(
 
     override fun refreshProcessExplorer() {
         processItems.clear()
-        processItems.addAll(processManager.listContents(processCurrentPath))
+        processItems.addAll(emptyList())
     }
 
     override fun navigateProcess(item: FileSystemItem) {
@@ -1309,7 +1247,7 @@ abstract class WeldingViewModel(
     }
 
     override fun createProcessFolder(name: String) {
-        if (processManager.createFolder(processCurrentPath, name)) {
+        if (false) {
             refreshProcessExplorer()
         }
     }
@@ -1351,21 +1289,21 @@ abstract class WeldingViewModel(
     }
 
     fun getProcessFile(relativePath: String): File {
-        return processManager.getFile(relativePath)
+        return File("")
     }
 
     fun zipProcessFolder(relativePath: String, zipFile: File): Boolean {
-        return processManager.zipFileOrFolder(relativePath, zipFile)
+        return false
     }
 
     fun unzipProcessFile(zipUri: Uri, destPath: String): Boolean {
-        val result = processManager.unzip(zipUri, destPath)
+        val result = false
         if (result) refreshProcessExplorer()
         return result
     }
 
     fun importProcessFile(uri: Uri, destPath: String, fileName: String): Boolean {
-        val result = processManager.importFile(uri, destPath, fileName)
+        val result = false
         if (result) refreshProcessExplorer()
         return result
     }
@@ -1387,7 +1325,7 @@ abstract class WeldingViewModel(
     }
 
     override fun loadProcess(path: String): WeldProcess? {
-        return processManager.loadProcess(path)
+        return null
     }
 
     fun beginAddProcessVariant(pathIndex: Int) {
@@ -1424,12 +1362,12 @@ abstract class WeldingViewModel(
     }
 
     override fun deleteProcessItem(item: FileSystemItem) {
-        if (processManager.deleteItem(item.path)) {
+        if (false) {
             refreshProcessExplorer()
         }
     }
 
-    override fun startUpdateDownload() {
+    fun startUpdateDownload() {
         val info = updateInfo ?: return
         if (isDownloading) return
         isUpdateDialogVisible = false
@@ -1464,7 +1402,7 @@ abstract class WeldingViewModel(
                 isRegistered = true
                 lastConnectionTime = System.currentTimeMillis()
                 saveAppSettings()
-                projectManager.saveLicense(code)
+                Unit
                 viewModelScope.launch {
                     _toastEvent.emit("注册成功")
                 }
@@ -1505,7 +1443,7 @@ abstract class WeldingViewModel(
 
     fun deleteCurrentProject() {
         val name = currentProjectName ?: return
-        if (projectManager.deleteItem(name)) {
+        if (false) {
             currentProjectName = null
             weldPaths.clear()
             addWeldPath() 
@@ -1966,54 +1904,19 @@ abstract class WeldingViewModel(
     }
 
     override fun selectTool(index: Int) {
-        if (index in 0 until 14) {
-            val pose = toolCoordinates[index]
-            if (pose == null) {
-                // Open edit dialog if empty
-                openToolEdit(index)
-            } else {
-                // Select tool
-                toolCoordinateSystem = "工具${index + 1}"
-                isToolListDialogVisible = false
-                saveAppSettings()
-                
-                // Send command
-                sendToolCoordCommand(index + 1, pose)
-            }
-        }
+        teach.selectTool(index)
     }
 
     override fun openToolEdit(index: Int) {
-        if (index in 0 until 14) {
-            editingToolIndex = index
-            editingToolPose = toolCoordinates[index] ?: Pose(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-            editingToolRemark = toolRemarks[index]
-            isToolEditDialogVisible = true
-            isToolListDialogVisible = false // Close list dialog
-        }
+        teach.openToolEdit(index)
     }
 
     override fun saveToolEdit(pose: Pose, remark: String) {
-        if (editingToolIndex in 0 until 14) {
-            toolCoordinates[editingToolIndex] = pose
-            toolRemarks[editingToolIndex] = remark
-            isToolEditDialogVisible = false
-            
-            // Auto-select the edited tool
-            toolCoordinateSystem = "工具${editingToolIndex + 1}"
-            
-            // Save settings
-            saveAppSettings()
-            
-            // Send command
-            sendToolCoordCommand(editingToolIndex + 1, pose)
-        }
+        teach.saveToolEdit(pose, remark)
     }
 
     override fun cancelToolEdit() {
-        isToolEditDialogVisible = false
-        // Re-open list dialog so user can choose another or see list
-        isToolListDialogVisible = true
+        teach.cancelToolEdit()
     }
 
     fun setWeldingCurrentVoltage() {
@@ -3369,9 +3272,7 @@ abstract class WeldingViewModel(
     }
 
     override fun setPosition(mode: String) {
-        positionMode = mode
-        isPositionDialogVisible = false
-        saveAppSettings()
+        teach.setPosition(mode)
     }
 
 
@@ -3408,49 +3309,31 @@ abstract class WeldingViewModel(
     }
 
     override fun setSpeed(mode: String) {
-        speedMode = mode
-        isSpeedDialogVisible = false
-        saveAppSettings()
+        teach.setSpeed(mode)
     }
 
     override fun updateInstallPos(pos: Int) {
-        installPos = pos
-        isInstallPosDialogVisible = false
-        saveAppSettings()
-        
-        // Send command to robot
-        val cmd = "SetRobotInstallPos($pos)"
-        val msg = "/f/bIII23III337III${cmd.length}III${cmd}III/b/f"
-        socketManager.sendControlCommand(msg)
+        teach.updateInstallPos(pos)
     }
 
     protected open fun saveAppSettings() {
-        val index = try {
-            toolCoordinateSystem.removePrefix("工具").toInt() - 1
-        } catch (e: Exception) { 0 }
-        
-        val settings = AppSettings(
-            selectedToolIndex = index,
-            toolCoordinates = toolCoordinates.toList(),
-            toolRemarks = toolRemarks.toList(),
-            positionMode = positionMode,
-            speedMode = speedMode,
-            lastOpenedProjectPath = currentProjectName,
-            totalWeldingLength = weldingLength,
-            totalWeldingDuration = weldingDuration,
-            isRegistered = isRegistered,
-            lastConnectionTime = lastConnectionTime,
-            installPos = installPos,
-            weldingCurrent = savedCurrent,
-            weldingVoltage = savedVoltage,
-            isExtAxisEnabled = isExtAxisEnabled
+        val cell = deviceSettings.loadAppSettings()
+        deviceSettings.saveAppSettings(
+            cell.copy(
+                lastOpenedProjectPath = currentProjectName,
+                totalWeldingLength = weldingLength,
+                totalWeldingDuration = weldingDuration,
+                isRegistered = isRegistered,
+                lastConnectionTime = lastConnectionTime,
+                weldingCurrent = savedCurrent,
+                weldingVoltage = savedVoltage,
+            ),
         )
-        projectManager.saveAppSettings(settings)
     }
 
     // --- Update Methods ---
 
-    override fun checkForUpdate() {
+    fun checkForUpdate() {
         viewModelScope.launch {
             // TODO: Replace with your actual server URL
             val updateUrl = "http://cdn.gbndt.com/sjqapk/update.json"
@@ -3554,16 +3437,7 @@ abstract class WeldingViewModel(
     }
 
     override fun reconnect() {
-        viewModelScope.launch {
-            _toastEvent.emit("正在尝试重新连接...")
-            withContext(Dispatchers.IO) {
-                try {
-                    socketManager.restart()
-                } catch (e: Exception) {
-                    Log.e("WeldPathViewModel", "Reconnection failed", e)
-                }
-            }
-        }
+        teach.reconnect()
     }
 
     override fun showToast(message: String) {

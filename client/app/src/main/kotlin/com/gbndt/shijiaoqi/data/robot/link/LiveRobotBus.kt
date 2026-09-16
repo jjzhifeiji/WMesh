@@ -20,13 +20,16 @@ import kotlinx.coroutines.withTimeout
 import java.io.OutputStream
 import java.net.InetSocketAddress
 import java.net.Socket
-import com.gbndt.shijiaoqi.domain.robot.FrPacket
-import com.gbndt.shijiaoqi.domain.robot.RobotCommands
-import com.gbndt.shijiaoqi.domain.robot.RobotLink
-import com.gbndt.shijiaoqi.domain.robot.Status8083
+import javax.inject.Inject
+import javax.inject.Singleton
+import com.gbndt.shijiaoqi.data.robot.protocol.FrPacket
+import com.gbndt.shijiaoqi.data.robot.protocol.RobotCommands
+import com.gbndt.shijiaoqi.data.robot.protocol.RobotLink
+import com.gbndt.shijiaoqi.data.robot.protocol.Status8083
 
 /** 三路 TCP 控制器适配：8080 点动/指令，8082 批量，8083 状态。不管身份。 */
-object LiveRobotBus {
+@Singleton
+class LiveRobotBus @Inject constructor() {
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     private val _isConnected8080 = MutableStateFlow(false)
@@ -88,11 +91,6 @@ object LiveRobotBus {
     private var socket8082: SocketClient? = null
     private var socket8083: SocketClient? = null
     private var lastDataTime8083 = 0L
-
-    const val SERVER_IP = "192.168.57.2"
-    const val PORT_CONTROL = 8080
-    const val PORT_BATCH = 8082
-    const val PORT_DATA = 8083
 
     private var isStarted = false
     private var clientCount = 0
@@ -322,5 +320,12 @@ object LiveRobotBus {
             socket = null
             outputStream = null
         }
+    }
+
+    companion object {
+        const val SERVER_IP = "192.168.57.2" // 机械臂路由器固定地址
+        const val PORT_CONTROL = 8080 // 点动与单条指令
+        const val PORT_BATCH = 8082 // 批量程序
+        const val PORT_DATA = 8083 // 状态回流
     }
 }

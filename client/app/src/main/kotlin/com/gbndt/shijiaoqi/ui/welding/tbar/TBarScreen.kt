@@ -44,6 +44,8 @@ import com.gbndt.shijiaoqi.model.isTBarCollectable
 import com.gbndt.shijiaoqi.ui.component.*
 import com.gbndt.shijiaoqi.ui.login.*
 import com.gbndt.shijiaoqi.ui.project.*
+import com.gbndt.shijiaoqi.ui.navigation.LocalTeach
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.TimeoutCancellationException
@@ -55,13 +57,17 @@ import com.gbndt.shijiaoqi.ui.welding.*
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun TBarScreen(
-    viewModel: TBarViewModel,
+    viewModel: TBarWeldViewModel,
     onNavigateToProjectManagement: () -> Unit,
-    onNavigateToProcessManagement: (Boolean) -> Unit
+    onNavigateToProcessManagement: (Boolean) -> Unit,
+    onCheckUpdate: () -> Unit,
 ) {
     var showDeleteDialog by remember { mutableStateOf(false) }
     var show3DViewer by remember { mutableStateOf(false) }
     var weldPathToDeleteIndex by remember { mutableStateOf(-1) }
+    var showGapEditor by remember { mutableStateOf(false) }
+    val teach = LocalTeach.current
+    val ui by viewModel.uiState.collectAsStateWithLifecycle()
 
     LaunchedEffect(viewModel.selectedWeldPathIndex) {
         viewModel.snapToCollectablePoint(viewModel.selectedWeldPathIndex)
@@ -115,10 +121,9 @@ fun TBarScreen(
                             weldPath = weldPath,
                             isSelected = index == viewModel.selectedWeldPathIndex,
                             onSelect = { viewModel.selectedWeldPathIndex = index },
-                            onProcess = { 
-                                viewModel.cancelAddProcessVariant()
+                            onProcess = {
                                 viewModel.selectedWeldPathIndex = index
-                                onNavigateToProcessManagement(true) 
+                                showGapEditor = true
                             },
                             onAddProcessVariant = {
                                 viewModel.selectedWeldPathIndex = index
@@ -182,9 +187,9 @@ fun TBarScreen(
                     Divider()
 
                     // 2. 模拟与焊接区 (Moved Up)
-                    if (viewModel.isWelding || viewModel.isSimulating) {
+                    if (ui.run.isWelding || ui.run.isSimulating) {
                         // Welding/Simulation Mode
-                        if (viewModel.isPaused) {
+                        if (ui.run.isPaused) {
                             // Paused: Continue + Stop
                             Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
                                 ActionButton(
@@ -235,7 +240,7 @@ fun TBarScreen(
                                 "起弧焊接", 
                                 onClick = { }, 
                                 onLongClick = {
-                                    viewModel.stopControllerActive()
+                                    teach.stopController()
                                     viewModel.startArcWelding()
                                 },
                                 modifier = Modifier.weight(1f)
@@ -252,7 +257,7 @@ fun TBarScreen(
                             Spacer(modifier = Modifier.height(2.dp))
                             ActionButton(
                                 "伺服使能",
-                                onClick = { viewModel.enableExtAxisServo() },
+                                onClick = { teach.enableExtAxisServo() },
                                 containerColor = Color(0xFF2196F3),
                                 modifier = Modifier.fillMaxWidth()
                             )
@@ -312,8 +317,8 @@ fun TBarScreen(
                     TwoColumnGrid(
                         spacing = 2.dp,
                         items = listOf(
-                            { m -> HoldButton("送丝", onPress = { viewModel.sendManualCommand(268, "SetForwardWireFeed(0,1)") }, onRelease = { viewModel.sendManualCommand(268, "SetForwardWireFeed(0,0)") }, modifier = m) },
-                            { m -> HoldButton("退丝", onPress = { viewModel.sendManualCommand(269, "SetReverseWireFeed(0,1)") }, onRelease = { viewModel.sendManualCommand(269, "SetReverseWireFeed(0,0)") }, modifier = m) },
+                            { m -> HoldButton("送丝", onPress = { teach.startWireFeed() }, onRelease = { teach.stopWireFeed() }, modifier = m) },
+                            { m -> HoldButton("退丝", onPress = { teach.reverseWireFeed(true) }, onRelease = { teach.reverseWireFeed(false) }, modifier = m) },
                             { m -> HoldButton("送气", onPress = { viewModel.sendManualCommand(270, "SetAspirated(0,1)") }, onRelease = { viewModel.sendManualCommand(270, "SetAspirated(0,0)") }, modifier = m) },
                             { m -> HoldButton("起弧", onPress = { viewModel.sendManualCommand(247, "ARCStart(0,0,10000)") }, onRelease = { viewModel.sendManualCommand(102, "STOP") }, modifier = m) }
                         )
@@ -348,13 +353,13 @@ fun TBarScreen(
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                         Text("焊长:", fontSize = 12.sp, color = Color.Gray)
                         Text(
-                            "%.1f m".format(java.util.Locale.US, viewModel.weldingLength), 
+                            "%.1f m".format(java.util.Locale.US, ui.weldingLength), 
                             fontSize = 12.sp, 
                             fontWeight = FontWeight.Bold,
                             modifier = Modifier.clickable { viewModel.clearStats() }
                         )
                     }
-                    val duration = viewModel.weldingDuration
+                    val duration = ui.weldingDuration
                     val hours = duration / 3600
                     val minutes = (duration % 3600) / 60
                     val seconds = duration % 60
@@ -370,7 +375,7 @@ fun TBarScreen(
                     }
                     ActionButton(
                         text = "系统更新",
-                        onClick = { viewModel.checkForUpdate() },
+                        onClick = { onCheckUpdate() },
                         modifier = Modifier.fillMaxWidth()
                     )
                 }
@@ -408,19 +413,22 @@ fun TBarScreen(
         )
     }
 
-    if (viewModel.isRobotErrorDialogVisible && viewModel.currentRobotErrors.isNotEmpty()) {
+    if (ui.isRobotErrorDialogVisible && viewModel.currentRobotErrors.isNotEmpty()) {
         RobotErrorDialog(
-            viewModel = viewModel,
-            errors = viewModel.currentRobotErrors
+            errors = viewModel.currentRobotErrors,
+            onDismiss = {
+                viewModel.currentRobotErrors.clear()
+                viewModel.isRobotErrorDialogVisible = false
+            },
         )
     }
 
     // Missing Process Dialog
-    if (viewModel.isMissingProcessDialogVisible) {
+    if (ui.isMissingProcessDialogVisible) {
         AlertDialog(
             onDismissRequest = { viewModel.isMissingProcessDialogVisible = false },
             title = { Text("工艺文件缺失") },
-            text = { Text(viewModel.missingProcessMessage) },
+            text = { Text(ui.missingProcessMessage) },
             confirmButton = {
                 Button(
                     onClick = { viewModel.isMissingProcessDialogVisible = false }
@@ -432,7 +440,7 @@ fun TBarScreen(
     }
 
     // 重命名对话框
-    if (viewModel.isRenameDialogVisible) {
+    if (ui.isRenameDialogVisible) {
         AlertDialog(
             onDismissRequest = { viewModel.isRenameDialogVisible = false },
             title = { Text("修改焊道名称") },
@@ -441,7 +449,7 @@ fun TBarScreen(
                     Text("请输入新的焊道名称：")
                     Spacer(modifier = Modifier.height(8.dp))
                     TextField(
-                        value = viewModel.newWeldPathName,
+                        value = ui.newWeldPathName,
                         onValueChange = { viewModel.newWeldPathName = it },
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -450,7 +458,7 @@ fun TBarScreen(
             confirmButton = {
                 Button(
                     onClick = {
-                        viewModel.renameWeldPath(viewModel.newWeldPathName)
+                        viewModel.renameWeldPath(ui.newWeldPathName)
                         viewModel.isRenameDialogVisible = false
                     }
                 ) {
@@ -471,14 +479,14 @@ fun TBarScreen(
 
 
     // Set Current/Voltage Dialog
-    if (viewModel.isCurrentVoltageDialogVisible) {
+    if (ui.isCurrentVoltageDialogVisible) {
         AlertDialog(
             onDismissRequest = { viewModel.isCurrentVoltageDialogVisible = false },
             title = { Text("设置电流电压") },
             text = {
                 Column {
                     OutlinedTextField(
-                        value = viewModel.inputCurrent,
+                        value = ui.inputCurrent,
                         onValueChange = { viewModel.inputCurrent = it },
                         label = { Text("焊接电流 (A) [0-1000]") },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
@@ -486,7 +494,7 @@ fun TBarScreen(
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     OutlinedTextField(
-                        value = viewModel.inputVoltage,
+                        value = ui.inputVoltage,
                         onValueChange = { viewModel.inputVoltage = it },
                         label = { Text("焊接电压 (V) [0-1000]") },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
@@ -513,6 +521,12 @@ fun TBarScreen(
     }
 
     FineTuneDialog(viewModel.fineTune)
+
+    if (showGapEditor) {
+        Box(modifier = Modifier.fillMaxSize().zIndex(20f)) {
+            TBarProcessEditorScreen(viewModel, onBack = { showGapEditor = false })
+        }
+    }
 }
 
 

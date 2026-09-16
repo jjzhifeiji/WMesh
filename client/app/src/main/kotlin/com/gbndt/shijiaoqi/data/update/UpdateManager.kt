@@ -64,7 +64,7 @@ class UpdateManager(private val context: Context) {
             .setTitle("软件更新")
             .setDescription("正在下载新版本...")
             .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-            .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName)
+            .setDestinationInExternalFilesDir(context, Environment.DIRECTORY_DOWNLOADS, fileName)
             .setAllowedOverMetered(true)
             .setAllowedOverRoaming(true)
 
@@ -143,6 +143,23 @@ class UpdateManager(private val context: Context) {
             cursor.close()
         }
         return null
+    }
+
+    /** 查询这条下载的状态；没有这条就返回 -1。 */
+    fun downloadStatus(id: Long): Int {
+        val downloadManager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+        val cursor = downloadManager.query(DownloadManager.Query().setFilterById(id))
+        try {
+            if (cursor.moveToFirst()) {
+                val statusIndex = cursor.getColumnIndex(DownloadManager.COLUMN_STATUS)
+                if (statusIndex >= 0) return cursor.getInt(statusIndex)
+            }
+        } catch (e: Exception) {
+            Log.e("UpdateManager", "Check status failed", e)
+        } finally {
+            cursor.close()
+        }
+        return -1
     }
 
     // 标准工艺库不再解到本机文件树；工艺只从闭包进袋。

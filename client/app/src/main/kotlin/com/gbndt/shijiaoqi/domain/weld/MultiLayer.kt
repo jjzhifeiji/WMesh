@@ -3,7 +3,7 @@ package com.gbndt.shijiaoqi.domain.weld
 import com.gbndt.shijiaoqi.model.Pose
 import com.gbndt.shijiaoqi.model.WeldPointType
 
-/** 多层交错下发与无参考点时的层偏移；有参考点的几何仍走现网 generatePassPath。 */
+/** 多层交错下发与无参考点时的层偏移；有参考点的几何在 MultiLayerPass。 */
 object MultiLayerRun {
     data class Step(val pathIndex: Int, val passIndex: Int)
 
