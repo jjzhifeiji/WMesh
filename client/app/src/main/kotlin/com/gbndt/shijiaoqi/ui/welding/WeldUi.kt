@@ -1,9 +1,9 @@
 package com.gbndt.shijiaoqi.ui.welding
 
-import com.gbndt.shijiaoqi.domain.weld.ProcessChoice
-import com.gbndt.shijiaoqi.domain.weld.ProjectChoice
+import com.gbndt.shijiaoqi.domain.shared.ProcessChoice
+import com.gbndt.shijiaoqi.domain.shared.ProjectChoice
 import com.gbndt.shijiaoqi.model.RobotError
-import com.gbndt.shijiaoqi.model.WeldPath
+import com.gbndt.shijiaoqi.model.single.WeldPath
 
 /** 开焊互斥态：空闲 / 焊接或模拟（可暂停）。 */
 sealed interface WeldRunUi {
@@ -52,7 +52,7 @@ data class SingleWeldUiState(
 /** 多层焊道屏状态。 */
 data class MultiLayerUiState(
     val run: WeldRunUi = WeldRunUi.Idle, // 开焊态
-    val paths: List<com.gbndt.shijiaoqi.model.MultiLayerWeldPath> = emptyList(), // 多层焊道
+    val paths: List<com.gbndt.shijiaoqi.model.multilayer.MultiLayerWeldPath> = emptyList(), // 多层焊道
     val selectedMultiLayerPathIndex: Int = 0, // 选中焊道
     val selectedPassIndex: Int = -1, // 道次；底道 -1
     val listScrollIndex: Int = 0, // 列表滚动

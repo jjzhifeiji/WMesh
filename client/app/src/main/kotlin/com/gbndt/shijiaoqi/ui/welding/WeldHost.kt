@@ -1,7 +1,7 @@
 package com.gbndt.shijiaoqi.ui.welding
 
-import com.gbndt.shijiaoqi.domain.weld.ProcessChoice
-import com.gbndt.shijiaoqi.domain.weld.ProjectChoice
+import com.gbndt.shijiaoqi.domain.shared.ProcessChoice
+import com.gbndt.shijiaoqi.domain.shared.ProjectChoice
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import java.util.UUID

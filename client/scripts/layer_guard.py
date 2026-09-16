@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""拦住 model/、domain/ 引用 android.* 或 Compose。"""
+"""拦住 model/、domain/、geom/ 引用 android.* 或 Compose；geom 不依赖本应用其它包。"""
 
 from __future__ import annotations
 
@@ -8,8 +8,10 @@ import sys
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 SRC = os.path.join(ROOT, "app", "src", "main", "kotlin", "com", "gbndt", "shijiaoqi")
-TARGETS = (os.path.join(SRC, "model"), os.path.join(SRC, "domain"))
+TARGETS = (os.path.join(SRC, "model"), os.path.join(SRC, "domain"), os.path.join(SRC, "geom"))
 BANNED = ("import android.", "import androidx.compose")
+GEOM = os.path.join(SRC, "geom")
+GEOM_OK = "import com.gbndt.shijiaoqi.geom"
 
 
 def offenders() -> list[str]:
@@ -23,19 +25,22 @@ def offenders() -> list[str]:
                 if not name.endswith(".kt"):
                     continue
                 path = os.path.join(dirpath, name)
+                in_geom = os.path.isdir(GEOM) and os.path.commonpath([path, GEOM]) == GEOM
                 with open(path, encoding="utf-8") as f:
                     for i, line in enumerate(f, 1):
                         stripped = line.strip()
+                        rel = os.path.relpath(path, ROOT)
                         if any(stripped.startswith(b) for b in BANNED):
-                            rel = os.path.relpath(path, ROOT)
                             hits.append(f"{rel}:{i}: {stripped}")
+                        if in_geom and stripped.startswith("import com.gbndt.shijiaoqi.") and not stripped.startswith(GEOM_OK):
+                            hits.append(f"{rel}:{i}: geom must not import app packages: {stripped}")
     return hits
 
 
 def main() -> int:
     bad = offenders()
     if bad:
-        print("model/domain must not import android.* or androidx.compose.*")
+        print("layer_guard failed")
         print("\n".join(bad))
         return 1
     return 0

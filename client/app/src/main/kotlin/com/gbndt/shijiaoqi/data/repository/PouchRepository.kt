@@ -5,11 +5,11 @@ import com.gbndt.shijiaoqi.data.pouch.Pouch
 import com.gbndt.shijiaoqi.data.pouch.PouchProcessSource
 import com.gbndt.shijiaoqi.data.pouch.PouchSave
 import com.gbndt.shijiaoqi.data.session.BagSession
-import com.gbndt.shijiaoqi.domain.weld.ProcessChoice
-import com.gbndt.shijiaoqi.domain.weld.ProcessSource
-import com.gbndt.shijiaoqi.domain.weld.ProjectChoice
-import com.gbndt.shijiaoqi.model.MultiLayerWeldPath
-import com.gbndt.shijiaoqi.model.WeldPath
+import com.gbndt.shijiaoqi.domain.shared.ProcessChoice
+import com.gbndt.shijiaoqi.domain.shared.ProcessSource
+import com.gbndt.shijiaoqi.domain.shared.ProjectChoice
+import com.gbndt.shijiaoqi.model.multilayer.MultiLayerWeldPath
+import com.gbndt.shijiaoqi.model.single.WeldPath
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton

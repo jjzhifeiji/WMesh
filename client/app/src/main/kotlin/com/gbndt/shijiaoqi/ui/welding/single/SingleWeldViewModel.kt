@@ -13,28 +13,28 @@ import com.gbndt.shijiaoqi.data.repository.RobotRepository
 import com.gbndt.shijiaoqi.data.robot.protocol.FrPacket
 import com.gbndt.shijiaoqi.data.robot.protocol.RobotCommands
 import com.gbndt.shijiaoqi.data.robot.protocol.RobotLink
-import com.gbndt.shijiaoqi.domain.script.ScriptPath
-import com.gbndt.shijiaoqi.domain.script.ScriptPoint
-import com.gbndt.shijiaoqi.domain.script.SingleLayerLua
-import com.gbndt.shijiaoqi.domain.script.StopResume
-import com.gbndt.shijiaoqi.domain.script.WeldLineFollow
-import com.gbndt.shijiaoqi.domain.script.WeldRun
-import com.gbndt.shijiaoqi.domain.weld.Capture
-import com.gbndt.shijiaoqi.domain.weld.CoordinateUtils.toPoint3D
-import com.gbndt.shijiaoqi.domain.weld.CornerWeldGenerator
-import com.gbndt.shijiaoqi.domain.weld.Point3D
-import com.gbndt.shijiaoqi.domain.weld.ProcessBind
-import com.gbndt.shijiaoqi.domain.weld.ProcessChoice
-import com.gbndt.shijiaoqi.domain.weld.ProcessRef
-import com.gbndt.shijiaoqi.domain.weld.ProjectChoice
-import com.gbndt.shijiaoqi.domain.weld.SingleLayerProject
-import com.gbndt.shijiaoqi.domain.weld.WeldProgress
+import com.gbndt.shijiaoqi.domain.shared.ScriptPath
+import com.gbndt.shijiaoqi.domain.shared.ScriptPoint
+import com.gbndt.shijiaoqi.domain.single.SingleLayerLua
+import com.gbndt.shijiaoqi.domain.shared.StopResume
+import com.gbndt.shijiaoqi.domain.shared.WeldLineFollow
+import com.gbndt.shijiaoqi.domain.shared.WeldRun
+import com.gbndt.shijiaoqi.domain.shared.Capture
+import com.gbndt.shijiaoqi.domain.single.CornerWeldGenerator
+import com.gbndt.shijiaoqi.domain.shared.ProcessBind
+import com.gbndt.shijiaoqi.domain.shared.ProcessChoice
+import com.gbndt.shijiaoqi.domain.shared.ProcessRef
+import com.gbndt.shijiaoqi.domain.shared.ProjectChoice
+import com.gbndt.shijiaoqi.domain.single.SingleLayerProject
+import com.gbndt.shijiaoqi.domain.shared.WeldProgress
+import com.gbndt.shijiaoqi.domain.shared.toVec3
+import com.gbndt.shijiaoqi.geom.Vec3
 import com.gbndt.shijiaoqi.model.Pose
 import com.gbndt.shijiaoqi.model.RefPoint
 import com.gbndt.shijiaoqi.model.RobotError
 import com.gbndt.shijiaoqi.model.RobotErrorCodes
-import com.gbndt.shijiaoqi.model.WeldPath
-import com.gbndt.shijiaoqi.model.WeldPathProcessSlot
+import com.gbndt.shijiaoqi.model.single.WeldPath
+import com.gbndt.shijiaoqi.model.single.WeldPathProcessSlot
 import com.gbndt.shijiaoqi.model.WeldPoint
 import com.gbndt.shijiaoqi.model.WeldPointType
 import com.gbndt.shijiaoqi.model.WeldProcess
@@ -590,8 +590,8 @@ class SingleWeldViewModel @Inject constructor(
         var bestI = 0
         var bestJ = 0
         for (i in ptsA.indices) for (j in ptsB.indices) {
-            val pA = ptsA[i].pose?.toPoint3D() ?: continue
-            val pB = ptsB[j].pose?.toPoint3D() ?: continue
+            val pA = ptsA[i].pose?.toVec3() ?: continue
+            val pB = ptsB[j].pose?.toVec3() ?: continue
             val d = pA.distanceTo(pB)
             if (d < minD) {
                 minD = d
@@ -599,17 +599,17 @@ class SingleWeldViewModel @Inject constructor(
                 bestJ = j
             }
         }
-        val pA1 = ptsA[bestI].pose!!.toPoint3D()
-        val pA2 = if (bestI == 0) ptsA[1].pose!!.toPoint3D() else ptsA[bestI - 1].pose!!.toPoint3D()
-        val pB1 = ptsB[bestJ].pose!!.toPoint3D()
-        val pB2 = if (bestJ == 0) ptsB[1].pose!!.toPoint3D() else ptsB[bestJ - 1].pose!!.toPoint3D()
+        val pA1 = ptsA[bestI].pose!!.toVec3()
+        val pA2 = if (bestI == 0) ptsA[1].pose!!.toVec3() else ptsA[bestI - 1].pose!!.toVec3()
+        val pB1 = ptsB[bestJ].pose!!.toVec3()
+        val pB2 = if (bestJ == 0) ptsB[1].pose!!.toVec3() else ptsB[bestJ - 1].pose!!.toVec3()
         val hit = CornerWeldGenerator.calculate3DIntersection(pA1, pA2, pB1, pB2)
         if (hit == null) {
             toast("无法计算交点，两条焊道平行或距离异常")
             return
         }
         val cornerPose = ptsB[bestJ].pose!!.copy(x = hit.x, y = hit.y, z = hit.z)
-        val cornerPt = cornerPose.toPoint3D()
+        val cornerPt = cornerPose.toVec3()
         val vecA = pathDir(refA, cornerPt) ?: return
         val vecB = pathDir(refB, cornerPt) ?: return
         val pid = processId?.takeIf { it.isNotEmpty() } ?: refA.processId
@@ -848,7 +848,7 @@ class SingleWeldViewModel @Inject constructor(
 
     private fun currentPath(): WeldPath? = weldPaths.getOrNull(selectedWeldPathIndex)
 
-    private fun pathDir(path: WeldPath, corner: Point3D): Point3D? {
+    private fun pathDir(path: WeldPath, corner: Vec3): Vec3? {
         val pts = path.points.filter {
             it.type == WeldPointType.START || it.type == WeldPointType.MIDDLE || it.type == WeldPointType.END
         }
@@ -856,15 +856,15 @@ class SingleWeldViewModel @Inject constructor(
         var minD = Double.MAX_VALUE
         var best = 0
         for (i in pts.indices) {
-            val p = pts[i].pose?.toPoint3D() ?: continue
+            val p = pts[i].pose?.toVec3() ?: continue
             val d = p.distanceTo(corner)
             if (d < minD) {
                 minD = d
                 best = i
             }
         }
-        val p1 = pts[best].pose!!.toPoint3D()
-        val p2 = if (best == 0) pts[1].pose!!.toPoint3D() else pts[best - 1].pose!!.toPoint3D()
+        val p1 = pts[best].pose!!.toVec3()
+        val p2 = if (best == 0) pts[1].pose!!.toVec3() else pts[best - 1].pose!!.toVec3()
         return p2 - p1
     }
 

@@ -31,10 +31,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.gbndt.shijiaoqi.model.GapBand
+import com.gbndt.shijiaoqi.model.tbar.GapBand
 import com.gbndt.shijiaoqi.ui.project.ClosureProcessPicker
-import com.gbndt.shijiaoqi.domain.weld.TBarPass
-import com.gbndt.shijiaoqi.domain.weld.TBarRun
+import com.gbndt.shijiaoqi.domain.tbar.TBarPass
+import com.gbndt.shijiaoqi.domain.tbar.TBarRun
 import com.gbndt.shijiaoqi.ui.welding.*
 
 @Composable

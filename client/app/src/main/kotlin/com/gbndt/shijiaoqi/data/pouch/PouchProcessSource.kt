@@ -1,9 +1,9 @@
 package com.gbndt.shijiaoqi.data.pouch
 
 import com.gbndt.shijiaoqi.data.crypt.Wm2
-import com.gbndt.shijiaoqi.domain.weld.ProcessChoice
-import com.gbndt.shijiaoqi.domain.weld.ProcessJson
-import com.gbndt.shijiaoqi.domain.weld.ProcessSource
+import com.gbndt.shijiaoqi.domain.shared.ProcessChoice
+import com.gbndt.shijiaoqi.domain.shared.ProcessJson
+import com.gbndt.shijiaoqi.domain.shared.ProcessSource
 import com.gbndt.shijiaoqi.model.WeldProcess
 import java.util.UUID
 

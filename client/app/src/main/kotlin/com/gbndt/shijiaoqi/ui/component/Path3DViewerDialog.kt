@@ -20,7 +20,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
-import com.gbndt.shijiaoqi.model.WeldPath
+import com.gbndt.shijiaoqi.model.single.WeldPath
 import com.gbndt.shijiaoqi.model.WeldPointType
 import kotlin.math.cos
 import kotlin.math.sin

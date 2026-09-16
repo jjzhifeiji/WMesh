@@ -1,8 +1,8 @@
 package com.gbndt.shijiaoqi.ui.welding
 
 import androidx.compose.runtime.toMutableStateList
-import com.gbndt.shijiaoqi.model.MultiLayerWeldPath
-import com.gbndt.shijiaoqi.model.WeldPath
+import com.gbndt.shijiaoqi.model.multilayer.MultiLayerWeldPath
+import com.gbndt.shijiaoqi.model.single.WeldPath
 
 /**
  * 领域层解出来的焊道用的是普通列表；进界面前换成 Compose 快照列表，

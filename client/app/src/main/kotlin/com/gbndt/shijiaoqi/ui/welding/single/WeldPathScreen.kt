@@ -67,7 +67,7 @@ fun WeldPathScreen(
 ) {
     var showDeleteDialog by remember { mutableStateOf(false) }
     var showCornerWeldDialog by remember { mutableStateOf(false) }
-    var cornerWeldInitialParams by remember { mutableStateOf<com.gbndt.shijiaoqi.model.CornerGroupParams?>(null) }
+    var cornerWeldInitialParams by remember { mutableStateOf<com.gbndt.shijiaoqi.model.single.CornerGroupParams?>(null) }
     var show3DViewer by remember { mutableStateOf(false) }
     var weldPathToDeleteIndex by remember { mutableStateOf(-1) }
     var showProcessPicker by remember { mutableStateOf(false) }
@@ -583,7 +583,7 @@ fun WeldPathScreen(
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun WeldPathItem(
-    weldPath: com.gbndt.shijiaoqi.model.WeldPath,
+    weldPath: com.gbndt.shijiaoqi.model.single.WeldPath,
     isSelected: Boolean,
     onSelect: () -> Unit,
     onProcess: () -> Unit,
@@ -794,7 +794,7 @@ fun WeldPathItem(
 
 @Composable
 private fun ExtraProcessRow(
-    slot: com.gbndt.shijiaoqi.model.WeldPathProcessSlot,
+    slot: com.gbndt.shijiaoqi.model.single.WeldPathProcessSlot,
     index: Int,
     onProcess: () -> Unit,
     onToggleEnabled: () -> Unit,

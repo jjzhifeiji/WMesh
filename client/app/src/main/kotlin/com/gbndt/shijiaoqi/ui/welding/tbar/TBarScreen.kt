@@ -40,7 +40,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.gbndt.shijiaoqi.model.WeldPointType
 import com.gbndt.shijiaoqi.model.displayName
-import com.gbndt.shijiaoqi.model.isTBarCollectable
+import com.gbndt.shijiaoqi.model.tbar.isTBarCollectable
 import com.gbndt.shijiaoqi.ui.component.*
 import com.gbndt.shijiaoqi.ui.login.*
 import com.gbndt.shijiaoqi.ui.project.*
@@ -537,7 +537,7 @@ fun TBarScreen(
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun WeldPathItem(
-    weldPath: com.gbndt.shijiaoqi.model.WeldPath,
+    weldPath: com.gbndt.shijiaoqi.model.single.WeldPath,
     isSelected: Boolean,
     onSelect: () -> Unit,
     onProcess: () -> Unit,
@@ -756,7 +756,7 @@ fun WeldPathItem(
 
 @Composable
 private fun ExtraProcessRow(
-    slot: com.gbndt.shijiaoqi.model.WeldPathProcessSlot,
+    slot: com.gbndt.shijiaoqi.model.single.WeldPathProcessSlot,
     index: Int,
     onProcess: () -> Unit,
     onToggleEnabled: () -> Unit,

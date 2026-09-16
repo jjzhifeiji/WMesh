@@ -33,7 +33,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
 import androidx.compose.foundation.BorderStroke
-import com.gbndt.shijiaoqi.model.MultiLayerWeldPath
+import com.gbndt.shijiaoqi.model.multilayer.MultiLayerWeldPath
 import com.gbndt.shijiaoqi.model.WeldPointType
 import com.gbndt.shijiaoqi.model.displayName
 import com.gbndt.shijiaoqi.model.WeldPoint

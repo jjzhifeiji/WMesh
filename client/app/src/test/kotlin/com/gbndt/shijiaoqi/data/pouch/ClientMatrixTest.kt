@@ -1,10 +1,10 @@
 package com.gbndt.shijiaoqi.data.pouch
 
 import com.gbndt.shijiaoqi.data.crypt.Wm2
-import com.gbndt.shijiaoqi.domain.weld.ProjectRefs
-import com.gbndt.shijiaoqi.domain.weld.SingleLayerProject
-import com.gbndt.shijiaoqi.domain.weld.TBarProject
-import com.gbndt.shijiaoqi.domain.weld.TBarRun
+import com.gbndt.shijiaoqi.domain.shared.ProjectRefs
+import com.gbndt.shijiaoqi.domain.single.SingleLayerProject
+import com.gbndt.shijiaoqi.domain.tbar.TBarProject
+import com.gbndt.shijiaoqi.domain.tbar.TBarRun
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue

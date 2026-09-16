@@ -27,7 +27,7 @@ import com.gbndt.shijiaoqi.ui.project.ClosureProcessPicker
 @Composable
 fun CornerWeldDialog(
     viewModel: SingleWeldViewModel,
-    initialParams: com.gbndt.shijiaoqi.model.CornerGroupParams? = null,
+    initialParams: com.gbndt.shijiaoqi.model.single.CornerGroupParams? = null,
     onDismiss: () -> Unit
 ) {
     val weldPaths = viewModel.weldPaths

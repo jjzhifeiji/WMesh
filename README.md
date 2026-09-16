@@ -2,15 +2,16 @@
 
 焊接机器人场景的 **WAN + Factory + Client** 分层平台。需求基线见 `docs/平台架构核心需求.md`（已锁定），推进计划见 `docs/总体计划.md`。
 
-仓库里是两个彼此独立、可单独构建部署的工程：
+仓库里是彼此独立、可单独构建部署的工程：
 
 | 目录 | 是什么 | 说明 |
 | --- | --- | --- |
 | [`global/`](global/README.md) | WAN 跨厂总控 | 唯一 WAN 管理员、工厂名录、给每个厂下发一名初始超管；不碰厂内人员；独立对象存储放平台级资产 |
 | [`factory/`](factory/README.md) | 厂内服务 | 本厂人员账号、自定义组织树、角色作用域、会话与审计；每厂一个独立库 + 本地对象存储 |
+| [`client/`](client/README.md) | 现场示教器 | Android 单模块；包作用域见该 README |
 | `docs/` | 需求、规格、验收矩阵 | 业务对错以此为准 |
 
-每个工程目录下只有 `frontend/`（React + Ant Design 管理后台）与 `server/`（Go），外加自己的 `Dockerfile`、`docker-compose.yml`、`Makefile`、`README.md`。两侧 Go 模块互不导入，WAN 库里没有厂内表，两侧对象存储互不相通。
+`global/` 与 `factory/` 各自只有 `frontend/`（React）和 `server/`（Go），外加自己的部署文件。两侧 Go 模块互不导入，WAN 库里没有厂内表，两侧对象存储互不相通。`client/` 是独立的 Android 工程，包作用域见其 README。
 
 ## 快速开始
 
