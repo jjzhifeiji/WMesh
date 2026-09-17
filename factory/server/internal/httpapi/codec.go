@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/google/uuid"
@@ -29,6 +30,14 @@ func decodeJSON(r *http.Request, dst any) error {
 // 取出会话令牌，不校验。
 func bearer(r *http.Request) string {
 	return strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+}
+
+// 写出软件包字节，不走 JSON。
+func writeBytes(w http.ResponseWriter, body []byte) {
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(body)
 }
 
 // 写出 JSON 响应。

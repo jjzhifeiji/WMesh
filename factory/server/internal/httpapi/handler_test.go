@@ -445,3 +445,73 @@ func TestFactorySoftwareHTTP(t *testing.T) {
 		t.Fatalf("installed current %d %s", code, body)
 	}
 }
+
+func TestPadClientSoftwareHTTP(t *testing.T) {
+	h, err := hub.New(testpg.AdminDSN())
+	if err != nil {
+		t.Fatalf("hub: %v", err)
+	}
+	fid := id.New()
+	t.Cleanup(func() {
+		_ = h.Drop(fid)
+		h.Close()
+	})
+	srv := httptest.NewServer(httpapi.New(h, "boot-secret", "").Router())
+	t.Cleanup(srv.Close)
+	base := "/v1/factories/" + fid.String()
+	code, body := do(t, srv, "POST", "/internal/bootstrap", "boot-secret", `{"factoryId":"`+fid.String()+`","saLogin":"sa","saDisplay":"超管"}`)
+	if code != http.StatusCreated {
+		t.Fatalf("bootstrap %d %s", code, body)
+	}
+	svc, err := h.Service(context.Background(), fid)
+	if err != nil {
+		t.Fatalf("service: %v", err)
+	}
+	if err := svc.Store().GrantLocalLease(context.Background()); err != nil {
+		t.Fatalf("lease: %v", err)
+	}
+	act := gjson(t, body, "activationToken")
+	code, body = do(t, srv, "POST", base+"/activate", "", `{"loginName":"sa","activationToken":"`+act+`","password":"secret"}`)
+	if code != http.StatusNoContent {
+		t.Fatalf("activate %d %s", code, body)
+	}
+	code, body = do(t, srv, "POST", base+"/pad/login", "", `{"loginName":"sa","password":"secret"}`)
+	if code != http.StatusOK {
+		t.Fatalf("pad login %d %s", code, body)
+	}
+	padTok := gjson(t, body, "token")
+	code, body = do(t, srv, "GET", base+"/pad/software/client", "", "")
+	if code != http.StatusUnauthorized {
+		t.Fatalf("anon %d %s", code, body)
+	}
+	code, body = do(t, srv, "GET", base+"/pad/software/client", padTok, "")
+	if code != http.StatusOK || strings.TrimSpace(body) != "null" {
+		t.Fatalf("empty %d %s", code, body)
+	}
+	wanPub, wanPriv, err := nodekey.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	apk := []byte("apk-http-51")
+	sum := digest.Sum(apk)
+	snap := service.SoftwareSnapshot{
+		Kind: service.SoftwareClientAPK, Version: 51, VersionName: "6.1.0", Digest: sum,
+		Signature:    nodekey.Sign(wanPriv, softwaresign.Message(service.SoftwareClientAPK, 51, sum, fid)),
+		WANPublicKey: wanPub, TargetFactoryID: fid, Body: apk,
+	}
+	if err := svc.Updates.AcceptSoftwareDelivery(context.Background(), snap); err != nil {
+		t.Fatalf("accept: %v", err)
+	}
+	code, body = do(t, srv, "GET", base+"/pad/software/client", padTok, "")
+	if code != http.StatusOK || gjson(t, body, "version") != "51" || gjson(t, body, "versionName") != "6.1.0" {
+		t.Fatalf("meta %d %s", code, body)
+	}
+	code, body = do(t, srv, "GET", base+"/pad/software/client/51", padTok, "")
+	if code != http.StatusOK || body != string(apk) {
+		t.Fatalf("file %d %q", code, body)
+	}
+	code, body = do(t, srv, "GET", base+"/pad/software/client/9", padTok, "")
+	if code != http.StatusNotFound {
+		t.Fatalf("missing %d %s", code, body)
+	}
+}

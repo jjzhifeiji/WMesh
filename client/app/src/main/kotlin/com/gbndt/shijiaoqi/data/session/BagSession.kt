@@ -216,6 +216,26 @@ class BagSession(
         pouch.setWelding(value)
     }
 
+    fun isWelding(): Boolean = pouch.isWelding()
+
+    /** 本厂已收的客户端包；未登录或没有则空。 */
+    fun pendingClientSoftware(): RemoteClientSoftware? {
+        val tok = token ?: return null
+        val base = identity.factoryUrl
+        val fid = identity.factoryId
+        if (base.isBlank() || fid.isBlank()) return null
+        return factory.padClientSoftware(base, fid, tok)
+    }
+
+    /** 按版本拉 APK 字节；摘要由调用方核。 */
+    fun pullClientApk(version: Long): ByteArray {
+        val tok = token ?: throw LoginRejected("unauthorized")
+        val base = identity.factoryUrl
+        val fid = identity.factoryId
+        if (base.isBlank() || fid.isBlank()) throw LoginRejected("unauthorized")
+        return factory.pullPadClientApk(base, fid, tok, version)
+    }
+
     fun open(id: UUID): ByteArray {
         hydrateCipher(id)
         return pouch.open(id)

@@ -1,12 +1,9 @@
 package com.gbndt.shijiaoqi.model
 
-import kotlinx.serialization.Serializable
-
-/** 发布通道给出的版本信息。 */
-@Serializable
+/** 厂服给出的客户端新包；确认后才下载安装。 */
 data class UpdateInfo(
-    val versionCode: Int,
-    val versionName: String,
-    val downloadUrl: String,
-    val description: String
+    val versionCode: Int, // 单调整数，大于本机才提示
+    val versionName: String, // 给人看的版本名
+    val digest: ByteArray, // 包文件 SHA-256
+    val description: String = "", // 弹窗说明
 )

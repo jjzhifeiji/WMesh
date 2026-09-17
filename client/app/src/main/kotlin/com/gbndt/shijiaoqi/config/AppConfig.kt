@@ -24,9 +24,6 @@ object AppConfig {
     /** warn/error 环形文件，在 filesDir 下，不进共有存储。 */
     const val LOG_DIR = "logs"
 
-    /** 厂内发布清单。 */
-    const val UPDATE_MANIFEST_URL = "http://cdn.gbndt.com/sjqapk/update.json"
-
     /** 更新包在 filesDir 下的子目录，不进共有存储。 */
     const val UPDATE_DIR = "updates"
 

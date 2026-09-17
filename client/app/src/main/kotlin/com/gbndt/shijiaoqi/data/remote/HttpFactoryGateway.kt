@@ -18,6 +18,7 @@ import com.gbndt.shijiaoqi.data.session.PadLoginResult
 import com.gbndt.shijiaoqi.data.session.PersonMeta
 import com.gbndt.shijiaoqi.data.session.PolicyMeta
 import com.gbndt.shijiaoqi.data.session.RemoteAsset
+import com.gbndt.shijiaoqi.data.session.RemoteClientSoftware
 import com.gbndt.shijiaoqi.data.log.HttpLog
 
 class HttpFactoryGateway : FactoryGateway {
@@ -149,6 +150,21 @@ class HttpFactoryGateway : FactoryGateway {
         if (http !in 200..299) throw LoginRejected(parseError(http, text))
     }
 
+    override fun padClientSoftware(baseUrl: String, factoryId: String, token: String): RemoteClientSoftware? {
+        val (code, text) = get(baseUrl, "/v1/factories/$factoryId/pad/software/client", token)
+        if (code !in 200..299) throw LoginRejected(parseError(code, text))
+        if (text.isBlank() || text.trim() == "null") return null
+        val dto = json.decodeFromString(PadClientSoftwareDto.serializer(), text)
+        return RemoteClientSoftware(dto.version, dto.versionName, decodeB64(dto.digest))
+    }
+
+    override fun pullPadClientApk(baseUrl: String, factoryId: String, token: String, version: Long): ByteArray {
+        val (code, bytes) = getBytes(baseUrl, "/v1/factories/$factoryId/pad/software/client/$version", token)
+        if (code == 404) throw LoginRejected("not found")
+        if (code !in 200..299) throw LoginRejected("http $code")
+        return bytes
+    }
+
     private fun decodeAsset(text: String): RemoteAsset {
         val dto = json.decodeFromString(AssetDto.serializer(), text)
         return RemoteAsset(
@@ -272,6 +288,33 @@ class HttpFactoryGateway : FactoryGateway {
             code to text
         } catch (e: Exception) {
             HttpLog.fail("GET", path, e.javaClass.simpleName, quiet = quiet)
+            throw e
+        }
+    }
+
+    private fun getBytes(baseUrl: String, path: String, token: String): Pair<Int, ByteArray> {
+        HttpLog.req("GET", path)
+        return try {
+            val url = URL(baseUrl.trimEnd('/') + path)
+            val conn = (url.openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = 15_000
+                readTimeout = 120_000
+                if (token.isNotBlank()) {
+                    setRequestProperty("Authorization", "Bearer $token")
+                }
+            }
+            val code = conn.responseCode
+            val bytes = if (code in 200..299) {
+                conn.inputStream.use { it.readBytes() }
+            } else {
+                ByteArray(0)
+            }
+            conn.disconnect()
+            HttpLog.rspBytes("GET", path, code, bytes.size.toLong())
+            code to bytes
+        } catch (e: Exception) {
+            HttpLog.fail("GET", path, e.javaClass.simpleName)
             throw e
         }
     }
@@ -422,6 +465,14 @@ class HttpFactoryGateway : FactoryGateway {
     private data class DepDto(
         val id: String,
         val revision: Long = 0,
+        val digest: String = "",
+    )
+
+    @Serializable
+    private data class PadClientSoftwareDto(
+        val kind: String = "",
+        val version: Long = 0,
+        val versionName: String = "",
         val digest: String = "",
     )
 }

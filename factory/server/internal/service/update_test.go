@@ -352,3 +352,54 @@ func TestAcceptSoftwareFirstTrust(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestPadClientSoftwarePull(t *testing.T) {
+	ctx := context.Background()
+	h := New(t)
+	seed, fac, err := h.Provision(ctx, "sa-pad", "超管")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fac.Activate(ctx, "sa-pad", seed.ActivationToken, "sa-pass"); err != nil {
+		t.Fatal(err)
+	}
+	tok := mustLogin(t, ctx, fac, "sa-pad", "sa-pass")
+	got, err := fac.PadClientSoftware(ctx, tok)
+	if err != nil || got != nil {
+		t.Fatalf("empty %+v %v", got, err)
+	}
+	if _, err := fac.PadClientSoftware(ctx, ""); !errors.Is(err, domain.ErrUnauthorized) {
+		t.Fatalf("anon %v", err)
+	}
+	wanPub, wanPriv, err := nodekey.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fac.SetWANPublicKey(ctx, wanPub); err != nil {
+		t.Fatal(err)
+	}
+	apk := []byte("apk-pad-51")
+	sum := digest.Sum(apk)
+	snap := factory.SoftwareSnapshot{
+		Kind: factory.SoftwareClientAPK, Version: 51, VersionName: "6.1.0", Digest: sum,
+		Signature:    nodekey.Sign(wanPriv, softwaresign.Message(factory.SoftwareClientAPK, 51, sum, seed.ID)),
+		WANPublicKey: wanPub, TargetFactoryID: seed.ID, Body: apk,
+	}
+	if err := fac.AcceptSoftwareDelivery(ctx, snap); err != nil {
+		t.Fatal(err)
+	}
+	row, err := fac.PadClientSoftware(ctx, tok)
+	if err != nil || row == nil || row.Version != 51 || row.VersionName != "6.1.0" {
+		t.Fatalf("meta %+v %v", row, err)
+	}
+	body, err := fac.PullPadClientSoftware(ctx, tok, 51)
+	if err != nil || !bytes.Equal(body, apk) {
+		t.Fatalf("pull %q %v", body, err)
+	}
+	if _, err := fac.PullPadClientSoftware(ctx, tok, 9); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("missing %v", err)
+	}
+	if _, err := fac.PullPadClientSoftware(ctx, "", 51); !errors.Is(err, domain.ErrUnauthorized) {
+		t.Fatalf("anon pull %v", err)
+	}
+}

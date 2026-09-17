@@ -5,9 +5,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.gbndt.shijiaoqi.config.AppConfig
-import com.gbndt.shijiaoqi.data.repository.UpdateRepository
 import com.gbndt.shijiaoqi.data.log.PadLog
+import com.gbndt.shijiaoqi.data.repository.UpdateRepository
 import com.gbndt.shijiaoqi.model.UpdateInfo
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -15,7 +14,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
-/** App 外壳的软件更新：查版本、下载、安装。 */
+/** App 外壳的软件更新：问厂服、下载、安装。 */
 @HiltViewModel
 class AppUpdateViewModel @Inject constructor(
     private val updates: UpdateRepository,
@@ -28,11 +27,19 @@ class AppUpdateViewModel @Inject constructor(
 
     private var downloading = false
 
-    /** 向发布清单问有没有新包。 */
+    /** 向本厂问有没有新包。 */
     fun check() {
         PadLog.info("Update", "check start")
+        if (!updates.loggedIn()) {
+            toast("先登录厂网再检查更新")
+            return
+        }
         viewModelScope.launch {
-            val info = updates.checkUpdate(AppConfig.UPDATE_MANIFEST_URL)
+            val info = runCatching { updates.checkUpdate() }.getOrElse { e ->
+                PadLog.warn("Update", "check failed ${e.message}")
+                toast("检查更新失败")
+                return@launch
+            }
             if (info != null) {
                 PadLog.info("Update", "check found version=${info.versionName}")
                 pending = info
@@ -52,12 +59,19 @@ class AppUpdateViewModel @Inject constructor(
     fun startDownload() {
         val info = pending ?: return
         if (downloading) return
+        if (updates.welding()) {
+            toast("焊完再更新")
+            return
+        }
         PadLog.info("Update", "download start version=${info.versionName}")
         pending = null
         downloading = true
         viewModelScope.launch {
             toast("开始下载更新...")
-            val file = updates.downloadApk(info.downloadUrl, "ShiJiaoQi_v${info.versionCode}.apk")
+            val file = runCatching { updates.downloadApk(info) }.getOrElse { e ->
+                PadLog.warn("Update", "download failed ${e.message}")
+                null
+            }
             downloading = false
             if (file == null) {
                 PadLog.warn("Update", "download failed")

@@ -80,6 +80,10 @@ interface FactoryGateway {
     ): RemoteAsset
     /** 删厂端这份；没有当成已删。 */
     fun deleteAsset(baseUrl: String, factoryId: String, token: String, assetId: String)
+    /** 登录平板看本厂已收客户端包元数据。 */
+    fun padClientSoftware(baseUrl: String, factoryId: String, token: String): RemoteClientSoftware?
+    /** 登录平板按版本拉 APK 字节。 */
+    fun pullPadClientApk(baseUrl: String, factoryId: String, token: String, version: Long): ByteArray
 }
 
 /** 厂端资产元数据；不含正文。 */
@@ -94,6 +98,13 @@ data class RemoteAsset(
     val revision: Long,
     val digest: ByteArray,
     val deps: List<com.gbndt.shijiaoqi.data.pouch.AssetDep> = emptyList(),
+)
+
+/** 本厂已收的客户端包元数据，不含 APK 字节。 */
+data class RemoteClientSoftware(
+    val version: Long, // 单调整数，须大于本机 versionCode 才提示
+    val versionName: String, // 给人看的版本名
+    val digest: ByteArray, // 包文件 SHA-256
 )
 
 /** 登录或绑定被拒绝，code 是英文原因。 */

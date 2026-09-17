@@ -357,3 +357,59 @@ func (s *Updates) ConfirmClientUpdate(ctx context.Context, bag *Bag, clocks Cloc
 	bag.SoftwareVersion = ready.Version
 	return s.auditTimed(ctx, personActor(bag), nil, "confirm_software", target, audit.Allow, src)
 }
+
+// PadClientSoftware 登录者看本厂已收最高客户端包元数据，不含字节。
+func (s *Updates) PadClientSoftware(ctx context.Context, token string) (*SoftwareReplica, error) {
+	if _, err := s.RequireActive(ctx, token); err != nil {
+		return nil, err
+	}
+	// 只给最高已收客户端包，不含字节。
+	max, err := s.store.MaxSoftwareReplica(ctx, SoftwareClientAPK)
+	if err != nil {
+		return nil, err
+	}
+	if max < 1 {
+		return nil, nil
+	}
+	row, err := s.store.SoftwareReplica(ctx, SoftwareClientAPK, max)
+	if err != nil {
+		return nil, err
+	}
+	return &row, nil
+}
+
+// PullPadClientSoftware 登录者按版本拉客户端包；摘要不对不给。
+func (s *Updates) PullPadClientSoftware(ctx context.Context, token string, version int64) ([]byte, error) {
+	acc, err := s.RequireActive(ctx, token)
+	target := softwareTarget(SoftwareClientAPK, version)
+	if err != nil {
+		_ = s.audit(ctx, nil, nil, "pull_software", target, audit.Deny)
+		return nil, err
+	}
+	if version < 1 {
+		_ = s.audit(ctx, &acc.ID, nil, "pull_software", target, audit.Deny)
+		return nil, domain.ErrInvalidName
+	}
+	row, err := s.store.SoftwareReplica(ctx, SoftwareClientAPK, version)
+	if err != nil {
+		_ = s.audit(ctx, &acc.ID, nil, "pull_software", target, audit.Deny)
+		return nil, err
+	}
+	// 取出包字节，摘要对不上不给平板。
+	body, err := s.blobs.Get(ctx, row.ObjectKey)
+	if err != nil {
+		_ = s.audit(ctx, &acc.ID, nil, "pull_software", target, audit.Deny)
+		if errors.Is(err, blob.ErrNotFound) {
+			return nil, domain.ErrIntegrity
+		}
+		return nil, err
+	}
+	if !digest.Match(body, row.Digest) {
+		_ = s.audit(ctx, &acc.ID, nil, "pull_software", target, audit.Deny)
+		return nil, domain.ErrIntegrity
+	}
+	if err := s.audit(ctx, &acc.ID, nil, "pull_software", target, audit.Allow); err != nil {
+		return nil, err
+	}
+	return body, nil
+}

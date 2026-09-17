@@ -144,6 +144,8 @@ class Pouch {
         welding = value
     }
 
+    fun isWelding(): Boolean = welding
+
     fun hasClosure(id: UUID): Boolean = closures.containsKey(id)
 
     fun activeProject(): UUID? = activeId

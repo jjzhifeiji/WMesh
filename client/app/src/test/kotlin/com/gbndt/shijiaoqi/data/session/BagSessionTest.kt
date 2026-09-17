@@ -269,6 +269,21 @@ class BagSessionTest {
     }
 
     @Test
+    fun clientApkComesFromFactory() {
+        val apk = "apk-51".toByteArray()
+        val factory = FakeFactory(
+            devices = listOf(PadDevice(UUID.randomUUID().toString(), "焊", "ARM-1", "C0008")),
+        )
+        factory.padClient = RemoteClientSoftware(51, "6.1.0", Digest.sum(apk))
+        factory.padClientBodies[51] = apk
+        val bag = BagSession({ "" }, factory, MemoryIdentityStore(), MemoryEnvelopeStore())
+        assertEquals(null, bag.pendingClientSoftware())
+        bag.login("http://f", UUID.randomUUID().toString(), "op", "p")
+        assertEquals(51L, bag.pendingClientSoftware()?.version)
+        assertArrayEquals(apk, bag.pullClientApk(51))
+    }
+
+    @Test
     fun findFactoriesShipsLogsWithoutLogin() {
         val factory = FakeFactory()
         factory.discoverHits = listOf(
@@ -792,6 +807,14 @@ internal class FakeFactory(
         padClosures = padClosures.filter { it.assetId != id }
         padTransits = padTransits - id
     }
+
+    var padClient: RemoteClientSoftware? = null
+    val padClientBodies = LinkedHashMap<Long, ByteArray>()
+
+    override fun padClientSoftware(baseUrl: String, factoryId: String, token: String): RemoteClientSoftware? = padClient
+
+    override fun pullPadClientApk(baseUrl: String, factoryId: String, token: String, version: Long): ByteArray =
+        padClientBodies[version] ?: throw LoginRejected("not found")
 }
 
 private fun processTransit(
