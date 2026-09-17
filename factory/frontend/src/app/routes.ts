@@ -14,8 +14,6 @@ export const paths = {
   projects: "/assets/projects",
   legacyImport: "/assets/import",
   fieldFiles: "/assets/files",
-  distribute: "/delivery/distribute",
-  sync: "/delivery/sync",
   auditEvents: "/audit/events",
   auditStats: "/audit/stats",
   reports: "/reports",

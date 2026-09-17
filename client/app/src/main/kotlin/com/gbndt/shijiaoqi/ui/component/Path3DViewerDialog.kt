@@ -18,7 +18,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Dialog
+import com.gbndt.shijiaoqi.ui.theme.FullscreenDialog
 import androidx.compose.ui.window.DialogProperties
 import com.gbndt.shijiaoqi.model.single.WeldPath
 import com.gbndt.shijiaoqi.model.WeldPointType
@@ -32,7 +32,7 @@ fun Path3DViewerDialog(
     weldPaths: List<WeldPath>,
     onDismiss: () -> Unit
 ) {
-    Dialog(
+    FullscreenDialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {

@@ -18,8 +18,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import com.gbndt.shijiaoqi.ui.theme.FullscreenDialog
 import com.gbndt.shijiaoqi.model.Pose
 import com.gbndt.shijiaoqi.ui.teach.TeachSession
 import java.util.Locale
@@ -32,7 +32,7 @@ fun ToolListDialog(
 ) {
     if (!teach.isToolListDialogVisible) return
 
-    Dialog(
+    FullscreenDialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
@@ -147,7 +147,7 @@ fun PositionSelectionDialog(
 
     val options = listOf("前", "后", "左", "右")
 
-    Dialog(onDismissRequest = onDismiss) {
+    FullscreenDialog(onDismissRequest = onDismiss) {
         Card(
             modifier = Modifier
                 .width(200.dp)
@@ -191,7 +191,7 @@ fun SpeedSelectionDialog(
 
     val options = listOf("1倍", "3倍", "5倍")
 
-    Dialog(onDismissRequest = onDismiss) {
+    FullscreenDialog(onDismissRequest = onDismiss) {
         Card(
             modifier = Modifier
                 .width(200.dp)
@@ -235,7 +235,7 @@ fun InstallPosSelectionDialog(
 
     val options = listOf("平装" to 0, "侧装" to 1, "挂装" to 2)
 
-    Dialog(onDismissRequest = onDismiss) {
+    FullscreenDialog(onDismissRequest = onDismiss) {
         Card(
             modifier = Modifier
                 .width(200.dp)
@@ -284,7 +284,7 @@ fun ToolEditDialog(
     var rz by remember { mutableStateOf(teach.editingToolPose.rz.toString()) }
     var remark by remember { mutableStateOf(teach.editingToolRemark) }
 
-    Dialog(
+    FullscreenDialog(
         onDismissRequest = { teach.cancelToolEdit() },
         properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {

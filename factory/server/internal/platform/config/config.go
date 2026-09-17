@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -20,8 +19,6 @@ type Config struct {
 	WANMQTT          string        // WAN MQTT 地址，空则按 HTTP 主机拼 :52183
 	ClientMQTTAddr   string        // 本厂 Client MQTT 监听；空则 :1884
 	ClientMQTTURL    string        // 回给平板的 MQTT URL；空则登录不带
-	DiscoverUDP      string        // 局域网探询 UDP 监听；空则 :52082，- 关闭
-	DiscoverHTTPPort int           // 回给 Client 的 HTTP 端口；0 则用监听端口
 	OSS              OSS           // 厂内对象存储；点云/图片本体落这里，不进 WAN
 	ShutdownTimeout  time.Duration // 优雅退出最长等待
 	DockerUpdate     bool          // 超管确认后由帮手 docker load 换本容器
@@ -54,8 +51,6 @@ func Load() (Config, error) {
 		WANMQTT:          strings.TrimSpace(os.Getenv("WMESH_WAN_MQTT_URL")),
 		ClientMQTTAddr:   envOr("WMESH_CLIENT_MQTT_ADDR", ":1884"),
 		ClientMQTTURL:    strings.TrimSpace(os.Getenv("WMESH_CLIENT_MQTT_URL")),
-		DiscoverUDP:      envOr("WMESH_DISCOVER_UDP", ":52082"),
-		DiscoverHTTPPort: envInt("WMESH_DISCOVER_HTTP_PORT"),
 		OSS: OSS{
 			Endpoint:  strings.TrimRight(strings.TrimSpace(os.Getenv("WMESH_OSS_ENDPOINT")), "/"),
 			Bucket:    strings.TrimSpace(os.Getenv("WMESH_OSS_BUCKET")),
@@ -100,15 +95,6 @@ func envTruthy(key string) bool {
 	default:
 		return false
 	}
-}
-
-// envInt 空或非法为 0。
-func envInt(key string) int {
-	n, err := strconv.Atoi(strings.TrimSpace(os.Getenv(key)))
-	if err != nil || n < 0 {
-		return 0
-	}
-	return n
 }
 
 // envOr 空则用开发默认。

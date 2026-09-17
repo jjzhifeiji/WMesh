@@ -7,6 +7,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.gbndt.shijiaoqi.config.AppConfig
 import com.gbndt.shijiaoqi.data.prefs.DeviceSettingsStore
 import com.gbndt.shijiaoqi.data.repository.PouchRepository
 import com.gbndt.shijiaoqi.data.repository.RobotRepository
@@ -556,7 +557,7 @@ class SingleWeldViewModel @Inject constructor(
     }
 
     fun unlockCornerParams(password: String): Boolean {
-        if (password != CORNER_PASSWORD) return false
+        if (password != AppConfig.CORNER_PASSWORD) return false
         isCornerParamsUnlocked = true
         return true
     }
@@ -659,6 +660,7 @@ class SingleWeldViewModel @Inject constructor(
         if (_uiState.value.run.busy) return
         if (!bindProcesses()) return
         val scripts = toScripts() ?: return
+        pouch.factoryArmError()?.let { toast(it); return }
         val resume = stopResume
         stopResume = null
         teach.stopController()
@@ -873,8 +875,4 @@ class SingleWeldViewModel @Inject constructor(
     }
 
     private fun String.toUuidOrNull(): UUID? = runCatching { UUID.fromString(trim()) }.getOrNull()
-
-    private companion object {
-        const val CORNER_PASSWORD = "bd888888"
-    }
 }

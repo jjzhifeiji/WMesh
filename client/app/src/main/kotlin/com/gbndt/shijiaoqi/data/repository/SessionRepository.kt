@@ -1,6 +1,7 @@
 package com.gbndt.shijiaoqi.data.repository
 
 import com.gbndt.shijiaoqi.model.FactoryOffer
+import com.gbndt.shijiaoqi.data.prefs.DeviceSettingsStore
 import com.gbndt.shijiaoqi.data.session.BagSession
 import com.gbndt.shijiaoqi.data.session.DeviceSerialHolder
 import com.gbndt.shijiaoqi.model.SessionState
@@ -16,6 +17,7 @@ import javax.inject.Singleton
 class SessionRepository @Inject constructor(
     private val session: BagSession,
     private val serials: DeviceSerialHolder,
+    private val settings: DeviceSettingsStore,
     private val io: CoroutineDispatcher,
 ) {
     val state: StateFlow<SessionState> = session.state
@@ -34,10 +36,17 @@ class SessionRepository @Inject constructor(
     /** 连上臂读到的识别号；只在内存里，进程死即失。 */
     fun setDeviceSerial(serial: String) = serials.set(serial)
 
-    /** 读到机械臂识别号后再匹配本机；未登录时拒绝。 */
+    /** 读到机械臂识别号后按本厂已落盘名录本地比对。 */
     suspend fun matchArm(serial: String) = withContext(io) { session.matchArm(serial) }
 
     fun logout() = session.logout()
+
+    /** 改自己的日常密码；勾选过记住则一并更新落盘。 */
+    suspend fun changePassword(password: String) = withContext(io) {
+        session.changePassword(password)
+        val remembered = settings.loadRememberedLogin()
+        if (remembered != null) settings.saveRememberedLogin(true, remembered.first, password)
+    }
 
     suspend fun activate(projectId: UUID) = withContext(io) { session.activate(projectId) }
 }

@@ -21,9 +21,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.zIndex
-import androidx.core.view.WindowCompat
-import androidx.core.view.WindowInsetsCompat
-import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.launch
@@ -31,9 +28,12 @@ import com.gbndt.shijiaoqi.data.repository.SessionRepository
 import com.gbndt.shijiaoqi.ui.login.LoginGate
 import com.gbndt.shijiaoqi.ui.navigation.LocalTeach
 import com.gbndt.shijiaoqi.ui.navigation.LocalWeldInput
+import com.gbndt.shijiaoqi.ui.navigation.ModeKey
+import com.gbndt.shijiaoqi.ui.navigation.SplashKey
 import com.gbndt.shijiaoqi.ui.navigation.WMeshNavHost
 import com.gbndt.shijiaoqi.ui.teach.TeachSession
 import com.gbndt.shijiaoqi.ui.theme.ShiJiaoQiTheme
+import com.gbndt.shijiaoqi.ui.theme.hideSystemBars
 import com.gbndt.shijiaoqi.ui.welding.WeldPad
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
@@ -311,30 +311,24 @@ class MainActivity : ComponentActivity() {
         return super.dispatchGenericMotionEvent(event)
     }
 
-    override fun onDestroy() {
-        if (isFinishing) {
-            sessionRepository.logout()
-        }
-        super.onDestroy()
-    }
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         
         // Keep screen on
         window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-
-        // 全屏、隐藏系统栏
-        WindowCompat.setDecorFitsSystemWindows(window, false)
-        val windowInsetsController = WindowCompat.getInsetsController(window, window.decorView)
-        windowInsetsController.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-        windowInsetsController.hide(WindowInsetsCompat.Type.systemBars())
+        hideSystemBars(window)
 
         setContent {
             ShiJiaoQiTheme {
                 Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
                     val session by sessionRepository.state.collectAsStateWithLifecycle()
-                    var splashDone by remember { mutableStateOf(false) }
+                    val app = application as ShiJiaoQiApp
+                    val skipSplash = remember {
+                        val skip = app.splashShown
+                        app.splashShown = true
+                        skip
+                    }
+                    var splashDone by remember { mutableStateOf(skipSplash) }
                     val register = remember { { pad: WeldPad? -> activeWeld = pad } }
 
                     Box(modifier = Modifier.fillMaxSize()) {
@@ -344,6 +338,7 @@ class MainActivity : ComponentActivity() {
                         ) {
                             WMeshNavHost(
                                 session = sessionRepository,
+                                startKey = if (skipSplash) ModeKey else SplashKey,
                                 onSplashFinished = { splashDone = true },
                             )
                         }
@@ -364,5 +359,15 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        hideSystemBars(window)
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) hideSystemBars(window)
     }
 }

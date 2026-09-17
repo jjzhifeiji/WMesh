@@ -617,6 +617,7 @@ class MultiLayerWeldViewModel @Inject constructor(
             toast("没有可执行的焊道")
             return
         }
+        pouch.factoryArmError()?.let { toast(it); return }
         teach.stopController()
         programStarted = false
         follow.reset()

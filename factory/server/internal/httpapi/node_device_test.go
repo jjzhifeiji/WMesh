@@ -74,11 +74,14 @@ func TestClientDeviceLoginHTTP(t *testing.T) {
 	}
 
 	code, body = do(t, srv, "POST", base+"/pad/login", "", `{"loginName":"sa","password":"secret"}`)
-	if code != http.StatusOK || gjson(t, body, "token") == "" || !strings.Contains(body, `"deviceSerial":"ARM-1"`) || !strings.Contains(body, `"unwrapKey"`) {
+	if code != http.StatusOK || gjson(t, body, "token") == "" || gjson(t, body, "unwrapKey") == "" || !strings.Contains(body, `"deviceSerial":"ARM-1"`) {
 		t.Fatalf("pad login %d %s", code, body)
 	}
+	if strings.Contains(body, `"deviceSerial":"ARM-1","unwrapKey"`) {
+		t.Fatalf("device key leaked %s", body)
+	}
 	padTok := gjson(t, body, "token")
-	code, body = do(t, srv, "GET", base+"/pad/clients/"+cid+"/inbox", padTok, "")
+	code, body = do(t, srv, "GET", base+"/pad/inbox", padTok, "")
 	if code != http.StatusOK || !strings.Contains(body, `"closures"`) {
 		t.Fatalf("pad inbox %d %s", code, body)
 	}

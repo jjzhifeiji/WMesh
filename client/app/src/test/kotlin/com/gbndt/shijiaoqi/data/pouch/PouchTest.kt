@@ -54,16 +54,15 @@ class PouchTest {
         val dek = Wm2.randomKey()
         val who = UUID.randomUUID()
         val factoryId = UUID.randomUUID()
-        val clientId = UUID.randomUUID()
         val asset = UUID.randomUUID()
         val plain = """{"current":180}""".toByteArray()
-        val wrap = Wm2.seal(unwrap, dek, Wm2.clientTransitDekAad(Pouch.uuidBytes(factoryId), Pouch.uuidBytes(clientId)))
-        val blob = Wm2.seal(dek, plain, Wm2.clientTransitAad(Pouch.uuidBytes(factoryId), Pouch.uuidBytes(clientId), Pouch.uuidBytes(asset), 2))
+        val wrap = Wm2.seal(unwrap, dek, Wm2.clientTransitDekAad(Pouch.uuidBytes(factoryId), Pouch.uuidBytes(who)))
+        val blob = Wm2.seal(dek, plain, Wm2.clientTransitAad(Pouch.uuidBytes(factoryId), Pouch.uuidBytes(who), Pouch.uuidBytes(asset), 2))
         val p = Pouch()
         p.login(unwrap, who, false)
         val n = p.ingestTransit(
             factoryId,
-            clientId,
+            who,
             wrap,
             listOf(TransitMember(asset, Pouch.LEVEL_FACTORY, "工艺", 2, null, blob)),
         )

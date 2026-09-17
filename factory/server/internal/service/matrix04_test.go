@@ -545,7 +545,7 @@ func testClosureDistribute(t *testing.T, run func(string, func(*testing.T))) {
 		if err := e.fac.GrantClientProject(e.ctx, e.sa, got.ID, cid); err != nil {
 			t.Fatal(err)
 		}
-		if err := e.fac.DistributeToClient(e.ctx, e.pe.tok, got.ID, cid, &bag, e.clocks); err != nil && !errors.Is(err, domain.ErrClientCacheFull) {
+		if err := e.fac.DistributeToClient(e.ctx, e.pe.tok, got.ID, cid, &bag, e.clocks); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -614,10 +614,10 @@ func testClosureActivate(t *testing.T, run func(string, func(*testing.T))) {
 		}
 	})
 	run("11.2", func(t *testing.T) {
-		if err := e.fac.DistributeToClient(e.ctx, e.pe.tok, proj3.ID, cid, &bag, e.clocks); !errors.Is(err, domain.ErrClientCacheFull) {
-			t.Fatalf("got %v", err)
+		if err := e.fac.DistributeToClient(e.ctx, e.pe.tok, proj3.ID, cid, &bag, e.clocks); err != nil {
+			t.Fatal(err)
 		}
-		if len(bag.Closures) != 2 {
+		if len(bag.Closures) != 3 {
 			t.Fatalf("len %d", len(bag.Closures))
 		}
 	})

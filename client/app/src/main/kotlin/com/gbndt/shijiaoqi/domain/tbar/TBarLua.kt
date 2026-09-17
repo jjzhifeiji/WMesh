@@ -13,7 +13,7 @@ import java.util.Locale
 import com.gbndt.shijiaoqi.domain.tbar.TBarRun
 import com.gbndt.shijiaoqi.domain.tbar.TBarSeg
 
-/** 一条 T 排焊缝：坡口几何加间隙带，工艺按身份取。 */
+/** 一条 T 排焊缝：坡口几何加间隙带，工艺已合进间隙带。 */
 data class TBarScriptPath(
     val startSafe: ScriptPoint,
     val endSafe: ScriptPoint,
@@ -60,7 +60,6 @@ object TBarLua {
 
     fun job(
         paths: List<TBarScriptPath>,
-        processes: Map<String, WeldProcess>,
         welding: Boolean,
         simulating: Boolean,
         speedMode: String = "1倍",
@@ -93,8 +92,8 @@ object TBarLua {
             } else {
                 out += taughtMoveL(path.startSafe, 100, toolIndex, extAxis, TBarPoint.START_SAFE).onPath(pathIndex)
             }
-            out += passLines(root, processes, isWeld, simulating, speedMode, toolIndex, extAxis, returnToStart = true).onPath(pathIndex)
-            out += passLines(cap, processes, isWeld, simulating, speedMode, toolIndex, extAxis, returnToStart = false).onPath(pathIndex)
+            out += passLines(root, isWeld, simulating, speedMode, toolIndex, extAxis, returnToStart = true).onPath(pathIndex)
+            out += passLines(cap, isWeld, simulating, speedMode, toolIndex, extAxis, returnToStart = false).onPath(pathIndex)
             out += taughtMoveL(path.endSafe, 100, toolIndex, extAxis, TBarPoint.END_SAFE).onPath(pathIndex)
         }
         return out
@@ -104,7 +103,6 @@ object TBarLua {
 
     fun passLines(
         segments: List<TBarSeg>,
-        processes: Map<String, WeldProcess>,
         isWelding: Boolean,
         simulating: Boolean,
         speedMode: String,
@@ -113,33 +111,32 @@ object TBarLua {
         returnToStart: Boolean,
     ): List<TBarLine> {
         val first = segments.first()
-        val firstProc = processOf(first, processes)
+        val firstProc = processOf(first)
         val out = mutableListOf<TBarLine>()
         out += processParams(firstProc, onlineWeave = false).map { TBarLine(it) }
         out += ikMoveL(first.startPose, 100, toolIndex, extAxis, TBarPoint.START)
         if (isWelding) out += TBarLine("ARCStart(0,2,10000)")
         if (firstProc.oscillation.type != "无摆动") out += TBarLine("WeaveStart(3)")
         segments.forEachIndexed { index, seg ->
-            val proc = processOf(seg, processes)
+            val proc = processOf(seg)
             if (index > 0) out += processParams(proc, onlineWeave = true).map { TBarLine(it) }
             // 最后一段走到终点，其余段的落点仍算在起点上，与老项目的点位回填一致
             val reached = if (index == segments.lastIndex) TBarPoint.END else TBarPoint.START
             out += ikMoveL(seg.endPose, weldSpeed(proc, simulating, speedMode), toolIndex, extAxis, reached)
         }
         if (isWelding) out += TBarLine("ARCEnd(0,2,10000)")
-        if (segments.any { processOf(it, processes).oscillation.type != "无摆动" }) {
+        if (segments.any { processOf(it).oscillation.type != "无摆动" }) {
             out += TBarLine("WeaveEnd(0)")
         }
         if (returnToStart) out += ikMoveL(first.startPose, 100, toolIndex, extAxis, TBarPoint.START)
         return out
     }
 
-    private fun processOf(seg: TBarSeg, processes: Map<String, WeldProcess>): WeldProcess {
+    private fun processOf(seg: TBarSeg): WeldProcess {
         if (seg.processId.isBlank()) {
             throw IllegalStateException("间隙带 ${TBarRun.bandLabel(seg.band)} 未选工艺")
         }
-        return processes[seg.processId]
-            ?: throw IllegalStateException("闭包里没有间隙带 ${TBarRun.bandLabel(seg.band)} 的工艺")
+        return seg.process
     }
 
     private fun processParams(process: WeldProcess, onlineWeave: Boolean): List<String> {

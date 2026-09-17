@@ -16,8 +16,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import com.gbndt.shijiaoqi.ui.theme.FullscreenDialog
 import java.util.Locale
 import com.gbndt.shijiaoqi.ui.component.ActionButton
 
@@ -25,7 +25,7 @@ import com.gbndt.shijiaoqi.ui.component.ActionButton
 fun FineTuneDialog(fineTune: FineTuneSupport) {
     if (!fineTune.isDialogVisible) return
 
-    Dialog(
+    FullscreenDialog(
         onDismissRequest = { },
         properties = DialogProperties(
             dismissOnBackPress = false,

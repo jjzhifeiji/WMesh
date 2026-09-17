@@ -16,7 +16,6 @@ import (
 	"wmesh/factory/internal/hub"
 	"wmesh/factory/internal/platform/config"
 	"wmesh/factory/internal/platform/dockerupdate"
-	"wmesh/factory/internal/platform/lanprobe"
 	"wmesh/factory/internal/platform/oss"
 	"wmesh/factory/internal/web"
 )
@@ -73,18 +72,6 @@ func run(ctx context.Context, log *slog.Logger) error {
 		return fmt.Errorf("client mqtt: %w", err)
 	}
 
-	httpPort := cfg.DiscoverHTTPPort
-	if httpPort == 0 {
-		httpPort = lanprobe.HTTPPort(cfg.HTTPAddr)
-	}
-	if cfg.DiscoverUDP != "" && cfg.DiscoverUDP != "-" && httpPort > 0 {
-		go func() {
-			if err := lanprobe.Serve(ctx, cfg.DiscoverUDP, httpPort); err != nil {
-				log.Error("client discover udp", "err", err)
-			}
-		}()
-	}
-
 	api := httpapi.New(h, cfg.BootstrapToken, cfg.WANURL)
 	api.Version = version
 	api.ClientMQTTURL = cfg.ClientMQTTURL
@@ -126,7 +113,7 @@ func run(ctx context.Context, log *slog.Logger) error {
 	}
 	errCh := make(chan error, 1)
 	go func() {
-		log.Info("factory http listening", "addr", cfg.HTTPAddr, "version", version, "web", cfg.WebDir != "", "oss", cfg.OSS.Enabled(), "clientMqtt", h.ClientMQTTAddr(), "discoverUdp", cfg.DiscoverUDP)
+		log.Info("factory http listening", "addr", cfg.HTTPAddr, "version", version, "web", cfg.WebDir != "", "oss", cfg.OSS.Enabled(), "clientMqtt", h.ClientMQTTAddr())
 		errCh <- srv.ListenAndServe()
 	}()
 	select {

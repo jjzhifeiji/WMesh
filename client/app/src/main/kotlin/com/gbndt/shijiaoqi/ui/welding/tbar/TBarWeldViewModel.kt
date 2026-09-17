@@ -91,7 +91,6 @@ class TBarWeldViewModel @Inject constructor(
     private var pouchProjectId: UUID? = null
     private var recording = false
     private var timerJob: Job? = null
-    private var boundProcesses = emptyMap<UUID, WeldProcess>()
     private var programStarted = false
     private var stopResume: StopResume? = null
     private val follow = WeldLineFollow()
@@ -284,16 +283,18 @@ class TBarWeldViewModel @Inject constructor(
         val bands = path.gapBands.toMutableList()
         if (bandIndex !in bands.indices) return
         val idStr = processId?.toString().orEmpty()
-        if (processId != null && pouch.processSource().open(processId) == null) {
-            missingProcessMessage = "闭包里没有这条工艺"
-            isMissingProcessDialogVisible = true
-            return
+        val loaded = if (processId == null) WeldProcess() else {
+            pouch.processSource().open(processId) ?: run {
+                missingProcessMessage = "闭包里没有这条工艺"
+                isMissingProcessDialogVisible = true
+                return
+            }
         }
         val old = bands[bandIndex]
         bands[bandIndex] = if (pass == TBarPass.ROOT) {
-            old.copy(rootProcessId = idStr)
+            old.copy(rootProcessId = idStr, rootProcess = loaded)
         } else {
-            old.copy(capProcessId = idStr)
+            old.copy(capProcessId = idStr, capProcess = loaded)
         }
         weldPaths[selectedWeldPathIndex] = path.copy(gapBands = bands)
         saveCurrentProject()
@@ -536,12 +537,12 @@ class TBarWeldViewModel @Inject constructor(
         if (_uiState.value.run.busy) return
         if (!bindProcesses()) return
         val scripts = toScripts() ?: return
+        pouch.factoryArmError()?.let { toast(it); return }
         val resume = stopResume
         stopResume = null
         val lua = try {
             TBarLua.job(
                 scripts,
-                boundProcesses.mapKeys { it.key.toString() },
                 welding,
                 simulating,
                 teach.speedMode,
@@ -662,7 +663,21 @@ class TBarWeldViewModel @Inject constructor(
             }.flatten()
         }
         val outcome = ProcessBind.resolve(refs, pouch.processSource())
-        boundProcesses = outcome.loaded
+        weldPaths.forEachIndexed { i, path ->
+            val bands = path.gapBands.map { band ->
+                val rootId = band.rootProcessId.toUuidOrNull()
+                val capId = band.capProcessId.toUuidOrNull()
+                band.copy(
+                    rootProcess = rootId?.let { outcome.loaded[it] } ?: band.rootProcess,
+                    capProcess = capId?.let { outcome.loaded[it] } ?: band.capProcess,
+                )
+            }
+            val firstRoot = bands.firstOrNull()?.rootProcess
+            weldPaths[i] = path.copy(
+                gapBands = bands,
+                process = firstRoot ?: path.process,
+            )
+        }
         if (outcome.missing.isNotEmpty()) {
             missingProcessMessage = "以下焊道的工艺不在当前闭包：\n" + outcome.missing.joinToString("\n")
             isMissingProcessDialogVisible = true
@@ -800,8 +815,8 @@ class TBarWeldViewModel @Inject constructor(
 
     private fun currentProcess(): WeldProcess? {
         val path = currentPath() ?: return null
-        val id = path.gapBands.firstOrNull()?.rootProcessId?.toUuidOrNull()
-        return id?.let { boundProcesses[it] } ?: path.process
+        val band = path.gapBands.firstOrNull()
+        return if (band != null && band.rootProcessId.isNotBlank()) band.rootProcess else path.process
     }
 
     private fun currentPath(): WeldPath? = weldPaths.getOrNull(selectedWeldPathIndex)

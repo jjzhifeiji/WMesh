@@ -70,9 +70,6 @@ fun WeldingShell(
         session.setDeviceSerial(teachUi.machineCode)
         if (sessionState.loggedIn && teachUi.machineCode.isNotBlank()) {
             runCatching { session.matchArm(teach.machineCode) }
-                .onFailure {
-                    Toast.makeText(context, session.state.value.error ?: it.message ?: "设备不匹配", Toast.LENGTH_SHORT).show()
-                }
             host.syncFromPouch()
         }
     }

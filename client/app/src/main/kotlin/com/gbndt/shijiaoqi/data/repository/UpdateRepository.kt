@@ -1,10 +1,10 @@
 package com.gbndt.shijiaoqi.data.repository
 
 import android.content.Context
-import android.net.Uri
 import com.gbndt.shijiaoqi.data.update.UpdateManager
 import com.gbndt.shijiaoqi.model.UpdateInfo
 import dagger.hilt.android.qualifiers.ApplicationContext
+import java.io.File
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -17,12 +17,7 @@ class UpdateRepository @Inject constructor(
 
     suspend fun checkUpdate(configUrl: String): UpdateInfo? = manager.checkUpdate(configUrl)
 
-    fun downloadApk(url: String, fileName: String = "update.apk"): Long = manager.downloadApk(url, fileName)
+    suspend fun downloadApk(url: String, fileName: String = "update.apk"): File? = manager.downloadApk(url, fileName)
 
-    fun getDownloadedUri(downloadId: Long): Uri? = manager.getDownloadedUri(downloadId)
-
-    fun installApk(uri: Uri) = manager.installApk(uri)
-
-    /** 查询这条下载的状态；没有这条就返回 -1。 */
-    fun downloadStatus(id: Long): Int = manager.downloadStatus(id)
+    fun installApk(file: File) = manager.installApk(file)
 }

@@ -9,8 +9,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import com.gbndt.shijiaoqi.model.UpdateInfo
+import com.gbndt.shijiaoqi.ui.theme.FullscreenDialog
 
 /** 发现新版本时的确认框。 */
 @Composable
@@ -19,7 +20,7 @@ fun UpdateDialog(
     onConfirm: () -> Unit,
     onDismiss: () -> Unit
 ) {
-    Dialog(onDismissRequest = onDismiss) {
+    FullscreenDialog(onDismissRequest = onDismiss) {
         Card(
             shape = RoundedCornerShape(16.dp),
             colors = CardDefaults.cardColors(containerColor = Color.White),

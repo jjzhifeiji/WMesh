@@ -7,16 +7,23 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -29,13 +36,15 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import com.gbndt.shijiaoqi.ui.theme.FullscreenDialog
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
@@ -45,17 +54,21 @@ fun LoginGate(
     viewModel: LoginViewModel = hiltViewModel(),
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
-    var login by remember { mutableStateOf("") }
-    var password by remember { mutableStateOf("") }
     var menuOpen by remember { mutableStateOf(false) }
+    var passwordVisible by remember { mutableStateOf(false) }
     val offers = state.offers
     val selected = state.selected
-
-    LaunchedEffect(Unit) {
-        if (!state.scanned && !state.busy) viewModel.scan()
+    val scanTone = when (state.scan) {
+        ScanStatus.Empty, ScanStatus.Unavailable -> MaterialTheme.colorScheme.error
+        ScanStatus.Scanning -> MaterialTheme.colorScheme.primary
+        ScanStatus.Ready -> if (state.loggingIn) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
     }
 
-    Dialog(
+    LaunchedEffect(Unit) {
+        if (state.scan == ScanStatus.Ready && state.offers.isEmpty()) viewModel.scan()
+    }
+
+    FullscreenDialog(
         onDismissRequest = {},
         properties = DialogProperties(dismissOnBackPress = false, dismissOnClickOutside = false, usePlatformDefaultWidth = false),
     ) {
@@ -73,13 +86,26 @@ fun LoginGate(
             ) {
                 Text("本厂登录", fontSize = 20.sp, fontWeight = FontWeight.Bold)
                 Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    if (state.scan == ScanStatus.Scanning) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp,
+                            color = scanTone,
+                        )
+                    }
+                    Text(state.scanCaption, fontSize = 14.sp, color = scanTone)
+                }
+                Row(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     ExposedDropdownMenuBox(
-                        expanded = menuOpen && offers.isNotEmpty(),
-                        onExpandedChange = { if (offers.isNotEmpty()) menuOpen = !menuOpen },
+                        expanded = menuOpen && offers.isNotEmpty() && state.canScan,
+                        onExpandedChange = { if (offers.isNotEmpty() && state.canScan) menuOpen = !menuOpen },
                         modifier = Modifier.weight(1f),
                     ) {
                         OutlinedTextField(
@@ -88,23 +114,15 @@ fun LoginGate(
                             readOnly = true,
                             singleLine = true,
                             label = { Text("厂服务") },
-                            placeholder = {
-                                Text(
-                                    when {
-                                        state.busy && !state.scanned -> "正在扫描…"
-                                        state.scanned -> "未发现厂服务"
-                                        else -> "扫描后选择"
-                                    },
-                                )
-                            },
+                            placeholder = { Text(state.scanCaption) },
                             trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = menuOpen && offers.isNotEmpty()) },
                             modifier = Modifier
                                 .menuAnchor()
                                 .fillMaxWidth(),
-                            enabled = offers.isNotEmpty(),
+                            enabled = offers.isNotEmpty() && state.canScan,
                         )
                         ExposedDropdownMenu(
-                            expanded = menuOpen && offers.isNotEmpty(),
+                            expanded = menuOpen && offers.isNotEmpty() && state.canScan,
                             onDismissRequest = { menuOpen = false },
                         ) {
                             offers.forEach { o ->
@@ -120,31 +138,70 @@ fun LoginGate(
                     }
                     OutlinedButton(
                         onClick = { viewModel.scan() },
-                        enabled = !state.busy,
+                        enabled = state.canScan,
                     ) {
-                        Text("扫描")
+                        Text(if (state.scan == ScanStatus.Scanning) "扫描中" else "扫描")
                     }
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                    OutlinedTextField(login, { login = it }, label = { Text("登录名") }, singleLine = true, modifier = Modifier.weight(1f))
                     OutlinedTextField(
-                        password,
-                        { password = it },
+                        state.loginName,
+                        viewModel::setLoginName,
+                        label = { Text("登录名") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f),
+                    )
+                    OutlinedTextField(
+                        state.password,
+                        viewModel::setPassword,
                         label = { Text("密码") },
                         singleLine = true,
-                        visualTransformation = PasswordVisualTransformation(),
+                        visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                        trailingIcon = {
+                            IconButton(onClick = { passwordVisible = !passwordVisible }) {
+                                Icon(
+                                    imageVector = if (passwordVisible) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
+                                    contentDescription = if (passwordVisible) "隐藏密码" else "显示密码",
+                                )
+                            }
+                        },
                         modifier = Modifier.weight(1f),
                     )
                 }
                 state.error?.let { Text(it, color = MaterialTheme.colorScheme.error, fontSize = 13.sp) }
-                Button(
-                    onClick = { viewModel.login(login, password) },
-                    enabled = !state.busy && selected != null && login.isNotBlank() && password.isNotBlank(),
-                    modifier = Modifier.align(Alignment.End),
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    if (state.busy) CircularProgressIndicator(modifier = Modifier.size(16.dp).padding(end = 8.dp), strokeWidth = 2.dp)
-                    Text("登录")
+                    Row(
+                        modifier = Modifier
+                            .weight(1f)
+                            .toggleable(
+                                value = state.remember,
+                                role = Role.Checkbox,
+                                onValueChange = viewModel::setRemember,
+                            ),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Checkbox(checked = state.remember, onCheckedChange = null)
+                        Text("记住账号密码", fontSize = 14.sp)
+                    }
+                    Button(
+                        onClick = { viewModel.login() },
+                        enabled = state.canLogin && state.loginName.isNotBlank() && state.password.isNotBlank(),
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            if (state.loggingIn) {
+                                CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                            }
+                            Text("登录")
+                        }
+                    }
                 }
             }
         }

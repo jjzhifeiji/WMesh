@@ -3,7 +3,6 @@ package store
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
 	"database/sql"
 	"errors"
 	"strings"
@@ -44,7 +43,7 @@ type Client struct {
 	OperatorID      *uuid.UUID `gorm:"type:uuid" json:"operatorId,omitempty"` // 当前在本机登录的本厂账号；无人则为空
 	ShortCode       string     `json:"shortCode,omitempty"`                   // Client 短码，随绑定补齐
 	DeviceSerial    string     `json:"deviceSerial,omitempty"`                // 从设备读到的机械臂识别号；未登记为空
-	UnwrapKey       []byte     `json:"-"`                                     // 到站重封解封钥；不进 JSON
+	UnwrapKey       []byte     `json:"-"`                                     // 历史列，焊机不持钥
 }
 
 func (Client) TableName() string { return "clients" }
@@ -294,13 +293,6 @@ func (s *Store) PinDeviceSerial(ctx context.Context, clientID uuid.UUID, serial 
 			return domain.ErrDeviceSerialTaken
 		}
 		patch := map[string]any{"device_serial": serial}
-		if len(row.UnwrapKey) != 32 {
-			key := make([]byte, 32)
-			if _, err := rand.Read(key); err != nil {
-				return err
-			}
-			patch["unwrap_key"] = key
-		}
 		if err := tx.Model(&Client{}).Where("id = ?", clientID).Updates(patch).Error; err != nil {
 			if domain.IsUniqueViolation(err) {
 				return domain.ErrDeviceSerialTaken

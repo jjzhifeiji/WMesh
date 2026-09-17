@@ -14,7 +14,7 @@ import (
 
 // ClosureRef 是 inbox 里一份工程闭包的元数据，不含正文。
 type ClosureRef struct {
-	AssetID  uuid.UUID `json:"assetId"`  // 工程身份
+	AssetID  uuid.UUID `json:"assetId"`  // 工艺或工程身份
 	Revision int64     `json:"revision"` // 当前可拉修订
 	Digest   []byte    `json:"digest"`   // 整包摘要；尚未组包可空
 	Name     string    `json:"name"`     // 显示名
@@ -24,14 +24,14 @@ type ClosureRef struct {
 // ClientInbox 登录或回连后要对账的策略和获准闭包清单。
 type ClientInbox struct {
 	Policy             ClientPolicy `json:"policy"`             // 本厂现行策略
-	Closures           []ClosureRef `json:"closures"`           // 该人获准工程；current 时为空
+	Closures           []ClosureRef `json:"closures"`           // 可见资产；操作员 current 时为空
 	SigningPublicKey   []byte       `json:"signingPublicKey"`   // 验下行 Intent
 }
 
-// TransitClosure 过站闭包：成员正文是一次性 DEK 信封，不是厂库信封。
+// TransitClosure 过站包：工艺成员是过站信封；工程根是明文，Wrap 为空。
 type TransitClosure struct {
-	Wrap     []byte          `json:"wrap"`     // 用本机解封钥包着的过站 DEK
-	Snapshot ClosureSnapshot `json:"snapshot"` // 成员 Content 为过站信封
+	Wrap     []byte          `json:"wrap,omitempty"` // 过站 DEK；工程明文不封
+	Snapshot ClosureSnapshot `json:"snapshot"`       // 工艺为过站信封，工程根为明文
 }
 
 // AuthClientMQTT 本机 MQTT CONNECT：会话令牌对得上当前登录人且绑定有效。
@@ -81,11 +81,11 @@ func (s *Closure) ClientInbox(ctx context.Context, token string, clientID uuid.U
 	return out, s.audit(ctx, &acc.ID, nil, "client_inbox", clientID.String(), audit.Allow)
 }
 
-// PadClientInbox 厂网登录后按设备对账获准闭包；不要求已占操作员位。
-func (s *Closure) PadClientInbox(ctx context.Context, token string, clientID uuid.UUID) (ClientInbox, error) {
-	acc, _, err := s.requireBoundClient(ctx, token, clientID)
+// PadClientInbox 厂网登录后拉与厂端列表同一份工艺/工程；不要求已绑设备。
+func (s *Closure) PadClientInbox(ctx context.Context, token string) (ClientInbox, error) {
+	acc, err := s.RequireActive(ctx, token)
 	if err != nil {
-		_ = s.audit(ctx, actorOf(acc), nil, "pad_inbox", clientID.String(), audit.Deny)
+		_ = s.audit(ctx, actorOf(acc), nil, "pad_inbox", "", audit.Deny)
 		return ClientInbox{}, err
 	}
 	pol, err := s.store.ClientPolicy(ctx)
@@ -96,21 +96,17 @@ func (s *Closure) PadClientInbox(ctx context.Context, token string, clientID uui
 	if err != nil {
 		return ClientInbox{}, err
 	}
-	out := ClientInbox{Policy: pol, Closures: []ClosureRef{}, SigningPublicKey: key.PublicKey}
-	if pol.CacheScope == CacheScopeCurrent {
-		return out, s.audit(ctx, &acc.ID, nil, "pad_inbox", clientID.String(), audit.Allow)
-	}
-	refs, err := s.listAuthorizedRefs(ctx, acc, clientID)
+	refs, err := s.listPadAssetRefs(ctx, acc)
 	if err != nil {
 		return ClientInbox{}, err
 	}
-	out.Closures = refs
-	return out, s.audit(ctx, &acc.ID, nil, "pad_inbox", clientID.String(), audit.Allow)
+	out := ClientInbox{Policy: pol, Closures: refs, SigningPublicKey: key.PublicKey}
+	return out, s.audit(ctx, &acc.ID, nil, "pad_inbox", acc.ID.String(), audit.Allow)
 }
 
 // PullClientClosure 组包后另造过站 DEK 封给这台已登录本机；厂库信封不原样拷。
 func (s *Closure) PullClientClosure(ctx context.Context, token string, clientID, projectID uuid.UUID) (TransitClosure, error) {
-	acc, cli, err := s.requireClientOperator(ctx, token, clientID)
+	acc, _, err := s.requireClientOperator(ctx, token, clientID)
 	target := projectID.String() + " client=" + clientID.String()
 	if err != nil {
 		_ = s.audit(ctx, actorOf(acc), nil, "pull_closure", target, audit.Deny)
@@ -132,7 +128,16 @@ func (s *Closure) PullClientClosure(ctx context.Context, token string, clientID,
 	}
 	cid := clientID
 	snap.TargetClientID = &cid
-	out, err := sealTransit(s.store.FactoryID(), cli, snap)
+	// 过站 DEK 用登录人钥封，不用焊机钥。
+	who, err := s.store.EnsurePersonUnwrapKey(ctx, acc.ID)
+	if err != nil || len(who.UnwrapKey) != contentcrypt.KeySize {
+		_ = s.audit(ctx, &acc.ID, nil, "pull_closure", target, audit.Deny)
+		if err != nil {
+			return TransitClosure{}, err
+		}
+		return TransitClosure{}, domain.ErrForbidden
+	}
+	out, err := sealTransit(s.store.FactoryID(), clientID, who.UnwrapKey, snap)
 	if err != nil {
 		_ = s.audit(ctx, &acc.ID, nil, "pull_closure", target, audit.Deny)
 		return TransitClosure{}, err
@@ -140,31 +145,37 @@ func (s *Closure) PullClientClosure(ctx context.Context, token string, clientID,
 	return out, s.audit(ctx, &acc.ID, nil, "pull_closure", target, audit.Allow)
 }
 
-// PadPullClientClosure 厂网登录后按设备拉过站密文；不要求已占操作员位。
-func (s *Closure) PadPullClientClosure(ctx context.Context, token string, clientID, projectID uuid.UUID) (TransitClosure, error) {
-	acc, cli, err := s.requireBoundClient(ctx, token, clientID)
-	target := projectID.String() + " client=" + clientID.String()
+// PadPullClientClosure 厂网登录后拉包：工程明文，工艺用登录人钥封过站 DEK。
+func (s *Closure) PadPullClientClosure(ctx context.Context, token string, assetID uuid.UUID) (TransitClosure, error) {
+	acc, err := s.RequireActive(ctx, token)
+	target := assetID.String()
 	if err != nil {
 		_ = s.audit(ctx, actorOf(acc), nil, "pad_pull", target, audit.Deny)
 		return TransitClosure{}, err
 	}
-	if err := s.assertPullable(ctx, acc, clientID, projectID); err != nil {
+	if err := s.assertPadPullable(ctx, acc, assetID); err != nil {
 		_ = s.audit(ctx, &acc.ID, nil, "pad_pull", target, audit.Deny)
 		return TransitClosure{}, err
 	}
-	root, err := s.loadRootForPack(ctx, projectID)
+	snap, err := s.packForPad(ctx, assetID)
 	if err != nil {
 		_ = s.audit(ctx, &acc.ID, nil, "pad_pull", target, audit.Deny)
 		return TransitClosure{}, err
 	}
-	snap, err := s.packFromMember(ctx, root)
-	if err != nil {
-		_ = s.audit(ctx, &acc.ID, nil, "pad_pull", target, audit.Deny)
-		return TransitClosure{}, err
+	if snap.Kind == KindProject {
+		// 工程明文过站，只引用工艺 Id，不封过站 DEK。
+		return TransitClosure{Snapshot: snap}, s.audit(ctx, &acc.ID, nil, "pad_pull", target, audit.Allow)
 	}
-	cid := clientID
-	snap.TargetClientID = &cid
-	out, err := sealTransit(s.store.FactoryID(), cli, snap)
+	// 过站 DEK 用登录人钥封，AAD 绑登录人，不绑焊机。
+	who, err := s.store.EnsurePersonUnwrapKey(ctx, acc.ID)
+	if err != nil || len(who.UnwrapKey) != contentcrypt.KeySize {
+		_ = s.audit(ctx, &acc.ID, nil, "pad_pull", target, audit.Deny)
+		if err != nil {
+			return TransitClosure{}, err
+		}
+		return TransitClosure{}, domain.ErrForbidden
+	}
+	out, err := sealTransit(s.store.FactoryID(), acc.ID, who.UnwrapKey, snap)
 	if err != nil {
 		_ = s.audit(ctx, &acc.ID, nil, "pad_pull", target, audit.Deny)
 		return TransitClosure{}, err
@@ -251,6 +262,50 @@ func (s *Closure) assertPullable(ctx context.Context, acc Account, clientID, pro
 	return nil
 }
 
+// 厂网登录可拉厂端列表里同一份资产，不另走下发授权。
+func (s *Closure) assertPadPullable(ctx context.Context, acc Account, assetID uuid.UUID) error {
+	rows, err := s.listVisibleAssets(ctx, acc, "")
+	if err != nil {
+		return err
+	}
+	for _, a := range rows {
+		if a.ID == assetID {
+			return nil
+		}
+	}
+	return domain.ErrNotFound
+}
+
+// listPadAssetRefs 与厂端工艺/工程列表同一范围。
+func (s *Closure) listPadAssetRefs(ctx context.Context, acc Account) ([]ClosureRef, error) {
+	rows, err := s.listVisibleAssets(ctx, acc, "")
+	if err != nil {
+		return nil, err
+	}
+	out := make([]ClosureRef, 0, len(rows))
+	for _, a := range rows {
+		ref, err := s.refForPad(ctx, a.ID)
+		if err != nil {
+			continue
+		}
+		out = append(out, ref)
+	}
+	return out, nil
+}
+
+// refForPad 组包得到修订和摘要；组包失败仍给出名称。
+func (s *Closure) refForPad(ctx context.Context, assetID uuid.UUID) (ClosureRef, error) {
+	root, err := s.loadRootForPack(ctx, assetID)
+	if err != nil {
+		return ClosureRef{}, err
+	}
+	snap, err := s.packForPad(ctx, assetID)
+	if err != nil {
+		return ClosureRef{AssetID: root.ID, Revision: root.Revision, Name: root.Name, Level: root.Level}, nil
+	}
+	return ClosureRef{AssetID: snap.AssetID, Revision: snap.Revision, Digest: snap.Digest, Name: root.Name, Level: snap.Level}, nil
+}
+
 // listAuthorizedRefs 收集该机授权工程和登录人个人级可用工程。
 func (s *Closure) listAuthorizedRefs(ctx context.Context, acc Account, clientID uuid.UUID) ([]ClosureRef, error) {
 	grants, err := s.store.ListActiveGrantsForClient(ctx, clientID)
@@ -300,9 +355,9 @@ func (s *Closure) refForProject(ctx context.Context, projectID uuid.UUID) (Closu
 	return ClosureRef{AssetID: snap.AssetID, Revision: snap.Revision, Digest: snap.Digest, Name: root.Name, Level: snap.Level}, nil
 }
 
-// sealTransit 另造过站 DEK，到站用本机解封钥解开后再重封进袋。
-func sealTransit(factoryID uuid.UUID, cli Client, snap ClosureSnapshot) (TransitClosure, error) {
-	if len(cli.UnwrapKey) != contentcrypt.KeySize {
+// sealTransit 另造过站 DEK；boundID 是登录人或本机，到站用登录人钥解开后再重封进袋。
+func sealTransit(factoryID, boundID uuid.UUID, unwrap []byte, snap ClosureSnapshot) (TransitClosure, error) {
+	if len(unwrap) != contentcrypt.KeySize {
 		return TransitClosure{}, domain.ErrForbidden
 	}
 	dek, err := contentcrypt.RandomKey()
@@ -313,7 +368,7 @@ func sealTransit(factoryID uuid.UUID, cli Client, snap ClosureSnapshot) (Transit
 	members := make([]ClosureMember, len(snap.Members))
 	for i, m := range snap.Members {
 		plain := append([]byte(nil), m.Content...)
-		env, err := contentcrypt.Seal(dek, plain, contentcrypt.ClientTransitAAD(factoryID, cli.ID, m.ID, m.Revision))
+		env, err := contentcrypt.Seal(dek, plain, contentcrypt.ClientTransitAAD(factoryID, boundID, m.ID, m.Revision))
 		contentcrypt.Zero(plain)
 		if err != nil {
 			return TransitClosure{}, err
@@ -322,7 +377,7 @@ func sealTransit(factoryID uuid.UUID, cli Client, snap ClosureSnapshot) (Transit
 		members[i] = m
 	}
 	snap.Members = members
-	wrap, err := contentcrypt.Seal(cli.UnwrapKey, dek, contentcrypt.ClientTransitDEKAAD(factoryID, cli.ID))
+	wrap, err := contentcrypt.Seal(unwrap, dek, contentcrypt.ClientTransitDEKAAD(factoryID, boundID))
 	if err != nil {
 		return TransitClosure{}, err
 	}
@@ -349,6 +404,7 @@ func (s *Closure) fanoutPolicy(ctx context.Context, pol ClientPolicy) {
 		CacheScope:        pol.CacheScope,
 		PersistUnwrapKey:  pol.PersistUnwrapKey,
 		KeyTTLSeconds:     pol.KeyTTLSeconds,
+		EncryptPouch:      pol.EncryptPouch,
 	}
 	fid := s.store.FactoryID()
 	for _, cl := range rows {
@@ -386,9 +442,9 @@ func (s *Closure) publishClosureReady(ctx context.Context, clientID uuid.UUID, s
 	s.clientDown.PublishDown(fid, clientID, raw)
 }
 
-// OpenTransit 用本机解封钥解开过站 DEK，再解成员；给夹具和本机袋验收。
-func OpenTransit(factoryID uuid.UUID, cli Client, t TransitClosure) (ClosureSnapshot, error) {
-	dek, err := contentcrypt.Open(cli.UnwrapKey, t.Wrap, contentcrypt.ClientTransitDEKAAD(factoryID, cli.ID))
+// OpenTransit 用登录人解封钥解开过站 DEK，再解成员；boundID 须与封包时相同。
+func OpenTransit(factoryID, boundID uuid.UUID, unwrap []byte, t TransitClosure) (ClosureSnapshot, error) {
+	dek, err := contentcrypt.Open(unwrap, t.Wrap, contentcrypt.ClientTransitDEKAAD(factoryID, boundID))
 	if err != nil {
 		return ClosureSnapshot{}, err
 	}
@@ -396,7 +452,7 @@ func OpenTransit(factoryID uuid.UUID, cli Client, t TransitClosure) (ClosureSnap
 	snap := t.Snapshot
 	members := make([]ClosureMember, len(snap.Members))
 	for i, m := range snap.Members {
-		plain, err := contentcrypt.Open(dek, m.Content, contentcrypt.ClientTransitAAD(factoryID, cli.ID, m.ID, m.Revision))
+		plain, err := contentcrypt.Open(dek, m.Content, contentcrypt.ClientTransitAAD(factoryID, boundID, m.ID, m.Revision))
 		if err != nil {
 			return ClosureSnapshot{}, err
 		}

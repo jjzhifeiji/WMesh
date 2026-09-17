@@ -45,6 +45,7 @@ import com.gbndt.shijiaoqi.ui.component.*
 import com.gbndt.shijiaoqi.ui.login.*
 import com.gbndt.shijiaoqi.ui.project.*
 import com.gbndt.shijiaoqi.ui.navigation.LocalTeach
+import com.gbndt.shijiaoqi.ui.theme.KeepFullscreen
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
@@ -387,7 +388,7 @@ fun TBarScreen(
     if (showDeleteDialog) {
         AlertDialog(
             onDismissRequest = { showDeleteDialog = false },
-            title = { Text("确认删除") },
+            title = { KeepFullscreen(); Text("确认删除") },
             text = { Text("确定要删除该焊道吗？此操作无法撤销。") },
             confirmButton = {
                 Button(
@@ -427,7 +428,7 @@ fun TBarScreen(
     if (ui.isMissingProcessDialogVisible) {
         AlertDialog(
             onDismissRequest = { viewModel.isMissingProcessDialogVisible = false },
-            title = { Text("工艺文件缺失") },
+            title = { KeepFullscreen(); Text("工艺文件缺失") },
             text = { Text(ui.missingProcessMessage) },
             confirmButton = {
                 Button(
@@ -443,7 +444,7 @@ fun TBarScreen(
     if (ui.isRenameDialogVisible) {
         AlertDialog(
             onDismissRequest = { viewModel.isRenameDialogVisible = false },
-            title = { Text("修改焊道名称") },
+            title = { KeepFullscreen(); Text("修改焊道名称") },
             text = {
                 Column {
                     Text("请输入新的焊道名称：")
@@ -482,7 +483,7 @@ fun TBarScreen(
     if (ui.isCurrentVoltageDialogVisible) {
         AlertDialog(
             onDismissRequest = { viewModel.isCurrentVoltageDialogVisible = false },
-            title = { Text("设置电流电压") },
+            title = { KeepFullscreen(); Text("设置电流电压") },
             text = {
                 Column {
                     OutlinedTextField(

@@ -1,17 +1,21 @@
 package com.gbndt.shijiaoqi.di
 
 import android.content.Context
+import com.gbndt.shijiaoqi.config.AppConfig
 import com.gbndt.shijiaoqi.data.db.RoomEnvelopeStore
 import com.gbndt.shijiaoqi.data.prefs.DeviceSettingsStore
-import com.gbndt.shijiaoqi.data.remote.DownChannel
+import com.gbndt.shijiaoqi.data.remote.AndroidLanMulticast
 import com.gbndt.shijiaoqi.data.remote.HttpFactoryGateway
-import com.gbndt.shijiaoqi.data.remote.MqttDownChannel
+import com.gbndt.shijiaoqi.data.remote.LanMulticast
 import com.gbndt.shijiaoqi.data.session.BagSession
 import com.gbndt.shijiaoqi.data.session.DeviceSerialHolder
 import com.gbndt.shijiaoqi.data.session.DeviceSerialReader
 import com.gbndt.shijiaoqi.data.session.EnvelopeStore
 import com.gbndt.shijiaoqi.data.session.FactoryGateway
+import com.gbndt.shijiaoqi.data.session.FileUnwrapKeyStore
 import com.gbndt.shijiaoqi.data.session.IdentityStore
+import com.gbndt.shijiaoqi.data.session.SessionVault
+import com.gbndt.shijiaoqi.data.session.UnwrapKeyStore
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -19,6 +23,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
+import java.io.File
 import javax.inject.Singleton
 
 /** 单模块工程的唯一装配处：谁实现谁、谁是单例，都在这里说清。 */
@@ -41,16 +46,24 @@ object AppModule {
 
     @Provides
     @Singleton
-    fun provideEnvelopeStore(@ApplicationContext context: Context): EnvelopeStore = RoomEnvelopeStore(context)
+    fun provideSessionVault(settings: DeviceSettingsStore): SessionVault = settings
 
-    /** 控制面只走 MQTT，正文不进这条通道。 */
     @Provides
     @Singleton
-    fun provideDownChannel(factory: FactoryGateway): DownChannel = MqttDownChannel(factory)
+    fun provideEnvelopeStore(@ApplicationContext context: Context): EnvelopeStore = RoomEnvelopeStore(context)
+
+    @Provides
+    @Singleton
+    fun provideUnwrapKeyStore(@ApplicationContext context: Context): UnwrapKeyStore =
+        FileUnwrapKeyStore(File(context.applicationContext.filesDir, AppConfig.UNWRAP_KEY_FILE))
 
     @Provides
     @Singleton
     fun provideDeviceSerialReader(holder: DeviceSerialHolder): DeviceSerialReader = holder
+
+    @Provides
+    @Singleton
+    fun provideLanMulticast(impl: AndroidLanMulticast): LanMulticast = impl
 
     @Provides
     @Singleton
@@ -59,12 +72,16 @@ object AppModule {
         factory: FactoryGateway,
         identity: IdentityStore,
         store: EnvelopeStore,
-        down: DownChannel,
+        multicast: LanMulticast,
+        vault: SessionVault,
+        keys: UnwrapKeyStore,
     ): BagSession = BagSession(
         serials = serials,
         factory = factory,
         identity = identity,
         store = store,
-        down = down,
+        multicast = multicast,
+        vault = vault,
+        keys = keys,
     )
 }

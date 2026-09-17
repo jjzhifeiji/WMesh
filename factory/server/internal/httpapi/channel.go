@@ -12,8 +12,8 @@ import (
 func (h *Handler) mountChannel(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/factories/{id}/clients/{clientId}/inbox", h.clientInbox)
 	mux.HandleFunc("GET /v1/factories/{id}/clients/{clientId}/closures/{projectId}", h.pullClientClosure)
-	mux.HandleFunc("GET /v1/factories/{id}/pad/clients/{clientId}/inbox", h.padClientInbox)
-	mux.HandleFunc("GET /v1/factories/{id}/pad/clients/{clientId}/closures/{projectId}", h.padPullClientClosure)
+	mux.HandleFunc("GET /v1/factories/{id}/pad/inbox", h.padClientInbox)
+	mux.HandleFunc("GET /v1/factories/{id}/pad/closures/{assetId}", h.padPullClientClosure)
 }
 
 // 登录人在这台上要对账的策略和获准闭包清单，不含正文。
@@ -55,15 +55,10 @@ func (h *Handler) pullClientClosure(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// 厂网登录后按设备对账获准闭包，不含正文。
+// 厂网登录后拉与厂端列表同一份资产，不含正文。
 func (h *Handler) padClientInbox(w http.ResponseWriter, r *http.Request) {
 	h.withFactory(w, r, func(svc *service.Service) {
-		clientID, err := uuid.Parse(r.PathValue("clientId"))
-		if err != nil {
-			writeBadRequest(w, errInvalidID)
-			return
-		}
-		box, err := svc.Closure.PadClientInbox(r.Context(), bearer(r), clientID)
+		box, err := svc.Closure.PadClientInbox(r.Context(), bearer(r))
 		if err != nil {
 			writeErr(w, err)
 			return
@@ -72,20 +67,15 @@ func (h *Handler) padClientInbox(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// 厂网登录后按设备拉过站密文。
+// 厂网登录后拉工程明文或工艺过站包。
 func (h *Handler) padPullClientClosure(w http.ResponseWriter, r *http.Request) {
 	h.withFactory(w, r, func(svc *service.Service) {
-		clientID, err := uuid.Parse(r.PathValue("clientId"))
+		assetID, err := uuid.Parse(r.PathValue("assetId"))
 		if err != nil {
 			writeBadRequest(w, errInvalidID)
 			return
 		}
-		projectID, err := uuid.Parse(r.PathValue("projectId"))
-		if err != nil {
-			writeBadRequest(w, errInvalidID)
-			return
-		}
-		snap, err := svc.Closure.PadPullClientClosure(r.Context(), bearer(r), clientID, projectID)
+		snap, err := svc.Closure.PadPullClientClosure(r.Context(), bearer(r), assetID)
 		if err != nil {
 			writeErr(w, err)
 			return

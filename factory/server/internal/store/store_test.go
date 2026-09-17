@@ -283,7 +283,7 @@ func TestClientBindingAndGrants(t *testing.T) {
 	if err != nil {
 		t.Fatalf("accept: %v", err)
 	}
-	if c.Status != store.ClientStatusBound || c.BindingRevision != 1 || c.Name != "焊机-1" {
+	if c.Status != store.ClientStatusBound || c.BindingRevision != 1 || c.Name != "焊机-1" || len(c.UnwrapKey) != 0 {
 		t.Fatalf("client: %+v", c)
 	}
 	who, err := s.CreatePerson(ctx, "op-a", "操作员A", false)
@@ -344,7 +344,7 @@ func TestClientBindingAndGrants(t *testing.T) {
 		t.Fatalf("void runtime: %v", err)
 	}
 	reb, err := s.AcceptBinding(ctx, cid, "焊机-1", cPub, 3)
-	if err != nil || reb.Status != store.ClientStatusBound || reb.BindingRevision != 3 {
+	if err != nil || reb.Status != store.ClientStatusBound || reb.BindingRevision != 3 || len(reb.UnwrapKey) != 0 {
 		t.Fatalf("re-accept: %+v %v", reb, err)
 	}
 
@@ -354,6 +354,34 @@ func TestClientBindingAndGrants(t *testing.T) {
 	}
 	if err := s.AppendAudit(ctx, audit.Event{Action: "issue", Target: cid.String(), Result: audit.Allow, TimeSource: audit.Local}); err != nil {
 		t.Fatalf("local audit: %v", err)
+	}
+}
+
+func TestEnsurePersonUnwrapKeyBackfills(t *testing.T) {
+	ctx := context.Background()
+	facDB, facID := testpg.Fresh(t)
+	s := store.Open(facDB, facID)
+	p, err := s.CreatePerson(ctx, "op", "操作员", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(p.UnwrapKey) != 0 {
+		t.Fatalf("create %+v", p)
+	}
+	filled, err := s.EnsurePersonUnwrapKey(ctx, p.ID)
+	if err != nil || len(filled.UnwrapKey) != 32 {
+		t.Fatalf("ensure %+v %v", filled, err)
+	}
+	if err := facDB.Exec("UPDATE people SET unwrap_key = NULL WHERE id = ?", p.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	again, err := s.EnsurePersonUnwrapKey(ctx, p.ID)
+	if err != nil || len(again.UnwrapKey) != 32 {
+		t.Fatalf("backfill %+v %v", again, err)
+	}
+	stable, err := s.EnsurePersonUnwrapKey(ctx, p.ID)
+	if err != nil || !bytes.Equal(stable.UnwrapKey, again.UnwrapKey) {
+		t.Fatalf("stable %+v %v", stable, err)
 	}
 }
 

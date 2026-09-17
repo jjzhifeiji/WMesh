@@ -129,10 +129,6 @@ func (p *Pouch) CacheClosure(snap ClosureSnapshot) error {
 	if cur, ok := p.closures[snap.AssetID]; ok && cur.Revision >= snap.Revision {
 		return nil
 	}
-	_, exists := p.closures[snap.AssetID]
-	if !exists && p.projectCount() >= p.maxCached {
-		return domain.ErrClientCacheFull
-	}
 	old := p.closures[snap.AssetID]
 	for _, m := range snap.Members {
 		if err := p.PutPlain(m.ID, m.Level, m.Name, m.Revision, m.CreatorID, m.Content); err != nil {

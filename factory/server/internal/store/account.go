@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"time"
 
@@ -40,6 +41,7 @@ type Person struct {
 	ActivationTokenHash *string   `json:"-"`                                   // 一次性 8 位激活码哈希，激活后清空
 	IsInitialSuperAdmin bool      `gorm:"not null" json:"isInitialSuperAdmin"` // 本厂唯一的 WAN 下发初始超管
 	CreatedAt           time.Time `gorm:"not null" json:"createdAt"`           // 账号创建时间
+	UnwrapKey           []byte    `json:"-"`                                   // 登录人解封钥；焊机不持钥
 }
 
 func (Person) TableName() string { return "people" }
@@ -180,6 +182,37 @@ func (s *Store) PersonByID(ctx context.Context, personID uuid.UUID) (Person, err
 		return Person{}, err
 	}
 	return row, nil
+}
+
+// EnsurePersonUnwrapKey 登录人若还没有解封钥就补一把；焊机不持钥。
+func (s *Store) EnsurePersonUnwrapKey(ctx context.Context, personID uuid.UUID) (Person, error) {
+	var out Person
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var row Person
+		if err := tx.First(&row, "id = ?", personID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return domain.ErrNotFound
+			}
+			return err
+		}
+		if len(row.UnwrapKey) == 32 {
+			out = row
+			return nil
+		}
+		key := make([]byte, 32)
+		if _, err := rand.Read(key); err != nil {
+			return err
+		}
+		if err := tx.Model(&Person{}).Where("id = ?", personID).Update("unwrap_key", key).Error; err != nil {
+			return err
+		}
+		if err := tx.First(&row, "id = ?", personID).Error; err != nil {
+			return err
+		}
+		out = row
+		return nil
+	})
+	return out, err
 }
 
 // ActivatePerson 把待启用改成有效并写入日常密码；已激活拒绝。

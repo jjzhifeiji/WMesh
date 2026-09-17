@@ -1,5 +1,6 @@
 package com.gbndt.shijiaoqi.domain.shared
 
+import com.gbndt.shijiaoqi.config.AppConfig
 import com.gbndt.shijiaoqi.data.robot.protocol.FrPacket
 import com.gbndt.shijiaoqi.data.robot.protocol.RobotCommands
 import com.gbndt.shijiaoqi.model.Pose
@@ -46,7 +47,7 @@ data class ScriptPath(
 )
 /** 单层批量与暂停继续的现网报文；不生成 Lua 正文。 */
 object WeldRun {
-    const val LUA_NAME = "/fruser/111.lua"
+    const val LUA_NAME = AppConfig.Robot.LUA_PATH
     const val AFTER_FILENAME_MS = 50L
     const val AFTER_BODY_ACK_MS = 500L
     const val AFTER_MODE_MS = 100L

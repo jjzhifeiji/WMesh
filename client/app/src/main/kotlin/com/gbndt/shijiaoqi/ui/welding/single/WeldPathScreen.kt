@@ -54,6 +54,7 @@ import com.gbndt.shijiaoqi.ui.component.Path3DViewerDialog
 import com.gbndt.shijiaoqi.ui.component.TwoColumnGrid
 import com.gbndt.shijiaoqi.ui.project.ClosureProcessPicker
 import com.gbndt.shijiaoqi.ui.navigation.LocalTeach
+import com.gbndt.shijiaoqi.ui.theme.KeepFullscreen
 import com.gbndt.shijiaoqi.ui.welding.*
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
@@ -418,7 +419,7 @@ fun WeldPathScreen(
     if (showDeleteDialog) {
         AlertDialog(
             onDismissRequest = { showDeleteDialog = false },
-            title = { Text("确认删除") },
+            title = { KeepFullscreen(); Text("确认删除") },
             text = { Text("确定要删除该焊道吗？此操作无法撤销。") },
             confirmButton = {
                 Button(
@@ -479,7 +480,7 @@ fun WeldPathScreen(
     if (ui.isMissingProcessDialogVisible) {
         AlertDialog(
             onDismissRequest = { viewModel.isMissingProcessDialogVisible = false },
-            title = { Text("闭包里没有这条工艺") },
+            title = { KeepFullscreen(); Text("闭包里没有这条工艺") },
             text = { Text(ui.missingProcessMessage) },
             confirmButton = {
                 Button(
@@ -495,7 +496,7 @@ fun WeldPathScreen(
     if (ui.isRenameDialogVisible) {
         AlertDialog(
             onDismissRequest = { viewModel.isRenameDialogVisible = false },
-            title = { Text("修改焊道名称") },
+            title = { KeepFullscreen(); Text("修改焊道名称") },
             text = {
                 Column {
                     Text("请输入新的焊道名称：")
@@ -534,7 +535,7 @@ fun WeldPathScreen(
     if (ui.isCurrentVoltageDialogVisible) {
         AlertDialog(
             onDismissRequest = { viewModel.isCurrentVoltageDialogVisible = false },
-            title = { Text("设置电流电压") },
+            title = { KeepFullscreen(); Text("设置电流电压") },
             text = {
                 Column {
                     OutlinedTextField(

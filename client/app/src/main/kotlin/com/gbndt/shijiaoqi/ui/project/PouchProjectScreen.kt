@@ -20,9 +20,9 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
 import com.gbndt.shijiaoqi.domain.shared.ProcessChoice
 import com.gbndt.shijiaoqi.domain.shared.ProjectChoice
+import com.gbndt.shijiaoqi.ui.theme.FullscreenDialog
 import java.util.UUID
 
 @Composable
@@ -34,9 +34,9 @@ fun PouchProjectScreen(
 ) {
     LaunchedEffect(Unit) { onRefresh() }
     Column(modifier = Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text("本机袋工程", style = MaterialTheme.typography.titleLarge)
+        Text("工程目录", style = MaterialTheme.typography.titleLarge)
         if (projects.isEmpty()) {
-            Text("还没有缓存的工程闭包", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("还没有工程", color = MaterialTheme.colorScheme.onSurfaceVariant)
         } else {
             LazyColumn(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 items(projects, key = { it.id }) { row ->
@@ -77,7 +77,7 @@ fun PouchProcessScreen(
 ) {
     LaunchedEffect(Unit) { onRefresh() }
     Column(modifier = Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text(if (picking) "选择闭包工艺" else "当前闭包工艺", style = MaterialTheme.typography.titleLarge)
+        Text(if (picking) "选择工艺" else "当前工艺", style = MaterialTheme.typography.titleLarge)
         if (processes.isEmpty()) {
             Text("当前工程没有工艺成员", color = MaterialTheme.colorScheme.onSurfaceVariant)
         } else {
@@ -112,7 +112,7 @@ fun ClosureProcessPicker(
     onDismiss: () -> Unit,
 ) {
     if (!visible) return
-    Dialog(onDismissRequest = onDismiss) {
+    FullscreenDialog(onDismissRequest = onDismiss) {
         Card {
             Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("闭包工艺", style = MaterialTheme.typography.titleMedium)

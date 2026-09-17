@@ -31,7 +31,7 @@ func TestClientPolicy(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got.Revision != 0 || got.MaxCachedProjects != 2 || got.CacheScope != factory.CacheScopeAll ||
-		got.PersistUnwrapKey || got.KeyTTLSeconds != 0 || !bytes.Equal(got.Extra, []byte(`{}`)) {
+		got.PersistUnwrapKey || got.KeyTTLSeconds != 0 || !got.EncryptPouch || !bytes.Equal(got.Extra, []byte(`{}`)) {
 		t.Fatalf("default %+v extra=%s", got, got.Extra)
 	}
 
@@ -41,13 +41,14 @@ func TestClientPolicy(t *testing.T) {
 		CacheScope:        factory.CacheScopeCurrent,
 		PersistUnwrapKey:  true,
 		KeyTTLSeconds:     3600,
+		EncryptPouch:      true,
 		Extra:             wantExtra,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if saved.Revision != 1 || saved.MaxCachedProjects != 4 || saved.CacheScope != factory.CacheScopeCurrent ||
-		!saved.PersistUnwrapKey || saved.KeyTTLSeconds != 3600 {
+		!saved.PersistUnwrapKey || saved.KeyTTLSeconds != 3600 || !saved.EncryptPouch {
 		t.Fatalf("saved %+v", saved)
 	}
 	var extra map[string]any
@@ -93,8 +94,20 @@ func TestClientPolicy(t *testing.T) {
 	}
 	afterLimit, err := fac.GetClientPolicy(ctx, saTok)
 	if err != nil || afterLimit.Revision != 2 || afterLimit.MaxCachedProjects != 5 ||
-		afterLimit.CacheScope != factory.CacheScopeCurrent || !afterLimit.PersistUnwrapKey {
+		afterLimit.CacheScope != factory.CacheScopeCurrent || !afterLimit.PersistUnwrapKey || !afterLimit.EncryptPouch {
 		t.Fatalf("cache limit %+v %v", afterLimit, err)
+	}
+
+	plain, err := fac.SetClientPolicy(ctx, saTok, factory.ClientPolicy{
+		MaxCachedProjects: 5,
+		CacheScope:        factory.CacheScopeCurrent,
+		PersistUnwrapKey:  true,
+		KeyTTLSeconds:     3600,
+		EncryptPouch:      false,
+		Extra:             wantExtra,
+	})
+	if err != nil || plain.EncryptPouch || plain.Revision != 3 {
+		t.Fatalf("encrypt off %+v %v", plain, err)
 	}
 
 	rows, err := fac.ListAudit(ctx)

@@ -26,3 +26,11 @@ data object TBarKey : NavKey
 /** 机械臂指令测试。 */
 @Serializable
 data object RobotTestKey : NavKey
+
+/** 个人中心。 */
+@Serializable
+data object AccountKey : NavKey
+
+/** 修改密码。 */
+@Serializable
+data object AccountPasswordKey : NavKey

@@ -86,8 +86,9 @@ dependencies {
 
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.coroutines.android)
-    implementation(libs.paho.mqtt)
     implementation(libs.bouncycastle.prov)
+
+    testImplementation(libs.junit4)
 
     testImplementation(libs.junit4)
     testImplementation(libs.kotlinx.coroutines.test)

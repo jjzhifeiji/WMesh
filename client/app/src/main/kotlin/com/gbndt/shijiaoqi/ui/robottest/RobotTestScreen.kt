@@ -23,6 +23,7 @@ import com.gbndt.shijiaoqi.model.Oscillation
 import com.gbndt.shijiaoqi.model.Pose
 import com.gbndt.shijiaoqi.ui.component.ActionButton
 import com.gbndt.shijiaoqi.ui.project.ProcessParamDropdown
+import com.gbndt.shijiaoqi.ui.theme.KeepFullscreen
 import com.gbndt.shijiaoqi.ui.project.ProcessParamRow
 import java.util.Locale
 
@@ -294,7 +295,7 @@ private fun OscillationEditDialog(
     var editing by remember(initial) { mutableStateOf(initial.copy()) }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("摆动参数") },
+        title = { KeepFullscreen(); Text("摆动参数") },
         text = {
             Column(
                 modifier = Modifier.fillMaxWidth().heightIn(max = 420.dp).verticalScroll(rememberScrollState()),

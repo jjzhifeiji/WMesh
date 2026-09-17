@@ -3,7 +3,6 @@ import {
   AppstoreOutlined,
   AuditOutlined,
   BarChartOutlined,
-  CloudSyncOutlined,
   ClusterOutlined,
   DashboardOutlined,
   TeamOutlined,
@@ -75,15 +74,6 @@ export const navTree: NavEntry[] = [
       { key: paths.projects, label: "工程", description: "工程及其依赖工艺的治理。" },
       { key: paths.legacyImport, label: "旧文件导入", description: "把示教器旧工艺/工程收成本厂资产，路径换成身份。" },
       { key: paths.fieldFiles, label: "现场文件", placeholder: true, description: "Client 上传的点云/图片记录，本体在本厂对象存储。" },
-    ],
-  },
-  {
-    key: "delivery",
-    label: "下发与同步",
-    icon: <CloudSyncOutlined />,
-    children: [
-      { key: paths.distribute, label: "下发与缓存", placeholder: true, description: "向本厂 Client 下发资产并调控缓存。" },
-      { key: paths.sync, label: "汇聚与 Intent", placeholder: true, description: "弱网汇聚、幂等合并与意图收敛。" },
     ],
   },
   {

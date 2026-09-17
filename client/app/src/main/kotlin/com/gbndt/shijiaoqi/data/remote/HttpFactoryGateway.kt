@@ -6,12 +6,10 @@ import kotlinx.serialization.json.Json
 import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
-import java.net.URLEncoder
 import java.util.Base64
 import com.gbndt.shijiaoqi.model.FactoryOffer
 import java.util.UUID
 import com.gbndt.shijiaoqi.data.session.ClientInbox
-import com.gbndt.shijiaoqi.data.session.ClientLoginResult
 import com.gbndt.shijiaoqi.data.session.ClosureRef
 import com.gbndt.shijiaoqi.data.session.FactoryGateway
 import com.gbndt.shijiaoqi.data.session.LoginRejected
@@ -23,63 +21,14 @@ import com.gbndt.shijiaoqi.data.session.PolicyMeta
 class HttpFactoryGateway : FactoryGateway {
     private val json = Json { ignoreUnknownKeys = true }
 
-    override fun registerDevice(baseUrl: String, factoryId: String, clientId: String, serial: String) {
-        val code = post(baseUrl, "/v1/factories/$factoryId/clients/$clientId/device", """{"deviceSerial":${jsonStr(serial)}}""").first
-        if (code !in 200..299) throw LoginRejected(parseError(code, lastBody))
-    }
-
-    override fun loginOnClient(
-        baseUrl: String,
-        factoryId: String,
-        clientId: String,
-        serial: String,
-        loginName: String,
-        password: String,
-    ): ClientLoginResult {
-        val body = """{"deviceSerial":${jsonStr(serial)},"loginName":${jsonStr(loginName)},"password":${jsonStr(password)}}"""
-        val (code, text) = post(baseUrl, "/v1/factories/$factoryId/clients/$clientId/login", body)
-        if (code !in 200..299) throw LoginRejected(parseError(code, text))
-        val dto = json.decodeFromString(LoginDto.serializer(), text)
-        val key = Base64.getDecoder().decode(dto.unwrapKey)
-        if (key.size != 32) throw LoginRejected("invalid unwrap key")
-        return ClientLoginResult(
-            token = dto.token,
-            unwrapKey = key,
-            person = PersonMeta(UUID.fromString(dto.account.id), dto.account.loginName, dto.account.displayName),
-            policy = PolicyMeta(
-                revision = dto.policy.revision,
-                maxCachedProjects = dto.policy.maxCachedProjects,
-                cacheScope = dto.policy.cacheScope,
-                persistUnwrapKey = dto.policy.persistUnwrapKey,
-                keyTtlSeconds = dto.policy.keyTtlSeconds,
-            ),
-            mqttUrl = dto.mqttUrl,
-            signingPublicKey = decodeB64(dto.signingPublicKey),
-            clientShortCode = dto.clientShortCode,
-            roles = dto.roles,
-        )
-    }
-
-    override fun inbox(baseUrl: String, factoryId: String, clientId: String, token: String): ClientInbox {
-        val (code, text) = get(baseUrl, "/v1/factories/$factoryId/clients/$clientId/inbox", token)
+    override fun padInbox(baseUrl: String, factoryId: String, token: String): ClientInbox {
+        val (code, text) = get(baseUrl, "/v1/factories/$factoryId/pad/inbox", token)
         if (code !in 200..299) throw LoginRejected(parseError(code, text))
         return decodeInbox(text)
     }
 
-    override fun padInbox(baseUrl: String, factoryId: String, clientId: String, token: String): ClientInbox {
-        val (code, text) = get(baseUrl, "/v1/factories/$factoryId/pad/clients/$clientId/inbox", token)
-        if (code !in 200..299) throw LoginRejected(parseError(code, text))
-        return decodeInbox(text)
-    }
-
-    override fun pullClosure(baseUrl: String, factoryId: String, clientId: String, projectId: String, token: String): TransitClosure {
-        val (code, text) = get(baseUrl, "/v1/factories/$factoryId/clients/$clientId/closures/$projectId", token)
-        if (code !in 200..299) throw LoginRejected(parseError(code, text))
-        return decodeTransit(text)
-    }
-
-    override fun padPullClosure(baseUrl: String, factoryId: String, clientId: String, projectId: String, token: String): TransitClosure {
-        val (code, text) = get(baseUrl, "/v1/factories/$factoryId/pad/clients/$clientId/closures/$projectId", token)
+    override fun padPullClosure(baseUrl: String, factoryId: String, assetId: String, token: String): TransitClosure {
+        val (code, text) = get(baseUrl, "/v1/factories/$factoryId/pad/closures/$assetId", token)
         if (code !in 200..299) throw LoginRejected(parseError(code, text))
         return decodeTransit(text)
     }
@@ -94,18 +43,13 @@ class HttpFactoryGateway : FactoryGateway {
         val (code, text) = post(baseUrl, "/v1/factories/$factoryId/pad/login", body)
         if (code !in 200..299) throw LoginRejected(parseError(code, text))
         val dto = json.decodeFromString(PadLoginDto.serializer(), text)
+        val key = decodeB64(dto.unwrapKey)
+        if (key.size != 32) throw LoginRejected("invalid unwrap key")
         return PadLoginResult(
             token = dto.token,
+            unwrapKey = key,
             person = PersonMeta(UUID.fromString(dto.account.id), dto.account.loginName, dto.account.displayName),
-            policy = PolicyMeta(
-                revision = dto.policy.revision,
-                maxCachedProjects = dto.policy.maxCachedProjects,
-                cacheScope = dto.policy.cacheScope,
-                persistUnwrapKey = dto.policy.persistUnwrapKey,
-                keyTtlSeconds = dto.policy.keyTtlSeconds,
-            ),
-            mqttUrl = dto.mqttUrl,
-            signingPublicKey = decodeB64(dto.signingPublicKey),
+            policy = dto.policy.toMeta(),
             roles = dto.roles,
             devices = dto.devices.map { d ->
                 PadDevice(
@@ -113,18 +57,13 @@ class HttpFactoryGateway : FactoryGateway {
                     name = d.name,
                     deviceSerial = d.deviceSerial,
                     shortCode = d.shortCode,
-                    unwrapKey = decodeB64(d.unwrapKey),
                 )
             },
         )
     }
 
-    override fun discover(baseUrl: String, serial: String): List<FactoryOffer> {
-        val path = if (serial.isBlank()) "/v1/discover" else {
-            val q = URLEncoder.encode(serial, Charsets.UTF_8.name())
-            "/v1/discover?deviceSerial=$q"
-        }
-        val (code, text) = get(baseUrl, path, token = "", connectMs = 800, readMs = 1500)
+    override fun discover(baseUrl: String): List<FactoryOffer> {
+        val (code, text) = get(baseUrl, "/v1/discover", token = "", connectMs = 400, readMs = 800)
         if (code !in 200..299) throw LoginRejected(parseError(code, text))
         val dto = json.decodeFromString(DiscoverDto.serializer(), text)
         val httpBase = dto.httpBase.ifBlank { baseUrl.trimEnd('/') }
@@ -140,6 +79,11 @@ class HttpFactoryGateway : FactoryGateway {
         }
     }
 
+    override fun changePassword(baseUrl: String, factoryId: String, token: String, password: String) {
+        val (code, text) = post(baseUrl, "/v1/factories/$factoryId/me/password", """{"password":${jsonStr(password)}}""", token)
+        if (code !in 200..299) throw LoginRejected(parseError(code, text))
+    }
+
     private fun decodeInbox(text: String): ClientInbox {
         val dto = json.decodeFromString(InboxDto.serializer(), text)
         return ClientInbox(
@@ -147,7 +91,6 @@ class HttpFactoryGateway : FactoryGateway {
             closures = dto.closures.map {
                 ClosureRef(UUID.fromString(it.assetId), it.revision, decodeB64OrNull(it.digest), it.name, it.level)
             },
-            signingPublicKey = decodeB64(dto.signingPublicKey),
         )
     }
 
@@ -187,9 +130,7 @@ class HttpFactoryGateway : FactoryGateway {
         )
     }
 
-    private var lastBody = ""
-
-    private fun post(baseUrl: String, path: String, body: String): Pair<Int, String> {
+    private fun post(baseUrl: String, path: String, body: String, token: String = ""): Pair<Int, String> {
         val url = URL(baseUrl.trimEnd('/') + path)
         val conn = (url.openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
@@ -197,11 +138,13 @@ class HttpFactoryGateway : FactoryGateway {
             readTimeout = 15_000
             doOutput = true
             setRequestProperty("Content-Type", "application/json")
+            if (token.isNotBlank()) {
+                setRequestProperty("Authorization", "Bearer $token")
+            }
         }
         OutputStreamWriter(conn.outputStream, Charsets.UTF_8).use { it.write(body) }
         val text = (if (conn.responseCode in 200..299) conn.inputStream else conn.errorStream)
             ?.bufferedReader(Charsets.UTF_8)?.readText().orEmpty()
-        lastBody = text
         val code = conn.responseCode
         conn.disconnect()
         return code to text
@@ -271,10 +214,9 @@ class HttpFactoryGateway : FactoryGateway {
     @Serializable
     private data class PadLoginDto(
         val token: String,
+        val unwrapKey: String = "",
         val account: AccountDto,
         val policy: PolicyDto,
-        val mqttUrl: String = "",
-        val signingPublicKey: String = "",
         val roles: List<String> = emptyList(),
         val devices: List<PadDeviceDto> = emptyList(),
     )
@@ -285,19 +227,6 @@ class HttpFactoryGateway : FactoryGateway {
         val name: String = "",
         val deviceSerial: String = "",
         val shortCode: String = "",
-        val unwrapKey: String = "",
-    )
-
-    @Serializable
-    private data class LoginDto(
-        val token: String,
-        val unwrapKey: String,
-        val account: AccountDto,
-        val policy: PolicyDto,
-        val mqttUrl: String = "",
-        val signingPublicKey: String = "",
-        val clientShortCode: String = "",
-        val roles: List<String> = emptyList(),
     )
 
     @Serializable
@@ -306,19 +235,17 @@ class HttpFactoryGateway : FactoryGateway {
     @Serializable
     private data class PolicyDto(
         val revision: Long = 0,
-        val maxCachedProjects: Int = 2,
-        val cacheScope: String = "all",
         val persistUnwrapKey: Boolean = false,
         val keyTtlSeconds: Long = 0,
+        val encryptPouch: Boolean = true,
     ) {
-        fun toMeta() = PolicyMeta(revision, maxCachedProjects, cacheScope, persistUnwrapKey, keyTtlSeconds)
+        fun toMeta() = PolicyMeta(revision, persistUnwrapKey, keyTtlSeconds, encryptPouch)
     }
 
     @Serializable
     private data class InboxDto(
         val policy: PolicyDto,
         val closures: List<ClosureRefDto> = emptyList(),
-        val signingPublicKey: String = "",
     )
 
     @Serializable
@@ -332,7 +259,7 @@ class HttpFactoryGateway : FactoryGateway {
 
     @Serializable
     private data class TransitDto(
-        val wrap: String,
+        val wrap: String = "",
         val snapshot: SnapshotDto,
     )
 

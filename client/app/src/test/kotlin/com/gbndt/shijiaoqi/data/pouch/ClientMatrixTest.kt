@@ -82,7 +82,6 @@ class ClientMatrixTest {
         p.setWelding(true)
         val secondProc = member(Pouch.KIND_PROCESS, "工艺2", """{"b":1}""".toByteArray())
         val second = project(mine, "第二", secondProc)
-        p.setPolicy(2, Pouch.SCOPE_ALL)
         p.cacheClosure(second)
         val e = runCatching { p.activate(second.assetId) }.exceptionOrNull() as PouchRejected
         assertEquals(Pouch.ERR_FORBIDDEN, e.code)
@@ -90,17 +89,16 @@ class ClientMatrixTest {
 
         val copy = Pouch()
         copy.login(unwrap, who, false)
-        val copied = runCatching { copy.cacheClosure(project(other, "只拷", member(Pouch.KIND_PROCESS, "他", body))) }
-        assertEquals(Pouch.ERR_FORBIDDEN, (copied.exceptionOrNull() as PouchRejected).code)
+        val copied = project(other, "只拷", member(Pouch.KIND_PROCESS, "他", body))
+        copy.cacheClosure(copied)
+        assertTrue(copy.hasClosure(copied.assetId))
     }
 
     @Test
-    fun c0_8c_currentOfflineMissingRefused() {
+    fun c0_8c_missingRefused() {
         val p = Pouch()
         p.login(Wm2.randomKey(), UUID.randomUUID(), false)
         p.bindClient(UUID.randomUUID())
-        p.setPolicy(2, Pouch.SCOPE_CURRENT)
-        p.setOnline(false)
         val e = runCatching { p.activate(UUID.randomUUID()) }.exceptionOrNull() as PouchRejected
         assertEquals(Pouch.ERR_NOT_FOUND, e.code)
     }

@@ -20,8 +20,9 @@ type ClientPolicy struct {
 	Revision          int64           `json:"revision"`          // 策略修订；Client 只接受更高
 	MaxCachedProjects int             `json:"maxCachedProjects"` // 每 Client 工程份上限，≥1
 	CacheScope        string          `json:"cacheScope"`        // current / all
-	PersistUnwrapKey  bool            `json:"persistUnwrapKey"`  // 包装后的解封材料可否落盘，禁止明文
-	KeyTTLSeconds     int64           `json:"keyTtlSeconds"`     // 解封钥时效秒；0 表示仅进程存活
+	PersistUnwrapKey  bool            `json:"persistUnwrapKey"`  // 解封钥可否落盘；退出或登录到期必清
+	KeyTTLSeconds     int64           `json:"keyTtlSeconds"`     // 登录时效秒；0 表示直到退出，进程内不踢
+	EncryptPouch      bool            `json:"encryptPouch"`      // 本机袋是否 SQLCipher；关则明文 SQLite
 	Extra             json.RawMessage `json:"extra"`             // 本厂扩展键；Client 忽略未知
 }
 
@@ -30,8 +31,9 @@ type factorySettingsRow struct {
 	MaxCachedProjects int             `gorm:"column:max_cached_projects;not null"`  // 缓存上限
 	Revision          int64           `gorm:"column:revision;not null"`             // 策略修订
 	CacheScope        string          `gorm:"column:cache_scope;not null"`          // current / all
-	PersistUnwrapKey  bool            `gorm:"column:persist_unwrap_key;not null"`   // 包装材料可否落盘
-	KeyTTLSeconds     int64           `gorm:"column:key_ttl_seconds;not null"`      // 时效秒
+	PersistUnwrapKey  bool            `gorm:"column:persist_unwrap_key;not null"`   // 解封钥可否落盘
+	KeyTTLSeconds     int64           `gorm:"column:key_ttl_seconds;not null"`      // 登录时效秒
+	EncryptPouch      bool            `gorm:"column:encrypt_pouch;not null"`        // 本机袋是否加密
 	Extra             json.RawMessage `gorm:"column:extra;type:jsonb;not null"`     // 扩展键
 }
 
@@ -61,6 +63,7 @@ func (s *Store) SetClientPolicy(ctx context.Context, in ClientPolicy) (ClientPol
 		"cache_scope":         in.CacheScope,
 		"persist_unwrap_key":  in.PersistUnwrapKey,
 		"key_ttl_seconds":     in.KeyTTLSeconds,
+		"encrypt_pouch":       in.EncryptPouch,
 		"extra":               []byte(extra),
 		"revision":            gorm.Expr("revision + 1"),
 	})
@@ -105,6 +108,7 @@ func policyFromRow(row factorySettingsRow) (ClientPolicy, error) {
 		CacheScope:        row.CacheScope,
 		PersistUnwrapKey:  row.PersistUnwrapKey,
 		KeyTTLSeconds:     row.KeyTTLSeconds,
+		EncryptPouch:      row.EncryptPouch,
 		Extra:             extra,
 	}, nil
 }

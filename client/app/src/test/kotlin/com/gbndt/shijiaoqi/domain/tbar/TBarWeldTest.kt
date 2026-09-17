@@ -87,6 +87,8 @@ class TBarWeldTest {
         val encoded = TBarProject.encode(paths)
         val text = encoded.decodeToString()
         assertFalse(text.contains("\"processPath\""))
+        assertFalse(text.contains("\"rootProcess\""))
+        assertFalse(text.contains("\"current\""))
         assertTrue(text.contains("\"kind\":\"tbar\"") || text.contains(TBarRun.KIND))
         val again = TBarProject.parse(encoded)
         assertEquals(1, again.size)
@@ -110,19 +112,17 @@ class TBarWeldTest {
         val cap1 = UUID.randomUUID().toString()
         val cap2 = UUID.randomUUID().toString()
         val osc = Oscillation(type = "三角波摆动")
-        val processes = mapOf(
-            root1 to WeldProcess(name = "r1", speed = 10.0, oscillation = osc),
-            root2 to WeldProcess(name = "r2", speed = 12.0, oscillation = osc),
-            cap1 to WeldProcess(name = "c1", speed = 8.0, oscillation = osc),
-            cap2 to WeldProcess(name = "c2", speed = 9.0, oscillation = osc),
-        )
+        val r1p = WeldProcess(name = "r1", speed = 10.0, oscillation = osc)
+        val r2p = WeldProcess(name = "r2", speed = 12.0, oscillation = osc)
+        val c1p = WeldProcess(name = "c1", speed = 8.0, oscillation = osc)
+        val c2p = WeldProcess(name = "c2", speed = 9.0, oscillation = osc)
         val bands = listOf(
-            GapBand(minGap = 3.0, maxGap = 4.0, layer = 1, rootProcessId = root1, capProcessId = cap1),
-            GapBand(minGap = 4.0, maxGap = 6.0, layer = 1, rootProcessId = root2, capProcessId = cap2),
+            GapBand(minGap = 3.0, maxGap = 4.0, layer = 1, rootProcessId = root1, capProcessId = cap1, rootProcess = r1p, capProcess = c1p),
+            GapBand(minGap = 4.0, maxGap = 6.0, layer = 1, rootProcessId = root2, capProcessId = cap2, rootProcess = r2p, capProcess = c2p),
         )
         val path = samplePath(bands)
-        val weld = TBarLua.job(listOf(path), processes, welding = true, simulating = false).map { it.text }
-        val sim = TBarLua.job(listOf(path), processes, welding = true, simulating = true).map { it.text }
+        val weld = TBarLua.job(listOf(path), welding = true, simulating = false).map { it.text }
+        val sim = TBarLua.job(listOf(path), welding = true, simulating = true).map { it.text }
         assertEquals(TBarLua.GLOBAL_SPEED, weld.first())
         val arcStarts = weld.withIndex().filter { it.value.startsWith("ARCStart") }.map { it.index }
         assertEquals(2, arcStarts.size)
@@ -157,14 +157,12 @@ class TBarWeldTest {
     fun onlyMoveLCarriesPointAndInverseKinHasNoId() {
         val root1 = UUID.randomUUID().toString()
         val cap1 = UUID.randomUUID().toString()
-        val processes = mapOf(
-            root1 to WeldProcess(name = "r1", speed = 10.0),
-            cap1 to WeldProcess(name = "c1", speed = 8.0),
-        )
+        val r1p = WeldProcess(name = "r1", speed = 10.0)
+        val c1p = WeldProcess(name = "c1", speed = 8.0)
         val bands = listOf(
-            GapBand(minGap = 3.0, maxGap = 6.0, layer = 1, rootProcessId = root1, capProcessId = cap1),
+            GapBand(minGap = 3.0, maxGap = 6.0, layer = 1, rootProcessId = root1, capProcessId = cap1, rootProcess = r1p, capProcess = c1p),
         )
-        val lines = TBarLua.job(listOf(samplePath(bands)), processes, welding = true, simulating = false)
+        val lines = TBarLua.job(listOf(samplePath(bands)), welding = true, simulating = false)
 
         // 求逆解不挂号，其余都挂
         assertTrue(lines.filter { !it.withId }.all { it.text.contains("GetInverseKinExaxis") })

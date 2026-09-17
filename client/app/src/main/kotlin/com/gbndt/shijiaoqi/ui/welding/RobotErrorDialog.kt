@@ -11,6 +11,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.DialogProperties
 import com.gbndt.shijiaoqi.model.RobotError
+import com.gbndt.shijiaoqi.ui.theme.KeepFullscreen
 
 @Composable
 fun RobotErrorDialog(
@@ -19,9 +20,10 @@ fun RobotErrorDialog(
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false),
+        properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
         modifier = Modifier.fillMaxWidth(0.8f),
         title = {
+            KeepFullscreen()
             Text(
                 text = "机器人故障报警",
                 color = Color.Red,

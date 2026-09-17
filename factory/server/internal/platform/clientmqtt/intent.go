@@ -25,8 +25,9 @@ type Intent struct {
 	Digest            []byte `json:"digest,omitempty"`            // 整包摘要；策略可空
 	MaxCachedProjects int    `json:"maxCachedProjects,omitempty"` // 策略：工程份上限
 	CacheScope        string `json:"cacheScope,omitempty"`        // 策略：all / current
-	PersistUnwrapKey  bool   `json:"persistUnwrapKey,omitempty"`  // 策略：包装材料可否落盘
-	KeyTTLSeconds     int64  `json:"keyTtlSeconds,omitempty"`     // 策略：钥时效秒
+	PersistUnwrapKey  bool   `json:"persistUnwrapKey"`            // 策略：解封钥可否落盘
+	KeyTTLSeconds     int64  `json:"keyTtlSeconds"`               // 策略：登录时效秒
+	EncryptPouch      bool   `json:"encryptPouch"`                // 策略：本机袋是否 SQLCipher
 	Sig               []byte `json:"sig"`                         // 本厂签发钥对 Message 的签名
 }
 
@@ -54,7 +55,7 @@ func Message(factoryID, clientID uuid.UUID, in Intent) []byte {
 	if in.PersistUnwrapKey {
 		persist = 1
 	}
-	out := make([]byte, 0, 16+16+len(in.Typ)+8+16+8+len(in.Digest)+8+len(in.CacheScope)+1+8)
+	out := make([]byte, 0, 16+16+len(in.Typ)+8+16+8+len(in.Digest)+8+len(in.CacheScope)+1+8+1)
 	out = append(out, factoryID[:]...)
 	out = append(out, clientID[:]...)
 	out = append(out, in.Typ...)
@@ -66,6 +67,11 @@ func Message(factoryID, clientID uuid.UUID, in Intent) []byte {
 	out = append(out, in.CacheScope...)
 	out = append(out, persist)
 	out = append(out, ttl[:]...)
+	encrypt := byte(0)
+	if in.EncryptPouch {
+		encrypt = 1
+	}
+	out = append(out, encrypt)
 	return out
 }
 

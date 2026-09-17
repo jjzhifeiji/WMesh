@@ -69,12 +69,12 @@ object Wm2 {
         return id + revBytes(rev) + table.toByteArray()
     }
 
-    fun clientTransitAad(factoryId: ByteArray, clientId: ByteArray, assetId: ByteArray, rev: Long): ByteArray {
-        return factoryId + clientId + assetId + revBytes(rev) + "client-transit".toByteArray()
+    fun clientTransitAad(factoryId: ByteArray, boundId: ByteArray, assetId: ByteArray, rev: Long): ByteArray {
+        return factoryId + boundId + assetId + revBytes(rev) + "client-transit".toByteArray()
     }
 
-    fun clientTransitDekAad(factoryId: ByteArray, clientId: ByteArray): ByteArray {
-        return factoryId + clientId + "client-transit-dek".toByteArray()
+    fun clientTransitDekAad(factoryId: ByteArray, boundId: ByteArray): ByteArray {
+        return factoryId + boundId + "client-transit-dek".toByteArray()
     }
 
     private fun revBytes(rev: Long): ByteArray {

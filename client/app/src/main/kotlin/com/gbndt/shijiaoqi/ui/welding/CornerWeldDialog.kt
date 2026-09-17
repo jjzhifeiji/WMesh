@@ -19,7 +19,9 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import com.gbndt.shijiaoqi.ui.theme.FullscreenDialog
+import com.gbndt.shijiaoqi.ui.theme.KeepFullscreen
 import com.gbndt.shijiaoqi.ui.welding.single.SingleWeldViewModel
 import com.gbndt.shijiaoqi.ui.project.ClosureProcessPicker
 
@@ -70,9 +72,9 @@ fun CornerWeldDialog(
         else -> "未选择（将使用参考焊道 A 的工艺）"
     }
 
-    Dialog(
+    FullscreenDialog(
         onDismissRequest = onDismiss,
-        properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)
+        properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
         Surface(
             shape = MaterialTheme.shapes.medium,
@@ -364,7 +366,7 @@ fun CornerWeldDialog(
     if (showPasswordDialog) {
         AlertDialog(
             onDismissRequest = { showPasswordDialog = false },
-            title = { Text("权限管理") },
+            title = { KeepFullscreen(); Text("权限管理") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("请输入密码后查看和修改几何参数", fontSize = 14.sp)

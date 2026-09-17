@@ -1,11 +1,10 @@
 package com.gbndt.shijiaoqi.data.remote
 
+import com.gbndt.shijiaoqi.config.AppConfig
 import com.gbndt.shijiaoqi.model.FactoryOffer
-import java.net.DatagramPacket
-import java.net.DatagramSocket
+import android.util.Log
 import java.net.Inet4Address
 import java.net.InetAddress
-import java.net.InetSocketAddress
 import java.net.NetworkInterface
 import java.net.URI
 import java.util.Collections
@@ -13,112 +12,85 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
-/** 厂服探活命中：地址与身份由服务给出，App 不手填。 */
+/** 扫局域网厂服务：先预置地址，再扫本网段，只 GET /v1/discover。 */
 object LanScan {
-    const val UDP_PORT = 52082
-    const val PROBE = "WMESH-DISCOVER/1"
-    const val REPLY_PREFIX = "WMESH-FACTORY/1"
-    val HTTP_PORTS = intArrayOf(8080, 8081, 52081)
-
-    fun parseReply(raw: String): Int? {
-        val line = raw.trim()
-        if (!line.startsWith(REPLY_PREFIX)) return null
-        val port = line.removePrefix(REPLY_PREFIX).trim().toIntOrNull() ?: return null
-        if (port !in 1..65535) return null
-        return port
-    }
-
-    fun find(savedBase: String, probe: (String) -> List<FactoryOffer>): List<FactoryOffer> {
-        val bases = LinkedHashSet<String>()
-        normalizeBase(savedBase)?.let { bases.add(it) }
-        bases.addAll(udpBases())
+    fun find(
+        savedBase: String,
+        probe: (String) -> List<FactoryOffer>,
+        multicast: LanMulticast = LanMulticast.None,
+    ): List<FactoryOffer> {
         val found = LinkedHashMap<String, FactoryOffer>()
-        fun absorb(base: String) {
-            probe(base).filter { it.factoryId.isNotBlank() }.forEach { o ->
+        fun absorb(hits: List<FactoryOffer>) {
+            hits.filter { it.factoryId.isNotBlank() }.forEach { o ->
                 val key = o.httpBase.trimEnd('/') + "/" + o.factoryId
                 val cur = found[key]
                 if (cur == null || (!cur.belongs && o.belongs)) found[key] = o
             }
         }
-        bases.forEach { runCatching { absorb(it) } }
-        if (found.isEmpty()) {
-            probeAll(httpCandidates(savedBase), probe).forEach { o ->
-                found[o.factoryId + "/" + o.clientId] = o
-            }
-        }
+        val links = mergeLinks(multicast.links())
+        val seeds = seedBases(savedBase)
+        log("presets=${seeds.size} links=${links.size} saved=$savedBase")
+        absorb(probeAll(seeds, probe))
+        val seedsSet = seeds.toHashSet()
+        val subnet = httpCandidates(savedBase, links).filter { it !in seedsSet }
+        log("subnet=${subnet.size}")
+        absorb(probeAll(subnet, probe))
+        log("hits=${found.size}")
         return found.values.toList()
     }
 
-    internal fun httpCandidates(savedBase: String): List<String> {
+    internal fun seedBases(savedBase: String): List<String> {
+        val out = LinkedHashSet<String>()
+        AppConfig.Factory.PRESET_BASES.forEach { normalizeBase(it)?.let(out::add) }
+        normalizeBase(savedBase)?.let(out::add)
+        return out.toList()
+    }
+
+    internal fun httpCandidates(savedBase: String, extra: List<LanLink> = emptyList()): List<String> {
         val ports = LinkedHashSet<Int>()
-        HTTP_PORTS.forEach { ports.add(it) }
+        AppConfig.Factory.HTTP_PORTS.forEach { ports.add(it) }
         portOf(savedBase)?.let { ports.add(it) }
         val out = LinkedHashSet<String>()
-        for (iface in ifaces()) {
-            val addr = iface.address
-            val prefix = iface.networkPrefixLength.toInt()
-            if (prefix < 24 || prefix > 30) continue
-            val mask = -1 shl (32 - prefix)
-            val raw = ipv4(addr)
-            val network = raw and mask
-            val broadcast = network or mask.inv()
-            var host = network + 1
-            while (host < broadcast) {
-                val ip = inet4(host).hostAddress
+        for (iface in mergeLinks(extra)) {
+            for (host in hostsInSubnet(iface.address, iface.prefix)) {
+                val ip = host.hostAddress ?: continue
                 for (p in ports) out.add("http://$ip:$p")
-                host++
             }
         }
         return out.toList()
     }
 
-    private fun udpBases(): List<String> {
-        val sock = DatagramSocket(null).apply {
-            reuseAddress = true
-            broadcast = true
-            soTimeout = 400
-            bind(InetSocketAddress(0))
+    internal fun hostsInSubnet(addr: Inet4Address, prefix: Int): List<Inet4Address> {
+        if (prefix !in 24..30) return emptyList()
+        val mask = -1 shl (32 - prefix)
+        val network = ipv4(addr) and mask
+        val broadcast = network or mask.inv()
+        val out = ArrayList<Inet4Address>(broadcast - network - 1)
+        var host = network + 1
+        while (host < broadcast) {
+            out.add(inet4(host))
+            host++
         }
-        return try {
-            val payload = PROBE.toByteArray(Charsets.US_ASCII)
-            val targets = LinkedHashSet<InetAddress>()
-            targets.add(InetAddress.getByName("255.255.255.255"))
-            ifaces().mapTo(targets) { it.broadcast }
-            for (to in targets) {
-                val pkt = DatagramPacket(payload, payload.size, to, UDP_PORT)
-                runCatching { sock.send(pkt) }
-            }
-            val seen = ConcurrentHashMap.newKeySet<String>()
-            val buf = ByteArray(128)
-            val deadline = System.currentTimeMillis() + 500
-            while (System.currentTimeMillis() < deadline) {
-                val pkt = DatagramPacket(buf, buf.size)
-                try {
-                    sock.receive(pkt)
-                } catch (_: Exception) {
-                    break
-                }
-                val port = parseReply(String(pkt.data, 0, pkt.length, Charsets.US_ASCII)) ?: continue
-                val host = pkt.address.hostAddress ?: continue
-                seen.add("http://$host:$port")
-            }
-            seen.toList()
-        } finally {
-            sock.close()
-        }
+        return out
     }
 
-    private data class Iface(val address: Inet4Address, val networkPrefixLength: Short, val broadcast: InetAddress)
+    private fun mergeLinks(extra: List<LanLink>): List<LanLink> {
+        val out = LinkedHashMap<String, LanLink>()
+        (nics() + extra).forEach { out[it.address.hostAddress.orEmpty()] = it }
+        return out.values.toList()
+    }
 
-    private fun ifaces(): List<Iface> {
-        val out = ArrayList<Iface>()
-        for (ni in Collections.list(NetworkInterface.getNetworkInterfaces())) {
-            if (!ni.isUp || ni.isLoopback) continue
+    private fun nics(): List<LanLink> {
+        val nics = runCatching { Collections.list(NetworkInterface.getNetworkInterfaces()) }.getOrDefault(emptyList())
+        val out = ArrayList<LanLink>()
+        for (ni in nics) {
+            if (runCatching { !ni.isUp || ni.isLoopback }.getOrDefault(true)) continue
             for (addr in ni.interfaceAddresses) {
                 val v4 = addr.address as? Inet4Address ?: continue
                 if (v4.isLoopbackAddress) continue
-                val bcast = addr.broadcast ?: continue
-                out.add(Iface(v4, addr.networkPrefixLength, bcast))
+                val prefix = addr.networkPrefixLength.toInt()
+                if (prefix !in 8..32) continue
+                out.add(LanLink(v4, prefix))
             }
         }
         return out
@@ -152,6 +124,12 @@ object LanScan {
         )
         return InetAddress.getByAddress(b) as Inet4Address
     }
+
+    private fun log(msg: String) {
+        runCatching { Log.i(TAG, msg) }
+    }
+
+    private const val TAG = "WMeshScan"
 }
 
 /** 并行探活候选地址；失败的丢掉。 */
@@ -171,7 +149,7 @@ fun probeAll(bases: Collection<String>, probe: (String) -> List<FactoryOffer>): 
                 }
             }
         }
-        jobs.forEach { runCatching { it.get(3, TimeUnit.SECONDS) } }
+        jobs.forEach { runCatching { it.get(4, TimeUnit.SECONDS) } }
     } finally {
         pool.shutdownNow()
     }

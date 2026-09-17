@@ -22,6 +22,8 @@ import java.net.InetSocketAddress
 import java.net.Socket
 import javax.inject.Inject
 import javax.inject.Singleton
+import com.gbndt.shijiaoqi.config.AppConfig
+import com.gbndt.shijiaoqi.data.remote.LanMulticast
 import com.gbndt.shijiaoqi.data.robot.protocol.FrPacket
 import com.gbndt.shijiaoqi.data.robot.protocol.RobotCommands
 import com.gbndt.shijiaoqi.data.robot.protocol.RobotLink
@@ -29,7 +31,9 @@ import com.gbndt.shijiaoqi.data.robot.protocol.Status8083
 
 /** 三路 TCP 控制器适配：8080 点动/指令，8082 批量，8083 状态。不管身份。 */
 @Singleton
-class LiveRobotBus @Inject constructor() {
+class LiveRobotBus @Inject constructor(
+    private val lan: LanMulticast,
+) {
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     private val _isConnected8080 = MutableStateFlow(false)
@@ -124,21 +128,21 @@ class LiveRobotBus @Inject constructor() {
     private fun startInternal() {
         if (isStarted) return
         isStarted = true
-        socket8080 = SocketClient(scope, SERVER_IP, PORT_CONTROL, onStatusChange = { _isConnected8080.value = it }) { data, length ->
+        socket8080 = SocketClient(scope, AppConfig.Robot.IP, AppConfig.Robot.PORT_CONTROL, { onRobotSubnet(lan.links(), AppConfig.Robot.IP) }, onStatusChange = { _isConnected8080.value = it }) { data, length ->
             val text = String(data, 0, length, Charsets.UTF_8)
             FrPacket.errorCode(text)?.let { code ->
                 scope.launch { _robotErrorEvent.emit(code) }
             }
             scope.launch { _receivedText.emit(text) }
         }
-        socket8082 = SocketClient(scope, SERVER_IP, PORT_BATCH, onStatusChange = { _isConnected8082.value = it }) { data, length ->
+        socket8082 = SocketClient(scope, AppConfig.Robot.IP, AppConfig.Robot.PORT_BATCH, { onRobotSubnet(lan.links(), AppConfig.Robot.IP) }, onStatusChange = { _isConnected8082.value = it }) { data, length ->
             val text = String(data, 0, length, Charsets.UTF_8)
             FrPacket.errorCode(text)?.let { code ->
                 scope.launch { _robotErrorEvent.emit(code) }
             }
             scope.launch { _receivedText8082.emit(text) }
         }
-        socket8083 = SocketClient(scope, SERVER_IP, PORT_DATA, onStatusChange = { up ->
+        socket8083 = SocketClient(scope, AppConfig.Robot.IP, AppConfig.Robot.PORT_DATA, { onRobotSubnet(lan.links(), AppConfig.Robot.IP) }, onStatusChange = { up ->
             _isConnected8083.value = up
             if (up) lastDataTime8083 = System.currentTimeMillis()
         }) { data, length ->
@@ -251,6 +255,7 @@ class LiveRobotBus @Inject constructor() {
         val scope: CoroutineScope,
         val ip: String,
         val port: Int,
+        val reachable: () -> Boolean,
         val onStatusChange: (Boolean) -> Unit,
         val onDataReceived: (ByteArray, Int) -> Unit,
     ) {
@@ -263,6 +268,11 @@ class LiveRobotBus @Inject constructor() {
             isRunning = true
             job = scope.launch {
                 while (isRunning) {
+                    if (!reachable()) {
+                        onStatusChange(false)
+                        delay(2000)
+                        continue
+                    }
                     try {
                         socket = Socket()
                         socket?.connect(InetSocketAddress(ip, port), 2000)
@@ -320,12 +330,5 @@ class LiveRobotBus @Inject constructor() {
             socket = null
             outputStream = null
         }
-    }
-
-    companion object {
-        const val SERVER_IP = "192.168.57.2" // 机械臂路由器固定地址
-        const val PORT_CONTROL = 8080 // 点动与单条指令
-        const val PORT_BATCH = 8082 // 批量程序
-        const val PORT_DATA = 8083 // 状态回流
     }
 }

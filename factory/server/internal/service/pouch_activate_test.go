@@ -72,13 +72,7 @@ func TestPouchActivateRejectsIncompleteMismatchCopyFullWeldOffline(t *testing.T)
 		t.Fatalf("copy: %v", err)
 	}
 
-	p.SetPolicy(1, store.CacheScopeAll)
 	second := projectSnap(client, "第二份", processMember("工艺2", []byte(`{"c":1}`)))
-	if err := p.CacheClosure(second); !errors.Is(err, domain.ErrClientCacheFull) {
-		t.Fatalf("full: %v", err)
-	}
-
-	p.SetPolicy(2, store.CacheScopeAll)
 	if err := p.CacheClosure(second); err != nil {
 		t.Fatal(err)
 	}

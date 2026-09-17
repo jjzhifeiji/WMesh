@@ -674,11 +674,84 @@ func (s *kernel) mutateAsset(ctx context.Context, acc Account, assetID uuid.UUID
 }
 
 // canViewAssetMeta 个人级元数据给本厂有效账号看；厂级有效账号都能看。
-func (s *Assets) canViewAssetMeta(ctx context.Context, acc Account, a Asset) error {
+func (s *kernel) canViewAssetMeta(ctx context.Context, acc Account, a Asset) error {
 	_ = ctx
 	_ = acc
 	_ = a
 	return nil
+}
+
+// listVisibleAssets 厂端列表与平板登录共用同一份可见元数据，不含正文。
+func (s *kernel) listVisibleAssets(ctx context.Context, acc Account, kind string) ([]Asset, error) {
+	if kind != "" && kind != KindProcess && kind != KindProject {
+		return nil, domain.ErrNotFound
+	}
+	rows, err := s.store.ListGovernedAssets(ctx)
+	if err != nil {
+		return nil, err
+	}
+	visible := []Asset{}
+	for _, a := range rows {
+		if kind != "" && a.Kind != kind {
+			continue
+		}
+		if err := s.canViewAssetMeta(ctx, acc, a); err != nil {
+			if errors.Is(err, domain.ErrForbidden) {
+				continue
+			}
+			return nil, err
+		}
+		visible = append(visible, stripContent(a))
+	}
+	replicas, err := s.store.ListReplicas(ctx)
+	if err != nil {
+		return nil, err
+	}
+	latest := map[uuid.UUID]AssetReplica{}
+	firstAt := map[uuid.UUID]time.Time{}
+	for _, r := range replicas {
+		if kind != "" && r.Kind != kind {
+			continue
+		}
+		if t, ok := firstAt[r.ID]; !ok || r.ReceivedAt.Before(t) {
+			firstAt[r.ID] = r.ReceivedAt
+		}
+		prev, ok := latest[r.ID]
+		if !ok || r.Revision > prev.Revision {
+			latest[r.ID] = r
+		}
+	}
+	seen := map[uuid.UUID]struct{}{}
+	for _, a := range visible {
+		seen[a.ID] = struct{}{}
+	}
+	for _, r := range latest {
+		if _, ok := seen[r.ID]; ok {
+			continue
+		}
+		// 厂端只展示云端当前可用的；停用/草稿不进列表，已钉修订仍可按身份读。
+		if r.Status != AssetAvailable {
+			continue
+		}
+		a := replicaAsAsset(r)
+		if t, ok := firstAt[r.ID]; ok {
+			a.CreatedAt = t
+		}
+		if err := s.canViewAssetMeta(ctx, acc, a); err != nil {
+			if errors.Is(err, domain.ErrForbidden) {
+				continue
+			}
+			return nil, err
+		}
+		visible = append(visible, stripContent(a))
+	}
+	sort.SliceStable(visible, func(i, j int) bool {
+		if visible[i].CreatedAt.Equal(visible[j].CreatedAt) {
+			return visible[i].ID.String() > visible[j].ID.String()
+		}
+		return visible[i].CreatedAt.After(visible[j].CreatedAt)
+	})
+	return visible, nil
 }
 
 // GetAsset 读元数据，不解包正文。
@@ -1003,75 +1076,10 @@ func (s *Assets) ListAssets(ctx context.Context, token, kind string) ([]AssetVie
 	if err != nil {
 		return nil, err
 	}
-	if kind != "" && kind != KindProcess && kind != KindProject {
-		return nil, domain.ErrNotFound
-	}
-	// 按许可过滤本厂工艺/工程元数据，不含正文。
-	rows, err := s.store.ListGovernedAssets(ctx)
+	visible, err := s.listVisibleAssets(ctx, acc, kind)
 	if err != nil {
 		return nil, err
 	}
-	visible := []Asset{}
-	for _, a := range rows {
-		if kind != "" && a.Kind != kind {
-			continue
-		}
-		if err := s.canViewAssetMeta(ctx, acc, a); err != nil {
-			if errors.Is(err, domain.ErrForbidden) {
-				continue
-			}
-			return nil, err
-		}
-		visible = append(visible, stripContent(a))
-	}
-	replicas, err := s.store.ListReplicas(ctx)
-	if err != nil {
-		return nil, err
-	}
-	latest := map[uuid.UUID]AssetReplica{}
-	firstAt := map[uuid.UUID]time.Time{}
-	for _, r := range replicas {
-		if kind != "" && r.Kind != kind {
-			continue
-		}
-		if t, ok := firstAt[r.ID]; !ok || r.ReceivedAt.Before(t) {
-			firstAt[r.ID] = r.ReceivedAt
-		}
-		prev, ok := latest[r.ID]
-		if !ok || r.Revision > prev.Revision {
-			latest[r.ID] = r
-		}
-	}
-	seen := map[uuid.UUID]struct{}{}
-	for _, a := range visible {
-		seen[a.ID] = struct{}{}
-	}
-	for _, r := range latest {
-		if _, ok := seen[r.ID]; ok {
-			continue
-		}
-		// 厂端只展示云端当前可用的；停用/草稿不进列表，已钉修订仍可按身份读。
-		if r.Status != AssetAvailable {
-			continue
-		}
-		a := replicaAsAsset(r)
-		if t, ok := firstAt[r.ID]; ok {
-			a.CreatedAt = t
-		}
-		if err := s.canViewAssetMeta(ctx, acc, a); err != nil {
-			if errors.Is(err, domain.ErrForbidden) {
-				continue
-			}
-			return nil, err
-		}
-		visible = append(visible, stripContent(a))
-	}
-	sort.SliceStable(visible, func(i, j int) bool {
-		if visible[i].CreatedAt.Equal(visible[j].CreatedAt) {
-			return visible[i].ID.String() > visible[j].ID.String()
-		}
-		return visible[i].CreatedAt.After(visible[j].CreatedAt)
-	})
 	return s.decorateAssets(ctx, visible)
 }
 

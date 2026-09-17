@@ -9,11 +9,12 @@ data class FactoryOffer(
     val clientId: String,
     val clientName: String,
 ) {
+    fun usable(): Boolean = status.isBlank() || status == "active"
+
     fun label(): String {
         val host = httpBase.removePrefix("https://").removePrefix("http://")
         val name = clientName.ifBlank { "厂服务" }
-        return "$name · $host"
+        val text = "$name · $host"
+        return if (usable()) text else "$text（不可用）"
     }
 }
-
-/** 扫局域网厂服务：UDP 探询加 HTTP 探活，多台都留下拉。 */

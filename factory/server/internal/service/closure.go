@@ -156,6 +156,32 @@ func (s *Closure) packFromMember(ctx context.Context, root ClosureMember) (Closu
 	return snap, nil
 }
 
+// packForPad 平板登录与厂端列表同一范围：草稿也拉；工艺单独成包；工程明文只带根和工艺 Id。
+func (s *Closure) packForPad(ctx context.Context, assetID uuid.UUID) (ClosureSnapshot, error) {
+	root, err := s.loadRootForPack(ctx, assetID)
+	if err != nil {
+		return ClosureSnapshot{}, err
+	}
+	root.Deps = copyDeps(root.Deps)
+	if root.Kind == KindProcess {
+		snap := sealClosure(KindProcess, root, nil, nil, nil)
+		if err := validateClosure(snap); err != nil {
+			return ClosureSnapshot{}, err
+		}
+		return snap, nil
+	}
+	if root.Kind != KindProject {
+		return ClosureSnapshot{}, domain.ErrForbidden
+	}
+	// 工程不把工艺正文打进包，焊道只引用工艺 Id。
+	parts := []digest.Member{{ID: root.ID, Revision: root.Revision, Digest: root.Digest, Content: root.Content}}
+	return ClosureSnapshot{
+		Kind: KindProject, AssetID: root.ID, Revision: root.Revision, Level: root.Level,
+		Copyable: root.Copyable, Status: root.Status, Members: []ClosureMember{root},
+		Digest: digest.ClosureSum(parts),
+	}, nil
+}
+
 // loadRootForPack 组包根：本厂原件优先，否则已收副本。
 func (s *Closure) loadRootForPack(ctx context.Context, assetID uuid.UUID) (ClosureMember, error) {
 	a, err := s.store.GovernedAssetByID(ctx, assetID)
@@ -265,7 +291,7 @@ func (s *Closure) isFactoryScopePE(ctx context.Context, acc Account) bool {
 	return false
 }
 
-// putCached 校验后写入本机袋；超上限拒绝。
+// putCached 校验后写入本机袋。
 func (s *Closure) putCached(ctx context.Context, bag *Bag, snap ClosureSnapshot) error {
 	if err := validateClosure(snap); err != nil {
 		return err
@@ -275,14 +301,6 @@ func (s *Closure) putCached(ctx context.Context, bag *Bag, snap ClosureSnapshot)
 	}
 	if snap.TargetClientID == nil || *snap.TargetClientID != bag.ClientID {
 		return domain.ErrForbidden
-	}
-	// 每 Client 工程缓存上限。
-	limit, err := s.store.CacheLimit(ctx)
-	if err != nil {
-		return err
-	}
-	if _, ok := bag.findClosure(snap.AssetID); !ok && bag.projectCount() >= limit {
-		return domain.ErrClientCacheFull
 	}
 	bag.putClosure(snap)
 	return nil

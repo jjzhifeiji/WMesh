@@ -80,6 +80,7 @@ fun WeldPath.toSurrogate() = WeldPathSurrogate(
     gapBands = gapBands,
 )
 
+/** 反序列化只带 processId；参数出库后再合进来。 */
 fun WeldPathSurrogate.toWeldPath(): WeldPath {
     val stateList = mutableListOf<WeldPoint>()
     stateList.addAll(points)

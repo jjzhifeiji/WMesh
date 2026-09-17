@@ -8,25 +8,25 @@ import java.util.UUID
 
 /** 本机新建的个人级；编号跟人看，身份仍是 UUID。 */
 data class IssuedAsset(
-    val id: UUID,
-    val kind: String,
-    val code: String,
-    val level: String,
+    val id: UUID, // 稳定身份
+    val kind: String, // process / project
+    val code: String, // 只读编号，创建后不改
+    val level: String, // 个人级
 )
 
 /** 待汇聚运行事实，尚未进厂库。 */
 data class PendingFact(
-    val id: UUID,
-    val creatorId: UUID,
+    val id: UUID, // 事实身份
+    val creatorId: UUID, // 创建人
 )
 
-/** 待发点云/图片记录，不含正文。 */
+/** 待发点云/图片记录，不含工艺正文。 */
 data class PendingUploadRecord(
-    val id: UUID,
-    val kind: String,
-    val digest: ByteArray,
-    val creatorId: UUID,
-    val clientId: UUID,
+    val id: UUID, // 待发记录身份
+    val kind: String, // point_cloud / image
+    val digest: ByteArray, // 内容摘要
+    val creatorId: UUID, // 创建人
+    val clientId: UUID, // 当时绑定的 Client
 )
 
 internal data class HeldUpload(
@@ -125,10 +125,10 @@ internal object LedgerCodec {
 }
 
 internal data class LedgerState(
-    val origin: String = "",
-    val nextProcess: Long = 1,
-    val nextProject: Long = 1,
-    val codes: Map<UUID, String> = emptyMap(),
-    val facts: List<PendingFact> = emptyList(),
-    val uploads: List<HeldUpload> = emptyList(),
+    val origin: String = "", // 本机短号前缀
+    val nextProcess: Long = 1, // 下一工艺序号
+    val nextProject: Long = 1, // 下一工程序号
+    val codes: Map<UUID, String> = emptyMap(), // 已发出的只读编号
+    val facts: List<PendingFact> = emptyList(), // 待汇聚事实
+    val uploads: List<HeldUpload> = emptyList(), // 待发点云/图片
 )

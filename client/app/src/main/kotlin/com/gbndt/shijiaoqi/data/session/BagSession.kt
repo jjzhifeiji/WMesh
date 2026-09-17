@@ -9,18 +9,20 @@ import kotlinx.coroutines.flow.update
 import com.gbndt.shijiaoqi.data.pouch.Pouch
 import com.gbndt.shijiaoqi.data.pouch.PouchRejected
 import java.util.UUID
-import com.gbndt.shijiaoqi.data.remote.DownChannel
 import com.gbndt.shijiaoqi.model.FactoryOffer
 import com.gbndt.shijiaoqi.data.remote.LanScan
-import com.gbndt.shijiaoqi.data.remote.NoopDownChannel
+import com.gbndt.shijiaoqi.data.remote.LanMulticast
 
-/** 本机登录会话：解封钥只在内存，信封进袋，默认不把钥落盘。 */
+/** 本机登录会话：令牌落盘；解封钥是否落盘跟厂策；退出或登录到期清钥。 */
 class BagSession(
     private val serials: DeviceSerialReader,
     private val factory: FactoryGateway,
     private val identity: IdentityStore,
     private val store: EnvelopeStore,
-    private val down: DownChannel = NoopDownChannel(),
+    private val multicast: LanMulticast = LanMulticast.None,
+    private val vault: SessionVault = MemorySessionVault(),
+    private val keys: UnwrapKeyStore = MemoryUnwrapKeyStore(),
+    private val clock: () -> Long = { System.currentTimeMillis() },
 ) {
     val pouch = Pouch()
 
@@ -39,6 +41,10 @@ class BagSession(
     private var token: String? = null
     private var devices: List<PadDevice> = emptyList()
 
+    init {
+        restore()
+    }
+
     fun savedUrl(): String = identity.factoryUrl
     fun savedFactoryId(): String = identity.factoryId
     fun savedClientId(): String = identity.clientId
@@ -46,9 +52,7 @@ class BagSession(
     fun findFactories(): List<FactoryOffer> {
         edit { it.copy(error = null, busy = true) }
         try {
-            val hits = LanScan.find(identity.factoryUrl) { base ->
-                factory.discover(base, "")
-            }
+            val hits = LanScan.find(identity.factoryUrl, factory::discover, multicast)
             if (hits.isEmpty()) {
                 edit { it.copy(error = "本网没有发现厂服务") }
             }
@@ -75,29 +79,40 @@ class BagSession(
                 identity.factoryUrl, identity.factoryId, loginName.trim(), password,
             )
             logoutMemory()
-            val pouchKey = sess.devices.filter { it.unwrapKey.size == 32 }.minByOrNull { it.id }?.unwrapKey?.copyOf()
-                ?: Wm2.randomKey()
+            if (sess.unwrapKey.size != 32) throw LoginRejected("invalid unwrap key")
+            val pouchKey = sess.unwrapKey.copyOf()
             pouch.login(pouchKey, sess.person.id, sess.policy.persistUnwrapKey)
-            store.open(pouchKey)
-            Wm2.zero(pouchKey)
+            store.open(pouchKey, sess.policy.encryptPouch)
             runCatching {
                 pouch.restoreEnvelopes(store.loadEnvelopes())
                 pouch.restoreLedger(store.loadLedger())
                 pouch.restoreClosures(store.loadClosures())
+                pouch.restoreProjectBodies(store.loadProjectPlains())
+                val active = store.loadActive()
+                pouch.restoreActive(active.first, active.second)
             }
-            pouch.setOnline(true)
-            pouch.setPolicy(sess.policy.maxCachedProjects, sess.policy.cacheScope)
             pouch.setRoles(sess.roles)
             token = sess.token
-            pullAllDevices(sess)
-            sess.devices.forEach { Wm2.zero(it.unwrapKey) }
-            devices = sess.devices.map { it.copy(unwrapKey = ByteArray(0)) }
+            // 登录后立刻拉全量并落库，不依赖是否已有设备。
+            pullCatalog(sess)
             persistPouch(store, pouch)
-            store.savePerson(sess.person)
+            store.savePerson(sess.person, sess.roles)
             store.savePolicy(sess.policy)
+            store.saveDevices(sess.devices)
+            val now = clock()
+            val ttlMs = if (sess.policy.keyTtlSeconds > 0) sess.policy.keyTtlSeconds * 1000L else 0L
+            store.saveSession(sess.token, if (ttlMs > 0) now + ttlMs else 0L, now)
+            if (sess.policy.persistUnwrapKey) keys.save(pouchKey, sess.devices) else keys.clear()
+            devices = sess.devices.map { it.copy(unwrapKey = ByteArray(0)) }
+            saveVault(sess)
+            sess.devices.forEach { Wm2.zero(it.unwrapKey) }
+            Wm2.zero(sess.unwrapKey)
+            Wm2.zero(pouchKey)
             edit {
                 it.copy(
                     personName = sess.person.displayName.ifBlank { sess.person.loginName },
+                    loginName = sess.person.loginName,
+                    roles = sess.roles,
                     loggedIn = true,
                     armMatched = false,
                 )
@@ -120,13 +135,18 @@ class BagSession(
     }
 
     fun matchArm(serial: String) {
+        ensureFactoryArm(serial)
+    }
+
+    /** 作业前本地核：读到的号在登录落下的本厂设备名录里即可。 */
+    fun ensureFactoryArm(serial: String = serials.read()) {
         val got = serial.trim()
         if (!loggedIn) throw LoginRejected("unauthorized")
         if (got.isEmpty()) {
             edit { it.copy(error = "读不到设备号", armMatched = false) }
             throw LoginRejected("device serial is required")
         }
-        val hit = devices.firstOrNull { it.deviceSerial == got }
+        val hit = findLocalDevice(got)
             ?: run {
                 edit { it.copy(error = "设备号未在本厂登记", armMatched = false) }
                 pouch.clearClient()
@@ -146,10 +166,10 @@ class BagSession(
         persistPouch(store, pouch)
     }
 
-    /** 覆盖袋内已有信封，盘上仍是密文。 */
+    /** 覆盖袋内已有正文，工艺仍封信封，工程仍明文。 */
     fun rewritePlain(id: UUID, plain: ByteArray) {
-        val env = pouch.envelope(id) ?: throw PouchRejected(Pouch.ERR_NOT_FOUND)
-        cachePlain(id, env.level, env.name, env.revision, env.ownerId, plain)
+        pouch.rewrite(id, plain)
+        persistPouch(store, pouch)
     }
 
     fun cacheClosure(snap: com.gbndt.shijiaoqi.data.pouch.ClosureSnapshotPlain) {
@@ -158,18 +178,30 @@ class BagSession(
     }
 
     fun activate(projectId: UUID) {
-        if (!armMatched) throw LoginRejected("device serial does not match")
         pouch.activate(projectId)
         persistPouch(store, pouch)
     }
 
-    fun openProcess(processId: UUID): ByteArray = pouch.openProcess(processId)
+    /** 出库解开工艺信封；明文只给调用方，袋里仍是密文。 */
+    fun openProcess(processId: UUID): ByteArray {
+        hydrateCipher(processId)
+        return pouch.openProcess(processId)
+    }
 
     fun setWelding(value: Boolean) {
+        if (value) ensureFactoryArm()
         pouch.setWelding(value)
     }
 
-    fun open(id: UUID): ByteArray = pouch.open(id)
+    fun open(id: UUID): ByteArray {
+        hydrateCipher(id)
+        return pouch.open(id)
+    }
+
+    /** 用的时候从库取信封密文，解开只发生在内存。 */
+    private fun hydrateCipher(id: UUID) {
+        store.loadEnvelope(id)?.let { pouch.rememberCipher(it) }
+    }
 
     fun issuePersonal(kind: String, name: String, content: ByteArray) =
         pouch.issuePersonal(kind, name, content).also { persistPouch(store, pouch) }
@@ -186,44 +218,152 @@ class BagSession(
     fun openPendingUpload(id: UUID): ByteArray = pouch.openPendingUpload(id)
 
     fun logout() {
+        dropPersistedSession()
         logoutMemory()
         edit { it.copy(error = null) }
     }
 
-    private fun pullAllDevices(sess: PadLoginResult) {
-        if (sess.policy.cacheScope == "current") return
+    fun changePassword(password: String) {
+        if (!loggedIn) throw LoginRejected("unauthorized")
+        val next = password.trim()
+        if (next.isEmpty()) throw LoginRejected("empty password")
+        val tok = token ?: throw LoginRejected("unauthorized")
+        factory.changePassword(identity.factoryUrl, identity.factoryId, tok, next)
+    }
+
+    /** 按厂端同一份可见资产拉全量；工程明文，工艺用人钥解过站包。 */
+    private fun pullCatalog(sess: PadLoginResult) {
         val tok = sess.token
         val fid = identity.factoryId
         val base = identity.factoryUrl
         val factoryId = UUID.fromString(fid)
-        val keyed = sess.devices.filter { it.id.isNotBlank() && it.unwrapKey.size == 32 }
-        if (keyed.isEmpty()) return
-        val boxes = keyed.map { d -> d to factory.padInbox(base, fid, d.id, tok) }
-        val n = boxes.sumOf { it.second.closures.size }
-        pouch.setPolicy(maxOf(sess.policy.maxCachedProjects, n.coerceAtLeast(1)), "all")
-        for ((d, box) in boxes) {
-            val cid = UUID.fromString(d.id)
-            pouch.bindClient(cid)
-            for (ref in box.closures) {
-                val t = factory.padPullClosure(base, fid, d.id, ref.assetId.toString(), tok)
-                try {
-                    pouch.cacheTransit(factoryId, cid, t, d.unwrapKey)
-                } catch (_: PouchRejected) {
-                }
+        if (sess.unwrapKey.size != 32) return
+        val personId = sess.person.id
+        val box = try {
+            factory.padInbox(base, fid, tok)
+        } catch (_: LoginRejected) {
+            return
+        }
+        for (ref in box.closures) {
+            val t = try {
+                factory.padPullClosure(base, fid, ref.assetId.toString(), tok)
+            } catch (_: LoginRejected) {
+                continue
+            }
+            try {
+                pouch.cacheTransit(factoryId, personId, t, sess.unwrapKey)
+            } catch (_: PouchRejected) {
+            } catch (_: Exception) {
             }
         }
-        pouch.clearClient()
-        pouch.setPolicy(sess.policy.maxCachedProjects, sess.policy.cacheScope)
+    }
+
+    private fun saveVault(sess: PadLoginResult) {
+        val now = clock()
+        val ttlMs = if (sess.policy.keyTtlSeconds > 0) sess.policy.keyTtlSeconds * 1000L else 0L
+        vault.save(
+            SavedSession(
+                token = sess.token,
+                expiresAtMillis = if (ttlMs > 0) now + ttlMs else 0L,
+                personId = sess.person.id.toString(),
+                personName = sess.person.displayName.ifBlank { sess.person.loginName },
+                loginName = sess.person.loginName,
+                roles = sess.roles,
+                persistUnwrapKey = sess.policy.persistUnwrapKey,
+                keyTtlSeconds = sess.policy.keyTtlSeconds,
+                loggedInAtMillis = now,
+                encryptPouch = sess.policy.encryptPouch,
+                devices = sess.devices.map { it.copy(unwrapKey = ByteArray(0)) },
+            ),
+        )
+    }
+
+    /** 开机恢复：登录未到期且钥文件还在才进主页；到期或退出过则清钥。 */
+    internal fun restore() {
+        val saved = vault.load() ?: return
+        if (saved.token.isBlank() || saved.personId.isBlank()) {
+            dropPersistedSession()
+            return
+        }
+        val now = clock()
+        if (saved.expiresAtMillis > 0 && now >= saved.expiresAtMillis) {
+            dropPersistedSession()
+            return
+        }
+        if (!saved.persistUnwrapKey) return
+        val key = keys.loadPouchKey()
+        if (key == null || key.size != 32) {
+            dropPersistedSession()
+            return
+        }
+        val personId = runCatching { UUID.fromString(saved.personId) }.getOrNull() ?: return
+        try {
+            pouch.login(key, personId, true)
+            store.open(key, saved.encryptPouch)
+            pouch.restoreEnvelopes(store.loadEnvelopes())
+            pouch.restoreLedger(store.loadLedger())
+            pouch.restoreClosures(store.loadClosures())
+            pouch.restoreProjectBodies(store.loadProjectPlains())
+            val active = store.loadActive()
+            pouch.restoreActive(active.first, active.second)
+            pouch.setRoles(saved.roles)
+            token = saved.token
+            devices = store.loadDevices().ifEmpty { saved.devices }
+            val person = store.loadPerson()
+            edit {
+                it.copy(
+                    personName = saved.personName.ifBlank { person?.displayName.orEmpty() },
+                    loginName = saved.loginName.ifBlank { person?.loginName.orEmpty() },
+                    roles = saved.roles,
+                    loggedIn = true,
+                    armMatched = false,
+                    error = null,
+                )
+            }
+            val serial = serials.read().trim()
+            if (serial.isNotEmpty()) {
+                runCatching { ensureFactoryArm(serial) }
+            }
+        } catch (_: Exception) {
+            dropPersistedSession()
+            logoutMemory()
+        }
+    }
+
+    /** 去空白、忽略大小写；号对上或互相包含就算本厂设备。 */
+    private fun findLocalDevice(serial: String): PadDevice? {
+        val want = foldSerial(serial)
+        if (want.isEmpty()) return null
+        return devices.firstOrNull { foldSerial(it.deviceSerial) == want }
+            ?: devices.firstOrNull {
+                val have = foldSerial(it.deviceSerial)
+                have.isNotEmpty() && (have.contains(want) || want.contains(have))
+            }
+    }
+
+    private fun foldSerial(raw: String): String =
+        buildString(raw.length) {
+            for (c in raw) if (!c.isWhitespace()) append(c.uppercaseChar())
+        }
+
+    /** 退出或登录到期：令牌、解封钥、本机袋一起丢掉。 */
+    private fun dropPersistedSession() {
+        vault.clear()
+        keys.clear()
+        pouch.wipeContents()
+        runCatching { store.wipe() }
+        store.close()
+        token = null
+        devices = emptyList()
     }
 
     private fun logoutMemory() {
-        down.stop()
         pouch.logout()
         pouch.clearClient()
         store.close()
         token = null
         devices = emptyList()
-        edit { it.copy(loggedIn = false, armMatched = false, personName = "") }
+        edit { it.copy(loggedIn = false, armMatched = false, personName = "", loginName = "", roles = emptyList()) }
     }
 
     private fun translate(code: String): String = when (code) {
@@ -231,9 +371,11 @@ class BagSession(
         "device serial already bound" -> "该设备号已绑其他机"
         "device serial does not match" -> "设备号未在本厂登记"
         "invalid credentials" -> "登录名或密码不对"
+        "empty password" -> "新密码不能为空"
         "client binding is void" -> "绑定已作废"
         "not found" -> "未绑定本厂"
         "scan failed" -> "扫描厂服务失败"
+        "invalid unwrap key" -> "领不到解封钥"
         else -> code
     }
 }

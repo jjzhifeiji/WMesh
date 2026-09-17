@@ -3,6 +3,7 @@ package com.gbndt.shijiaoqi.domain.tbar
 import com.gbndt.shijiaoqi.geom.Rotation
 import com.gbndt.shijiaoqi.geom.Vec3
 import com.gbndt.shijiaoqi.model.Pose
+import com.gbndt.shijiaoqi.model.WeldProcess
 import com.gbndt.shijiaoqi.model.single.WeldPath
 import com.gbndt.shijiaoqi.model.single.WeldPathSurrogate
 import com.gbndt.shijiaoqi.model.single.toSurrogate
@@ -19,7 +20,7 @@ import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
-/** 按间隙切出的一段打底或盖面。 */
+/** 按间隙切出的一段打底或盖面；工艺对象已从袋合进来。 */
 data class TBarSeg(
     val tStart: Double,
     val tEnd: Double,
@@ -27,6 +28,7 @@ data class TBarSeg(
     val endPose: Pose,
     val gapStart: Double,
     val gapEnd: Double,
+    val process: WeldProcess,
     val processId: String,
     val band: GapBand,
 )
@@ -90,6 +92,8 @@ object TBarRun {
             }
             val t0 = sampled[i].t
             val t1 = sampled[j].t
+            val pid = processId(current.band, pass)
+            val proc = if (pass == TBarPass.ROOT) current.band.rootProcess else current.band.capProcess
             segments.add(
                 TBarSeg(
                     tStart = t0,
@@ -98,7 +102,8 @@ object TBarRun {
                     endPose = lerpPose(startPose, endPose, t1),
                     gapStart = sampled[i].gap,
                     gapEnd = sampled[j].gap,
-                    processId = processId(current.band, pass),
+                    process = proc,
+                    processId = pid,
                     band = current.band,
                 )
             )

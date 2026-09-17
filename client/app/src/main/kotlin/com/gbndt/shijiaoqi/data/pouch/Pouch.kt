@@ -4,39 +4,42 @@ import com.gbndt.shijiaoqi.data.crypt.Wm2
 import java.security.MessageDigest
 import java.util.UUID
 
+/** 袋内信封：磁盘只有密文，解开只发生在内存。 */
 data class CachedEnvelope(
-    val id: UUID,
-    val level: String,
-    val ownerId: UUID?,
-    val name: String,
-    val revision: Long,
-    val blob: ByteArray,
+    val id: UUID, // 资产稳定身份
+    val level: String, // factory / personal / platform
+    val ownerId: UUID?, // 个人级创建人；其余为空
+    val name: String, // 显示名，不当身份
+    val revision: Long, // 当前修订
+    val blob: ByteArray, // 信封密文，工艺明文永不进这列
 )
 
+/** 厂端下发闭包里的一条成员，内容仍是密文。 */
 data class TransitMember(
-    val id: UUID,
-    val level: String,
-    val name: String,
-    val revision: Long,
-    val ownerId: UUID?,
-    val content: ByteArray,
-    val kind: String = "",
-    val status: String = "",
-    val digest: ByteArray = ByteArray(0),
-    val deps: List<AssetDep> = emptyList(),
-    val code: String = "",
+    val id: UUID, // 稳定身份
+    val level: String, // platform / factory / personal
+    val name: String, // 显示名
+    val revision: Long, // 钉死修订
+    val ownerId: UUID?, // 个人级创建人；其余为空
+    val content: ByteArray, // 过路密文，不是工艺明文
+    val kind: String = "", // process / project
+    val status: String = "", // 送达时状态
+    val digest: ByteArray = ByteArray(0), // 内容 SHA-256
+    val deps: List<AssetDep> = emptyList(), // 工艺必须空
+    val code: String = "", // 只读编号，跟身份走
 )
 
+/** 厂端过站包；工程明文 Wrap 为空，工艺成员仍是过站信封。 */
 data class TransitClosure(
-    val wrap: ByteArray,
-    val members: List<TransitMember>,
-    val assetId: UUID,
-    val revision: Long,
-    val kind: String = "project",
-    val level: String = "",
-    val status: String = "",
-    val digest: ByteArray = ByteArray(0),
-    val targetClientId: UUID? = null,
+    val wrap: ByteArray, // 过站 DEK；工程明文为空
+    val members: List<TransitMember>, // 工程仅根；工艺单独成包
+    val assetId: UUID, // 根身份
+    val revision: Long, // 根修订
+    val kind: String = "project", // process / project
+    val level: String = "", // 与源相同
+    val status: String = "", // 与源相同
+    val digest: ByteArray = ByteArray(0), // 本包摘要
+    val targetClientId: UUID? = null, // 历史字段，工程不再发给某台设备
 )
 
 /** 本机袋：磁盘只有信封，解封钥默认只在登录内存；激活恰好一份工程。 */
@@ -48,11 +51,9 @@ class Pouch {
     private var material: ByteArray? = null
     private val items = LinkedHashMap<UUID, CachedEnvelope>()
     private val closures = LinkedHashMap<UUID, CachedClosure>()
+    private val projectBodies = LinkedHashMap<UUID, ByteArray>()
     private var clientId: UUID? = null
     private var welding = false
-    private var online = true
-    private var maxCached = 2
-    private var cacheScope = SCOPE_ALL
     private var activeId: UUID? = null
     private var activeRev = 0L
     private var origin: String? = null
@@ -96,6 +97,26 @@ class Pouch {
         origin = null
     }
 
+    /** 退出登录：内存钥、信封、闭包一起丢掉。 */
+    fun wipeContents() {
+        persist = false
+        logout()
+        Wm2.zero(material)
+        material = null
+        persistPerson = null
+        items.clear()
+        closures.clear()
+        projectBodies.values.forEach { Wm2.zero(it) }
+        projectBodies.clear()
+        facts.clear()
+        uploads.clear()
+        codes.clear()
+        byCode.clear()
+        origin = null
+        nextN[KIND_PROCESS] = 1L
+        nextN[KIND_PROJECT] = 1L
+    }
+
     fun hasUnwrapKey(): Boolean = unwrap?.size == Wm2.KEY_SIZE
 
     fun bindClient(id: UUID) {
@@ -108,16 +129,6 @@ class Pouch {
 
     fun boundClient(): UUID? = clientId
 
-    fun setPolicy(maxCachedProjects: Int, scope: String) {
-        maxCached = if (maxCachedProjects < 1) 2 else maxCachedProjects
-        cacheScope = if (scope == SCOPE_CURRENT) SCOPE_CURRENT else SCOPE_ALL
-        pruneToActive()
-    }
-
-    fun setOnline(value: Boolean) {
-        online = value
-    }
-
     fun setWelding(value: Boolean) {
         welding = value
     }
@@ -128,15 +139,49 @@ class Pouch {
 
     fun activeRevision(): Long = activeRev
 
+    /** 导出已缓存工程元数据，不含正文。 */
     fun exportClosures(): List<CachedClosure> = closures.values.map { it.copy(members = it.members.toList()) }
 
-    /** 当前激活闭包里的工艺成员，列表不解开正文。 */
+    /** 当前工程引用的工艺；明文工程只带 Id，列表不解开正文。 */
     fun listProcessMembers(): List<CachedMember> {
         val aid = activeId ?: return emptyList()
         val cl = closures[aid] ?: return emptyList()
-        return cl.members.filter { it.kind == KIND_PROCESS }
+        val packed = cl.members.filter { it.kind == KIND_PROCESS }
+        if (packed.isNotEmpty()) return packed
+        val root = cl.members.firstOrNull() ?: return emptyList()
+        return root.deps.map { d ->
+            val env = items[d.id]
+            CachedMember(
+                id = d.id,
+                kind = KIND_PROCESS,
+                level = env?.level.orEmpty(),
+                name = env?.name.orEmpty(),
+                status = "",
+                revision = d.revision,
+                digest = d.digest.copyOf(),
+                ownerId = env?.ownerId,
+            )
+        }
     }
 
+    /** 袋内全部工艺信封，与厂端工艺列表对齐，不解开正文。 */
+    fun listCachedProcesses(): List<CachedMember> {
+        val projectIds = closures.keys
+        return items.values.filter { it.id !in projectIds }.map {
+            CachedMember(
+                id = it.id,
+                kind = KIND_PROCESS,
+                level = it.level,
+                name = it.name,
+                status = "",
+                revision = it.revision,
+                digest = ByteArray(0),
+                ownerId = it.ownerId,
+            )
+        }
+    }
+
+    /** 从库恢复工程元数据；编号跟人走。 */
     fun restoreClosures(list: List<CachedClosure>) {
         closures.clear()
         list.forEach { closures[it.assetId] = it }
@@ -147,6 +192,22 @@ class Pouch {
         }
     }
 
+    /** 从库恢复工程明文；工艺仍走信封。 */
+    fun restoreProjectBodies(list: List<CachedEnvelope>) {
+        projectBodies.values.forEach { Wm2.zero(it) }
+        projectBodies.clear()
+        list.forEach { projectBodies[it.id] = it.blob.copyOf() }
+    }
+
+    /** 工程明文副本，供落盘；不是工艺信封。 */
+    fun exportProjectPlains(): List<CachedEnvelope> =
+        closures.values.filter { it.kind == KIND_PROJECT }.mapNotNull { c ->
+            val body = projectBodies[c.assetId] ?: return@mapNotNull null
+            val owner = c.members.firstOrNull()?.ownerId
+            CachedEnvelope(c.assetId, c.level, owner, c.name, c.revision, body.copyOf())
+        }
+
+    /** 恢复激活工程；库里没有这份则清空。 */
     fun restoreActive(id: UUID?, revision: Long) {
         if (id == null || !closures.containsKey(id)) {
             activeId = null
@@ -159,8 +220,6 @@ class Pouch {
 
     fun putPlain(id: UUID, level: String, name: String, revision: Long, ownerId: UUID?, plain: ByteArray) {
         val key = unwrap ?: throw SecurityException("unauthorized")
-        val who = person ?: throw SecurityException("unauthorized")
-        if (level == LEVEL_PERSONAL && ownerId != who) throw SecurityException("forbidden")
         val aad = Wm2.assetAad(uuidBytes(id), revision, "pouch")
         val blob = Wm2.seal(key, plain, aad)
         items[id] = CachedEnvelope(id, level, ownerId, name, revision, blob)
@@ -173,17 +232,68 @@ class Pouch {
         return true
     }
 
-    fun revisionOf(id: UUID): Long = items[id]?.revision ?: 0L
+    fun rewrite(id: UUID, plain: ByteArray) {
+        items[id]?.let {
+            putPlain(id, it.level, it.name, it.revision, it.ownerId, plain)
+            return
+        }
+        closures[id]?.let { c ->
+            val m = c.members.first()
+            putProject(
+                ClosureMemberPlain(
+                    id = m.id, kind = m.kind, level = m.level, name = m.name,
+                    status = m.status, revision = m.revision, content = plain,
+                    digest = Digest.sum(plain), deps = m.deps, ownerId = m.ownerId, code = m.code,
+                ),
+            )
+            return
+        }
+        throw PouchRejected(ERR_NOT_FOUND)
+    }
 
-    fun ingestTransit(factoryId: UUID, clientId: UUID, wrap: ByteArray, members: List<TransitMember>): Int {
+    fun revisionOf(id: UUID): Long = closures[id]?.revision ?: items[id]?.revision ?: 0L
+
+    /** 工程明文进袋；只引用工艺 Id，不封信封。 */
+    fun putProject(m: ClosureMemberPlain) {
+        if (!loggedIn()) throw PouchRejected(ERR_UNAUTHORIZED)
+        if (m.kind != KIND_PROJECT) throw PouchRejected(ERR_FORBIDDEN)
+        val held = closures[m.id]
+        if (held != null && held.revision > m.revision) return
+        items.remove(m.id)
+        Wm2.zero(projectBodies.remove(m.id))
+        projectBodies[m.id] = m.content.copyOf()
+        val contentDigest = if (m.digest.isNotEmpty()) m.digest.copyOf() else Digest.sum(m.content)
+        val packDigest = Digest.closureSum(listOf(Digest.Member(m.id, m.revision, contentDigest, m.content)))
+        closures[m.id] = CachedClosure(
+            assetId = m.id,
+            revision = m.revision,
+            kind = KIND_PROJECT,
+            level = m.level,
+            status = m.status.ifBlank { STATUS_AVAILABLE },
+            name = m.name,
+            digest = packDigest,
+            targetClientId = null,
+            members = listOf(
+                CachedMember(
+                    id = m.id, kind = KIND_PROJECT, level = m.level, name = m.name,
+                    status = m.status.ifBlank { STATUS_AVAILABLE }, revision = m.revision,
+                    digest = contentDigest,
+                    deps = m.deps, ownerId = m.ownerId, code = m.code,
+                ),
+            ),
+        )
+        if (m.code.isNotBlank()) bindCode(m.id, m.code)
+    }
+
+    fun ingestTransit(factoryId: UUID, personId: UUID, wrap: ByteArray, members: List<TransitMember>): Int {
         val key = unwrap ?: throw SecurityException("unauthorized")
         val fid = uuidBytes(factoryId)
-        val cid = uuidBytes(clientId)
-        val dek = Wm2.open(key, wrap, Wm2.clientTransitDekAad(fid, cid))
+        val pid = uuidBytes(personId)
+        val dek = Wm2.open(key, wrap, Wm2.clientTransitDekAad(fid, pid))
         try {
             var n = 0
             for (m in members) {
-                val plain = Wm2.open(dek, m.content, Wm2.clientTransitAad(fid, cid, uuidBytes(m.id), m.revision))
+                val plain = Wm2.open(dek, m.content, Wm2.clientTransitAad(fid, pid, uuidBytes(m.id), m.revision))
                 try {
                     if (putPlainIfNewer(m.id, m.level, m.name, m.revision, m.ownerId, plain)) n++
                 } finally {
@@ -196,95 +306,119 @@ class Pouch {
         }
     }
 
-    fun cacheTransit(factoryId: UUID, clientId: UUID, t: TransitClosure, wrapKey: ByteArray? = null) {
-        val key = wrapKey ?: unwrap ?: throw PouchRejected(ERR_UNAUTHORIZED)
-        val fid = uuidBytes(factoryId)
-        val cid = uuidBytes(clientId)
-        val dek = Wm2.open(key, t.wrap, Wm2.clientTransitDekAad(fid, cid))
+    /** 解开厂端过路包后写入本机袋；工程明文不封，工艺密文用时再解。 */
+    fun cacheTransit(factoryId: UUID, personId: UUID, t: TransitClosure, wrapKey: ByteArray? = null) {
         val plains = ArrayList<ClosureMemberPlain>(t.members.size)
         try {
-            for (m in t.members) {
-                val plain = Wm2.open(dek, m.content, Wm2.clientTransitAad(fid, cid, uuidBytes(m.id), m.revision))
-                val dig = if (m.digest.isNotEmpty()) m.digest else Digest.sum(plain)
-                plains.add(
-                    ClosureMemberPlain(
-                        id = m.id,
-                        kind = m.kind.ifBlank { if (m.id == t.assetId) KIND_PROJECT else KIND_PROCESS },
-                        level = m.level,
-                        name = m.name,
-                        status = m.status.ifBlank { STATUS_AVAILABLE },
-                        revision = m.revision,
-                        content = plain,
-                        digest = dig,
-                        deps = m.deps,
-                        ownerId = m.ownerId,
-                        code = m.code,
-                    ),
-                )
+            if (t.wrap.isEmpty()) {
+                for (m in t.members) {
+                    val plain = m.content.copyOf()
+                    plains.add(
+                        ClosureMemberPlain(
+                            id = m.id,
+                            kind = m.kind.ifBlank { if (m.id == t.assetId) KIND_PROJECT else KIND_PROCESS },
+                            level = m.level,
+                            name = m.name,
+                            status = m.status.ifBlank { STATUS_AVAILABLE },
+                            revision = m.revision,
+                            content = plain,
+                            digest = if (m.digest.isNotEmpty()) m.digest else Digest.sum(plain),
+                            deps = m.deps,
+                            ownerId = m.ownerId,
+                            code = m.code,
+                        ),
+                    )
+                }
+            } else {
+                val key = wrapKey ?: unwrap ?: throw PouchRejected(ERR_UNAUTHORIZED)
+                val fid = uuidBytes(factoryId)
+                val pid = uuidBytes(personId)
+                val dek = Wm2.open(key, t.wrap, Wm2.clientTransitDekAad(fid, pid))
+                try {
+                    for (m in t.members) {
+                        val plain = Wm2.open(dek, m.content, Wm2.clientTransitAad(fid, pid, uuidBytes(m.id), m.revision))
+                        plains.add(
+                            ClosureMemberPlain(
+                                id = m.id,
+                                kind = m.kind.ifBlank { if (m.id == t.assetId) KIND_PROJECT else KIND_PROCESS },
+                                level = m.level,
+                                name = m.name,
+                                status = m.status.ifBlank { STATUS_AVAILABLE },
+                                revision = m.revision,
+                                content = plain,
+                                digest = if (m.digest.isNotEmpty()) m.digest else Digest.sum(plain),
+                                deps = m.deps,
+                                ownerId = m.ownerId,
+                                code = m.code,
+                            ),
+                        )
+                    }
+                } finally {
+                    Wm2.zero(dek)
+                }
             }
-            val parts = plains.map { Digest.Member(it.id, it.revision, it.digest, it.content) }
-            val pack = if (t.digest.isNotEmpty()) t.digest else Digest.closureSum(parts)
-            cacheClosure(
-                ClosureSnapshotPlain(
-                    kind = t.kind.ifBlank { KIND_PROJECT },
-                    assetId = t.assetId,
-                    revision = t.revision,
-                    level = t.level.ifBlank { plains.firstOrNull()?.level.orEmpty() },
-                    status = t.status.ifBlank { STATUS_AVAILABLE },
-                    digest = pack,
-                    targetClientId = t.targetClientId ?: clientId,
-                    members = plains,
-                ),
-            )
+            val packKind = t.kind.ifBlank { plains.firstOrNull()?.kind.orEmpty() }
+            if (packKind == KIND_PROCESS) {
+                for (m in plains) {
+                    putPlain(m.id, m.level, m.name, m.revision, m.ownerId, m.content)
+                }
+                return
+            }
+            val root = plains.firstOrNull { it.id == t.assetId } ?: plains.firstOrNull() ?: throw PouchRejected(ERR_INCOMPLETE)
+            putProject(root)
+            for (m in plains) {
+                if (m.kind == KIND_PROCESS) {
+                    putPlain(m.id, m.level, m.name, m.revision, m.ownerId, m.content)
+                }
+            }
         } finally {
-            Wm2.zero(dek)
             plains.forEach { Wm2.zero(it.content) }
         }
     }
 
+    /** 缓存一份工程；明文根即可，不要求发给哪台设备。 */
     fun cacheClosure(snap: ClosureSnapshotPlain) {
         if (!loggedIn()) throw PouchRejected(ERR_UNAUTHORIZED)
         validateClosure(snap)
         if (snap.kind != KIND_PROJECT) throw PouchRejected(ERR_FORBIDDEN)
-        val self = clientId ?: throw PouchRejected(ERR_FORBIDDEN)
-        if (snap.targetClientId == null || snap.targetClientId != self) throw PouchRejected(ERR_FORBIDDEN)
         val held = closures[snap.assetId]
         if (held != null && held.revision >= snap.revision) return
-        if (held == null && projectCount() >= maxCached) throw PouchRejected(ERR_CACHE_FULL)
         bindMemberCodes(snap.members)
         val old = held?.members.orEmpty()
         for (m in snap.members) {
-            putPlain(m.id, m.level, m.name, m.revision, m.ownerId, m.content)
+            if (m.kind == KIND_PROJECT) putProject(m) else putPlain(m.id, m.level, m.name, m.revision, m.ownerId, m.content)
         }
-        closures[snap.assetId] = metaFromSnap(snap)
+        closures[snap.assetId] = metaFromSnap(snap.copy(targetClientId = null))
         dropUnreferenced(old)
     }
 
+    /** 激活恰好一份工程；焊接中不允许换。 */
     fun activate(projectId: UUID) {
         if (!loggedIn()) throw PouchRejected(ERR_UNAUTHORIZED)
         if (!closures.containsKey(projectId)) {
-            if (cacheScope == SCOPE_CURRENT && !online) throw PouchRejected(ERR_NOT_FOUND)
             throw PouchRejected(ERR_NOT_FOUND)
         }
         if (welding && activeId != null && activeId != projectId) throw PouchRejected(ERR_FORBIDDEN)
         val snap = snapshotFromDisk(projectId)
         validateClosure(snap)
-        val self = clientId ?: throw PouchRejected(ERR_FORBIDDEN)
-        if (snap.targetClientId == null || snap.targetClientId != self) throw PouchRejected(ERR_FORBIDDEN)
         val root = snap.members.first()
         if (root.level == LEVEL_PERSONAL && root.ownerId != person) throw PouchRejected(ERR_FORBIDDEN)
         if (root.status != STATUS_AVAILABLE) throw PouchRejected(ERR_NOT_AVAILABLE)
         activeId = snap.assetId
         activeRev = snap.revision
-        pruneToActive()
     }
 
     fun openProcess(processId: UUID): ByteArray {
         if (!loggedIn()) throw PouchRejected(ERR_UNAUTHORIZED)
         val aid = activeId ?: throw PouchRejected(ERR_NOT_FOUND)
         val cl = closures[aid] ?: throw PouchRejected(ERR_NOT_FOUND)
-        val member = cl.members.firstOrNull { it.id == processId } ?: throw PouchRejected(ERR_NOT_FOUND)
-        if (member.kind != KIND_PROCESS) throw PouchRejected(ERR_NOT_FOUND)
+        val packed = cl.members.firstOrNull { it.id == processId }
+        if (packed != null) {
+            if (packed.kind != KIND_PROCESS) throw PouchRejected(ERR_NOT_FOUND)
+            return open(processId)
+        }
+        val root = cl.members.firstOrNull() ?: throw PouchRejected(ERR_NOT_FOUND)
+        if (root.deps.none { it.id == processId }) throw PouchRejected(ERR_NOT_FOUND)
         return open(processId)
     }
 
@@ -297,8 +431,14 @@ class Pouch {
     }
 
     fun open(id: UUID): ByteArray {
-        val key = unwrap ?: throw SecurityException("unauthorized")
+        if (!loggedIn()) throw SecurityException("unauthorized")
         val who = person ?: throw SecurityException("unauthorized")
+        projectBodies[id]?.let { body ->
+            val meta = closures[id]?.members?.firstOrNull()
+            if (meta?.level == LEVEL_PERSONAL && meta.ownerId != who) throw SecurityException("forbidden")
+            return body.copyOf()
+        }
+        val key = unwrap ?: throw SecurityException("unauthorized")
         val env = items[id] ?: throw NoSuchElementException("not found")
         if (env.level == LEVEL_PERSONAL && env.ownerId != who) throw SecurityException("forbidden")
         return Wm2.open(key, env.blob, Wm2.assetAad(uuidBytes(env.id), env.revision, "pouch"))
@@ -313,7 +453,12 @@ class Pouch {
 
     fun restoreEnvelopes(list: List<CachedEnvelope>) {
         items.clear()
-        list.forEach { items[it.id] = it.copy(blob = it.blob.copyOf()) }
+        list.forEach { rememberCipher(it) }
+    }
+
+    /** 把库里的信封密文放进内存，解开时再查。 */
+    fun rememberCipher(env: CachedEnvelope) {
+        items[env.id] = env.copy(blob = env.blob.copyOf())
     }
 
     fun setOrigin(code: String) {
@@ -341,7 +486,17 @@ class Pouch {
         val id = UUID.randomUUID()
         bindCode(id, code)
         nextN[kind] = n + 1
-        putPlain(id, LEVEL_PERSONAL, name, 1, person, content)
+        if (kind == KIND_PROJECT) {
+            putProject(
+                ClosureMemberPlain(
+                    id = id, kind = KIND_PROJECT, level = LEVEL_PERSONAL, name = name,
+                    status = STATUS_AVAILABLE, revision = 1, content = content,
+                    digest = Digest.sum(content), ownerId = person, code = code,
+                ),
+            )
+        } else {
+            putPlain(id, LEVEL_PERSONAL, name, 1, person, content)
+        }
         return IssuedAsset(id, kind, code, LEVEL_PERSONAL)
     }
 
@@ -447,26 +602,29 @@ class Pouch {
         }
     }
 
-    private fun projectCount(): Int = closures.values.count { it.kind == KIND_PROJECT }
-
-    private fun pruneToActive() {
-        if (cacheScope != SCOPE_CURRENT) return
-        val keep = activeId ?: return
-        val dropped = closures.entries.filter { it.key != keep }.map { it.value }
-        closures.keys.retainAll(setOf(keep))
-        dropped.forEach { dropUnreferenced(it.members) }
-    }
-
     private fun dropUnreferenced(old: List<CachedMember>) {
         val ref = referencedIds()
+        val candidates = HashSet<UUID>()
         old.forEach { m ->
-            if (m.id !in ref) items.remove(m.id)
+            candidates.add(m.id)
+            m.deps.forEach { candidates.add(it.id) }
+        }
+        candidates.forEach { id ->
+            if (id !in ref) {
+                items.remove(id)
+                Wm2.zero(projectBodies.remove(id))
+            }
         }
     }
 
     private fun referencedIds(): Set<UUID> {
         val out = HashSet<UUID>()
-        closures.values.forEach { c -> c.members.forEach { out.add(it.id) } }
+        closures.values.forEach { c ->
+            c.members.forEach { m ->
+                out.add(m.id)
+                m.deps.forEach { out.add(it.id) }
+            }
+        }
         return out
     }
 
@@ -524,6 +682,8 @@ class Pouch {
             return
         }
         if (snap.kind != KIND_PROJECT || root.kind != KIND_PROJECT) throw PouchRejected(ERR_MISMATCH)
+        // 工程明文只带根；工艺用 Id 引用，不要求成员工艺正文。
+        if (snap.members.size == 1) return
         val expect = 1 + root.deps.size
         if (snap.members.size != expect) {
             if (snap.members.size < expect) throw PouchRejected(ERR_INCOMPLETE)
@@ -537,30 +697,28 @@ class Pouch {
     }
 
     companion object {
-        const val LEVEL_FACTORY = "factory"
-        const val LEVEL_PLATFORM = "platform"
-        const val LEVEL_PERSONAL = "personal"
-        const val KIND_PROCESS = "process"
-        const val KIND_PROJECT = "project"
-        const val SCOPE_ALL = "all"
-        const val SCOPE_CURRENT = "current"
-        const val STATUS_AVAILABLE = "available"
-        const val ERR_UNAUTHORIZED = "unauthorized"
-        const val ERR_FORBIDDEN = "forbidden"
-        const val ERR_NOT_FOUND = "not found"
-        const val ERR_CACHE_FULL = "client cache is full"
-        const val ERR_INCOMPLETE = "closure is incomplete"
-        const val ERR_MISMATCH = "closure revision mismatch"
-        const val ERR_INTEGRITY = "asset integrity check failed"
-        const val ERR_NOT_AVAILABLE = "asset is not available"
-        const val ERR_CODE_MISSING = AssetCode.ERR_MISSING
-        const val ERR_CODE_CONFLICT = AssetCode.ERR_CONFLICT
-        const val ERR_CODE_EXHAUSTED = AssetCode.ERR_EXHAUSTED
-        const val KIND_POINT_CLOUD = "point_cloud"
-        const val KIND_IMAGE = "image"
-        const val ROLE_OPERATOR = "operator"
-        const val ROLE_PROCESS_ENGINEER = "process_engineer"
+        const val LEVEL_FACTORY = "factory" // 本厂厂级
+        const val LEVEL_PLATFORM = "platform" // 已下发平台级
+        const val LEVEL_PERSONAL = "personal" // 本厂个人级
+        const val KIND_PROCESS = "process" // 可复用工艺
+        const val KIND_PROJECT = "project" // 一次作业工程
+        const val STATUS_AVAILABLE = "available" // 可用
+        const val ERR_UNAUTHORIZED = "unauthorized" // 未登录或无钥
+        const val ERR_FORBIDDEN = "forbidden" // 默认拒绝
+        const val ERR_NOT_FOUND = "not found" // 袋里没有这份
+        const val ERR_INCOMPLETE = "closure is incomplete" // 工程成员不齐
+        const val ERR_MISMATCH = "closure revision mismatch" // 修订或摘要对不上
+        const val ERR_INTEGRITY = "asset integrity check failed" // 摘要核验失败
+        const val ERR_NOT_AVAILABLE = "asset is not available" // 工程不可用
+        const val ERR_CODE_MISSING = AssetCode.ERR_MISSING // 缺本机短号
+        const val ERR_CODE_CONFLICT = AssetCode.ERR_CONFLICT // 编号冲突
+        const val ERR_CODE_EXHAUSTED = AssetCode.ERR_EXHAUSTED // 序号用尽
+        const val KIND_POINT_CLOUD = "point_cloud" // 待发点云
+        const val KIND_IMAGE = "image" // 待发图片
+        const val ROLE_OPERATOR = "operator" // 操作工
+        const val ROLE_PROCESS_ENGINEER = "process_engineer" // 工艺工程师
 
+        /** 把 UUID 收成 16 字节，供信封 AAD。 */
         fun uuidBytes(id: UUID): ByteArray {
             val buf = ByteArray(16)
             val hi = id.mostSignificantBits

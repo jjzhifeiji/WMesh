@@ -144,11 +144,7 @@ func TestClientChannelPullAndPolicyFanout(t *testing.T) {
 		}
 	}
 
-	cli, err := fac.Store().ClientByID(ctx, cid)
-	if err != nil {
-		t.Fatal(err)
-	}
-	opened, err := factory.OpenTransit(fac.Store().FactoryID(), cli, got)
+	opened, err := factory.OpenTransit(fac.Store().FactoryID(), cid, sess.UnwrapKey, got)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,14 +173,14 @@ func TestClientChannelPullAndPolicyFanout(t *testing.T) {
 	}
 
 	pol, err := fac.SetClientPolicy(ctx, sa, factory.ClientPolicy{
-		MaxCachedProjects: 3, CacheScope: factory.CacheScopeAll, PersistUnwrapKey: true, KeyTTLSeconds: 60,
+		MaxCachedProjects: 3, CacheScope: factory.CacheScopeAll, PersistUnwrapKey: true, KeyTTLSeconds: 60, EncryptPouch: true,
 	})
 	if err != nil || pol.Revision < 1 {
 		t.Fatalf("policy %v %v", pol, err)
 	}
 	in, raw, err := down.latestFor(sess.SigningPublicKey, fac.Store().FactoryID(), cid)
 	if err != nil || clientmqtt.HasBody(raw) || in.Typ != clientmqtt.TypPolicy || in.Revision != pol.Revision ||
-		in.MaxCachedProjects != 3 || in.CacheScope != factory.CacheScopeAll || !in.PersistUnwrapKey || in.KeyTTLSeconds != 60 {
+		in.MaxCachedProjects != 3 || in.CacheScope != factory.CacheScopeAll || !in.PersistUnwrapKey || in.KeyTTLSeconds != 60 || !in.EncryptPouch {
 		t.Fatalf("policy intent %+v %v %s", in, err, raw)
 	}
 	if err := fac.SetCacheLimit(ctx, sa, 4); err != nil {

@@ -25,6 +25,10 @@ object PouchSave {
     fun weldPath(bag: BagSession, path: WeldPath) {
         process(bag, path.processId, path.process)
         path.extraProcesses.forEach { process(bag, it.processId, it.process) }
+        path.gapBands.forEach {
+            process(bag, it.rootProcessId, it.rootProcess)
+            process(bag, it.capProcessId, it.capProcess)
+        }
     }
 
     fun multi(bag: BagSession, path: MultiLayerWeldPath) {

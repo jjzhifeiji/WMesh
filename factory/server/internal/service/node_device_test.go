@@ -163,12 +163,12 @@ func TestPadLoginListsDevicesWithoutSerial(t *testing.T) {
 	}
 
 	sess, err := fac.LoginPad(ctx, "op", "op-pass")
-	if err != nil || sess.Token == "" || sess.Account.ID != op.acc.ID || len(sess.Devices) != 2 {
+	if err != nil || sess.Token == "" || sess.Account.ID != op.acc.ID || len(sess.Devices) != 2 || len(sess.UnwrapKey) != 32 {
 		t.Fatalf("pad %+v %v", sess, err)
 	}
 	seen := map[string]factory.PadDevice{}
 	for _, d := range sess.Devices {
-		if len(d.UnwrapKey) != 32 || d.DeviceSerial == "" {
+		if d.DeviceSerial == "" {
 			t.Fatalf("device %+v", d)
 		}
 		seen[d.DeviceSerial] = d
@@ -193,11 +193,8 @@ func TestPadLoginListsDevicesWithoutSerial(t *testing.T) {
 	if _, err := fac.ClientInbox(ctx, sess.Token, cidA); !errors.Is(err, domain.ErrForbidden) {
 		t.Fatalf("operator inbox: %v", err)
 	}
-	if _, err := fac.PadClientInbox(ctx, sess.Token, cidA); err != nil {
-		t.Fatalf("pad inbox a: %v", err)
-	}
-	if _, err := fac.PadClientInbox(ctx, sess.Token, cidB); err != nil {
-		t.Fatalf("pad inbox b: %v", err)
+	if _, err := fac.PadClientInbox(ctx, sess.Token); err != nil {
+		t.Fatalf("pad inbox: %v", err)
 	}
 
 	rows, err := fac.ListAudit(ctx)
@@ -206,6 +203,37 @@ func TestPadLoginListsDevicesWithoutSerial(t *testing.T) {
 	}
 	if !audit.ContainsAny(audit.Dump(rows), "pad_login") {
 		t.Fatalf("audit %s", audit.Dump(rows))
+	}
+}
+
+func TestPadLoginIssuesUnwrapKeyWithoutSerial(t *testing.T) {
+	ctx := context.Background()
+	h := New(t)
+	seed, fac, err := h.Provision(ctx, "sa", "超管")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fac.Activate(ctx, "sa", seed.ActivationToken, "sa-pass"); err != nil {
+		t.Fatal(err)
+	}
+	saTok := mustLogin(t, ctx, fac, "sa", "sa-pass")
+	_ = mustCreateRole(t, ctx, fac, saTok, "op", "op-pass", factory.RoleOperator, factory.ScopeFactory, nil)
+
+	cid := id.New()
+	pub, _, err := nodekey.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fac.AcceptBinding(ctx, cid, "焊机", pub, 1); err != nil {
+		t.Fatal(err)
+	}
+
+	sess, err := fac.LoginPad(ctx, "op", "op-pass")
+	if err != nil || len(sess.Devices) != 1 {
+		t.Fatalf("pad %+v %v", sess, err)
+	}
+	if sess.Devices[0].ID != cid || sess.Devices[0].DeviceSerial != "" || len(sess.UnwrapKey) != 32 {
+		t.Fatalf("device %+v key %d", sess.Devices[0], len(sess.UnwrapKey))
 	}
 }
 

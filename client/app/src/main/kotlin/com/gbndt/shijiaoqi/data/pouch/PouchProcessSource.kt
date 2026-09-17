@@ -7,14 +7,26 @@ import com.gbndt.shijiaoqi.domain.shared.ProcessSource
 import com.gbndt.shijiaoqi.model.WeldProcess
 import java.util.UUID
 
-/** 只从当前激活闭包的工艺成员解参数，用完清明文。 */
-class PouchProcessSource(private val pouch: Pouch) : ProcessSource {
-    override fun open(processId: UUID): WeldProcess? {
-        val bytes = try {
-            pouch.openProcess(processId)
-        } catch (_: Exception) {
-            return null
+/** 出库解开工艺信封，解码成参数对象后抹掉明文。 */
+class PouchProcessSource(
+    private val openBytes: (UUID) -> ByteArray?,
+    private val listFn: () -> List<ProcessChoice> = { emptyList() },
+) : ProcessSource {
+    constructor(pouch: Pouch) : this(openFrom(pouch), listFrom(pouch))
+
+    companion object {
+        private fun openFrom(pouch: Pouch): (UUID) -> ByteArray? = { id ->
+            runCatching { pouch.openProcess(id) }.getOrNull()
+                ?: runCatching { pouch.open(id) }.getOrNull()
         }
+
+        private fun listFrom(pouch: Pouch): () -> List<ProcessChoice> = {
+            pouch.listCachedProcesses().map { ProcessChoice(it.id, it.name) }
+        }
+    }
+
+    override fun open(processId: UUID): WeldProcess? {
+        val bytes = openBytes(processId) ?: return null
         return try {
             ProcessJson.decode(bytes)
         } catch (_: Exception) {
@@ -24,8 +36,5 @@ class PouchProcessSource(private val pouch: Pouch) : ProcessSource {
         }
     }
 
-    fun list(): List<ProcessChoice> =
-        pouch.listProcessMembers().map { ProcessChoice(it.id, it.name) }
-
-    fun members(): List<CachedMember> = pouch.listProcessMembers()
+    fun list(): List<ProcessChoice> = listFn()
 }

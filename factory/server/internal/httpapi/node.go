@@ -144,7 +144,7 @@ func (h *Handler) loginOnClient(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// 厂网登录：不校验机械臂号，回本厂设备名录。
+// 厂网登录：不校验机械臂号，回登录人解封钥和本厂设备名录。
 func (h *Handler) loginPad(w http.ResponseWriter, r *http.Request) {
 	h.withFactory(w, r, func(svc *service.Service) {
 		var req padLoginReq

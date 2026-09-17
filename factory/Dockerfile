@@ -26,7 +26,7 @@ USER wmesh
 ENV WMESH_HTTP_ADDR=:8080 \
     WMESH_WEB_DIR=/srv/web \
     WMESH_CLIENT_MQTT_ADDR=:1884
-EXPOSE 8080 1884 52082/udp
+EXPOSE 8080 1884
 HEALTHCHECK --interval=10s --timeout=3s --start-period=15s --retries=6 \
     CMD wget -qO- http://127.0.0.1:8080/healthz >/dev/null || exit 1
 ENTRYPOINT ["/usr/local/bin/wmesh"]

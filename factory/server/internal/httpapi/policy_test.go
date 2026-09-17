@@ -57,14 +57,23 @@ func TestFactoryClientPolicyHTTP(t *testing.T) {
 	}
 	code, body = do(t, srv, "GET", base+"/client-policy", tok, "")
 	if code != http.StatusOK || gjson(t, body, "revision") != "0" || gjson(t, body, "maxCachedProjects") != "2" ||
-		gjson(t, body, "cacheScope") != "all" {
+		gjson(t, body, "cacheScope") != "all" || !strings.Contains(body, `"encryptPouch":true`) {
 		t.Fatalf("default %d %s", code, body)
 	}
 
 	code, body = do(t, srv, "PUT", base+"/client-policy", tok, `{"maxCachedProjects":3,"cacheScope":"current","persistUnwrapKey":true,"keyTtlSeconds":60,"extra":{"k":true}}`)
 	if code != http.StatusOK || gjson(t, body, "revision") != "1" || gjson(t, body, "maxCachedProjects") != "3" ||
-		gjson(t, body, "cacheScope") != "current" {
+		gjson(t, body, "cacheScope") != "current" || !strings.Contains(body, `"encryptPouch":true`) {
 		t.Fatalf("put %d %s", code, body)
+	}
+
+	code, body = do(t, srv, "PUT", base+"/client-policy", tok, `{"maxCachedProjects":3,"cacheScope":"current","persistUnwrapKey":true,"keyTtlSeconds":60,"encryptPouch":false}`)
+	if code != http.StatusOK || !strings.Contains(body, `"encryptPouch":false`) || gjson(t, body, "revision") != "2" {
+		t.Fatalf("encrypt off %d %s", code, body)
+	}
+	code, body = do(t, srv, "PUT", base+"/client-policy", tok, `{"maxCachedProjects":3,"cacheScope":"current","persistUnwrapKey":true,"keyTtlSeconds":60}`)
+	if code != http.StatusOK || !strings.Contains(body, `"encryptPouch":false`) {
+		t.Fatalf("omit keeps encrypt %d %s", code, body)
 	}
 
 	code, body = do(t, srv, "PUT", base+"/client-policy", tok, `{"maxCachedProjects":3,"cacheScope":"nope","persistUnwrapKey":false,"keyTtlSeconds":0}`)
@@ -72,7 +81,7 @@ func TestFactoryClientPolicyHTTP(t *testing.T) {
 		t.Fatalf("bad scope %d %s", code, body)
 	}
 	code, body = do(t, srv, "GET", base+"/client-policy", tok, "")
-	if code != http.StatusOK || gjson(t, body, "revision") != "1" {
+	if code != http.StatusOK || gjson(t, body, "revision") != "3" {
 		t.Fatalf("still %d %s", code, body)
 	}
 
@@ -95,7 +104,7 @@ func TestFactoryClientPolicyHTTP(t *testing.T) {
 		t.Fatalf("op put %d %s", code, body)
 	}
 	code, body = do(t, srv, "GET", base+"/client-policy", tok, "")
-	if code != http.StatusOK || gjson(t, body, "revision") != "1" || gjson(t, body, "maxCachedProjects") != "3" {
+	if code != http.StatusOK || gjson(t, body, "revision") != "3" || gjson(t, body, "maxCachedProjects") != "3" {
 		t.Fatalf("op must not write %d %s", code, body)
 	}
 	if strings.Contains(body, "secret") || strings.Contains(body, opTok) {

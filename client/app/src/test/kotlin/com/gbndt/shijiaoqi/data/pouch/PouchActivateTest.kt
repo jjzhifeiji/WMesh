@@ -3,7 +3,6 @@ package com.gbndt.shijiaoqi.data.pouch
 import com.gbndt.shijiaoqi.data.crypt.Wm2
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -29,13 +28,6 @@ class PouchActivateTest {
         val good = projectSnap(client, "工程", proc)
         p.cacheClosure(good)
 
-        val root = good.members.first()
-        val missing = good.copy(
-            members = listOf(root),
-            digest = Digest.closureSum(listOf(Digest.Member(root.id, root.revision, root.digest, root.content))),
-        )
-        assertReject(Pouch.ERR_INCOMPLETE) { p.cacheClosure(missing) }
-
         val mismatch = projectSnap(client, "串版", processMember("工艺", """{"a":1}""".toByteArray()))
         val mismatchRoot = mismatch.members.first()
         val brokenRoot = mismatchRoot.copy(deps = listOf(mismatchRoot.deps.first().copy(revision = 99)))
@@ -48,39 +40,16 @@ class PouchActivateTest {
         assertReject(Pouch.ERR_INTEGRITY) { p.cacheClosure(tampered.copy(members = dirty)) }
 
         val copied = projectSnap(UUID.randomUUID(), "只拷", processMember("他机", """{"b":1}""".toByteArray()))
-        assertReject(Pouch.ERR_FORBIDDEN) { p.cacheClosure(copied) }
+        p.cacheClosure(copied)
+        assertTrue(p.hasClosure(copied.assetId))
 
-        p.setPolicy(1, Pouch.SCOPE_ALL)
         val second = projectSnap(client, "第二份", processMember("工艺2", """{"c":1}""".toByteArray()))
-        assertReject(Pouch.ERR_CACHE_FULL) { p.cacheClosure(second) }
-
-        p.setPolicy(2, Pouch.SCOPE_ALL)
         p.cacheClosure(second)
         p.activate(good.assetId)
         p.setWelding(true)
         assertReject(Pouch.ERR_FORBIDDEN) { p.activate(second.assetId) }
         assertEquals(good.assetId, p.activeProject())
         p.setWelding(false)
-
-        p.setPolicy(2, Pouch.SCOPE_CURRENT)
-        p.setOnline(false)
-        assertReject(Pouch.ERR_NOT_FOUND) { p.activate(UUID.randomUUID()) }
-    }
-
-    @Test
-    fun currentScopeDropsOtherProjects() {
-        val (p, client) = loggedPouch()
-        p.setPolicy(2, Pouch.SCOPE_CURRENT)
-        val aProc = processMember("A工艺", """{"a":1}""".toByteArray())
-        val bProc = processMember("B工艺", """{"b":1}""".toByteArray())
-        val a = projectSnap(client, "A", aProc)
-        val b = projectSnap(client, "B", bProc)
-        p.cacheClosure(a)
-        p.cacheClosure(b)
-        p.activate(b.assetId)
-        assertFalse(p.hasClosure(a.assetId))
-        assertThrows(NoSuchElementException::class.java) { p.open(aProc.id) }
-        assertArrayEquals("""{"b":1}""".toByteArray(), p.openProcess(bProc.id))
     }
 
     @Test
@@ -112,7 +81,7 @@ class PouchActivateTest {
         val proc = processMember("工艺", procBody)
         val snap = projectSnap(client, "工程", proc)
         val fid = Pouch.uuidBytes(factoryId)
-        val cid = Pouch.uuidBytes(client)
+        val pid = Pouch.uuidBytes(who)
         val sealed = snap.members.map { m ->
             TransitMember(
                 id = m.id,
@@ -120,20 +89,20 @@ class PouchActivateTest {
                 name = m.name,
                 revision = m.revision,
                 ownerId = m.ownerId,
-                content = Wm2.seal(dek, m.content, Wm2.clientTransitAad(fid, cid, Pouch.uuidBytes(m.id), m.revision)),
+                content = Wm2.seal(dek, m.content, Wm2.clientTransitAad(fid, pid, Pouch.uuidBytes(m.id), m.revision)),
                 kind = m.kind,
                 status = m.status,
                 digest = m.digest,
                 deps = m.deps,
             )
         }
-        val wrap = Wm2.seal(unwrap, dek, Wm2.clientTransitDekAad(fid, cid))
+        val wrap = Wm2.seal(unwrap, dek, Wm2.clientTransitDekAad(fid, pid))
         val p = Pouch()
         p.login(unwrap, who, false)
         p.bindClient(client)
         p.cacheTransit(
             factoryId,
-            client,
+            who,
             TransitClosure(
                 wrap = wrap,
                 members = sealed,
@@ -148,6 +117,41 @@ class PouchActivateTest {
         )
         p.activate(snap.assetId)
         assertArrayEquals(procBody, p.openProcess(proc.id))
+    }
+
+    @Test
+    fun rootOnlyProjectOpensProcessById() {
+        val (p, _) = loggedPouch()
+        val body = """{"a":1}""".toByteArray()
+        val proc = processMember("工艺", body)
+        p.putPlain(proc.id, proc.level, proc.name, proc.revision, null, body)
+        val projectBody = """[{"name":"w","processId":"${proc.id}"}]""".toByteArray()
+        val rootId = UUID.randomUUID()
+        val root = ClosureMemberPlain(
+            id = rootId,
+            kind = Pouch.KIND_PROJECT,
+            level = Pouch.LEVEL_FACTORY,
+            name = "工程",
+            status = Pouch.STATUS_AVAILABLE,
+            revision = 1,
+            content = projectBody,
+            digest = Digest.sum(projectBody),
+            deps = listOf(AssetDep(proc.id, proc.revision, proc.digest)),
+        )
+        p.cacheClosure(
+            ClosureSnapshotPlain(
+                kind = Pouch.KIND_PROJECT,
+                assetId = rootId,
+                revision = 1,
+                level = Pouch.LEVEL_FACTORY,
+                status = Pouch.STATUS_AVAILABLE,
+                digest = Digest.closureSum(listOf(Digest.Member(root.id, root.revision, root.digest, root.content))),
+                targetClientId = null,
+                members = listOf(root),
+            ),
+        )
+        p.activate(rootId)
+        assertArrayEquals(body, p.openProcess(proc.id))
     }
 
     private fun assertReject(code: String, block: () -> Unit) {

@@ -22,7 +22,6 @@ hiltExt = "1.4.0"
 junit4 = "4.13.2"
 kotlinxCoroutines = "1.11.0"
 kotlinxSerializationJson = "1.11.0"
-paho = "1.2.5"
 room = "2.8.5"
 sqlcipher = "4.19.0"
 
@@ -60,7 +59,6 @@ junit4 = { group = "junit", name = "junit", version.ref = "junit4" }
 kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "kotlinxCoroutines" }
 kotlinx-coroutines-test = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-test", version.ref = "kotlinxCoroutines" }
 kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-serialization-json", version.ref = "kotlinxSerializationJson" }
-paho-mqtt = { group = "org.eclipse.paho", name = "org.eclipse.paho.client.mqttv3", version.ref = "paho" }
 sqlcipher-android = { group = "net.zetetic", name = "sqlcipher-android", version.ref = "sqlcipher" }
 
 [plugins]

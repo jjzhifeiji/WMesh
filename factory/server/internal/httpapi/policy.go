@@ -16,8 +16,9 @@ func (h *Handler) mountPolicy(mux *http.ServeMux) {
 type clientPolicyPutReq struct {
 	MaxCachedProjects int             `json:"maxCachedProjects"` // 每 Client 工程份上限，≥1
 	CacheScope        string          `json:"cacheScope"`        // current / all
-	PersistUnwrapKey  bool            `json:"persistUnwrapKey"`  // 包装材料可否落盘
-	KeyTTLSeconds     int64           `json:"keyTtlSeconds"`     // 时效秒；0 表示仅进程存活
+	PersistUnwrapKey  bool            `json:"persistUnwrapKey"`  // 解封钥可否落盘
+	KeyTTLSeconds     int64           `json:"keyTtlSeconds"`     // 登录时效秒；0 表示直到退出
+	EncryptPouch      *bool           `json:"encryptPouch"`      // 本机袋是否 SQLCipher；省略则保留
 	Extra             json.RawMessage `json:"extra"`             // 本厂扩展键；可省略则保留原值
 }
 
@@ -41,11 +42,22 @@ func (h *Handler) putClientPolicy(w http.ResponseWriter, r *http.Request) {
 			writeBadRequest(w, err)
 			return
 		}
+		// 省略 encryptPouch 时沿用现行值，避免改别的项时把加密关掉。
+		cur, err := svc.Closure.GetClientPolicy(r.Context(), bearer(r))
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		encrypt := cur.EncryptPouch
+		if req.EncryptPouch != nil {
+			encrypt = *req.EncryptPouch
+		}
 		row, err := svc.Closure.SetClientPolicy(r.Context(), bearer(r), service.ClientPolicy{
 			MaxCachedProjects: req.MaxCachedProjects,
 			CacheScope:        req.CacheScope,
 			PersistUnwrapKey:  req.PersistUnwrapKey,
 			KeyTTLSeconds:     req.KeyTTLSeconds,
+			EncryptPouch:      encrypt,
 			Extra:             req.Extra,
 		})
 		if err != nil {

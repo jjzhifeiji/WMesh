@@ -4,60 +4,41 @@ import com.gbndt.shijiaoqi.data.pouch.TransitClosure
 import java.util.UUID
 import com.gbndt.shijiaoqi.model.FactoryOffer
 
-data class ClientLoginResult(
-    val token: String,
-    val unwrapKey: ByteArray,
-    val person: PersonMeta,
-    val policy: PolicyMeta,
-    val mqttUrl: String = "",
-    val signingPublicKey: ByteArray = ByteArray(0),
-    val clientShortCode: String = "",
-    val roles: List<String> = emptyList(),
-)
-
+/** 登录可见的一台 Client；焊机只有编号，不带解封钥。 */
 data class PadDevice(
-    val id: String,
-    val name: String,
-    val deviceSerial: String,
-    val shortCode: String,
-    val unwrapKey: ByteArray = ByteArray(0),
+    val id: String, // Client 身份
+    val name: String, // 设备显示名
+    val deviceSerial: String, // 机械臂识别号
+    val shortCode: String, // 本机短号
+    val unwrapKey: ByteArray = ByteArray(0), // 焊机不持钥；兼容旧文件格式
 )
 
+/** 平板登录结果：人、人钥、策略和设备。 */
 data class PadLoginResult(
-    val token: String,
-    val person: PersonMeta,
-    val policy: PolicyMeta,
-    val mqttUrl: String = "",
-    val signingPublicKey: ByteArray = ByteArray(0),
-    val roles: List<String> = emptyList(),
-    val devices: List<PadDevice> = emptyList(),
+    val token: String, // 登录令牌
+    val unwrapKey: ByteArray, // 登录人解封钥；焊机不持钥
+    val person: PersonMeta, // 当前登录人
+    val policy: PolicyMeta, // 厂端客户端策略
+    val roles: List<String> = emptyList(), // 厂端授予角色
+    val devices: List<PadDevice> = emptyList(), // 本厂未作废设备
 )
 
+/** 目录里一份待拉资产，不含正文。 */
 data class ClosureRef(
-    val assetId: UUID,
-    val revision: Long,
-    val digest: ByteArray?,
-    val name: String,
-    val level: String,
+    val assetId: UUID, // 资产稳定身份
+    val revision: Long, // 目录修订
+    val digest: ByteArray?, // 整包摘要；空则拉取时再核
+    val name: String, // 显示名
+    val level: String, // factory / personal / platform
 )
 
 data class ClientInbox(
     val policy: PolicyMeta,
     val closures: List<ClosureRef>,
-    val signingPublicKey: ByteArray,
 )
 
+/** 厂端 HTTP：登录、目录、拉工艺/工程。不管机械臂。 */
 interface FactoryGateway {
-    fun registerDevice(baseUrl: String, factoryId: String, clientId: String, serial: String)
-    fun loginOnClient(
-        baseUrl: String,
-        factoryId: String,
-        clientId: String,
-        serial: String,
-        loginName: String,
-        password: String,
-    ): ClientLoginResult
-
     fun loginPad(
         baseUrl: String,
         factoryId: String,
@@ -65,11 +46,11 @@ interface FactoryGateway {
         password: String,
     ): PadLoginResult
 
-    fun inbox(baseUrl: String, factoryId: String, clientId: String, token: String): ClientInbox
-    fun pullClosure(baseUrl: String, factoryId: String, clientId: String, projectId: String, token: String): TransitClosure
-    fun padInbox(baseUrl: String, factoryId: String, clientId: String, token: String): ClientInbox
-    fun padPullClosure(baseUrl: String, factoryId: String, clientId: String, projectId: String, token: String): TransitClosure
-    fun discover(baseUrl: String, serial: String): List<FactoryOffer>
+    fun padInbox(baseUrl: String, factoryId: String, token: String): ClientInbox
+    fun padPullClosure(baseUrl: String, factoryId: String, assetId: String, token: String): TransitClosure
+    fun discover(baseUrl: String): List<FactoryOffer>
+    fun changePassword(baseUrl: String, factoryId: String, token: String, password: String)
 }
 
+/** 登录或绑定被拒绝，code 是英文原因。 */
 class LoginRejected(val code: String) : Exception(code)

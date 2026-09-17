@@ -1,9 +1,11 @@
 package com.gbndt.shijiaoqi.model.tbar
 
 import com.gbndt.shijiaoqi.model.WeldPointType
+import com.gbndt.shijiaoqi.model.WeldProcess
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.Transient
 
-/** T 排间隙带；工艺按身份取，不嵌工艺正文。 */
+/** T 排间隙带；JSON 只留工艺 Id，参数对象出库后合进来。 */
 @Serializable
 data class GapBand(
     val minGap: Double = 0.0,
@@ -11,6 +13,8 @@ data class GapBand(
     val layer: Int = 1,
     val rootProcessId: String = "",
     val capProcessId: String = "",
+    @Transient var rootProcess: WeldProcess = WeldProcess(),
+    @Transient var capProcess: WeldProcess = WeldProcess(),
 )
 /** 坡口四点。 */
 fun WeldPointType.isGroovePoint(): Boolean {

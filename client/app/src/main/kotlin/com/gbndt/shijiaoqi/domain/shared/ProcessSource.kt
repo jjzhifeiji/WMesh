@@ -5,7 +5,7 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.util.UUID
 
-/** 按稳定身份从内存取工艺参数；不解文件路径。 */
+/** 按 processId 出库解开工艺；合到焊道后给界面和 Lua。 */
 fun interface ProcessSource {
     fun open(processId: UUID): WeldProcess?
 }

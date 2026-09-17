@@ -5,6 +5,7 @@ import com.gbndt.shijiaoqi.data.pouch.Pouch
 import com.gbndt.shijiaoqi.data.pouch.PouchProcessSource
 import com.gbndt.shijiaoqi.data.pouch.PouchSave
 import com.gbndt.shijiaoqi.data.session.BagSession
+import com.gbndt.shijiaoqi.data.session.LoginRejected
 import com.gbndt.shijiaoqi.domain.shared.ProcessChoice
 import com.gbndt.shijiaoqi.domain.shared.ProcessSource
 import com.gbndt.shijiaoqi.domain.shared.ProjectChoice
@@ -14,23 +15,29 @@ import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
 
-/** 本机袋对界面的唯一出口：明文只在回调里活着，出了这层就被抹掉。 */
+/** 本机袋对界面的唯一出口：工艺出库解开后合到焊道，字节用完即抹。 */
 @Singleton
 class PouchRepository @Inject constructor(
     private val session: BagSession,
 ) {
-    /** 按 processId 取工艺参数；界面不碰袋本身。 */
-    fun processSource(): ProcessSource = PouchProcessSource(session.pouch)
+    /** 从库取出工艺信封解开；调用方把对象合到焊道。 */
+    fun processSource(): ProcessSource = PouchProcessSource(
+        openBytes = { id ->
+            runCatching { session.openProcess(id) }.getOrNull()
+                ?: runCatching { session.open(id) }.getOrNull()
+        },
+        listFn = { session.pouch.listCachedProcesses().map { ProcessChoice(it.id, it.name) } },
+    )
 
-    fun listProcesses(): List<ProcessChoice> = PouchProcessSource(session.pouch).list()
+    fun listProcesses(): List<ProcessChoice> =
+        session.pouch.listCachedProcesses().map { ProcessChoice(it.id, it.name) }
 
-    /** 只列发到本机的工程，顺带标出当前激活的那一份。 */
+    /** 列本机已缓存工程，与厂端工程列表对齐。 */
     fun listProjects(): List<ProjectChoice> {
         val pouch = session.pouch
         val active = pouch.activeProject()
-        val self = pouch.boundClient() ?: return emptyList()
         return pouch.exportClosures()
-            .filter { it.kind == Pouch.KIND_PROJECT && it.targetClientId == self }
+            .filter { it.kind == Pouch.KIND_PROJECT }
             .map { ProjectChoice(it.assetId, it.name, it.revision, it.assetId == active) }
     }
 
@@ -54,6 +61,20 @@ class PouchRepository @Inject constructor(
     }
 
     fun activate(id: UUID) = session.activate(id)
+
+    /** 作业前本地核本厂设备号；失败返回中文原因。 */
+    fun factoryArmError(): String? {
+        return try {
+            session.ensureFactoryArm()
+            null
+        } catch (e: LoginRejected) {
+            when (e.code) {
+                "device serial is required" -> "读不到设备号"
+                "device serial does not match" -> "设备号未在本厂登记"
+                else -> e.code
+            }
+        }
+    }
 
     /** 焊接中不许切换缓存，靠这个标记挡住。 */
     fun setWelding(on: Boolean) {
