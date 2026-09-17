@@ -5,7 +5,8 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
-import android.util.Log
+import com.gbndt.shijiaoqi.data.log.HttpLog
+import com.gbndt.shijiaoqi.data.log.PadLog
 import androidx.core.content.FileProvider
 import com.gbndt.shijiaoqi.config.AppConfig
 import com.gbndt.shijiaoqi.model.UpdateInfo
@@ -24,14 +25,19 @@ class UpdateManager(private val context: Context) {
     suspend fun checkUpdate(configUrl: String): UpdateInfo? {
         return withContext(Dispatchers.IO) {
             try {
+                val path = HttpLog.pathOf(configUrl)
+                HttpLog.req("GET", path)
                 val url = URL(configUrl)
                 val connection = url.openConnection() as HttpURLConnection
                 connection.requestMethod = "GET"
                 connection.connectTimeout = 5000
                 connection.readTimeout = 5000
                 try {
-                    if (connection.responseCode != HttpURLConnection.HTTP_OK) return@withContext null
-                    val text = connection.inputStream.bufferedReader().use { it.readText() }
+                    val code = connection.responseCode
+                    val text = (if (code in 200..299) connection.inputStream else connection.errorStream)
+                        ?.bufferedReader()?.readText().orEmpty()
+                    HttpLog.rsp("GET", path, code, text)
+                    if (code != HttpURLConnection.HTTP_OK) return@withContext null
                     val info = json.decodeFromString<UpdateInfo>(text)
                     val packageInfo = context.packageManager.getPackageInfo(context.packageName, 0)
                     val currentVersionCode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
@@ -45,7 +51,8 @@ class UpdateManager(private val context: Context) {
                     connection.disconnect()
                 }
             } catch (e: Exception) {
-                Log.e("UpdateManager", "Check update failed", e)
+                HttpLog.fail("GET", HttpLog.pathOf(configUrl), e.javaClass.simpleName)
+                PadLog.error("UpdateManager", "check update failed", e)
                 null
             }
         }
@@ -57,14 +64,21 @@ class UpdateManager(private val context: Context) {
             val dest = privateUpdateFile(context.filesDir, fileName)
             dest.parentFile?.mkdirs()
             val tmp = File(dest.parentFile, dest.name + ".part")
+            val path = HttpLog.pathOf(url)
+            HttpLog.req("GET", path)
             val connection = URL(url).openConnection() as HttpURLConnection
             connection.connectTimeout = 15_000
             connection.readTimeout = 60_000
             try {
-                if (connection.responseCode !in 200..299) return@withContext null
+                val code = connection.responseCode
+                if (code !in 200..299) {
+                    HttpLog.fail("GET", path, "code=$code")
+                    return@withContext null
+                }
                 connection.inputStream.use { input ->
                     tmp.outputStream().use { output -> input.copyTo(output) }
                 }
+                HttpLog.rspBytes("GET", path, code, tmp.length())
             } finally {
                 connection.disconnect()
             }
@@ -75,7 +89,8 @@ class UpdateManager(private val context: Context) {
             }
             dest.takeIf { it.isFile && it.length() > 0 }
         } catch (e: Exception) {
-            Log.e("UpdateManager", "Download APK failed", e)
+            HttpLog.fail("GET", HttpLog.pathOf(url), e.javaClass.simpleName)
+            PadLog.error("UpdateManager", "download apk failed", e)
             null
         }
     }
@@ -83,7 +98,7 @@ class UpdateManager(private val context: Context) {
     /** 只把私有文件的读权限临时交给安装器。 */
     fun installApk(file: File) {
         if (!file.exists()) {
-            Log.e("UpdateManager", "APK file not found: ${file.absolutePath}")
+            PadLog.error("UpdateManager", "apk missing")
             return
         }
         val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
@@ -96,7 +111,7 @@ class UpdateManager(private val context: Context) {
         try {
             context.startActivity(intent)
         } catch (e: Exception) {
-            Log.e("UpdateManager", "Failed to start installation", e)
+            PadLog.error("UpdateManager", "install start failed", e)
         }
     }
 

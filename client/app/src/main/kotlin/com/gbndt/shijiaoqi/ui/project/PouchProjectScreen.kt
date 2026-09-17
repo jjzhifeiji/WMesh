@@ -23,6 +23,10 @@ import androidx.compose.ui.unit.sp
 import com.gbndt.shijiaoqi.domain.shared.ProcessChoice
 import com.gbndt.shijiaoqi.domain.shared.ProjectChoice
 import com.gbndt.shijiaoqi.ui.theme.FullscreenDialog
+import com.gbndt.shijiaoqi.data.log.PadLog
+import com.gbndt.shijiaoqi.ui.preview.PadPreview
+import com.gbndt.shijiaoqi.ui.preview.PadPreviewTheme
+import com.gbndt.shijiaoqi.ui.preview.PadSamples
 import java.util.UUID
 
 @Composable
@@ -40,11 +44,17 @@ fun PouchProjectScreen(
         } else {
             LazyColumn(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 items(projects, key = { it.id }) { row ->
-                    PouchProjectRow(row) { onOpen(row.id) }
+                    PouchProjectRow(row) {
+                        PadLog.info("Pouch", "open project id=${row.id} name=${row.name}")
+                        onOpen(row.id)
+                    }
                 }
             }
         }
-        Button(onClick = onBack, modifier = Modifier.fillMaxWidth()) { Text("返回") }
+        Button(onClick = {
+            PadLog.click("project back")
+            onBack()
+        }, modifier = Modifier.fillMaxWidth()) { Text("返回") }
     }
 }
 
@@ -85,7 +95,10 @@ fun PouchProcessScreen(
                 items(processes, key = { it.id }) { item ->
                     Card(
                         modifier = Modifier.fillMaxWidth().then(
-                            if (picking) Modifier.clickable { onPick(item.id) } else Modifier
+                            if (picking) Modifier.clickable {
+                                PadLog.info("Pouch", "pick process id=${item.id} name=${item.name}")
+                                onPick(item.id)
+                            } else Modifier
                         ),
                     ) {
                         Text(
@@ -98,9 +111,42 @@ fun PouchProcessScreen(
             }
         }
         if (picking) {
-            TextButton(onClick = { onPick(null) }, modifier = Modifier.fillMaxWidth()) { Text("不选工艺") }
+            TextButton(onClick = {
+                PadLog.click("process none")
+                onPick(null)
+            }, modifier = Modifier.fillMaxWidth()) { Text("不选工艺") }
         }
-        Button(onClick = onBack, modifier = Modifier.fillMaxWidth()) { Text("返回") }
+        Button(onClick = {
+            PadLog.click("process back")
+            onBack()
+        }, modifier = Modifier.fillMaxWidth()) { Text("返回") }
+    }
+}
+
+@PadPreview
+@Composable
+private fun PouchProjectScreenPreview() {
+    PadPreviewTheme {
+        PouchProjectScreen(
+            projects = PadSamples.projects,
+            onRefresh = {},
+            onOpen = { _ -> },
+            onBack = {},
+        )
+    }
+}
+
+@PadPreview
+@Composable
+private fun PouchProcessScreenPreview() {
+    PadPreviewTheme {
+        PouchProcessScreen(
+            processes = PadSamples.processes,
+            picking = true,
+            onRefresh = {},
+            onPick = { _ -> },
+            onBack = {},
+        )
     }
 }
 

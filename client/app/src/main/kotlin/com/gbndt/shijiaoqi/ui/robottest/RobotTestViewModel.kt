@@ -7,6 +7,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.gbndt.shijiaoqi.data.log.PadLog
 import com.gbndt.shijiaoqi.data.prefs.DeviceSettingsStore
 import com.gbndt.shijiaoqi.data.repository.RobotRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -100,7 +101,7 @@ class RobotTestViewModel @Inject constructor(
                 try {
                     socketManager.restart()
                 } catch (e: Exception) {
-                    Log.e("RobotTest", "Reconnection failed", e)
+                    PadLog.error("RobotTest", "reconnection failed", e)
                 }
             }
         }
@@ -121,6 +122,7 @@ class RobotTestViewModel @Inject constructor(
     }
 
     fun startRun() {
+        PadLog.info("RobotTest", "start run")
         val start = startPoint
         val end = endPoint
         if (start == null || end == null) {
@@ -172,6 +174,7 @@ class RobotTestViewModel @Inject constructor(
     }
 
     fun stopRun() {
+        PadLog.info("RobotTest", "stop run")
         socketManager.sendControlCommand("/f/bIII7III102III4IIISTOPIII/b/f")
         sendLuaOnce("Mode(1)", type = 303)
         toast("已停止")
@@ -341,6 +344,7 @@ class RobotTestViewModel @Inject constructor(
     private fun nextId(): Int = commandId++
 
     private fun toast(message: String) {
+        PadLog.toast(message)
         viewModelScope.launch { _toastEvent.emit(message) }
     }
 

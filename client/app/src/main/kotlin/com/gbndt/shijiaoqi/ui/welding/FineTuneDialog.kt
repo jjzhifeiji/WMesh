@@ -18,6 +18,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.DialogProperties
 import com.gbndt.shijiaoqi.ui.theme.FullscreenDialog
+import com.gbndt.shijiaoqi.data.log.PadLog
 import java.util.Locale
 import com.gbndt.shijiaoqi.ui.component.ActionButton
 
@@ -49,7 +50,10 @@ fun FineTuneDialog(fineTune: FineTuneSupport) {
                 ) {
                     Text("焊接微调", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
                     Button(
-                        onClick = { fineTune.close() },
+                        onClick = {
+                            PadLog.click("fine tune close")
+                            fineTune.close()
+                        },
                         colors = ButtonDefaults.buttonColors(containerColor = Color.White)
                     ) {
                         Text("关闭", color = Color(0xFF1565C0), fontWeight = FontWeight.Bold)

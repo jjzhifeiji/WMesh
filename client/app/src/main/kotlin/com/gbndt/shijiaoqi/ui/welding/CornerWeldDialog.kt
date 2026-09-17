@@ -24,6 +24,7 @@ import com.gbndt.shijiaoqi.ui.theme.FullscreenDialog
 import com.gbndt.shijiaoqi.ui.theme.KeepFullscreen
 import com.gbndt.shijiaoqi.ui.welding.single.SingleWeldViewModel
 import com.gbndt.shijiaoqi.ui.project.ClosureProcessPicker
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -32,7 +33,8 @@ fun CornerWeldDialog(
     initialParams: com.gbndt.shijiaoqi.model.single.CornerGroupParams? = null,
     onDismiss: () -> Unit
 ) {
-    val weldPaths = viewModel.weldPaths
+    val ui by viewModel.uiState.collectAsStateWithLifecycle()
+    val weldPaths = ui.weldPaths
 
     var refPathAIndex by remember(initialParams) { mutableStateOf(if (initialParams != null) weldPaths.indexOfFirst { it.id == initialParams.refPathAId }.takeIf { it != -1 } ?: -1 else -1) }
     var refPathBIndex by remember(initialParams) { mutableStateOf(if (initialParams != null) weldPaths.indexOfFirst { it.id == initialParams.refPathBId }.takeIf { it != -1 } ?: -1 else -1) }
@@ -66,7 +68,7 @@ fun CornerWeldDialog(
 
     val processLabel = when {
         selectedProcessId.isNotEmpty() ->
-            viewModel.pouchProcesses.firstOrNull { it.id.toString() == selectedProcessId }?.name
+            ui.shell.pouchProcesses.firstOrNull { it.id.toString() == selectedProcessId }?.name
                 ?: existingPath?.process?.name?.takeIf { it.isNotBlank() }
                 ?: selectedProcessId
         else -> "未选择（将使用参考焊道 A 的工艺）"
@@ -354,7 +356,7 @@ fun CornerWeldDialog(
 
     ClosureProcessPicker(
         visible = showProcessPicker,
-        processes = viewModel.pouchProcesses,
+        processes = ui.shell.pouchProcesses,
         onPick = { id ->
             selectedProcessId = id?.toString().orEmpty()
             showProcessPicker = false

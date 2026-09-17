@@ -2,6 +2,7 @@ package com.gbndt.shijiaoqi.data.session
 
 import com.gbndt.shijiaoqi.data.crypt.Wm2
 import com.gbndt.shijiaoqi.data.pouch.AssetDep
+import com.gbndt.shijiaoqi.data.pouch.CachedEnvelope
 import com.gbndt.shijiaoqi.data.pouch.ClosureMemberPlain
 import com.gbndt.shijiaoqi.data.pouch.ClosureSnapshotPlain
 import com.gbndt.shijiaoqi.data.pouch.Digest
@@ -47,6 +48,42 @@ class BagSessionTest {
     }
 
     @Test
+    fun findFactoriesShipsLogsWithoutLogin() {
+        val factory = FakeFactory()
+        factory.discoverHits = listOf(
+            FactoryOffer("http://10.0.0.8:52081", "fac-1", "active", false, "", ""),
+        )
+        val shipped = mutableListOf<Pair<String, String>>()
+        val bag = BagSession(
+            { "" },
+            factory,
+            MemoryIdentityStore(),
+            MemoryEnvelopeStore(),
+            onFactoryNet = { base, factoryId -> shipped += base to factoryId },
+        )
+        val hits = bag.findFactories()
+        assertEquals(1, hits.size)
+        assertEquals(listOf("http://10.0.0.8:52081" to "fac-1"), shipped.distinct())
+    }
+
+    @Test
+    fun matchArmShipsLogsWithFactory() {
+        val cid = UUID.randomUUID()
+        val factoryId = UUID.randomUUID().toString()
+        val shipped = mutableListOf<Pair<String, String>>()
+        val bag = BagSession(
+            { "ARM-1" },
+            FakeFactory(devices = listOf(PadDevice(cid.toString(), "焊机", "ARM-1", "C0008"))),
+            MemoryIdentityStore(),
+            MemoryEnvelopeStore(),
+            onFactoryNet = { base, fid -> shipped += base to fid },
+        )
+        bag.login("http://10.0.0.8:52081", factoryId, "op", "p")
+        assertTrue(shipped.any { it.first == "http://10.0.0.8:52081" && it.second == factoryId })
+        assertEquals(cid.toString(), bag.savedClientId())
+    }
+
+    @Test
     fun activateWithoutArmThenWeldChecksLocalList() {
         val cid = UUID.randomUUID()
         var serial = ""
@@ -65,6 +102,26 @@ class BagSessionTest {
         bag.matchArm(serial)
         bag.setWelding(true)
         bag.setWelding(false)
+    }
+
+    @Test
+    fun openSkipsStoreWhenAlreadyHeld() {
+        val store = CountingEnvelopeStore()
+        val cid = UUID.randomUUID()
+        val bag = BagSession(
+            { "ARM-1" },
+            FakeFactory(devices = listOf(PadDevice(cid.toString(), "焊机", "ARM-1", "C0008"))),
+            MemoryIdentityStore(),
+            store,
+        )
+        bag.login("http://f", UUID.randomUUID().toString(), "op", "p")
+        val proc = processMember("工艺", """{"a":1}""".toByteArray())
+        val snap = projectSnap(cid, "工程", proc)
+        bag.cacheClosure(snap)
+        store.envelopeLoads = 0
+        bag.activate(snap.assetId)
+        assertArrayEquals("""{"items":[]}""".toByteArray(), bag.open(snap.assetId))
+        assertEquals(0, store.envelopeLoads)
     }
 
     @Test
@@ -377,6 +434,16 @@ class BagSessionTest {
     }
 }
 
+private class CountingEnvelopeStore(
+    private val inner: MemoryEnvelopeStore = MemoryEnvelopeStore(),
+) : EnvelopeStore by inner {
+    var envelopeLoads = 0
+    override fun loadEnvelope(id: UUID): CachedEnvelope? {
+        envelopeLoads++
+        return inner.loadEnvelope(id)
+    }
+}
+
 internal class FakeFactory(
     private val key: ByteArray = Wm2.randomKey(),
     var personId: UUID = UUID.randomUUID(),
@@ -413,7 +480,8 @@ internal class FakeFactory(
         return padTransits[UUID.fromString(assetId)] ?: throw LoginRejected("not found")
     }
 
-    override fun discover(baseUrl: String): List<FactoryOffer> = emptyList()
+    var discoverHits: List<FactoryOffer> = emptyList()
+    override fun discover(baseUrl: String): List<FactoryOffer> = discoverHits
 
     var lastPassword: String? = null
     override fun changePassword(baseUrl: String, factoryId: String, token: String, password: String) {

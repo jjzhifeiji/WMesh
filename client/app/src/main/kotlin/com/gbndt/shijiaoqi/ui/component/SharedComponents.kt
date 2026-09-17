@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -19,6 +20,11 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import com.gbndt.shijiaoqi.data.log.PadLog
+
+/** 组合时记下真正界面位置，避免通用按钮只显示组件文件。 */
+@Composable
+fun rememberLogSite(): String = remember { PadLog.origin() }
 
 @Composable
 fun SectionHeader(title: String) {
@@ -44,9 +50,15 @@ fun ActionButton(
     height: Dp = 60.dp
 ) {
     val haptic = LocalHapticFeedback.current
+    val at = rememberLogSite()
     
     Button(
-        onClick = onClick,
+        onClick = {
+            if (onLongClick == null) {
+                PadLog.click(text, at)
+                onClick()
+            }
+        },
         modifier = modifier.height(height),
         colors = ButtonDefaults.buttonColors(containerColor = containerColor),
         shape = RoundedCornerShape(8.dp),
@@ -60,9 +72,13 @@ fun ActionButton(
                 modifier = Modifier
                     .fillMaxSize()
                     .combinedClickable(
-                        onClick = onClick,
+                        onClick = {
+                            PadLog.click(text, at)
+                            onClick()
+                        },
                         onLongClick = {
                             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            PadLog.info("UI", "longclick $text", at)
                             onLongClick()
                         }
                     ),
@@ -104,6 +120,7 @@ fun HoldButton(
     containerColor: Color = MaterialTheme.colorScheme.primary
 ) {
     val haptic = LocalHapticFeedback.current
+    val at = rememberLogSite()
     Box(
         modifier = modifier
             .height(50.dp)
@@ -114,6 +131,7 @@ fun HoldButton(
                     onLongPress = {
                         isLongPressed = true
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        PadLog.info("UI", "press $text", at)
                         onPress()
                     },
                     onPress = {
@@ -122,6 +140,7 @@ fun HoldButton(
                             tryAwaitRelease()
                         } finally {
                             if (isLongPressed) {
+                                PadLog.info("UI", "release $text", at)
                                 onRelease()
                             }
                         }

@@ -36,17 +36,40 @@ import com.gbndt.shijiaoqi.ui.project.ClosureProcessPicker
 import com.gbndt.shijiaoqi.domain.tbar.TBarPass
 import com.gbndt.shijiaoqi.domain.tbar.TBarRun
 import com.gbndt.shijiaoqi.ui.welding.*
+import com.gbndt.shijiaoqi.domain.shared.ProcessChoice
+import com.gbndt.shijiaoqi.ui.preview.PadPreview
+import com.gbndt.shijiaoqi.ui.preview.PadPreviewTheme
+import com.gbndt.shijiaoqi.ui.preview.PadSamples
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import java.util.UUID
 
 @Composable
 fun TBarProcessEditorScreen(
     viewModel: TBarWeldViewModel,
     onBack: () -> Unit,
 ) {
+    val ui by viewModel.uiState.collectAsStateWithLifecycle()
+    TBarProcessEditorScreen(
+        processes = ui.shell.pouchProcesses,
+        bands = viewModel.currentGapBands(),
+        onBack = onBack,
+        onRefresh = viewModel::refreshPouchLists,
+        onBind = viewModel::bindGapBandProcess,
+    )
+}
+
+@Composable
+fun TBarProcessEditorScreen(
+    processes: List<ProcessChoice>,
+    bands: List<GapBand>,
+    onBack: () -> Unit,
+    onRefresh: () -> Unit = {},
+    onBind: (Int, TBarPass, UUID?) -> Unit = { _, _, _ -> },
+) {
     BackHandler { onBack() }
     var selectedIndex by remember { mutableStateOf(0) }
     var pass by remember { mutableStateOf(TBarPass.ROOT) }
     var showPicker by remember { mutableStateOf(false) }
-    val bands = viewModel.currentGapBands()
     val selected = bands.getOrNull(selectedIndex)
 
     Column(modifier = Modifier.fillMaxSize().background(Color(0xFFF5F5F5))) {
@@ -119,13 +142,13 @@ fun TBarProcessEditorScreen(
                             }
                         }
                         val id = if (pass == TBarPass.ROOT) selected.rootProcessId else selected.capProcessId
-                        val name = viewModel.pouchProcesses.firstOrNull { it.id.toString() == id }?.name
+                        val name = processes.firstOrNull { it.id.toString() == id }?.name
                         Text(
                             if (id.isBlank()) "未选择" else (name ?: id),
                             fontSize = 16.sp,
                         )
                         TextButton(onClick = {
-                            viewModel.refreshPouchLists()
+                            onRefresh()
                             showPicker = true
                         }) { Text("从闭包选择") }
                     }
@@ -135,13 +158,25 @@ fun TBarProcessEditorScreen(
     }
     ClosureProcessPicker(
         visible = showPicker,
-        processes = viewModel.pouchProcesses,
+        processes = processes,
         onPick = { id ->
-            viewModel.bindGapBandProcess(selectedIndex, pass, id)
+            onBind(selectedIndex, pass, id)
             showPicker = false
         },
         onDismiss = { showPicker = false },
     )
+}
+
+@PadPreview
+@Composable
+private fun TBarProcessEditorScreenPreview() {
+    PadPreviewTheme {
+        TBarProcessEditorScreen(
+            processes = PadSamples.processes,
+            bands = PadSamples.gapBands,
+            onBack = {},
+        )
+    }
 }
 
 private fun bandKey(band: GapBand): String =

@@ -9,16 +9,14 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -50,6 +48,10 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.gbndt.shijiaoqi.BuildConfig
+import com.gbndt.shijiaoqi.data.log.PadLog
+import com.gbndt.shijiaoqi.ui.component.rememberLogSite
+import com.gbndt.shijiaoqi.ui.preview.PadPreview
+import com.gbndt.shijiaoqi.ui.preview.PadPreviewTheme
 import kotlinx.coroutines.launch
 
 private val PageBg = Color(0xFFF5F7FA)
@@ -77,39 +79,48 @@ fun AccountScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 24.dp, vertical = 16.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
+                .padding(horizontal = 20.dp, vertical = 12.dp),
         ) {
-            Column(modifier = Modifier.widthIn(max = 640.dp).fillMaxWidth()) {
-                AccountHeader(personName = personName, loginName = loginName)
-                Spacer(Modifier.height(16.dp))
-                SectionCard(title = "账户") {
+            AccountHeader(personName = personName, loginName = loginName)
+            Spacer(Modifier.height(12.dp))
+            Row(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                SectionCard(title = "账户", modifier = Modifier.weight(1f).fillMaxHeight()) {
                     InfoLine("姓名", personName.ifBlank { "未设置" })
                     HorizontalDivider(color = Color(0xFFE8EEF4))
                     InfoLine("登录名", loginName.ifBlank { "—" })
                     HorizontalDivider(color = Color(0xFFE8EEF4))
                     InfoLine("角色", roles.joinToString("、", transform = ::roleLabel).ifBlank { "—" })
                 }
-                Spacer(Modifier.height(12.dp))
-                SectionCard(title = "安全") {
-                    ActionLine("修改密码", onClick = onChangePassword)
-                }
-                Spacer(Modifier.height(12.dp))
-                SectionCard(title = "关于") {
-                    ActionLine("版本 ${BuildConfig.VERSION_NAME}", hint = "检查更新", onClick = onCheckUpdate)
-                }
-                Spacer(Modifier.height(24.dp))
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(Color.White)
-                        .clickable(onClick = onLogout)
-                        .padding(vertical = 16.dp),
-                    contentAlignment = Alignment.Center,
+                Column(
+                    modifier = Modifier.weight(1f).fillMaxHeight(),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    Text("退出登录", color = Color(0xFFD32F2F), fontSize = 16.sp, fontWeight = FontWeight.Medium)
+                    SectionCard(title = "安全") {
+                        ActionLine("修改密码", onClick = onChangePassword)
+                    }
+                    SectionCard(title = "关于") {
+                        ActionLine("版本 ${BuildConfig.VERSION_NAME}", hint = "检查更新", onClick = onCheckUpdate)
+                    }
+                    Spacer(Modifier.weight(1f))
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(Color.White)
+                            .clickable(onClick = {
+                                PadLog.click("logout")
+                                onLogout()
+                            })
+                            .padding(vertical = 12.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text("退出登录", color = Color(0xFFD32F2F), fontSize = 16.sp, fontWeight = FontWeight.Medium)
+                    }
                 }
             }
         }
@@ -140,21 +151,21 @@ fun AccountPasswordScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(24.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
+                .padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Column(
-                modifier = Modifier.widthIn(max = 480.dp).fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                val eye = @Composable {
-                    IconButton(onClick = { show = !show }) {
-                        Icon(
-                            imageVector = if (show) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
-                            contentDescription = if (show) "隐藏密码" else "显示密码",
-                        )
-                    }
+            val eye = @Composable {
+                IconButton(onClick = { show = !show }) {
+                    Icon(
+                        imageVector = if (show) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
+                        contentDescription = if (show) "隐藏密码" else "显示密码",
+                    )
                 }
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
                 OutlinedTextField(
                     first,
                     { first = it; error = null },
@@ -163,7 +174,7 @@ fun AccountPasswordScreen(
                     visualTransformation = transform,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
                     trailingIcon = eye,
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.weight(1f),
                 )
                 OutlinedTextField(
                     second,
@@ -173,30 +184,36 @@ fun AccountPasswordScreen(
                     visualTransformation = transform,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
                     trailingIcon = eye,
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.weight(1f),
                 )
-                error?.let { Text(it, color = MaterialTheme.colorScheme.error, fontSize = 13.sp) }
-                Button(
-                    enabled = !busy,
-                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-                    onClick = {
-                        when {
-                            first.isBlank() -> error = "新密码不能为空"
-                            first != second -> error = "两次密码不一致"
-                            else -> scope.launch {
-                                busy = true
-                                runCatching { onChangePassword(first) }
-                                    .onSuccess {
-                                        Toast.makeText(context, "密码已修改", Toast.LENGTH_SHORT).show()
-                                        onBack()
-                                    }
-                                    .onFailure { error = it.message ?: "修改失败" }
-                                busy = false
-                            }
-                        }
-                    },
-                ) { Text(if (busy) "提交中" else "确定") }
             }
+            error?.let { Text(it, color = MaterialTheme.colorScheme.error, fontSize = 13.sp) }
+            Button(
+                enabled = !busy,
+                modifier = Modifier.fillMaxWidth(),
+                onClick = {
+                    PadLog.click("change password")
+                    when {
+                        first.isBlank() -> error = "新密码不能为空"
+                        first != second -> error = "两次密码不一致"
+                        else -> scope.launch {
+                            busy = true
+                            runCatching { onChangePassword(first) }
+                                .onSuccess {
+                                    PadLog.info("Account", "password changed")
+                                    PadLog.toast("密码已修改")
+                                    Toast.makeText(context, "密码已修改", Toast.LENGTH_SHORT).show()
+                                    onBack()
+                                }
+                                .onFailure {
+                                    PadLog.warn("Account", "password change failed")
+                                    error = it.message ?: "修改失败"
+                                }
+                            busy = false
+                        }
+                    }
+                },
+            ) { Text(if (busy) "提交中" else "确定") }
         }
     }
 }
@@ -206,12 +223,15 @@ private fun AccountTopBar(title: String, onBack: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .height(56.dp)
+            .height(48.dp)
             .background(BarBg)
             .padding(horizontal = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        IconButton(onClick = onBack) {
+        IconButton(onClick = {
+            PadLog.click("back")
+            onBack()
+        }) {
             Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回", tint = TitleColor)
         }
         Text(title, fontSize = 18.sp, fontWeight = FontWeight.Bold, color = TitleColor)
@@ -225,22 +245,22 @@ private fun AccountHeader(personName: String, loginName: String) {
             .fillMaxWidth()
             .clip(RoundedCornerShape(12.dp))
             .background(Color.White)
-            .padding(20.dp),
+            .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(16.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Box(
             modifier = Modifier
-                .size(56.dp)
+                .size(44.dp)
                 .clip(CircleShape)
                 .background(Color(0xFFE3F2FD)),
             contentAlignment = Alignment.Center,
         ) {
             val mark = personName.ifBlank { loginName }.take(1).ifBlank { "帐" }
-            Text(mark, fontSize = 22.sp, fontWeight = FontWeight.Bold, color = Color(0xFF1565C0))
+            Text(mark, fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color(0xFF1565C0))
         }
         Column {
-            Text(personName.ifBlank { loginName.ifBlank { "未登录" } }, fontSize = 20.sp, fontWeight = FontWeight.Bold, color = TitleColor)
+            Text(personName.ifBlank { loginName.ifBlank { "未登录" } }, fontSize = 18.sp, fontWeight = FontWeight.Bold, color = TitleColor)
             if (personName.isNotBlank() && loginName.isNotBlank()) {
                 Text(loginName, fontSize = 14.sp, color = Color.Gray)
             }
@@ -249,8 +269,8 @@ private fun AccountHeader(personName: String, loginName: String) {
 }
 
 @Composable
-private fun SectionCard(title: String, content: @Composable () -> Unit) {
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+private fun SectionCard(title: String, modifier: Modifier = Modifier, content: @Composable () -> Unit) {
+    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Text(title, fontSize = 13.sp, color = Color.Gray, modifier = Modifier.padding(start = 4.dp))
         Column(
             modifier = Modifier
@@ -266,7 +286,7 @@ private fun InfoLine(label: String, value: String) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 14.dp),
+            .padding(horizontal = 16.dp, vertical = 10.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -277,11 +297,15 @@ private fun InfoLine(label: String, value: String) {
 
 @Composable
 private fun ActionLine(title: String, hint: String = "", onClick: () -> Unit) {
+    val at = rememberLogSite()
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 14.dp),
+            .clickable(onClick = {
+                PadLog.click(title, at)
+                onClick()
+            })
+            .padding(horizontal = 16.dp, vertical = 10.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -290,6 +314,30 @@ private fun ActionLine(title: String, hint: String = "", onClick: () -> Unit) {
             if (hint.isNotBlank()) Text(hint, fontSize = 13.sp, color = Color.Gray)
             Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null, tint = Color(0xFFB0BEC5))
         }
+    }
+}
+
+@PadPreview
+@Composable
+private fun AccountScreenPreview() {
+    PadPreviewTheme {
+        AccountScreen(
+            personName = "张工",
+            loginName = "operator",
+            roles = listOf("operator", "process_engineer"),
+            onBack = {},
+            onChangePassword = {},
+            onLogout = {},
+            onCheckUpdate = {},
+        )
+    }
+}
+
+@PadPreview
+@Composable
+private fun AccountPasswordScreenPreview() {
+    PadPreviewTheme {
+        AccountPasswordScreen(onBack = {}, onChangePassword = { _ -> })
     }
 }
 

@@ -46,6 +46,8 @@ class PouchTest {
         p.login(key, b, false)
         assertThrows(SecurityException::class.java) { p.open(personal) }
         assertArrayEquals("""{"f":1}""".toByteArray(), p.open(factory))
+        assertTrue(p.held(factory))
+        assertFalse(p.held(UUID.randomUUID()))
     }
 
     @Test

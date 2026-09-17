@@ -1,6 +1,6 @@
 package com.gbndt.shijiaoqi.ui.welding.tbar
 
-import android.util.Log
+import com.gbndt.shijiaoqi.data.log.PadLog
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -20,10 +20,8 @@ import com.gbndt.shijiaoqi.domain.shared.WeldLineFollow
 import com.gbndt.shijiaoqi.domain.shared.WeldRun
 import com.gbndt.shijiaoqi.domain.tbar.toLuaLine
 import com.gbndt.shijiaoqi.domain.shared.Capture
-import com.gbndt.shijiaoqi.domain.shared.ProcessBind
-import com.gbndt.shijiaoqi.domain.shared.ProcessChoice
 import com.gbndt.shijiaoqi.domain.shared.ProcessRef
-import com.gbndt.shijiaoqi.domain.shared.ProjectChoice
+import com.gbndt.shijiaoqi.data.crypt.Wm2
 import com.gbndt.shijiaoqi.domain.tbar.TBarGeometry
 import com.gbndt.shijiaoqi.domain.tbar.TBarPass
 import com.gbndt.shijiaoqi.domain.tbar.TBarProject
@@ -60,7 +58,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
-import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.merge
@@ -68,6 +66,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.Locale
 import java.util.UUID
@@ -96,14 +95,19 @@ class TBarWeldViewModel @Inject constructor(
     private val follow = WeldLineFollow()
 
     val weldPaths = mutableStateListOf<WeldPath>()
-    val pouchProjects = mutableStateListOf<ProjectChoice>()
-    val pouchProcesses = mutableStateListOf<ProcessChoice>()
     private val robotErrors = mutableStateListOf<RobotError>()
+    private var starting = false
 
     private val _uiState = MutableStateFlow(TBarUiState())
-    val uiState: StateFlow<TBarUiState> = _uiState.asStateFlow()
+    val uiState: StateFlow<TBarUiState> = combine(
+        _uiState,
+        pouch.projects,
+        pouch.processes,
+    ) { s, projects, processes ->
+        s.copy(shell = s.shell.copy(pouchProjects = projects, pouchProcesses = processes))
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), TBarUiState())
     override val shellUi: StateFlow<WeldShellUi> =
-        uiState.map { it.shell }.stateIn(viewModelScope, SharingStarted.Eagerly, WeldShellUi())
+        uiState.map { it.shell }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), WeldShellUi())
 
     var selectedWeldPathIndex: Int
         get() = _uiState.value.selectedWeldPathIndex
@@ -237,12 +241,12 @@ class TBarWeldViewModel @Inject constructor(
         addWeldPath()
     }
 
-    override fun syncFromPouch() {
-        refreshPouchLists()
+    override suspend fun syncFromPouch() {
         val id = pouch.activeProjectId() ?: return
-        pouch.withProjectPlain(id) { bytes ->
+        val bytes = pouch.openProjectBytes(id) ?: return
+        try {
             val loaded = runCatching { TBarProject.parse(bytes) }.getOrElse {
-                Log.e("TBarWeld", "active project parse failed", it)
+                PadLog.error("TBarWeld", "active project parse failed", it)
                 emptyList()
             }
             weldPaths.clear()
@@ -252,23 +256,24 @@ class TBarWeldViewModel @Inject constructor(
             pouchProjectId = id
             patch { it.copy(shell = it.shell.copy(currentProjectName = pouch.projectName(id))) }
             bindProcesses()
+        } finally {
+            Wm2.zero(bytes)
         }
-        refreshPouchLists()
+        publish()
     }
 
     override fun activatePouchProject(id: UUID) {
-        runCatching {
-            pouch.activate(id)
-            syncFromPouch()
-        }.onFailure { e -> toast(e.message ?: "无法激活工程") }
+        PadLog.info("TBarWeld", "activate project=$id")
+        viewModelScope.launch {
+            runCatching {
+                pouch.activate(id)
+                syncFromPouch()
+            }.onFailure { e -> toast(e.message ?: "无法激活工程") }
+        }
     }
 
     override fun refreshPouchLists() {
-        pouchProjects.clear()
-        pouchProjects.addAll(pouch.listProjects())
-        pouchProcesses.clear()
-        pouchProcesses.addAll(pouch.listProcesses())
-        publish()
+        viewModelScope.launch { pouch.refresh() }
     }
 
     override fun bindProcessFromPouch(processId: UUID?) {
@@ -279,25 +284,27 @@ class TBarWeldViewModel @Inject constructor(
         (currentPath()?.gapBands ?: emptyList()).sortedWith(compareBy({ it.layer }, { it.minGap }))
 
     fun bindGapBandProcess(bandIndex: Int, pass: TBarPass, processId: UUID?) {
-        val path = currentPath() ?: return
-        val bands = path.gapBands.toMutableList()
-        if (bandIndex !in bands.indices) return
-        val idStr = processId?.toString().orEmpty()
-        val loaded = if (processId == null) WeldProcess() else {
-            pouch.processSource().open(processId) ?: run {
-                missingProcessMessage = "闭包里没有这条工艺"
-                isMissingProcessDialogVisible = true
-                return
+        viewModelScope.launch {
+            val path = currentPath() ?: return@launch
+            val bands = path.gapBands.toMutableList()
+            if (bandIndex !in bands.indices) return@launch
+            val idStr = processId?.toString().orEmpty()
+            val loaded = if (processId == null) WeldProcess() else {
+                pouch.openProcess(processId) ?: run {
+                    missingProcessMessage = "闭包里没有这条工艺"
+                    isMissingProcessDialogVisible = true
+                    return@launch
+                }
             }
+            val old = bands[bandIndex]
+            bands[bandIndex] = if (pass == TBarPass.ROOT) {
+                old.copy(rootProcessId = idStr, rootProcess = loaded)
+            } else {
+                old.copy(capProcessId = idStr, capProcess = loaded)
+            }
+            weldPaths[selectedWeldPathIndex] = path.copy(gapBands = bands)
+            saveCurrentProject()
         }
-        val old = bands[bandIndex]
-        bands[bandIndex] = if (pass == TBarPass.ROOT) {
-            old.copy(rootProcessId = idStr, rootProcess = loaded)
-        } else {
-            old.copy(capProcessId = idStr, capProcess = loaded)
-        }
-        weldPaths[selectedWeldPathIndex] = path.copy(gapBands = bands)
-        saveCurrentProject()
     }
 
     fun addWeldPath() {
@@ -399,6 +406,7 @@ class TBarWeldViewModel @Inject constructor(
     }
 
     override fun collectData() {
+        PadLog.info("TBarWeld", "collect point")
         if (teach.connectionStatus == RobotLink.DOWN) {
             toast("设备未连接")
             return
@@ -444,11 +452,18 @@ class TBarWeldViewModel @Inject constructor(
         sendMoveL(pose, point.jointAngles)
     }
 
-    override fun startSimulation() = startRun(welding = false, simulating = true)
+    override fun startSimulation() {
+        PadLog.info("TBarWeld", "start simulation")
+        startRun(welding = false, simulating = true)
+    }
 
-    override fun startArcWelding() = startRun(welding = true, simulating = false)
+    override fun startArcWelding() {
+        PadLog.info("TBarWeld", "start arc")
+        startRun(welding = true, simulating = false)
+    }
 
     fun pauseWelding() {
+        PadLog.info("TBarWeld", "pause")
         if (!_uiState.value.run.busy) return
         viewModelScope.launch {
             WeldRun.pauseSeq().forEach {
@@ -461,6 +476,7 @@ class TBarWeldViewModel @Inject constructor(
     }
 
     fun continueWelding() {
+        PadLog.info("TBarWeld", "continue")
         if (!_uiState.value.run.isPaused) return
         viewModelScope.launch {
             val run = _uiState.value.run
@@ -473,6 +489,7 @@ class TBarWeldViewModel @Inject constructor(
     }
 
     override fun stopWelding(force: Boolean) {
+        PadLog.info("TBarWeld", "stop force=$force")
         val pose = robot.robotPose.value ?: operationPosition
         val joints = robot.robotJoints.value
         val pathIdx = if (follow.lastPath >= 0) follow.lastPath else selectedWeldPathIndex
@@ -528,68 +545,80 @@ class TBarWeldViewModel @Inject constructor(
 
     fun saveCurrentProject() {
         val id = pouchProjectId ?: return
-        weldPaths.forEach { pouch.saveWeldPath(it) }
-        pouch.saveProject(id, TBarProject.encode(weldPaths.toList()))
+        val paths = weldPaths.toList()
         publish()
+        viewModelScope.launch {
+            runCatching {
+                pouch.saveWeldPaths(paths)
+                pouch.saveProject(id, TBarProject.encode(paths))
+            }.onFailure { e -> toast(e.message ?: "无法保存工程") }
+        }
     }
 
     private fun startRun(welding: Boolean, simulating: Boolean) {
-        if (_uiState.value.run.busy) return
-        if (!bindProcesses()) return
-        val scripts = toScripts() ?: return
-        pouch.factoryArmError()?.let { toast(it); return }
-        val resume = stopResume
-        stopResume = null
-        val lua = try {
-            TBarLua.job(
-                scripts,
-                welding,
-                simulating,
-                teach.speedMode,
-                teach.toolIndex,
-                teach.isExtAxisEnabled,
-                resume,
-            )
-        } catch (e: Exception) {
-            missingProcessMessage = e.message ?: "无法生成 T 排指令"
-            isMissingProcessDialogVisible = true
-            return
-        }
-        if (lua.size <= 1) {
-            toast("没有可执行的焊道")
-            return
-        }
-        teach.stopController()
-        programStarted = false
-        follow.reset()
-        patch { it.copy(run = WeldRunUi.Active(welding = welding, paused = false)) }
-        fineTune.resetOffsets()
-        pouch.setWelding(true)
-        if (welding) startTimer()
-        viewModelScope.launch(Dispatchers.IO) {
-            val numbered = WeldRun.number(
-                lua.map { line -> line.toLuaLine(weldPaths.getOrNull(line.pathIndex)?.points.orEmpty()) },
-            ) { commandId++ }
-            follow.load(numbered)
-            val id105 = commandId++
-            val id106 = commandId++
-            val plan = WeldRun.batch(id105, id106, numbered.body)
-            robot.sendBatchCommandSync(plan.fileName)
-            delay(WeldRun.AFTER_FILENAME_MS)
-            val ack = async {
-                withTimeoutOrNull(8000) {
-                    merge(robot.receivedText8082, robot.receivedText).first {
-                        it.contains(id106.toString()) || it.contains("106")
-                    }
+        if (_uiState.value.run.busy || starting) return
+        starting = true
+        viewModelScope.launch {
+            try {
+                if (!bindProcesses()) return@launch
+                val scripts = toScripts() ?: return@launch
+                pouch.factoryArmError()?.let { toast(it); return@launch }
+                val resume = stopResume
+                stopResume = null
+                val lua = try {
+                    TBarLua.job(
+                        scripts,
+                        welding,
+                        simulating,
+                        teach.speedMode,
+                        teach.toolIndex,
+                        teach.isExtAxisEnabled,
+                        resume,
+                    )
+                } catch (e: Exception) {
+                    missingProcessMessage = e.message ?: "无法生成 T 排指令"
+                    isMissingProcessDialogVisible = true
+                    return@launch
                 }
+                if (lua.size <= 1) {
+                    toast("没有可执行的焊道")
+                    return@launch
+                }
+                teach.stopController()
+                programStarted = false
+                follow.reset()
+                patch { it.copy(run = WeldRunUi.Active(welding = welding, paused = false)) }
+                fineTune.resetOffsets()
+                pouch.setWelding(true)
+                if (welding) startTimer()
+                withContext(Dispatchers.IO) {
+                    val numbered = WeldRun.number(
+                        lua.map { line -> line.toLuaLine(weldPaths.getOrNull(line.pathIndex)?.points.orEmpty()) },
+                    ) { commandId++ }
+                    follow.load(numbered)
+                    val id105 = commandId++
+                    val id106 = commandId++
+                    val plan = WeldRun.batch(id105, id106, numbered.body)
+                    robot.sendBatchCommandSync(plan.fileName)
+                    delay(WeldRun.AFTER_FILENAME_MS)
+                    val ack = async {
+                        withTimeoutOrNull(8000) {
+                            merge(robot.receivedText8082, robot.receivedText).first {
+                                it.contains(id106.toString()) || it.contains("106")
+                            }
+                        }
+                    }
+                    delay(100)
+                    robot.sendBatchCommandSync(plan.body)
+                    ack.await()
+                    delay(WeldRun.AFTER_BODY_ACK_MS)
+                    robot.sendControlCommand(plan.modeAuto)
+                    delay(WeldRun.AFTER_MODE_MS)
+                    robot.sendControlCommand(plan.start)
+                }
+            } finally {
+                starting = false
             }
-            delay(100)
-            robot.sendBatchCommandSync(plan.body)
-            ack.await()
-            delay(WeldRun.AFTER_BODY_ACK_MS)
-            robot.sendControlCommand(plan.modeAuto)
-            delay(WeldRun.AFTER_MODE_MS)
-            robot.sendControlCommand(plan.start)
         }
     }
 
@@ -652,7 +681,7 @@ class TBarWeldViewModel @Inject constructor(
         )
     }
 
-    private fun bindProcesses(): Boolean {
+    private suspend fun bindProcesses(): Boolean {
         val refs = weldPaths.flatMap { path ->
             path.gapBands.map { band ->
                 val label = TBarRun.bandLabel(band)
@@ -662,7 +691,7 @@ class TBarWeldViewModel @Inject constructor(
                 )
             }.flatten()
         }
-        val outcome = ProcessBind.resolve(refs, pouch.processSource())
+        val outcome = pouch.resolveProcesses(refs)
         weldPaths.forEachIndexed { i, path ->
             val bands = path.gapBands.map { band ->
                 val rootId = band.rootProcessId.toUuidOrNull()
@@ -700,7 +729,7 @@ class TBarWeldViewModel @Inject constructor(
                 null
             }
         } catch (t: Throwable) {
-            Log.e("TBarWeld", "计算起点终点失败", t)
+            PadLog.error("TBarWeld", "start/end pose failed", t)
             toast("起点终点计算失败")
             null
         }
@@ -745,7 +774,7 @@ class TBarWeldViewModel @Inject constructor(
         follow.statsActive = false
         timerJob?.cancel()
         teach.stopController()
-        pouch.setWelding(false)
+        viewModelScope.launch { pouch.setWelding(false) }
         patch { it.copy(run = WeldRunUi.Idle) }
         if (sendStop) {
             viewModelScope.launch {
@@ -787,10 +816,6 @@ class TBarWeldViewModel @Inject constructor(
             n.copy(
                 weldPaths = weldPaths.toList(),
                 currentRobotErrors = robotErrors.toList(),
-                shell = n.shell.copy(
-                    pouchProjects = pouchProjects.toList(),
-                    pouchProcesses = pouchProcesses.toList(),
-                ),
             )
         }
     }
@@ -822,6 +847,7 @@ class TBarWeldViewModel @Inject constructor(
     private fun currentPath(): WeldPath? = weldPaths.getOrNull(selectedWeldPathIndex)
 
     private fun toast(msg: String) {
+        PadLog.toast(msg)
         viewModelScope.launch { _toast.emit(msg) }
     }
 

@@ -14,6 +14,7 @@ import (
 
 	"wmesh/factory/internal/httpapi"
 	"wmesh/factory/internal/hub"
+	"wmesh/factory/internal/platform/applog"
 	"wmesh/factory/internal/platform/config"
 	"wmesh/factory/internal/platform/dockerupdate"
 	"wmesh/factory/internal/platform/oss"
@@ -25,8 +26,7 @@ var version = "dev"
 
 // 启动进程，失败则退出。
 func main() {
-	log := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	slog.SetDefault(log)
+	log := applog.New(os.Stdout, "wmesh-factory", "factory", version)
 	if len(os.Args) > 1 && os.Args[1] == "docker-swap" {
 		// 帮手容器入口：load、建新容器、再停旧起新。
 		if err := dockerupdate.Swap(os.Args[2:]); err != nil {

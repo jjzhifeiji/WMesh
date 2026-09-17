@@ -1,4 +1,4 @@
-# 厂内一键部署：app（API + 管理端静态页）+ db（每厂一个库，按工厂身份自动建）+ oss（RustFS，S3 兼容对象存储）。
+# 厂内一键部署：app（API + 管理端静态页）+ db（每厂一个库，按工厂身份自动建）+ oss（RustFS，S3 兼容对象存储）+ alloy（采容器日志推 Loki）。
 # 用法：cp .env.example .env && 改密码 && docker compose up -d --build --wait
 name: wmesh-factory
 
@@ -25,6 +25,7 @@ services:
       WMESH_DOCKER_UPDATE: "1"
       WMESH_DOCKER_HOST: unix:///var/run/docker.sock
       WMESH_DOCKER_UPDATE_DIR: /var/lib/wmesh/update
+      WMESH_LOG_LEVEL: ${WMESH_LOG_LEVEL:-info}
     user: "0:0"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
@@ -92,8 +93,32 @@ services:
       start_period: 30s
     logging: *logging
 
+  # 采本项目容器 stdout，并在 3500 收 Pad Loki push；推到 LOKI_URL，厂网断了会重试，不挡 app。
+  alloy:
+    image: grafana/alloy:v1.19.2
+    user: "0:0"
+    environment:
+      LOKI_URL: ${LOKI_URL:-http://154.82.81.16:3100/loki/api/v1/push}
+      WMESH_SIDE: factory
+      COMPOSE_PROJECT_NAME: wmesh-factory
+    volumes:
+      - ./alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - alloydata:/var/lib/alloy
+    ports:
+      - "${ALLOY_PAD_PORT:-3500}:3500"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/127.0.0.1/12345'"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 10s
+    logging: *logging
+
 volumes:
   pgdata:
   ossdata:
   osslogs:
   update:
+  alloydata:

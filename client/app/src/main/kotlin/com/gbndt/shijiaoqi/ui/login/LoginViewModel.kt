@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.gbndt.shijiaoqi.data.prefs.DeviceSettingsStore
 import com.gbndt.shijiaoqi.model.FactoryOffer
 import com.gbndt.shijiaoqi.data.repository.SessionRepository
+import com.gbndt.shijiaoqi.data.log.PadLog
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -35,6 +36,7 @@ class LoginViewModel @Inject constructor(
     /** 扫本网厂服务；进行中不再开一轮。 */
     fun scan() {
         if (local.value.scan == ScanStatus.Scanning) return
+        PadLog.info("Login", "scan start")
         local.update { it.copy(scan = ScanStatus.Scanning) }
         viewModelScope.launch {
             val result = runCatching { session.findFactories() }
@@ -42,6 +44,7 @@ class LoginViewModel @Inject constructor(
                 result.fold(
                     onSuccess = { hits ->
                         val offers = loginOffers(hits)
+                        PadLog.info("Login", "scan ${if (offers.isEmpty()) "empty" else "ok"} n=${offers.size}")
                         cur.copy(
                             offers = offers,
                             selected = pick(offers, cur.selected),
@@ -49,6 +52,7 @@ class LoginViewModel @Inject constructor(
                         )
                     },
                     onFailure = {
+                        PadLog.warn("Login", "scan failed")
                         cur.copy(offers = emptyList(), selected = null, scan = ScanStatus.Unavailable)
                     },
                 )
@@ -56,7 +60,10 @@ class LoginViewModel @Inject constructor(
         }
     }
 
-    fun select(offer: FactoryOffer) = local.update { it.copy(selected = offer) }
+    fun select(offer: FactoryOffer) {
+        PadLog.info("Login", "select factory=${offer.factoryId}")
+        local.update { it.copy(selected = offer) }
+    }
 
     fun setLoginName(value: String) = local.update { it.copy(loginName = value) }
 
@@ -76,11 +83,15 @@ class LoginViewModel @Inject constructor(
         val name = cur.loginName
         val password = cur.password
         if (name.isBlank() || password.isBlank()) return
+        PadLog.info("Login", "login start factory=${hit.factoryId} user=${name.trim()}")
         viewModelScope.launch {
             val result = runCatching { session.login(hit.httpBase, hit.factoryId, name, password) }
             if (result.isSuccess) {
+                PadLog.info("Login", "login loading done factory=${hit.factoryId}")
                 val (on, n, p) = storedLogin(local.value.remember, name, password)
                 settings.saveRememberedLogin(on, n, p)
+            } else {
+                PadLog.warn("Login", "login failed factory=${hit.factoryId}")
             }
         }
     }

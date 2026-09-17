@@ -8,6 +8,7 @@ import com.gbndt.shijiaoqi.data.robot.protocol.FrPacket
 import com.gbndt.shijiaoqi.data.robot.protocol.RobotCommands
 import com.gbndt.shijiaoqi.data.robot.protocol.RobotLink
 import com.gbndt.shijiaoqi.model.Pose
+import com.gbndt.shijiaoqi.data.log.PadLog
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -222,11 +223,13 @@ class TeachSession @Inject constructor(
     }
 
     fun toggleExtAxisEnabled() {
+        PadLog.info("Teach", "ext axis enabled=${!isExtAxisEnabled}")
         _uiState.update { it.copy(isExtAxisEnabled = !it.isExtAxisEnabled) }
         persistCell()
     }
 
     fun enableExtAxisServo() {
+        PadLog.info("Teach", "ext axis servo on")
         sendManualCommand(RobotCommands.TYPE_EXT_SERVO, "ExtAxisServoOn(1,1)")
     }
 
@@ -248,6 +251,7 @@ class TeachSession @Inject constructor(
             return
         }
         _uiState.update { it.copy(toolCoordinateSystem = "工具${index + 1}", isToolListDialogVisible = false) }
+        PadLog.info("Teach", "select tool=${index + 1}")
         persistCell()
         sendTool(index + 1, pose)
     }
@@ -293,10 +297,12 @@ class TeachSession @Inject constructor(
     }
 
     fun resetAllError() {
+        PadLog.info("Teach", "reset errors")
         robot.sendControlCommand(FrPacket.encode(7, 107, "ResetAllError()"))
     }
 
     fun reconnect() {
+        PadLog.info("Teach", "reconnect")
         robot.restart()
     }
 

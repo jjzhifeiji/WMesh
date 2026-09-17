@@ -31,7 +31,7 @@ test: test-db ## 门禁 + 服务端 vet + 矩阵验收，前端 lint + 类型检
 build: env ## 构建应用镜像（二进制构建号取 git describe，镜像标签取 .env 的 WMESH_VERSION）
 	$(COMPOSE) build --pull
 
-up: env ## 拉起 app + db + oss 并等到健康
+up: env ## 拉起 app + db + oss + alloy 并等到健康
 	$(COMPOSE) up -d --build --wait
 
 down: ## 停止并移除容器，保留数据卷
@@ -48,7 +48,7 @@ upgrade: env ## 升级：拉新基础镜像、重建应用、替换容器；各�
 	$(COMPOSE) build --pull
 	$(COMPOSE) up -d --wait --remove-orphans
 
-bundle: build ## 导出离线安装包 dist/*.tar（含全部镜像），目标机 docker load -i 后 make up
+bundle: build ## 导出离线安装包 dist/*.tar（含 app/db/oss/alloy 镜像），目标机 docker load -i 后 make up
 	$(COMPOSE) pull --ignore-buildable --ignore-pull-failures
 	mkdir -p dist && docker save -o dist/wmesh-factory-images-$(VERSION).tar $$($(COMPOSE) config --images)
 	@ls -lh dist/wmesh-factory-images-$(VERSION).tar

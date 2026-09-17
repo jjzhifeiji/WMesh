@@ -22,9 +22,9 @@ import (
 // Hooks 把鉴权和在线交给应用服务；Broker 自己不查库。
 type Hooks struct {
 	Auth    func(factoryID uuid.UUID, unix int64, sig []byte) error // CONNECT 验厂钥
-	Online  func(factoryID uuid.UUID)                             // 会话已建立
-	Offline func(factoryID uuid.UUID)                            // 会话断开
-	Up      func(factoryID uuid.UUID, payload []byte)            // 厂端上行，无问询号时交给业务
+	Online  func(factoryID uuid.UUID)                               // 会话已建立
+	Offline func(factoryID uuid.UUID)                               // 会话断开
+	Up      func(factoryID uuid.UUID, payload []byte)               // 厂端上行，无问询号时交给业务
 }
 
 // Broker 是 WAN 进程内的 MQTT 服务。
@@ -62,7 +62,7 @@ func Listen(addr string, hooks Hooks) (*Broker, error) {
 	}
 	server := mqtt.New(&mqtt.Options{
 		InlineClient: true,
-		Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
 	hook := &factoryHook{broker: b}
 	if err := server.AddHook(hook, nil); err != nil {
@@ -201,9 +201,14 @@ func (h *factoryHook) OnConnectAuthenticate(cl *mqtt.Client, pk packets.Packet) 
 	}
 	unix, sig, err := nodekey.ParseMQTTPassword(string(pk.Connect.Password))
 	if err != nil {
+		slog.Warn("factory mqtt auth failed", "factory", fid, "err", err)
 		return false
 	}
-	return h.broker.hooks.Auth(fid, unix, sig) == nil
+	if err := h.broker.hooks.Auth(fid, unix, sig); err != nil {
+		slog.Warn("factory mqtt auth failed", "factory", fid, "err", err)
+		return false
+	}
+	return true
 }
 
 // OnACLCheck 只允许订自己的 down、发自己的 up。
@@ -231,6 +236,7 @@ func (h *factoryHook) OnSessionEstablished(cl *mqtt.Client, _ packets.Packet) {
 		return
 	}
 	h.broker.hooks.Online(fid)
+	slog.Info("factory mqtt online", "factory", fid)
 }
 
 // OnDisconnect 名录标离线。
@@ -243,6 +249,7 @@ func (h *factoryHook) OnDisconnect(cl *mqtt.Client, _ error, _ bool) {
 		return
 	}
 	h.broker.hooks.Offline(fid)
+	slog.Info("factory mqtt offline", "factory", fid)
 }
 
 // OnPublished 升档回执交给 Call，其余交给业务。

@@ -451,6 +451,9 @@ class Pouch {
     /** 袋内信封元数据；blob 仍是密文。 */
     fun envelope(id: UUID): CachedEnvelope? = items[id]
 
+    /** 内存已有明文或信封，不必再读库。 */
+    fun held(id: UUID): Boolean = projectBodies.containsKey(id) || items.containsKey(id)
+
     fun restoreEnvelopes(list: List<CachedEnvelope>) {
         items.clear()
         list.forEach { rememberCipher(it) }

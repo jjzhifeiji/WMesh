@@ -27,6 +27,7 @@ import com.gbndt.shijiaoqi.ui.navigation.LocalTeach
 import com.gbndt.shijiaoqi.ui.navigation.LocalWeldInput
 import com.gbndt.shijiaoqi.ui.project.PouchProcessScreen
 import com.gbndt.shijiaoqi.ui.project.PouchProjectScreen
+import com.gbndt.shijiaoqi.data.log.PadLog
 
 /** 焊接屏内部的三级页面：焊道、工程、工艺。 */
 sealed class WeldPage {
@@ -100,7 +101,10 @@ fun WeldingShell(
             CustomStatusBar(
                 teach = teach,
                 host = host,
-                onProjectClick = { page = WeldPage.Project },
+                onProjectClick = {
+                    PadLog.info("Nav", "open project list")
+                    page = WeldPage.Project
+                },
             )
             Box(modifier = Modifier.weight(1f)) {
                 when (val current = page) {

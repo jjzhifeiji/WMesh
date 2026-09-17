@@ -16,13 +16,16 @@ import com.gbndt.shijiaoqi.data.session.FileUnwrapKeyStore
 import com.gbndt.shijiaoqi.data.session.IdentityStore
 import com.gbndt.shijiaoqi.data.session.SessionVault
 import com.gbndt.shijiaoqi.data.session.UnwrapKeyStore
+import com.gbndt.shijiaoqi.data.log.PadLog
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import java.io.File
 import javax.inject.Singleton
 
@@ -34,7 +37,14 @@ object AppModule {
     /** 阻塞 IO 用的调度器；测试里换成单线程的即可。 */
     @Provides
     @Singleton
+    @IoDispatcher
     fun provideIoDispatcher(): CoroutineDispatcher = Dispatchers.IO
+
+    @Provides
+    @Singleton
+    @ApplicationScope
+    fun provideApplicationScope(@IoDispatcher io: CoroutineDispatcher): CoroutineScope =
+        CoroutineScope(SupervisorJob() + io)
 
     @Provides
     @Singleton
@@ -83,5 +93,7 @@ object AppModule {
         multicast = multicast,
         vault = vault,
         keys = keys,
+        onFactoryNet = { base, factoryId -> PadLog.tryShip(base, factoryId, identity.clientId) },
+        restoreOnStart = false,
     )
 }

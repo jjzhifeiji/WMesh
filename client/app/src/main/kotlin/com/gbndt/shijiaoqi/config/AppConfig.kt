@@ -17,7 +17,12 @@ object AppConfig {
         val PRESET_BASES = PRESET_HOSTS.map { "http://$it:$HTTP_PORT" }
         const val HTTP_PORT = 52081
         val HTTP_PORTS = intArrayOf(HTTP_PORT)
+        /** 厂机 Alloy 收 Pad Loki push；与 HTTP 同主机。 */
+        const val ALLOY_PORT = 3500
     }
+
+    /** warn/error 环形文件，在 filesDir 下，不进共有存储。 */
+    const val LOG_DIR = "logs"
 
     /** 厂内发布清单。 */
     const val UPDATE_MANIFEST_URL = "http://cdn.gbndt.com/sjqapk/update.json"

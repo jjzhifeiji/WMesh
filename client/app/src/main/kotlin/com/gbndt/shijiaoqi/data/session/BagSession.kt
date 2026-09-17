@@ -1,6 +1,7 @@
 package com.gbndt.shijiaoqi.data.session
 
 import com.gbndt.shijiaoqi.data.crypt.Wm2
+import com.gbndt.shijiaoqi.data.log.PadLog
 import com.gbndt.shijiaoqi.model.SessionState
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -23,6 +24,8 @@ class BagSession(
     private val vault: SessionVault = MemorySessionVault(),
     private val keys: UnwrapKeyStore = MemoryUnwrapKeyStore(),
     private val clock: () -> Long = { System.currentTimeMillis() },
+    private val onFactoryNet: (httpBase: String, factoryId: String) -> Unit = { _, _ -> },
+    restoreOnStart: Boolean = true,
 ) {
     val pouch = Pouch()
 
@@ -42,7 +45,7 @@ class BagSession(
     private var devices: List<PadDevice> = emptyList()
 
     init {
-        restore()
+        if (restoreOnStart) restore()
     }
 
     fun savedUrl(): String = identity.factoryUrl
@@ -51,16 +54,26 @@ class BagSession(
 
     fun findFactories(): List<FactoryOffer> {
         edit { it.copy(error = null, busy = true) }
+        PadLog.info("BagSession", "scan start")
         try {
             val hits = LanScan.find(identity.factoryUrl, factory::discover, multicast)
             if (hits.isEmpty()) {
                 edit { it.copy(error = "本网没有发现厂服务") }
+                PadLog.warn("BagSession", "scan empty")
+            } else {
+                PadLog.info("BagSession", "scan ok n=${hits.size}")
+                // 扫到厂网即可直推日志，不登录。
+                hits.distinctBy { it.httpBase.trimEnd('/') }.forEach { o ->
+                    runCatching { onFactoryNet(o.httpBase, o.factoryId) }
+                }
             }
             return hits
         } catch (e: LoginRejected) {
+            PadLog.warn("BagSession", "scan rejected ${e.code}")
             edit { it.copy(error = translate(e.code)) }
             throw e
         } catch (e: Exception) {
+            PadLog.error("BagSession", "scan failed", e)
             edit { it.copy(error = e.message ?: "scan failed") }
             throw e
         } finally {
@@ -70,6 +83,7 @@ class BagSession(
 
     fun login(baseUrl: String, factoryId: String, loginName: String, password: String) {
         edit { it.copy(error = null, busy = true) }
+        PadLog.info("BagSession", "login loading factory=$factoryId user=${loginName.trim()}")
         try {
             identity.factoryUrl = baseUrl.trim()
             identity.factoryId = factoryId.trim()
@@ -121,12 +135,16 @@ class BagSession(
             if (serial.isNotEmpty()) {
                 runCatching { matchArm(serial) }
             }
+            runCatching { onFactoryNet(identity.factoryUrl, identity.factoryId) }
+            PadLog.info("BagSession", "login ok factory=${identity.factoryId}")
         } catch (e: LoginRejected) {
             logoutMemory()
+            PadLog.warn("BagSession", "login rejected ${e.code} factory=$factoryId")
             edit { it.copy(error = translate(e.code)) }
             throw e
         } catch (e: Exception) {
             logoutMemory()
+            PadLog.error("BagSession", "login failed factory=$factoryId", e)
             edit { it.copy(error = e.message ?: "login failed") }
             throw e
         } finally {
@@ -144,6 +162,7 @@ class BagSession(
         if (!loggedIn) throw LoginRejected("unauthorized")
         if (got.isEmpty()) {
             edit { it.copy(error = "读不到设备号", armMatched = false) }
+            PadLog.warn("BagSession", "arm serial empty factory=${identity.factoryId}")
             throw LoginRejected("device serial is required")
         }
         val hit = findLocalDevice(got)
@@ -152,6 +171,7 @@ class BagSession(
                 pouch.clearClient()
                 identity.clientId = ""
                 identity.clientShortCode = ""
+                PadLog.warn("BagSession", "arm not listed factory=${identity.factoryId}")
                 throw LoginRejected("device serial does not match")
             }
         identity.clientId = hit.id
@@ -159,6 +179,8 @@ class BagSession(
         pouch.bindClient(UUID.fromString(hit.id))
         if (hit.shortCode.isNotBlank()) pouch.setOrigin(hit.shortCode)
         edit { it.copy(armMatched = true, error = null) }
+        PadLog.info("BagSession", "arm matched client=${hit.id}")
+        runCatching { onFactoryNet(identity.factoryUrl, identity.factoryId) }
     }
 
     fun cachePlain(id: UUID, level: String, name: String, revision: Long, ownerId: UUID?, plain: ByteArray) {
@@ -178,6 +200,7 @@ class BagSession(
     }
 
     fun activate(projectId: UUID) {
+        PadLog.info("BagSession", "activate project=$projectId")
         pouch.activate(projectId)
         persistPouch(store, pouch)
     }
@@ -189,6 +212,7 @@ class BagSession(
     }
 
     fun setWelding(value: Boolean) {
+        PadLog.info("BagSession", "welding=$value")
         if (value) ensureFactoryArm()
         pouch.setWelding(value)
     }
@@ -200,6 +224,7 @@ class BagSession(
 
     /** 用的时候从库取信封密文，解开只发生在内存。 */
     private fun hydrateCipher(id: UUID) {
+        if (pouch.held(id)) return
         store.loadEnvelope(id)?.let { pouch.rememberCipher(it) }
     }
 
@@ -218,6 +243,7 @@ class BagSession(
     fun openPendingUpload(id: UUID): ByteArray = pouch.openPendingUpload(id)
 
     fun logout() {
+        PadLog.info("BagSession", "logout")
         dropPersistedSession()
         logoutMemory()
         edit { it.copy(error = null) }
@@ -229,6 +255,7 @@ class BagSession(
         if (next.isEmpty()) throw LoginRejected("empty password")
         val tok = token ?: throw LoginRejected("unauthorized")
         factory.changePassword(identity.factoryUrl, identity.factoryId, tok, next)
+        PadLog.info("BagSession", "password changed")
     }
 
     /** 按厂端同一份可见资产拉全量；工程明文，工艺用人钥解过站包。 */
@@ -239,23 +266,32 @@ class BagSession(
         val factoryId = UUID.fromString(fid)
         if (sess.unwrapKey.size != 32) return
         val personId = sess.person.id
+        PadLog.info("BagSession", "catalog loading")
         val box = try {
             factory.padInbox(base, fid, tok)
         } catch (_: LoginRejected) {
+            PadLog.warn("BagSession", "catalog inbox rejected")
             return
         }
+        var ok = 0
+        var failed = 0
         for (ref in box.closures) {
             val t = try {
                 factory.padPullClosure(base, fid, ref.assetId.toString(), tok)
             } catch (_: LoginRejected) {
+                failed++
                 continue
             }
             try {
                 pouch.cacheTransit(factoryId, personId, t, sess.unwrapKey)
+                ok++
             } catch (_: PouchRejected) {
+                failed++
             } catch (_: Exception) {
+                failed++
             }
         }
+        PadLog.info("BagSession", "catalog done listed=${box.closures.size} ok=$ok fail=$failed")
     }
 
     private fun saveVault(sess: PadLoginResult) {
@@ -279,7 +315,7 @@ class BagSession(
     }
 
     /** 开机恢复：登录未到期且钥文件还在才进主页；到期或退出过则清钥。 */
-    internal fun restore() {
+    fun restore() {
         val saved = vault.load() ?: return
         if (saved.token.isBlank() || saved.personId.isBlank()) {
             dropPersistedSession()
@@ -324,7 +360,9 @@ class BagSession(
             if (serial.isNotEmpty()) {
                 runCatching { ensureFactoryArm(serial) }
             }
+            PadLog.info("BagSession", "restore ok")
         } catch (_: Exception) {
+            PadLog.warn("BagSession", "restore failed")
             dropPersistedSession()
             logoutMemory()
         }

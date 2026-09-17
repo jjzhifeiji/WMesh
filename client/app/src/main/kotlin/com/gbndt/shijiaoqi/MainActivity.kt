@@ -34,6 +34,7 @@ import com.gbndt.shijiaoqi.ui.navigation.WMeshNavHost
 import com.gbndt.shijiaoqi.ui.teach.TeachSession
 import com.gbndt.shijiaoqi.ui.theme.ShiJiaoQiTheme
 import com.gbndt.shijiaoqi.ui.theme.hideSystemBars
+import com.gbndt.shijiaoqi.data.log.PadLog
 import com.gbndt.shijiaoqi.ui.welding.WeldPad
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
@@ -73,7 +74,7 @@ class MainActivity : ComponentActivity() {
     private val longPressHandler = android.os.Handler(android.os.Looper.getMainLooper())
     private val longPressRunnable = Runnable {
         if (activeWeld != null) {
-            Log.d("GameController", "Button Y Long Pressed - Executing MoveL")
+            PadLog.info("Pad", "long Y moveL")
             activeWeld?.sendMoveLCommand()
         }
     }
@@ -82,7 +83,7 @@ class MainActivity : ComponentActivity() {
     // Long press handling for Button B (simulate welding)
     private val longPressBRunnable = Runnable {
         if (activeWeld != null && 按钮R1 == 0) {
-            Log.d("GameController", "Long Press B - Simulate Welding")
+            PadLog.info("Pad", "long B simulate")
             activeWeld?.startSimulation()
         }
     }
@@ -90,7 +91,7 @@ class MainActivity : ComponentActivity() {
     // Long press handling for Button B + R1 (arc welding)
     private val longPressBR1Runnable = Runnable {
         if (activeWeld != null && 按钮R1 == 1) {
-            Log.d("GameController", "Long Press B + R1 - Arc Welding")
+            PadLog.info("Pad", "long B+R1 arc")
             teachSession.stopController()
             activeWeld?.startArcWelding()
         }
@@ -201,6 +202,7 @@ class MainActivity : ComponentActivity() {
                         Log.d("GameController", "Move: L($joy_X1, $joy_Y1) R($joy_X2, $joy_Y2) Dpad($按钮左, $按钮右, $按钮上, $按钮下)")
                     } else if (buttonName.isNotEmpty()) {
                         Log.d("GameController", "Button Down: $buttonName")
+                        if (event.repeatCount == 0) PadLog.info("Pad", "click $buttonName")
                     }
                     updateViewModelInput()
                 } else if (event.action == KeyEvent.ACTION_UP) {
@@ -322,6 +324,7 @@ class MainActivity : ComponentActivity() {
             ShiJiaoQiTheme {
                 Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
                     val session by sessionRepository.state.collectAsStateWithLifecycle()
+                    val bootstrapped by sessionRepository.bootstrapped.collectAsStateWithLifecycle()
                     val app = application as ShiJiaoQiApp
                     val skipSplash = remember {
                         val skip = app.splashShown
@@ -343,8 +346,16 @@ class MainActivity : ComponentActivity() {
                             )
                         }
 
-                        // 未登录就盖住整屏，开屏动画期间不盖
-                        if (splashDone && !session.loggedIn) {
+                        // 开屏结束后等袋恢复完，再决定是否盖登录。
+                        if (splashDone && !bootstrapped) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .background(MaterialTheme.colorScheme.background)
+                                    .zIndex(150f),
+                            )
+                        }
+                        if (splashDone && bootstrapped && !session.loggedIn) {
                             Box(
                                 modifier = Modifier
                                     .fillMaxSize()

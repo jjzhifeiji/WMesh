@@ -1,6 +1,6 @@
 package com.gbndt.shijiaoqi.ui.welding.single
 
-import android.util.Log
+import com.gbndt.shijiaoqi.data.log.PadLog
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -22,11 +22,9 @@ import com.gbndt.shijiaoqi.domain.shared.WeldLineFollow
 import com.gbndt.shijiaoqi.domain.shared.WeldRun
 import com.gbndt.shijiaoqi.domain.shared.Capture
 import com.gbndt.shijiaoqi.domain.single.CornerWeldGenerator
-import com.gbndt.shijiaoqi.domain.shared.ProcessBind
-import com.gbndt.shijiaoqi.domain.shared.ProcessChoice
 import com.gbndt.shijiaoqi.domain.shared.ProcessRef
-import com.gbndt.shijiaoqi.domain.shared.ProjectChoice
 import com.gbndt.shijiaoqi.domain.single.SingleLayerProject
+import com.gbndt.shijiaoqi.data.crypt.Wm2
 import com.gbndt.shijiaoqi.domain.shared.WeldProgress
 import com.gbndt.shijiaoqi.domain.shared.toVec3
 import com.gbndt.shijiaoqi.geom.Vec3
@@ -61,7 +59,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
-import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.merge
@@ -69,6 +67,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.Locale
 import java.util.UUID
@@ -98,14 +97,19 @@ class SingleWeldViewModel @Inject constructor(
     private val follow = WeldLineFollow()
 
     val weldPaths = mutableStateListOf<WeldPath>()
-    val pouchProjects = mutableStateListOf<ProjectChoice>()
-    val pouchProcesses = mutableStateListOf<ProcessChoice>()
     private val robotErrors = mutableStateListOf<RobotError>()
+    private var starting = false
 
     private val _uiState = MutableStateFlow(SingleWeldUiState())
-    val uiState: StateFlow<SingleWeldUiState> = _uiState.asStateFlow()
+    val uiState: StateFlow<SingleWeldUiState> = combine(
+        _uiState,
+        pouch.projects,
+        pouch.processes,
+    ) { s, projects, processes ->
+        s.copy(shell = s.shell.copy(pouchProjects = projects, pouchProcesses = processes))
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SingleWeldUiState())
     override val shellUi: StateFlow<WeldShellUi> =
-        uiState.map { it.shell }.stateIn(viewModelScope, SharingStarted.Eagerly, WeldShellUi())
+        uiState.map { it.shell }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), WeldShellUi())
 
     var selectedWeldPathIndex: Int
         get() = _uiState.value.selectedWeldPathIndex
@@ -243,12 +247,12 @@ class SingleWeldViewModel @Inject constructor(
         addWeldPath()
     }
 
-    override fun syncFromPouch() {
-        refreshPouchLists()
+    override suspend fun syncFromPouch() {
         val id = pouch.activeProjectId() ?: return
-        pouch.withProjectPlain(id) { bytes ->
+        val bytes = pouch.openProjectBytes(id) ?: return
+        try {
             val loaded = runCatching { SingleLayerProject.parse(bytes) }.getOrElse {
-                Log.e("SingleWeld", "active project parse failed", it)
+                PadLog.error("SingleWeld", "active project parse failed", it)
                 emptyList()
             }
             weldPaths.clear()
@@ -258,62 +262,65 @@ class SingleWeldViewModel @Inject constructor(
             pouchProjectId = id
             patch { it.copy(shell = it.shell.copy(currentProjectName = pouch.projectName(id))) }
             bindProcesses()
+        } finally {
+            Wm2.zero(bytes)
         }
-        refreshPouchLists()
-    }
-
-    override fun activatePouchProject(id: UUID) {
-        runCatching {
-            pouch.activate(id)
-            syncFromPouch()
-        }.onFailure { e -> toast(e.message ?: "无法激活工程") }
-    }
-
-    override fun refreshPouchLists() {
-        pouchProjects.clear()
-        pouchProjects.addAll(pouch.listProjects())
-        pouchProcesses.clear()
-        pouchProcesses.addAll(pouch.listProcesses())
         publish()
     }
 
+    override fun activatePouchProject(id: UUID) {
+        PadLog.info("SingleWeld", "activate project=$id")
+        viewModelScope.launch {
+            runCatching {
+                pouch.activate(id)
+                syncFromPouch()
+            }.onFailure { e -> toast(e.message ?: "无法激活工程") }
+        }
+    }
+
+    override fun refreshPouchLists() {
+        viewModelScope.launch { pouch.refresh() }
+    }
+
     override fun bindProcessFromPouch(processId: UUID?) {
-        val path = currentPath() ?: run {
-            extraProcessEditIndex = -1
-            return
-        }
-        val process = if (processId == null) WeldProcess() else {
-            pouch.processSource().open(processId) ?: run {
-                missingProcessMessage = "闭包里没有这条工艺"
-                isMissingProcessDialogVisible = true
+        viewModelScope.launch {
+            val path = currentPath() ?: run {
                 extraProcessEditIndex = -1
-                return
+                return@launch
             }
-        }
-        val idStr = processId?.toString().orEmpty()
-        when {
-            extraProcessEditIndex == -2 -> {
-                if (processId != null) {
-                    path.extraProcesses.add(
-                        WeldPathProcessSlot(
-                            id = UUID.randomUUID().toString(),
-                            process = process,
-                            processId = idStr,
-                            isEnabled = true,
-                        ),
-                    )
+            val process = if (processId == null) WeldProcess() else {
+                pouch.openProcess(processId) ?: run {
+                    missingProcessMessage = "闭包里没有这条工艺"
+                    isMissingProcessDialogVisible = true
+                    extraProcessEditIndex = -1
+                    return@launch
                 }
             }
-            extraProcessEditIndex >= 0 && extraProcessEditIndex < path.extraProcesses.size -> {
-                val slot = path.extraProcesses[extraProcessEditIndex]
-                path.extraProcesses[extraProcessEditIndex] = slot.copy(process = process, processId = idStr)
+            val idStr = processId?.toString().orEmpty()
+            when {
+                extraProcessEditIndex == -2 -> {
+                    if (processId != null) {
+                        path.extraProcesses.add(
+                            WeldPathProcessSlot(
+                                id = UUID.randomUUID().toString(),
+                                process = process,
+                                processId = idStr,
+                                isEnabled = true,
+                            ),
+                        )
+                    }
+                }
+                extraProcessEditIndex >= 0 && extraProcessEditIndex < path.extraProcesses.size -> {
+                    val slot = path.extraProcesses[extraProcessEditIndex]
+                    path.extraProcesses[extraProcessEditIndex] = slot.copy(process = process, processId = idStr)
+                }
+                else -> {
+                    weldPaths[selectedWeldPathIndex] = path.copy(process = process, processId = idStr)
+                }
             }
-            else -> {
-                weldPaths[selectedWeldPathIndex] = path.copy(process = process, processId = idStr)
-            }
+            extraProcessEditIndex = -1
+            saveProject()
         }
-        extraProcessEditIndex = -1
-        saveProject()
     }
 
     override fun cancelAddProcessVariant() {
@@ -412,6 +419,7 @@ class SingleWeldViewModel @Inject constructor(
     }
 
     override fun collectData() {
+        PadLog.info("SingleWeld", "collect point")
         if (teach.connectionStatus == RobotLink.DOWN) {
             toast("设备未连接")
             return
@@ -486,11 +494,18 @@ class SingleWeldViewModel @Inject constructor(
         )
     }
 
-    override fun startSimulation() = startRun(welding = false, simulating = true)
+    override fun startSimulation() {
+        PadLog.info("SingleWeld", "start simulation")
+        startRun(welding = false, simulating = true)
+    }
 
-    override fun startArcWelding() = startRun(welding = true, simulating = false)
+    override fun startArcWelding() {
+        PadLog.info("SingleWeld", "start arc")
+        startRun(welding = true, simulating = false)
+    }
 
     fun pauseWelding() {
+        PadLog.info("SingleWeld", "pause")
         if (!_uiState.value.run.busy) return
         viewModelScope.launch {
             WeldRun.pauseSeq().forEach {
@@ -503,6 +518,7 @@ class SingleWeldViewModel @Inject constructor(
     }
 
     fun continueWelding() {
+        PadLog.info("SingleWeld", "continue")
         if (!_uiState.value.run.isPaused) return
         viewModelScope.launch {
             val run = _uiState.value.run
@@ -515,6 +531,7 @@ class SingleWeldViewModel @Inject constructor(
     }
 
     override fun stopWelding(force: Boolean) {
+        PadLog.info("SingleWeld", "stop force=$force")
         val pose = robot.robotPose.value ?: operationPosition
         val joints = robot.robotJoints.value
         val pathIdx = if (follow.lastPath >= 0) follow.lastPath else selectedWeldPathIndex
@@ -614,12 +631,12 @@ class SingleWeldViewModel @Inject constructor(
         val vecA = pathDir(refA, cornerPt) ?: return
         val vecB = pathDir(refB, cornerPt) ?: return
         val pid = processId?.takeIf { it.isNotEmpty() } ?: refA.processId
-        val proc = pid.toUuidOrNull()?.let { pouch.processSource().open(it) } ?: refA.process
-        val orient = if (torchRx != null && torchRy != null && torchRz != null) {
-            Pose(0.0, 0.0, 0.0, torchRx, torchRy, torchRz)
-        } else null
-        val safe = refB.points.firstOrNull { it.type == WeldPointType.START_SAFE }?.pose
         viewModelScope.launch {
+            val proc = pid.toUuidOrNull()?.let { pouch.openProcess(it) } ?: refA.process
+            val orient = if (torchRx != null && torchRy != null && torchRz != null) {
+                Pose(0.0, 0.0, 0.0, torchRx, torchRy, torchRz)
+            } else null
+            val safe = refB.points.firstOrNull { it.type == WeldPointType.START_SAFE }?.pose
             toast("正在通过逆运动学计算关节角度，请稍候...")
             val newPaths = CornerWeldGenerator.generateCornerPaths(
                 baseProcess = proc,
@@ -651,51 +668,58 @@ class SingleWeldViewModel @Inject constructor(
                 weldPaths.add(p.copy(name = "包角焊道 ${weldPaths.size + 1} (层 ${i + 1})").asUiPath())
             }
             saveProject()
-            _toast.emit("成功生成 $layerCount 层包角工艺")
+            toast("成功生成 $layerCount 层包角工艺")
             _scrollToIndex.emit(weldPaths.lastIndex)
         }
     }
 
     private fun startRun(welding: Boolean, simulating: Boolean) {
-        if (_uiState.value.run.busy) return
-        if (!bindProcesses()) return
-        val scripts = toScripts() ?: return
-        pouch.factoryArmError()?.let { toast(it); return }
-        val resume = stopResume
-        stopResume = null
-        teach.stopController()
-        programStarted = false
-        follow.reset()
-        patch { it.copy(run = WeldRunUi.Active(welding = welding, paused = false)) }
-        fineTune.resetOffsets()
-        pouch.setWelding(true)
-        if (welding) startTimer()
-        viewModelScope.launch(Dispatchers.IO) {
-            val numbered = WeldRun.number(
-                SingleLayerLua.job(
-                    scripts, welding, simulating, teach.speedMode, teach.toolIndex, teach.isExtAxisEnabled, resume,
-                ),
-            ) { commandId++ }
-            follow.load(numbered)
-            val id105 = commandId++
-            val id106 = commandId++
-            val plan = WeldRun.batch(id105, id106, numbered.body)
-            robot.sendBatchCommandSync(plan.fileName)
-            delay(WeldRun.AFTER_FILENAME_MS)
-            val ack = async {
-                withTimeoutOrNull(8000) {
-                    merge(robot.receivedText8082, robot.receivedText).first {
-                        it.contains(id106.toString()) || it.contains("106")
+        if (_uiState.value.run.busy || starting) return
+        starting = true
+        viewModelScope.launch {
+            try {
+                if (!bindProcesses()) return@launch
+                val scripts = toScripts() ?: return@launch
+                pouch.factoryArmError()?.let { toast(it); return@launch }
+                val resume = stopResume
+                stopResume = null
+                teach.stopController()
+                programStarted = false
+                follow.reset()
+                patch { it.copy(run = WeldRunUi.Active(welding = welding, paused = false)) }
+                fineTune.resetOffsets()
+                pouch.setWelding(true)
+                if (welding) startTimer()
+                withContext(Dispatchers.IO) {
+                    val numbered = WeldRun.number(
+                        SingleLayerLua.job(
+                            scripts, welding, simulating, teach.speedMode, teach.toolIndex, teach.isExtAxisEnabled, resume,
+                        ),
+                    ) { commandId++ }
+                    follow.load(numbered)
+                    val id105 = commandId++
+                    val id106 = commandId++
+                    val plan = WeldRun.batch(id105, id106, numbered.body)
+                    robot.sendBatchCommandSync(plan.fileName)
+                    delay(WeldRun.AFTER_FILENAME_MS)
+                    val ack = async {
+                        withTimeoutOrNull(8000) {
+                            merge(robot.receivedText8082, robot.receivedText).first {
+                                it.contains(id106.toString()) || it.contains("106")
+                            }
+                        }
                     }
+                    delay(100)
+                    robot.sendBatchCommandSync(plan.body)
+                    ack.await()
+                    delay(WeldRun.AFTER_BODY_ACK_MS)
+                    robot.sendControlCommand(plan.modeAuto)
+                    delay(WeldRun.AFTER_MODE_MS)
+                    robot.sendControlCommand(plan.start)
                 }
+            } finally {
+                starting = false
             }
-            delay(100)
-            robot.sendBatchCommandSync(plan.body)
-            ack.await()
-            delay(WeldRun.AFTER_BODY_ACK_MS)
-            robot.sendControlCommand(plan.modeAuto)
-            delay(WeldRun.AFTER_MODE_MS)
-            robot.sendControlCommand(plan.start)
         }
     }
 
@@ -726,12 +750,12 @@ class SingleWeldViewModel @Inject constructor(
         return out
     }
 
-    private fun bindProcesses(): Boolean {
+    private suspend fun bindProcesses(): Boolean {
         val refs = weldPaths.flatMap { path ->
             listOf(ProcessRef(path.name, path.processId, path.isEnabled)) +
                 path.extraProcesses.map { ProcessRef("${path.name} 附加", it.processId, it.isEnabled) }
         }
-        val outcome = ProcessBind.resolve(refs, pouch.processSource())
+        val outcome = pouch.resolveProcesses(refs)
         weldPaths.forEach { path ->
             path.processId.toUuidOrNull()?.let { id -> outcome.loaded[id]?.let { path.process = it } }
             path.extraProcesses.forEachIndexed { i, slot ->
@@ -750,9 +774,14 @@ class SingleWeldViewModel @Inject constructor(
 
     private fun saveProject() {
         val id = pouchProjectId ?: return
-        weldPaths.forEach { pouch.saveWeldPath(it) }
-        pouch.saveProject(id, SingleLayerProject.encode(weldPaths.toList()))
+        val paths = weldPaths.toList()
         publish()
+        viewModelScope.launch {
+            runCatching {
+                pouch.saveWeldPaths(paths)
+                pouch.saveProject(id, SingleLayerProject.encode(paths))
+            }.onFailure { e -> toast(e.message ?: "无法保存工程") }
+        }
     }
 
     private fun persistStats() {
@@ -786,7 +815,7 @@ class SingleWeldViewModel @Inject constructor(
         follow.statsActive = false
         timerJob?.cancel()
         teach.stopController()
-        pouch.setWelding(false)
+        viewModelScope.launch { pouch.setWelding(false) }
         patch { it.copy(run = WeldRunUi.Idle) }
         if (sendStop) {
             viewModelScope.launch {
@@ -828,10 +857,6 @@ class SingleWeldViewModel @Inject constructor(
             n.copy(
                 weldPaths = weldPaths.toList(),
                 currentRobotErrors = robotErrors.toList(),
-                shell = n.shell.copy(
-                    pouchProjects = pouchProjects.toList(),
-                    pouchProcesses = pouchProcesses.toList(),
-                ),
             )
         }
     }
@@ -871,6 +896,7 @@ class SingleWeldViewModel @Inject constructor(
     }
 
     private fun toast(msg: String) {
+        PadLog.toast(msg)
         viewModelScope.launch { _toast.emit(msg) }
     }
 

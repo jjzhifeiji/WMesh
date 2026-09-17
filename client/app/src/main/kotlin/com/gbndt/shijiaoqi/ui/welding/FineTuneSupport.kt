@@ -4,6 +4,7 @@ import android.util.Log
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import com.gbndt.shijiaoqi.data.log.PadLog
 import com.gbndt.shijiaoqi.data.repository.RobotRepository
 import com.gbndt.shijiaoqi.model.Oscillation
 import com.gbndt.shijiaoqi.model.WeldProcess
@@ -89,13 +90,13 @@ class FineTuneSupport(
     fun increaseSpeed() {
         speedPercent = (speedPercent + 5).coerceAtMost(100)
         sendCommand("SetSpeed($speedPercent)", 206)
-        toast("SetSpeed($speedPercent)")
+        notify("SetSpeed($speedPercent)")
     }
 
     fun decreaseSpeed() {
         speedPercent = (speedPercent - 5).coerceAtLeast(1)
         sendCommand("SetSpeed($speedPercent)", 206)
-        toast("SetSpeed($speedPercent)")
+        notify("SetSpeed($speedPercent)")
     }
 
     fun sendOffset(axis: Char, positive: Boolean) {
@@ -111,7 +112,7 @@ class FineTuneSupport(
             weaveOffsetX, weaveOffsetY, weaveOffsetZ
         )
         sendCommand(cmd, 1368)
-        toast(cmd)
+        notify(cmd)
     }
 
     fun increaseCurrent() = adjustCurrent(1.0)
@@ -127,7 +128,7 @@ class FineTuneSupport(
         currentProcess()?.current = setCurrent
         val currentStr = formatNumber(setCurrent)
         sendCommand("WeldingSetCurrent(0,$currentStr,0)", 201)
-        toast("电流 ${currentStr}A")
+        notify("电流 ${currentStr}A")
     }
 
     private fun adjustVoltage(delta: Double) {
@@ -135,7 +136,7 @@ class FineTuneSupport(
         currentProcess()?.voltage = setVoltage
         val voltageStr = formatNumber(setVoltage)
         sendCommand("WeldingSetVoltage(0,$voltageStr,1)", 201)
-        toast("电压 ${voltageStr}V")
+        notify("电压 ${voltageStr}V")
     }
 
     private fun adjustWeave(amplitudeDelta: Double = 0.0, frequencyDelta: Double = 0.0) {
@@ -144,7 +145,7 @@ class FineTuneSupport(
         val newAmp = (base.amplitude + amplitudeDelta).coerceAtLeast(1.0)
         val newFreq = (base.frequency + frequencyDelta).coerceAtLeast(1.0)
         if (newAmp == base.amplitude && newFreq == base.frequency) {
-            toast("已到最小值")
+            notify("已到最小值")
             return
         }
         val osc = base.copy(amplitude = newAmp, frequency = newFreq)
@@ -153,7 +154,7 @@ class FineTuneSupport(
         oscillationType = osc.type
         onOscillationChanged(osc)
         sendWeaveOnline(osc)
-        toast(
+        notify(
             String.format(
                 Locale.US,
                 "摆幅 %.0f mm  频率 %.0f Hz",
@@ -185,6 +186,11 @@ class FineTuneSupport(
         val msg = "/f/bIII${id}III${type}III${cmd.length}III${cmd}III/b/f"
         Log.d("FineTune", "Send: $msg")
         socketManager.sendControlCommand(msg)
+    }
+
+    private fun notify(msg: String) {
+        PadLog.toast(msg)
+        toast(msg)
     }
 
     private fun formatNumber(value: Double): String {

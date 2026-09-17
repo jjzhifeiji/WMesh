@@ -1,6 +1,6 @@
 package com.gbndt.shijiaoqi.ui.welding.multilayer
 
-import android.util.Log
+import com.gbndt.shijiaoqi.data.log.PadLog
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -19,10 +19,8 @@ import com.gbndt.shijiaoqi.domain.shared.WeldRun
 import com.gbndt.shijiaoqi.domain.shared.Capture
 import com.gbndt.shijiaoqi.domain.multilayer.MultiLayerPass
 import com.gbndt.shijiaoqi.domain.multilayer.MultiLayerProject
-import com.gbndt.shijiaoqi.domain.shared.ProcessBind
-import com.gbndt.shijiaoqi.domain.shared.ProcessChoice
 import com.gbndt.shijiaoqi.domain.shared.ProcessRef
-import com.gbndt.shijiaoqi.domain.shared.ProjectChoice
+import com.gbndt.shijiaoqi.data.crypt.Wm2
 import com.gbndt.shijiaoqi.domain.shared.WeldProgress
 import com.gbndt.shijiaoqi.model.multilayer.MultiLayerWeldPath
 import com.gbndt.shijiaoqi.model.Pose
@@ -56,7 +54,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
-import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.merge
@@ -64,6 +62,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.Locale
 import java.util.UUID
@@ -96,14 +95,19 @@ class MultiLayerWeldViewModel @Inject constructor(
     private val follow = WeldLineFollow()
 
     val multiLayerWeldPaths = mutableStateListOf<MultiLayerWeldPath>()
-    val pouchProjects = mutableStateListOf<ProjectChoice>()
-    val pouchProcesses = mutableStateListOf<ProcessChoice>()
     private val robotErrors = mutableStateListOf<RobotError>()
+    private var starting = false
 
     private val _uiState = MutableStateFlow(MultiLayerUiState())
-    val uiState: StateFlow<MultiLayerUiState> = _uiState.asStateFlow()
+    val uiState: StateFlow<MultiLayerUiState> = combine(
+        _uiState,
+        pouch.projects,
+        pouch.processes,
+    ) { s, projects, processes ->
+        s.copy(shell = s.shell.copy(pouchProjects = projects, pouchProcesses = processes))
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), MultiLayerUiState())
     override val shellUi: StateFlow<WeldShellUi> =
-        uiState.map { it.shell }.stateIn(viewModelScope, SharingStarted.Eagerly, WeldShellUi())
+        uiState.map { it.shell }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), WeldShellUi())
 
     var selectedMultiLayerPathIndex: Int
         get() = _uiState.value.selectedMultiLayerPathIndex
@@ -240,12 +244,12 @@ class MultiLayerWeldViewModel @Inject constructor(
         }
     }
 
-    override fun syncFromPouch() {
-        refreshPouchLists()
+    override suspend fun syncFromPouch() {
         val id = pouch.activeProjectId() ?: return
-        pouch.withProjectPlain(id) { bytes ->
+        val bytes = pouch.openProjectBytes(id) ?: return
+        try {
             val loaded = runCatching { MultiLayerProject.parse(bytes) }.getOrElse {
-                Log.e("MultiWeld", "active project parse failed", it)
+                PadLog.error("MultiWeld", "active project parse failed", it)
                 emptyList()
             }
             multiLayerWeldPaths.clear()
@@ -257,44 +261,47 @@ class MultiLayerWeldViewModel @Inject constructor(
             pouchProjectId = id
             patch { it.copy(shell = it.shell.copy(currentProjectName = pouch.projectName(id))) }
             bindProcesses()
+        } finally {
+            Wm2.zero(bytes)
         }
-        refreshPouchLists()
-    }
-
-    override fun activatePouchProject(id: UUID) {
-        runCatching {
-            pouch.activate(id)
-            syncFromPouch()
-        }.onFailure { e -> toast(e.message ?: "无法激活工程") }
-    }
-
-    override fun refreshPouchLists() {
-        pouchProjects.clear()
-        pouchProjects.addAll(pouch.listProjects())
-        pouchProcesses.clear()
-        pouchProcesses.addAll(pouch.listProcesses())
         publish()
     }
 
+    override fun activatePouchProject(id: UUID) {
+        PadLog.info("MultiWeld", "activate project=$id")
+        viewModelScope.launch {
+            runCatching {
+                pouch.activate(id)
+                syncFromPouch()
+            }.onFailure { e -> toast(e.message ?: "无法激活工程") }
+        }
+    }
+
+    override fun refreshPouchLists() {
+        viewModelScope.launch { pouch.refresh() }
+    }
+
     override fun bindProcessFromPouch(processId: UUID?) {
-        val mp = currentMulti() ?: return
-        val process = if (processId == null) WeldProcess() else {
-            pouch.processSource().open(processId) ?: run {
-                missingProcessMessage = "闭包里没有这条工艺"
-                isMissingProcessDialogVisible = true
-                return
+        viewModelScope.launch {
+            val mp = currentMulti() ?: return@launch
+            val process = if (processId == null) WeldProcess() else {
+                pouch.openProcess(processId) ?: run {
+                    missingProcessMessage = "闭包里没有这条工艺"
+                    isMissingProcessDialogVisible = true
+                    return@launch
+                }
             }
+            val idStr = processId?.toString().orEmpty()
+            if (selectedPassIndex == -1) {
+                multiLayerWeldPaths[selectedMultiLayerPathIndex] = mp.copy(
+                    basePath = mp.basePath.copy(process = process, processId = idStr),
+                )
+            } else if (selectedPassIndex in mp.passes.indices) {
+                val pass = mp.passes[selectedPassIndex]
+                mp.passes[selectedPassIndex] = pass.copy(process = process, processId = idStr)
+            }
+            saveCurrentProject()
         }
-        val idStr = processId?.toString().orEmpty()
-        if (selectedPassIndex == -1) {
-            multiLayerWeldPaths[selectedMultiLayerPathIndex] = mp.copy(
-                basePath = mp.basePath.copy(process = process, processId = idStr),
-            )
-        } else if (selectedPassIndex in mp.passes.indices) {
-            val pass = mp.passes[selectedPassIndex]
-            mp.passes[selectedPassIndex] = pass.copy(process = process, processId = idStr)
-        }
-        saveCurrentProject()
     }
 
     fun addLinearWeldPath() = addPath("多层直线", withArc = false)
@@ -426,6 +433,7 @@ class MultiLayerWeldViewModel @Inject constructor(
     }
 
     override fun collectData() {
+        PadLog.info("MultiWeld", "collect point")
         if (selectedPassIndex >= 0) return
         if (teach.connectionStatus == RobotLink.DOWN) {
             toast("设备未连接")
@@ -518,11 +526,18 @@ class MultiLayerWeldViewModel @Inject constructor(
         sendMoveL(pose, point.jointAngles)
     }
 
-    override fun startSimulation() = startRun(welding = false, simulating = true)
+    override fun startSimulation() {
+        PadLog.info("MultiWeld", "start simulation")
+        startRun(welding = false, simulating = true)
+    }
 
-    override fun startArcWelding() = startRun(welding = true, simulating = false)
+    override fun startArcWelding() {
+        PadLog.info("MultiWeld", "start arc")
+        startRun(welding = true, simulating = false)
+    }
 
     fun pauseWelding() {
+        PadLog.info("MultiWeld", "pause")
         if (!_uiState.value.run.busy) return
         viewModelScope.launch {
             WeldRun.pauseSeq().forEach {
@@ -535,6 +550,7 @@ class MultiLayerWeldViewModel @Inject constructor(
     }
 
     fun continueWelding() {
+        PadLog.info("MultiWeld", "continue")
         if (!_uiState.value.run.isPaused) return
         viewModelScope.launch {
             val run = _uiState.value.run
@@ -547,6 +563,7 @@ class MultiLayerWeldViewModel @Inject constructor(
     }
 
     override fun stopWelding(force: Boolean) {
+        PadLog.info("MultiWeld", "stop force=$force")
         val pose = robot.robotPose.value ?: operationPosition
         val joints = robot.robotJoints.value
         val pathIdx = if (follow.lastPath >= 0) follow.lastPath else selectedMultiLayerPathIndex
@@ -590,72 +607,84 @@ class MultiLayerWeldViewModel @Inject constructor(
 
     fun saveCurrentProject() {
         val id = pouchProjectId ?: return
-        multiLayerWeldPaths.forEach { pouch.saveMultiLayerPath(it) }
-        pouch.saveProject(id, MultiLayerProject.encode(multiLayerWeldPaths.toList()))
+        val paths = multiLayerWeldPaths.toList()
         publish()
+        viewModelScope.launch {
+            runCatching {
+                pouch.saveMultiLayerPaths(paths)
+                pouch.saveProject(id, MultiLayerProject.encode(paths))
+            }.onFailure { e -> toast(e.message ?: "无法保存工程") }
+        }
     }
 
     private fun startRun(welding: Boolean, simulating: Boolean) {
-        if (_uiState.value.run.busy) return
-        if (!bindProcesses()) return
-        val resume = stopResume
-        stopResume = null
-        val luaLines = MultiLayerLua.job(
-            multiLayerWeldPaths.toList(),
-            welding,
-            simulating,
-            teach.speedMode,
-            teach.toolIndex,
-            teach.isExtAxisEnabled,
-            resume,
-        )
-        if (luaLines == null) {
-            toast("有未采集的点")
-            return
-        }
-        if (luaLines.isEmpty() || luaLines.size == 1) {
-            toast("没有可执行的焊道")
-            return
-        }
-        pouch.factoryArmError()?.let { toast(it); return }
-        teach.stopController()
-        programStarted = false
-        follow.reset()
-        patch { it.copy(run = WeldRunUi.Active(welding = welding, paused = false)) }
-        fineTune.resetOffsets()
-        pouch.setWelding(true)
-        if (welding) startTimer()
-        viewModelScope.launch(Dispatchers.IO) {
-            val numbered = WeldRun.number(luaLines) { commandId++ }
-            follow.load(numbered)
-            val id105 = commandId++
-            val id106 = commandId++
-            val plan = WeldRun.batch(id105, id106, numbered.body)
-            robot.sendBatchCommandSync(plan.fileName)
-            delay(WeldRun.AFTER_FILENAME_MS)
-            val ack = async {
-                withTimeoutOrNull(8000) {
-                    merge(robot.receivedText8082, robot.receivedText).first {
-                        it.contains(id106.toString()) || it.contains("106")
-                    }
+        if (_uiState.value.run.busy || starting) return
+        starting = true
+        viewModelScope.launch {
+            try {
+                if (!bindProcesses()) return@launch
+                val resume = stopResume
+                stopResume = null
+                val luaLines = MultiLayerLua.job(
+                    multiLayerWeldPaths.toList(),
+                    welding,
+                    simulating,
+                    teach.speedMode,
+                    teach.toolIndex,
+                    teach.isExtAxisEnabled,
+                    resume,
+                )
+                if (luaLines == null) {
+                    toast("有未采集的点")
+                    return@launch
                 }
+                if (luaLines.isEmpty() || luaLines.size == 1) {
+                    toast("没有可执行的焊道")
+                    return@launch
+                }
+                pouch.factoryArmError()?.let { toast(it); return@launch }
+                teach.stopController()
+                programStarted = false
+                follow.reset()
+                patch { it.copy(run = WeldRunUi.Active(welding = welding, paused = false)) }
+                fineTune.resetOffsets()
+                pouch.setWelding(true)
+                if (welding) startTimer()
+                withContext(Dispatchers.IO) {
+                    val numbered = WeldRun.number(luaLines) { commandId++ }
+                    follow.load(numbered)
+                    val id105 = commandId++
+                    val id106 = commandId++
+                    val plan = WeldRun.batch(id105, id106, numbered.body)
+                    robot.sendBatchCommandSync(plan.fileName)
+                    delay(WeldRun.AFTER_FILENAME_MS)
+                    val ack = async {
+                        withTimeoutOrNull(8000) {
+                            merge(robot.receivedText8082, robot.receivedText).first {
+                                it.contains(id106.toString()) || it.contains("106")
+                            }
+                        }
+                    }
+                    delay(100)
+                    robot.sendBatchCommandSync(plan.body)
+                    ack.await()
+                    delay(WeldRun.AFTER_BODY_ACK_MS)
+                    robot.sendControlCommand(plan.modeAuto)
+                    delay(WeldRun.AFTER_MODE_MS)
+                    robot.sendControlCommand(plan.start)
+                }
+            } finally {
+                starting = false
             }
-            delay(100)
-            robot.sendBatchCommandSync(plan.body)
-            ack.await()
-            delay(WeldRun.AFTER_BODY_ACK_MS)
-            robot.sendControlCommand(plan.modeAuto)
-            delay(WeldRun.AFTER_MODE_MS)
-            robot.sendControlCommand(plan.start)
         }
     }
 
-    private fun bindProcesses(): Boolean {
+    private suspend fun bindProcesses(): Boolean {
         val refs = multiLayerWeldPaths.flatMap { mp ->
             listOf(ProcessRef("${mp.name} 基准", mp.basePath.processId, mp.basePath.isEnabled)) +
                 mp.passes.map { ProcessRef("${mp.name} ${it.name}", it.processId, it.isEnabled) }
         }
-        val outcome = ProcessBind.resolve(refs, pouch.processSource())
+        val outcome = pouch.resolveProcesses(refs)
         multiLayerWeldPaths.forEach { mp ->
             mp.basePath.processId.toUuidOrNull()?.let { id -> outcome.loaded[id]?.let { mp.basePath.process = it } }
             mp.passes.forEachIndexed { i, pass ->
@@ -703,7 +732,7 @@ class MultiLayerWeldViewModel @Inject constructor(
         follow.statsActive = false
         timerJob?.cancel()
         teach.stopController()
-        pouch.setWelding(false)
+        viewModelScope.launch { pouch.setWelding(false) }
         patch { it.copy(run = WeldRunUi.Idle) }
         if (sendStop) {
             viewModelScope.launch {
@@ -747,10 +776,6 @@ class MultiLayerWeldViewModel @Inject constructor(
             n.copy(
                 paths = multiLayerWeldPaths.toList(),
                 currentRobotErrors = robotErrors.toList(),
-                shell = n.shell.copy(
-                    pouchProjects = pouchProjects.toList(),
-                    pouchProcesses = pouchProcesses.toList(),
-                ),
             )
         }
     }
@@ -850,6 +875,7 @@ class MultiLayerWeldViewModel @Inject constructor(
     private fun currentBase(): WeldPath? = currentMulti()?.basePath
 
     private fun toast(msg: String) {
+        PadLog.toast(msg)
         viewModelScope.launch { _toast.emit(msg) }
     }
 

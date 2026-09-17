@@ -94,6 +94,8 @@ func (h *clientHook) ID() string { return "wmesh-client-auth" }
 func (h *clientHook) Provides(b byte) bool {
 	return bytes.Contains([]byte{
 		mqtt.OnConnectAuthenticate,
+		mqtt.OnSessionEstablished,
+		mqtt.OnDisconnect,
 		mqtt.OnACLCheck,
 		mqtt.OnPublished,
 	}, []byte{b})
@@ -115,7 +117,35 @@ func (h *clientHook) OnConnectAuthenticate(cl *mqtt.Client, pk packets.Packet) b
 	if err != nil {
 		return false
 	}
-	return h.broker.hooks.Auth(fid, cid, string(pk.Connect.Password)) == nil
+	if err := h.broker.hooks.Auth(fid, cid, string(pk.Connect.Password)); err != nil {
+		slog.Warn("client mqtt auth failed", "factory", fid, "client", cid, "err", err)
+		return false
+	}
+	return true
+}
+
+// OnSessionEstablished 记下本机上线，不写令牌。
+func (h *clientHook) OnSessionEstablished(cl *mqtt.Client, _ packets.Packet) {
+	if cl.Net.Inline {
+		return
+	}
+	fid, cid, ok := sessionIDs(cl)
+	if !ok {
+		return
+	}
+	slog.Info("client mqtt online", "factory", fid, "client", cid)
+}
+
+// OnDisconnect 记下本机离线。
+func (h *clientHook) OnDisconnect(cl *mqtt.Client, _ error, _ bool) {
+	if cl.Net.Inline {
+		return
+	}
+	fid, cid, ok := sessionIDs(cl)
+	if !ok {
+		return
+	}
+	slog.Info("client mqtt offline", "factory", fid, "client", cid)
 }
 
 // OnACLCheck 只允许订自己的 down、发自己的 up。

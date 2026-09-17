@@ -12,6 +12,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.DialogProperties
 import com.gbndt.shijiaoqi.model.RobotError
 import com.gbndt.shijiaoqi.ui.theme.KeepFullscreen
+import com.gbndt.shijiaoqi.data.log.PadLog
 
 @Composable
 fun RobotErrorDialog(
@@ -47,7 +48,10 @@ fun RobotErrorDialog(
         },
         confirmButton = {
             Button(
-                onClick = onDismiss,
+                onClick = {
+                    PadLog.click("robot error dismiss")
+                    onDismiss()
+                },
                 colors = ButtonDefaults.buttonColors(containerColor = Color.Red)
             ) {
                 Text("知道了", color = Color.White)

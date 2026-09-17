@@ -32,12 +32,28 @@ func Wrap(log *slog.Logger, next http.Handler) http.Handler {
 			case sw.status >= http.StatusInternalServerError:
 				level = slog.LevelError
 			}
-			log.Log(r.Context(), level, "http",
-				"method", r.Method, "path", r.URL.Path, "status", sw.status,
-				"ms", time.Since(start).Milliseconds(), "remote", r.RemoteAddr)
+			log.Log(r.Context(), level, "http", nodeLogAttrs(r, sw.status, time.Since(start).Milliseconds())...)
 		}()
 		next.ServeHTTP(sw, r)
 	})
+}
+
+// nodeLogAttrs 访问日志带上工厂或本机身份，便于按节点查。
+func nodeLogAttrs(r *http.Request, status int, ms int64) []any {
+	attrs := []any{
+		"method", r.Method, "path", r.URL.Path, "status", status,
+		"ms", ms, "remote", r.RemoteAddr,
+	}
+	path := r.URL.Path
+	if v := r.PathValue("id"); v != "" {
+		switch {
+		case strings.Contains(path, "/factories/"):
+			attrs = append(attrs, "factory", v)
+		case strings.Contains(path, "/clients/"):
+			attrs = append(attrs, "client", v)
+		}
+	}
+	return attrs
 }
 
 // statusWriter 只为记下响应码，不改响应内容。

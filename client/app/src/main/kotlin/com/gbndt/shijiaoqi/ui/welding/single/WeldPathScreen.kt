@@ -42,20 +42,26 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.gbndt.shijiaoqi.model.WeldPointType
 import com.gbndt.shijiaoqi.model.displayName
+import com.gbndt.shijiaoqi.data.log.PadLog
+import com.gbndt.shijiaoqi.ui.component.ActionButton
+import com.gbndt.shijiaoqi.ui.component.HoldButton
+import com.gbndt.shijiaoqi.ui.component.Path3DViewerDialog
+import com.gbndt.shijiaoqi.ui.component.TwoColumnGrid
+import com.gbndt.shijiaoqi.ui.component.rememberLogSite
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlin.math.roundToInt
 import androidx.compose.ui.platform.LocalViewConfiguration
 import androidx.compose.ui.text.input.KeyboardType
-import com.gbndt.shijiaoqi.ui.component.ActionButton
-import com.gbndt.shijiaoqi.ui.component.HoldButton
-import com.gbndt.shijiaoqi.ui.component.Path3DViewerDialog
-import com.gbndt.shijiaoqi.ui.component.TwoColumnGrid
 import com.gbndt.shijiaoqi.ui.project.ClosureProcessPicker
 import com.gbndt.shijiaoqi.ui.navigation.LocalTeach
 import com.gbndt.shijiaoqi.ui.theme.KeepFullscreen
 import com.gbndt.shijiaoqi.ui.welding.*
+import com.gbndt.shijiaoqi.ui.preview.PadPreview
+import com.gbndt.shijiaoqi.ui.preview.PadPreviewTheme
+import com.gbndt.shijiaoqi.ui.preview.PadSamples
+import com.gbndt.shijiaoqi.ui.teach.TeachSession
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
@@ -66,18 +72,40 @@ fun WeldPathScreen(
     onNavigateToProcessManagement: (Boolean) -> Unit,
     onCheckUpdate: () -> Unit,
 ) {
+    val teach = LocalTeach.current
+    val ui by viewModel.uiState.collectAsStateWithLifecycle()
+    WeldPathScreen(
+        ui = ui,
+        viewModel = viewModel,
+        teach = teach,
+        isControllerActive = viewModel.isControllerActive,
+        onNavigateToProjectManagement = onNavigateToProjectManagement,
+        onNavigateToProcessManagement = onNavigateToProcessManagement,
+        onCheckUpdate = onCheckUpdate,
+    )
+}
+
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
+@Composable
+fun WeldPathScreen(
+    ui: SingleWeldUiState,
+    viewModel: SingleWeldViewModel? = null,
+    teach: TeachSession? = null,
+    isControllerActive: Boolean = false,
+    onNavigateToProjectManagement: () -> Unit = {},
+    onNavigateToProcessManagement: (Boolean) -> Unit = {},
+    onCheckUpdate: () -> Unit = {},
+) {
     var showDeleteDialog by remember { mutableStateOf(false) }
     var showCornerWeldDialog by remember { mutableStateOf(false) }
     var cornerWeldInitialParams by remember { mutableStateOf<com.gbndt.shijiaoqi.model.single.CornerGroupParams?>(null) }
     var show3DViewer by remember { mutableStateOf(false) }
     var weldPathToDeleteIndex by remember { mutableStateOf(-1) }
     var showProcessPicker by remember { mutableStateOf(false) }
-    val teach = LocalTeach.current
-    val ui by viewModel.uiState.collectAsStateWithLifecycle()
 
     if (show3DViewer) {
         Path3DViewerDialog(
-            weldPaths = viewModel.weldPaths,
+            weldPaths = ui.weldPaths,
             onDismiss = { show3DViewer = false }
         )
     }
@@ -89,21 +117,22 @@ fun WeldPathScreen(
             Column(modifier = Modifier.weight(1f).fillMaxHeight().background(Color(0xFFF5F5F5))) {
                 // 焊道列表
                 val listState = rememberLazyListState(
-                    initialFirstVisibleItemIndex = viewModel.listScrollIndex,
-                    initialFirstVisibleItemScrollOffset = viewModel.listScrollOffset
+                    initialFirstVisibleItemIndex = ui.listScrollIndex,
+                    initialFirstVisibleItemScrollOffset = ui.listScrollOffset
                 )
 
                 LaunchedEffect(listState) {
                     snapshotFlow { listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset }
                         .collect { (index, offset) ->
-                            viewModel.listScrollIndex = index
-                            viewModel.listScrollOffset = offset
+                            viewModel?.listScrollIndex = index
+                            viewModel?.listScrollOffset = offset
                         }
                 }
 
                 // Listen for Scroll Events (e.g., when adding new path)
-                LaunchedEffect(Unit) {
-                    viewModel.scrollToIndexEvent.collect { index ->
+                LaunchedEffect(viewModel) {
+                    val vm = viewModel ?: return@LaunchedEffect
+                    vm.scrollToIndexEvent.collect { index ->
                         if (index >= 0) {
                             listState.animateScrollToItem(index)
                         }
@@ -115,41 +144,41 @@ fun WeldPathScreen(
                     state = listState
                 ) {
                     items(
-                        items = viewModel.weldPaths,
+                        items = ui.weldPaths,
                         key = { it.id }
                     ) { weldPath ->
-                        val index = viewModel.weldPaths.indexOf(weldPath)
+                        val index = ui.weldPaths.indexOf(weldPath)
                         WeldPathItem(
                             weldPath = weldPath,
-                            isSelected = index == viewModel.selectedWeldPathIndex,
-                            onSelect = { viewModel.selectedWeldPathIndex = index },
+                            isSelected = index == ui.selectedWeldPathIndex,
+                            onSelect = { viewModel?.selectedWeldPathIndex = index },
                             onProcess = { 
-                                viewModel.cancelAddProcessVariant()
-                                viewModel.selectedWeldPathIndex = index
-                                viewModel.refreshPouchLists()
+                                viewModel?.cancelAddProcessVariant()
+                                viewModel?.selectedWeldPathIndex = index
+                                viewModel?.refreshPouchLists()
                                 showProcessPicker = true
                             },
                             onAddProcessVariant = {
-                                viewModel.selectedWeldPathIndex = index
-                                viewModel.beginAddProcessVariant(index)
-                                viewModel.refreshPouchLists()
+                                viewModel?.selectedWeldPathIndex = index
+                                viewModel?.beginAddProcessVariant(index)
+                                viewModel?.refreshPouchLists()
                                 showProcessPicker = true
                             },
                             onReplaceExtraProcess = { extraIdx ->
-                                viewModel.beginReplaceExtraProcess(index, extraIdx)
-                                viewModel.refreshPouchLists()
+                                viewModel?.beginReplaceExtraProcess(index, extraIdx)
+                                viewModel?.refreshPouchLists()
                                 showProcessPicker = true
                             },
-                            onToggleExtraEnabled = { extraIdx -> viewModel.toggleExtraProcessEnabled(index, extraIdx) },
-                            onDeleteExtraProcess = { extraIdx -> viewModel.deleteExtraProcess(index, extraIdx) },
+                            onToggleExtraEnabled = { extraIdx -> viewModel?.toggleExtraProcessEnabled(index, extraIdx) },
+                            onDeleteExtraProcess = { extraIdx -> viewModel?.deleteExtraProcess(index, extraIdx) },
                             onRename = {
-                                viewModel.selectedWeldPathIndex = index
-                                viewModel.newWeldPathName = weldPath.name
-                                viewModel.isRenameDialogVisible = true
+                                viewModel?.selectedWeldPathIndex = index
+                                viewModel?.newWeldPathName = weldPath.name
+                                viewModel?.isRenameDialogVisible = true
                             },
-                            onSelectPoint = { pointIndex -> viewModel.selectPoint(index, pointIndex) },
-                            onDeletePoint = { pointIndex -> viewModel.deletePoint(index, pointIndex) },
-                            onToggleEnabled = { viewModel.toggleWeldPathEnabled(index) },
+                            onSelectPoint = { pointIndex -> viewModel?.selectPoint(index, pointIndex) },
+                            onDeletePoint = { pointIndex -> viewModel?.deletePoint(index, pointIndex) },
+                            onToggleEnabled = { viewModel?.toggleWeldPathEnabled(index) },
                             onUpdateCorner = if (weldPath.cornerGroupParams?.isMaster == true) {
                                 {
                                     cornerWeldInitialParams = weldPath.cornerGroupParams
@@ -157,8 +186,8 @@ fun WeldPathScreen(
                                 }
                             } else null,
                             index = index,
-                            totalCount = viewModel.weldPaths.size,
-                            onMove = { from, to -> viewModel.moveWeldPath(from, to) },
+                            totalCount = ui.weldPaths.size,
+                            onMove = { from, to -> viewModel?.moveWeldPath(from, to) },
                             modifier = Modifier.animateItem()
                         )
                     }
@@ -180,7 +209,7 @@ fun WeldPathScreen(
                             items = listOf(
                                 { m -> ActionButton("工程管理", onClick = { onNavigateToProjectManagement() }, modifier = m) },
                                 { m -> ActionButton("工艺管理", onClick = {
-                                    viewModel.cancelAddProcessVariant()
+                                    viewModel?.cancelAddProcessVariant()
                                     onNavigateToProcessManagement(false)
                                 }, modifier = m) }
                             )
@@ -188,7 +217,7 @@ fun WeldPathScreen(
                         Spacer(modifier = Modifier.height(8.dp))
                         ActionButton(
                             "微调",
-                            onClick = { viewModel.fineTune.open() },
+                            onClick = { viewModel?.fineTune?.open() },
                             modifier = Modifier.fillMaxWidth(),
                             containerColor = Color(0xFF1565C0)
                         )
@@ -206,14 +235,14 @@ fun WeldPathScreen(
                                 ActionButton(
                                     "长按继续",
                                     onClick = { },
-                                    onLongClick = { viewModel.continueWelding() },
+                                    onLongClick = { viewModel?.continueWelding() },
                                     containerColor = Color(0xFF4CAF50),
                                     modifier = Modifier.weight(1f),
                                     height = 122.dp
                                 )
                                 ActionButton(
                                     "停止",
-                                    onClick = { viewModel.stopWelding() },
+                                    onClick = { viewModel?.stopWelding() },
                                     containerColor = Color(0xFFB00020),
                                     modifier = Modifier.weight(1f),
                                     height = 122.dp
@@ -224,14 +253,14 @@ fun WeldPathScreen(
                             Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
                                 ActionButton(
                                     "暂停",
-                                    onClick = { viewModel.pauseWelding() },
+                                    onClick = { viewModel?.pauseWelding() },
                                     containerColor = Color(0xFFFF9800),
                                     modifier = Modifier.weight(1f),
                                     height = 122.dp
                                 )
                                 ActionButton(
                                     "停止",
-                                    onClick = { viewModel.stopWelding() },
+                                    onClick = { viewModel?.stopWelding() },
                                     containerColor = Color(0xFFB00020),
                                     modifier = Modifier.weight(1f),
                                     height = 122.dp
@@ -244,15 +273,15 @@ fun WeldPathScreen(
                             ActionButton(
                                 "模拟焊接", 
                                 onClick = { /* Short press action if needed */ },
-                                onLongClick = { viewModel.startSimulation() },
+                                onLongClick = { viewModel?.startSimulation() },
                                 modifier = Modifier.weight(1f)
                             )
                             ActionButton(
                                 "起弧焊接", 
                                 onClick = { }, 
                                 onLongClick = {
-                                    teach.stopController()
-                                    viewModel.startArcWelding()
+                                    teach?.stopController()
+                                    viewModel?.startArcWelding()
                                 },
                                 modifier = Modifier.weight(1f)
                             )
@@ -260,15 +289,15 @@ fun WeldPathScreen(
                         Spacer(modifier = Modifier.height(2.dp))
                         ActionButton(
                             "停止",
-                            onClick = { viewModel.stopWelding() },
+                            onClick = { viewModel?.stopWelding() },
                             containerColor = Color(0xFFB00020),
                             modifier = Modifier.fillMaxWidth()
                         )
-                        if (viewModel.isControllerActive) {
+                        if (isControllerActive) {
                             Spacer(modifier = Modifier.height(2.dp))
                             ActionButton(
                                 "伺服使能",
-                                onClick = { teach.enableExtAxisServo() },
+                                onClick = { teach?.enableExtAxisServo() },
                                 containerColor = Color(0xFF2196F3),
                                 modifier = Modifier.fillMaxWidth()
                             )
@@ -278,15 +307,15 @@ fun WeldPathScreen(
                     Divider()
 
                     // 3. 焊道操作区
-                    val isWeldPathSelected = viewModel.weldPaths.isNotEmpty() && viewModel.selectedWeldPathIndex >= 0 && viewModel.selectedWeldPathIndex < viewModel.weldPaths.size
+                    val isWeldPathSelected = ui.weldPaths.isNotEmpty() && ui.selectedWeldPathIndex >= 0 && ui.selectedWeldPathIndex < ui.weldPaths.size
                     
                     TwoColumnGrid(
                         spacing = 2.dp,
                         items = listOf(
-                            { m -> ActionButton("添加焊道", onClick = { viewModel.addWeldPath() }, modifier = m) },
+                            { m -> ActionButton("添加焊道", onClick = { viewModel?.addWeldPath() }, modifier = m) },
                             { m -> ActionButton("删除焊道", onClick = {
                                 if (isWeldPathSelected) {
-                                    weldPathToDeleteIndex = viewModel.selectedWeldPathIndex
+                                    weldPathToDeleteIndex = ui.selectedWeldPathIndex
                                     showDeleteDialog = true
                                 }
                             }, containerColor = Color(0xFFF44336), enabled = isWeldPathSelected, modifier = m) },
@@ -301,7 +330,7 @@ fun WeldPathScreen(
                     Divider()
 
                     // 4. 焊接操作区 (Point Ops)
-                    val currentWeldPath = viewModel.weldPaths.getOrNull(viewModel.selectedWeldPathIndex)
+                    val currentWeldPath = ui.weldPaths.getOrNull(ui.selectedWeldPathIndex)
                     val selectedPointIndex = currentWeldPath?.selectedPointIndex ?: -1
                     val selectedPoint = currentWeldPath?.points?.getOrNull(selectedPointIndex)
                     
@@ -316,8 +345,8 @@ fun WeldPathScreen(
                     TwoColumnGrid(
                         spacing = 2.dp,
                         items = listOf(
-                            { m -> ActionButton("添加中间点", onClick = { viewModel.addMiddlePoint() }, modifier = m) },
-                            { m -> ActionButton("添加圆弧点", onClick = { viewModel.addArcMiddlePoint() }, modifier = m) }
+                            { m -> ActionButton("添加中间点", onClick = { viewModel?.addMiddlePoint() }, modifier = m) },
+                            { m -> ActionButton("添加圆弧点", onClick = { viewModel?.addArcMiddlePoint() }, modifier = m) }
                         )
                     )
                     
@@ -325,7 +354,7 @@ fun WeldPathScreen(
                         "删除点位",
                         onClick = {
                             if (isPointDeletable) {
-                                viewModel.deletePoint(viewModel.selectedWeldPathIndex, selectedPointIndex)
+                                viewModel?.deletePoint(ui.selectedWeldPathIndex, selectedPointIndex)
                             }
                         },
                         containerColor = Color(0xFFF44336),
@@ -336,10 +365,10 @@ fun WeldPathScreen(
                     TwoColumnGrid(
                         spacing = 2.dp,
                         items = listOf(
-                            { m -> ActionButton("采集数据", onClick = { viewModel.collectData() }, modifier = m) },
-                            { m -> ActionButton("清除数据", onClick = { viewModel.clearPointData() }, containerColor = if (isDataClearable) MaterialTheme.colorScheme.primary else Color.Gray, enabled = isDataClearable, modifier = m) },
-                            { m -> ActionButton(if (hasRefX) "重采X向" else "采集X向", onClick = { viewModel.collectRefX() }, enabled = isRefXApplicable, containerColor = if (hasRefX) Color(0xFF009688) else MaterialTheme.colorScheme.primary, modifier = m) },
-                            { m -> ActionButton("清除X向", onClick = { viewModel.clearRefX() }, enabled = hasRefX, containerColor = if (hasRefX) Color(0xFFF44336) else Color.Gray, modifier = m) }
+                            { m -> ActionButton("采集数据", onClick = { viewModel?.collectData() }, modifier = m) },
+                            { m -> ActionButton("清除数据", onClick = { viewModel?.clearPointData() }, containerColor = if (isDataClearable) MaterialTheme.colorScheme.primary else Color.Gray, enabled = isDataClearable, modifier = m) },
+                            { m -> ActionButton(if (hasRefX) "重采X向" else "采集X向", onClick = { viewModel?.collectRefX() }, enabled = isRefXApplicable, containerColor = if (hasRefX) Color(0xFF009688) else MaterialTheme.colorScheme.primary, modifier = m) },
+                            { m -> ActionButton("清除X向", onClick = { viewModel?.clearRefX() }, enabled = hasRefX, containerColor = if (hasRefX) Color(0xFFF44336) else Color.Gray, modifier = m) }
                         )
                     )
 
@@ -349,10 +378,10 @@ fun WeldPathScreen(
                     TwoColumnGrid(
                         spacing = 2.dp,
                         items = listOf(
-                            { m -> HoldButton("送丝", onPress = { teach.startWireFeed() }, onRelease = { teach.stopWireFeed() }, modifier = m) },
-                            { m -> HoldButton("退丝", onPress = { teach.reverseWireFeed(true) }, onRelease = { teach.reverseWireFeed(false) }, modifier = m) },
-                            { m -> HoldButton("送气", onPress = { viewModel.sendManualCommand(270, "SetAspirated(0,1)") }, onRelease = { viewModel.sendManualCommand(270, "SetAspirated(0,0)") }, modifier = m) },
-                            { m -> HoldButton("起弧", onPress = { viewModel.sendManualCommand(247, "ARCStart(0,0,10000)") }, onRelease = { viewModel.sendManualCommand(102, "STOP") }, modifier = m) }
+                            { m -> HoldButton("送丝", onPress = { teach?.startWireFeed() }, onRelease = { teach?.stopWireFeed() }, modifier = m) },
+                            { m -> HoldButton("退丝", onPress = { teach?.reverseWireFeed(true) }, onRelease = { teach?.reverseWireFeed(false) }, modifier = m) },
+                            { m -> HoldButton("送气", onPress = { viewModel?.sendManualCommand(270, "SetAspirated(0,1)") }, onRelease = { viewModel?.sendManualCommand(270, "SetAspirated(0,0)") }, modifier = m) },
+                            { m -> HoldButton("起弧", onPress = { viewModel?.sendManualCommand(247, "ARCStart(0,0,10000)") }, onRelease = { viewModel?.sendManualCommand(102, "STOP") }, modifier = m) }
                         )
                     )
                     
@@ -361,9 +390,9 @@ fun WeldPathScreen(
                     // 6. Current/Voltage Setting
                     Button(
                         onClick = {
-                            viewModel.inputCurrent = viewModel.savedCurrent.let { if (it % 1.0 == 0.0) it.toInt().toString() else it.toString() }
-                            viewModel.inputVoltage = viewModel.savedVoltage.let { if (it % 1.0 == 0.0) it.toInt().toString() else it.toString() }
-                            viewModel.isCurrentVoltageDialogVisible = true
+                            viewModel?.inputCurrent = ui.savedCurrent.let { if (it % 1.0 == 0.0) it.toInt().toString() else it.toString() }
+                            viewModel?.inputVoltage = ui.savedVoltage.let { if (it % 1.0 == 0.0) it.toInt().toString() else it.toString() }
+                            viewModel?.isCurrentVoltageDialogVisible = true
                         },
                         modifier = Modifier.fillMaxWidth().height(50.dp),
                         shape = RoundedCornerShape(8.dp),
@@ -372,9 +401,9 @@ fun WeldPathScreen(
                     ) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
                             Text("设置电流电压", fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                            val c = viewModel.savedCurrent.let { if (it % 1.0 == 0.0) it.toInt().toString() else it.toString() }
-                            val v = viewModel.savedVoltage.let { if (it % 1.0 == 0.0) it.toInt().toString() else it.toString() }
-                            val subtitle = if (viewModel.savedCurrent > 0 || viewModel.savedVoltage > 0) "$c A  $v V" else "电流电压"
+                            val c = ui.savedCurrent.let { if (it % 1.0 == 0.0) it.toInt().toString() else it.toString() }
+                            val v = ui.savedVoltage.let { if (it % 1.0 == 0.0) it.toInt().toString() else it.toString() }
+                            val subtitle = if (ui.savedCurrent > 0 || ui.savedVoltage > 0) "$c A  $v V" else "电流电压"
                             Text(subtitle, fontSize = 11.sp)
                         }
                     }
@@ -388,7 +417,7 @@ fun WeldPathScreen(
                             "%.1f m".format(java.util.Locale.US, ui.weldingLength), 
                             fontSize = 12.sp, 
                             fontWeight = FontWeight.Bold,
-                            modifier = Modifier.clickable { viewModel.clearStats() }
+                            modifier = Modifier.clickable { viewModel?.clearStats() }
                         )
                     }
                     val duration = ui.weldingDuration
@@ -402,7 +431,7 @@ fun WeldPathScreen(
                             timeText, 
                             fontSize = 12.sp, 
                             fontWeight = FontWeight.Bold,
-                            modifier = Modifier.clickable { viewModel.clearStats() }
+                            modifier = Modifier.clickable { viewModel?.clearStats() }
                         )
                     }
                     ActionButton(
@@ -425,7 +454,7 @@ fun WeldPathScreen(
                 Button(
                     onClick = {
                         if (weldPathToDeleteIndex != -1) {
-                            viewModel.deleteWeldPath(weldPathToDeleteIndex)
+                            viewModel?.deleteWeldPath(weldPathToDeleteIndex)
                         }
                         showDeleteDialog = false
                     },
@@ -449,29 +478,31 @@ fun WeldPathScreen(
         RobotErrorDialog(
             errors = ui.currentRobotErrors,
             onDismiss = {
-                viewModel.currentRobotErrors.clear()
-                viewModel.isRobotErrorDialogVisible = false
+                viewModel?.currentRobotErrors?.clear()
+                viewModel?.isRobotErrorDialogVisible = false
             },
         )
     }
 
     if (showCornerWeldDialog) {
-        CornerWeldDialog(
-            viewModel = viewModel,
-            initialParams = cornerWeldInitialParams,
-            onDismiss = { showCornerWeldDialog = false }
-        )
+        viewModel?.let { vm ->
+            CornerWeldDialog(
+                viewModel = vm,
+                initialParams = cornerWeldInitialParams,
+                onDismiss = { showCornerWeldDialog = false }
+            )
+        }
     }
 
     ClosureProcessPicker(
         visible = showProcessPicker,
-        processes = viewModel.pouchProcesses,
+        processes = ui.shell.pouchProcesses,
         onPick = { id ->
-            viewModel.bindProcessFromPouch(id)
+            viewModel?.bindProcessFromPouch(id)
             showProcessPicker = false
         },
         onDismiss = {
-            viewModel.cancelAddProcessVariant()
+            viewModel?.cancelAddProcessVariant()
             showProcessPicker = false
         },
     )
@@ -479,12 +510,12 @@ fun WeldPathScreen(
     // Missing Process Dialog
     if (ui.isMissingProcessDialogVisible) {
         AlertDialog(
-            onDismissRequest = { viewModel.isMissingProcessDialogVisible = false },
+            onDismissRequest = { viewModel?.isMissingProcessDialogVisible = false },
             title = { KeepFullscreen(); Text("闭包里没有这条工艺") },
             text = { Text(ui.missingProcessMessage) },
             confirmButton = {
                 Button(
-                    onClick = { viewModel.isMissingProcessDialogVisible = false }
+                    onClick = { viewModel?.isMissingProcessDialogVisible = false }
                 ) {
                     Text("确定")
                 }
@@ -495,7 +526,7 @@ fun WeldPathScreen(
     // 重命名对话框
     if (ui.isRenameDialogVisible) {
         AlertDialog(
-            onDismissRequest = { viewModel.isRenameDialogVisible = false },
+            onDismissRequest = { viewModel?.isRenameDialogVisible = false },
             title = { KeepFullscreen(); Text("修改焊道名称") },
             text = {
                 Column {
@@ -503,7 +534,7 @@ fun WeldPathScreen(
                     Spacer(modifier = Modifier.height(8.dp))
                     TextField(
                         value = ui.newWeldPathName,
-                        onValueChange = { viewModel.newWeldPathName = it },
+                        onValueChange = { viewModel?.newWeldPathName = it },
                         modifier = Modifier.fillMaxWidth()
                     )
                 }
@@ -511,8 +542,8 @@ fun WeldPathScreen(
             confirmButton = {
                 Button(
                     onClick = {
-                        viewModel.renameWeldPath(ui.newWeldPathName)
-                        viewModel.isRenameDialogVisible = false
+                        viewModel?.renameWeldPath(ui.newWeldPathName)
+                        viewModel?.isRenameDialogVisible = false
                     }
                 ) {
                     Text("确定")
@@ -520,7 +551,7 @@ fun WeldPathScreen(
             },
             dismissButton = {
                 Button(
-                    onClick = { viewModel.isRenameDialogVisible = false },
+                    onClick = { viewModel?.isRenameDialogVisible = false },
                     colors = ButtonDefaults.buttonColors(Color.Gray)
                 ) {
                     Text("取消")
@@ -534,13 +565,13 @@ fun WeldPathScreen(
     // Set Current/Voltage Dialog
     if (ui.isCurrentVoltageDialogVisible) {
         AlertDialog(
-            onDismissRequest = { viewModel.isCurrentVoltageDialogVisible = false },
+            onDismissRequest = { viewModel?.isCurrentVoltageDialogVisible = false },
             title = { KeepFullscreen(); Text("设置电流电压") },
             text = {
                 Column {
                     OutlinedTextField(
                         value = ui.inputCurrent,
-                        onValueChange = { viewModel.inputCurrent = it },
+                        onValueChange = { viewModel?.inputCurrent = it },
                         label = { Text("焊接电流 (A) [0-1000]") },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                         modifier = Modifier.fillMaxWidth()
@@ -548,7 +579,7 @@ fun WeldPathScreen(
                     Spacer(modifier = Modifier.height(8.dp))
                     OutlinedTextField(
                         value = ui.inputVoltage,
-                        onValueChange = { viewModel.inputVoltage = it },
+                        onValueChange = { viewModel?.inputVoltage = it },
                         label = { Text("焊接电压 (V) [0-1000]") },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                         modifier = Modifier.fillMaxWidth()
@@ -557,14 +588,14 @@ fun WeldPathScreen(
             },
             confirmButton = {
                 Button(
-                    onClick = { viewModel.setWeldingCurrentVoltage() }
+                    onClick = { viewModel?.setWeldingCurrentVoltage() }
                 ) {
                     Text("确定")
                 }
             },
             dismissButton = {
                 Button(
-                    onClick = { viewModel.isCurrentVoltageDialogVisible = false },
+                    onClick = { viewModel?.isCurrentVoltageDialogVisible = false },
                     colors = ButtonDefaults.buttonColors(Color.Gray)
                 ) {
                     Text("取消")
@@ -573,7 +604,16 @@ fun WeldPathScreen(
         )
     }
 
-    FineTuneDialog(viewModel.fineTune)
+    viewModel?.let { FineTuneDialog(it.fineTune) }
+}
+
+
+@PadPreview
+@Composable
+private fun WeldPathScreenPreview() {
+    PadPreviewTheme {
+        WeldPathScreen(ui = PadSamples.singleUi)
+    }
 }
 
 
@@ -873,6 +913,7 @@ fun PointButton(
     index: Int,
     totalCount: Int
 ) {
+    val at = rememberLogSite()
     val hasData = point.pose != null
 
     val color = when (point.type) {
@@ -894,7 +935,10 @@ fun PointButton(
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Button(
-                onClick = onClick,
+                onClick = {
+                    PadLog.click("point $name", at)
+                    onClick()
+                },
                 contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = if (isSelected) Color(0xFFFFFFFF) else color,

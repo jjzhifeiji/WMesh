@@ -19,7 +19,8 @@ interface WeldPad {
 interface WeldShellHost {
     val toastEvent: SharedFlow<String>
     val shellUi: StateFlow<WeldShellUi>
-    fun syncFromPouch()
+    /** 从袋里把当前工程拉到焊道屏。 */
+    suspend fun syncFromPouch()
     fun refreshPouchLists()
     fun activatePouchProject(id: UUID)
     fun bindProcessFromPouch(processId: UUID?)

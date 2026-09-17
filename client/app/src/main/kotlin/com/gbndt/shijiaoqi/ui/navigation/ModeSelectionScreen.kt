@@ -22,6 +22,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.gbndt.shijiaoqi.data.log.PadLog
+import com.gbndt.shijiaoqi.ui.component.rememberLogSite
+import com.gbndt.shijiaoqi.ui.preview.PadPreview
+import com.gbndt.shijiaoqi.ui.preview.PadPreviewTheme
 
 @Composable
 fun ModeSelectionScreen(
@@ -47,7 +51,10 @@ fun ModeSelectionScreen(
     ) {
         if (personName.isNotBlank() || loginName.isNotBlank()) {
             TextButton(
-                onClick = onOpenAccount,
+                onClick = {
+                    PadLog.click("account")
+                    onOpenAccount()
+                },
                 modifier = Modifier
                     .align(Alignment.TopEnd)
                     .padding(12.dp),
@@ -113,8 +120,12 @@ fun ModeCard(
     color: Color,
     onClick: () -> Unit
 ) {
+    val at = rememberLogSite()
     Card(
-        onClick = onClick,
+        onClick = {
+            PadLog.click(title, at)
+            onClick()
+        },
         modifier = Modifier
             .size(220.dp, 180.dp),
         elevation = CardDefaults.cardElevation(defaultElevation = 6.dp),
@@ -160,5 +171,21 @@ fun ModeCard(
                 color = Color.Gray
             )
         }
+    }
+}
+
+@PadPreview
+@Composable
+private fun ModeSelectionScreenPreview() {
+    PadPreviewTheme {
+        ModeSelectionScreen(
+            personName = "张工",
+            loginName = "operator",
+            onOpenAccount = {},
+            onSingleLayerClick = {},
+            onMultiLayerClick = {},
+            onTBarClick = {},
+            onRobotTestClick = {},
+        )
     }
 }

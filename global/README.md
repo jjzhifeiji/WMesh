@@ -7,7 +7,8 @@ WAN 侧唯一的人员入口。只做三件事：登录唯一 WAN 管理员、�
 ```
 global/
 ├── Dockerfile            前端构建 → Go 静态编译 → alpine 运行时（单进程：API + 管理端静态页）
-├── docker-compose.yml    部署：app + db（PostgreSQL 18）+ oss（RustFS，S3 兼容）
+├── docker-compose.yml    部署：app + db（PostgreSQL 18）+ oss（RustFS，S3 兼容）+ alloy（日志）
+├── alloy/                Grafana Alloy：采本项目容器日志推 Loki
 ├── Makefile              up / down / upgrade / bundle / test …
 ├── .env.example          部署配置模板，复制为 .env
 ├── frontend/             管理后台（见下）
@@ -17,7 +18,7 @@ global/
     ├── internal/service  应用服务：允许 / 拒绝 / 审计
     ├── internal/store    WAN 库读写（GORM，仅结构体对齐，禁 AutoMigrate）
     ├── internal/web      托管已构建的管理端静态页
-    ├── internal/platform 底座：config / oss / id / secret / audit / domain / migrate / testpg
+    ├── internal/platform 底座：config / applog / oss / id / secret / audit / domain / migrate / testpg
     ├── migrations/       只向前的版本化 SQL，进程启动时自动套用
     └── docker-compose.yml  仅 go test 用的一次性测试库（:55432）
 ```
@@ -49,10 +50,10 @@ src/
 ## 运行
 
 ```bash
-make up        # 首次自动生成 .env，请改密码；构建镜像并等到 app/db/oss 全部健康
+make up        # 首次自动生成 .env，请改密码；构建镜像并等到 app/db/oss/alloy 全部健康
 make logs      # 跟随日志（JSON）
 make upgrade   # 拉新基础镜像、重建应用、替换容器；库迁移随启动自动向前
-make bundle    # 导出离线安装包 dist/*.tar（app + postgres + rustfs），目标机 docker load -i 后 make up
+make bundle    # 导出离线安装包 dist/*.tar（app + postgres + rustfs + alloy），目标机 docker load -i 后 make up
 make down      # 停容器，保留数据卷
 ```
 
@@ -66,6 +67,8 @@ make down      # 停容器，保留数据卷
 | `OSS_ACCESS_KEY` / `OSS_SECRET_KEY` / `OSS_BUCKET` | 对象存储密钥与默认桶；桶由 app 启动时自动创建 |
 | `OSS_PORT` / `OSS_CONSOLE_PORT` | S3 端点（默认 52900）与 RustFS 管理台（默认 52901，用同一对密钥登录） |
 | `WMESH_REGISTRY` / `WMESH_VERSION` | 镜像前缀与标签，供 `make push` |
+| `WMESH_LOG_LEVEL` | app JSON 日志级别，默认 info |
+| `LOKI_URL` | Alloy 推送地址，默认 `http://154.82.81.16:3100/loki/api/v1/push` |
 
 服务进程直接读 `WMESH_*` 环境变量（见 `server/internal/platform/config`）；`/healthz` 报告版本、库与 OSS 状态。
 

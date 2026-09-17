@@ -1,4 +1,4 @@
-# WAN 侧一键部署：app（API + 管理端静态页）+ db + oss（RustFS，S3 兼容对象存储，放平台级资产）。
+# WAN 侧一键部署：app（API + 管理端静态页）+ db + oss（RustFS，S3 兼容对象存储，放平台级资产）+ alloy（采容器日志推 Loki）。
 # WAN 的 OSS 与各厂 OSS 互不相通；点云/图片原件仍只落厂内。
 # 用法：cp .env.example .env && 改密码 && docker compose up -d --build --wait
 name: wmesh-global
@@ -19,6 +19,7 @@ services:
       WMESH_OSS_BUCKET: ${OSS_BUCKET:-wmesh-global}
       WMESH_OSS_ACCESS_KEY: ${OSS_ACCESS_KEY:-wmesh}
       WMESH_OSS_SECRET_KEY: ${OSS_SECRET_KEY:?set OSS_SECRET_KEY in .env}
+      WMESH_LOG_LEVEL: ${WMESH_LOG_LEVEL:-info}
     ports:
       - "${HTTP_PORT:-52080}:8080"
       - "${MQTT_PORT:-52183}:1883"
@@ -83,7 +84,29 @@ services:
       start_period: 30s
     logging: *logging
 
+  # 只采本项目容器 stdout，推到 LOKI_URL；连不上 Loki 会重试，不挡 app。
+  alloy:
+    image: grafana/alloy:v1.19.2
+    user: "0:0"
+    environment:
+      LOKI_URL: ${LOKI_URL:-http://154.82.81.16:3100/loki/api/v1/push}
+      WMESH_SIDE: global
+      COMPOSE_PROJECT_NAME: wmesh-global
+    volumes:
+      - ./alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - alloydata:/var/lib/alloy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/127.0.0.1/12345'"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 10s
+    logging: *logging
+
 volumes:
   pgdata:
   ossdata:
   osslogs:
+  alloydata:

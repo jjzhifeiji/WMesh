@@ -18,6 +18,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.gbndt.shijiaoqi.ui.teach.TeachSession
 import com.gbndt.shijiaoqi.ui.welding.WeldShellHost
+import com.gbndt.shijiaoqi.data.log.PadLog
 import java.util.Locale
 
 @Composable
@@ -145,13 +146,17 @@ fun StatusBarItem(
     onClick: (() -> Unit)? = null,
     onLongClick: (() -> Unit)? = null
 ) {
+    val at = rememberLogSite()
     Row(
         modifier = modifier
             .padding(horizontal = 4.dp)
             .then(
                 if (onClick != null || onLongClick != null) {
                     Modifier.combinedClickable(
-                        onClick = { onClick?.invoke() },
+                        onClick = {
+                            PadLog.click(label, at)
+                            onClick?.invoke()
+                        },
                         onLongClick = onLongClick
                     )
                 } else {

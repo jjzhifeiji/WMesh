@@ -27,6 +27,9 @@ import com.gbndt.shijiaoqi.ui.welding.single.SingleWeldViewModel
 import com.gbndt.shijiaoqi.ui.welding.single.WeldPathScreen
 import com.gbndt.shijiaoqi.ui.welding.tbar.TBarScreen
 import com.gbndt.shijiaoqi.ui.welding.tbar.TBarWeldViewModel
+import com.gbndt.shijiaoqi.data.log.PadLog
+import kotlinx.coroutines.launch
+import androidx.compose.runtime.rememberCoroutineScope
 
 /** 一个 Activity 一张栈：冷启动开屏 → 选模式 → 三种焊接或指令测试。 */
 @Composable
@@ -37,6 +40,7 @@ fun WMeshNavHost(
     backStack: NavBackStack<NavKey> = rememberNavBackStack(startKey),
 ) {
     val update: AppUpdateViewModel = hiltViewModel()
+    val scope = rememberCoroutineScope()
     Box {
         NavDisplay(
             backStack = backStack,
@@ -49,6 +53,7 @@ fun WMeshNavHost(
                 entry<SplashKey> {
                     SplashScreen(
                         onSplashFinished = {
+                            PadLog.info("Nav", "splash done")
                             onSplashFinished()
                             backStack.clear()
                             backStack.add(ModeKey)
@@ -60,11 +65,26 @@ fun WMeshNavHost(
                     ModeSelectionScreen(
                         personName = sess.personName,
                         loginName = sess.loginName,
-                        onOpenAccount = { backStack.add(AccountKey) },
-                        onSingleLayerClick = { backStack.add(SingleWeldKey) },
-                        onMultiLayerClick = { backStack.add(MultiLayerKey) },
-                        onTBarClick = { backStack.add(TBarKey) },
-                        onRobotTestClick = { backStack.add(RobotTestKey) },
+                        onOpenAccount = {
+                            PadLog.info("Nav", "open account")
+                            backStack.add(AccountKey)
+                        },
+                        onSingleLayerClick = {
+                            PadLog.info("Nav", "open single")
+                            backStack.add(SingleWeldKey)
+                        },
+                        onMultiLayerClick = {
+                            PadLog.info("Nav", "open multilayer")
+                            backStack.add(MultiLayerKey)
+                        },
+                        onTBarClick = {
+                            PadLog.info("Nav", "open tbar")
+                            backStack.add(TBarKey)
+                        },
+                        onRobotTestClick = {
+                            PadLog.info("Nav", "open robot-test")
+                            backStack.add(RobotTestKey)
+                        },
                     )
                 }
                 entry<AccountKey> {
@@ -74,10 +94,15 @@ fun WMeshNavHost(
                         loginName = sess.loginName,
                         roles = sess.roles,
                         onBack = { backStack.removeLastOrNull() },
-                        onChangePassword = { backStack.add(AccountPasswordKey) },
+                        onChangePassword = {
+                            PadLog.info("Nav", "open change-password")
+                            backStack.add(AccountPasswordKey)
+                        },
                         onLogout = {
-                            session.logout()
-                            backStack.removeLastOrNull()
+                            scope.launch {
+                                session.logout()
+                                backStack.removeLastOrNull()
+                            }
                         },
                         onCheckUpdate = update::check,
                     )

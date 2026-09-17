@@ -17,6 +17,7 @@ import com.gbndt.shijiaoqi.data.session.PadDevice
 import com.gbndt.shijiaoqi.data.session.PadLoginResult
 import com.gbndt.shijiaoqi.data.session.PersonMeta
 import com.gbndt.shijiaoqi.data.session.PolicyMeta
+import com.gbndt.shijiaoqi.data.log.HttpLog
 
 class HttpFactoryGateway : FactoryGateway {
     private val json = Json { ignoreUnknownKeys = true }
@@ -131,40 +132,56 @@ class HttpFactoryGateway : FactoryGateway {
     }
 
     private fun post(baseUrl: String, path: String, body: String, token: String = ""): Pair<Int, String> {
-        val url = URL(baseUrl.trimEnd('/') + path)
-        val conn = (url.openConnection() as HttpURLConnection).apply {
-            requestMethod = "POST"
-            connectTimeout = 15_000
-            readTimeout = 15_000
-            doOutput = true
-            setRequestProperty("Content-Type", "application/json")
-            if (token.isNotBlank()) {
-                setRequestProperty("Authorization", "Bearer $token")
+        HttpLog.req("POST", path, body)
+        return try {
+            val url = URL(baseUrl.trimEnd('/') + path)
+            val conn = (url.openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                connectTimeout = 15_000
+                readTimeout = 15_000
+                doOutput = true
+                setRequestProperty("Content-Type", "application/json")
+                if (token.isNotBlank()) {
+                    setRequestProperty("Authorization", "Bearer $token")
+                }
             }
+            OutputStreamWriter(conn.outputStream, Charsets.UTF_8).use { it.write(body) }
+            val text = (if (conn.responseCode in 200..299) conn.inputStream else conn.errorStream)
+                ?.bufferedReader(Charsets.UTF_8)?.readText().orEmpty()
+            val code = conn.responseCode
+            conn.disconnect()
+            HttpLog.rsp("POST", path, code, text)
+            code to text
+        } catch (e: Exception) {
+            HttpLog.fail("POST", path, e.javaClass.simpleName)
+            throw e
         }
-        OutputStreamWriter(conn.outputStream, Charsets.UTF_8).use { it.write(body) }
-        val text = (if (conn.responseCode in 200..299) conn.inputStream else conn.errorStream)
-            ?.bufferedReader(Charsets.UTF_8)?.readText().orEmpty()
-        val code = conn.responseCode
-        conn.disconnect()
-        return code to text
     }
 
     private fun get(baseUrl: String, path: String, token: String, connectMs: Int = 15_000, readMs: Int = 30_000): Pair<Int, String> {
-        val url = URL(baseUrl.trimEnd('/') + path)
-        val conn = (url.openConnection() as HttpURLConnection).apply {
-            requestMethod = "GET"
-            connectTimeout = connectMs
-            readTimeout = readMs
-            if (token.isNotBlank()) {
-                setRequestProperty("Authorization", "Bearer $token")
+        val quiet = HttpLog.isDiscover(path)
+        if (!quiet) HttpLog.req("GET", path)
+        return try {
+            val url = URL(baseUrl.trimEnd('/') + path)
+            val conn = (url.openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = connectMs
+                readTimeout = readMs
+                if (token.isNotBlank()) {
+                    setRequestProperty("Authorization", "Bearer $token")
+                }
             }
+            val text = (if (conn.responseCode in 200..299) conn.inputStream else conn.errorStream)
+                ?.bufferedReader(Charsets.UTF_8)?.readText().orEmpty()
+            val code = conn.responseCode
+            conn.disconnect()
+            // 扫网段时大量 404/拒绝不记，命中厂服 2xx 才记回包。
+            if (!quiet || code in 200..299) HttpLog.rsp("GET", path, code, text)
+            code to text
+        } catch (e: Exception) {
+            HttpLog.fail("GET", path, e.javaClass.simpleName, quiet = quiet)
+            throw e
         }
-        val text = (if (conn.responseCode in 200..299) conn.inputStream else conn.errorStream)
-            ?.bufferedReader(Charsets.UTF_8)?.readText().orEmpty()
-        val code = conn.responseCode
-        conn.disconnect()
-        return code to text
     }
 
     private fun decodeB64(s: String): ByteArray =

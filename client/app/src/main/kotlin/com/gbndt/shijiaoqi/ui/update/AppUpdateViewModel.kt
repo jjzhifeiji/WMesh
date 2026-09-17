@@ -7,6 +7,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.gbndt.shijiaoqi.config.AppConfig
 import com.gbndt.shijiaoqi.data.repository.UpdateRepository
+import com.gbndt.shijiaoqi.data.log.PadLog
 import com.gbndt.shijiaoqi.model.UpdateInfo
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -29,12 +30,15 @@ class AppUpdateViewModel @Inject constructor(
 
     /** 向发布清单问有没有新包。 */
     fun check() {
+        PadLog.info("Update", "check start")
         viewModelScope.launch {
             val info = updates.checkUpdate(AppConfig.UPDATE_MANIFEST_URL)
             if (info != null) {
+                PadLog.info("Update", "check found version=${info.versionName}")
                 pending = info
             } else {
-                _toast.emit("当前已是最新版本")
+                PadLog.info("Update", "check latest")
+                toast("当前已是最新版本")
             }
         }
     }
@@ -48,18 +52,26 @@ class AppUpdateViewModel @Inject constructor(
     fun startDownload() {
         val info = pending ?: return
         if (downloading) return
+        PadLog.info("Update", "download start version=${info.versionName}")
         pending = null
         downloading = true
         viewModelScope.launch {
-            _toast.emit("开始下载更新...")
+            toast("开始下载更新...")
             val file = updates.downloadApk(info.downloadUrl, "ShiJiaoQi_v${info.versionCode}.apk")
             downloading = false
             if (file == null) {
-                _toast.emit("更新下载失败")
+                PadLog.warn("Update", "download failed")
+                toast("更新下载失败")
                 return@launch
             }
-            _toast.emit("下载完成，正在准备安装...")
+            PadLog.info("Update", "download ok")
+            toast("下载完成，正在准备安装...")
             updates.installApk(file)
         }
+    }
+
+    private fun toast(msg: String) {
+        PadLog.toast(msg)
+        viewModelScope.launch { _toast.emit(msg) }
     }
 }

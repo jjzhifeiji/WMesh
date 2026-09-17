@@ -12,6 +12,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.DialogProperties
 import com.gbndt.shijiaoqi.model.UpdateInfo
 import com.gbndt.shijiaoqi.ui.theme.FullscreenDialog
+import com.gbndt.shijiaoqi.data.log.PadLog
 
 /** 发现新版本时的确认框。 */
 @Composable
@@ -61,14 +62,20 @@ fun UpdateDialog(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.End
                 ) {
-                    TextButton(onClick = onDismiss) {
+                    TextButton(onClick = {
+                        PadLog.click("update later")
+                        onDismiss()
+                    }) {
                         Text("稍后", color = Color.Gray)
                     }
                     
                     Spacer(modifier = Modifier.width(8.dp))
                     
                     Button(
-                        onClick = onConfirm,
+                        onClick = {
+                            PadLog.click("update now")
+                            onConfirm()
+                        },
                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2196F3))
                     ) {
                         Text("立即更新")

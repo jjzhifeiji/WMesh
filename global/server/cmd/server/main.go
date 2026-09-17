@@ -19,6 +19,7 @@ import (
 	"github.com/google/uuid"
 
 	"wmesh/global/internal/httpapi"
+	"wmesh/global/internal/platform/applog"
 	"wmesh/global/internal/platform/config"
 	"wmesh/global/internal/platform/migrate"
 	"wmesh/global/internal/platform/mqttbroker"
@@ -34,8 +35,7 @@ var version = "dev"
 
 // 启动进程，失败则退出。
 func main() {
-	log := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	slog.SetDefault(log)
+	log := applog.New(os.Stdout, "wmesh-global", "global", version)
 	if err := run(context.Background(), log); err != nil {
 		log.Error("global server exit", "err", err)
 		os.Exit(1)

@@ -27,6 +27,8 @@ import com.gbndt.shijiaoqi.R
 import kotlinx.coroutines.delay
 
 import com.gbndt.shijiaoqi.BuildConfig
+import com.gbndt.shijiaoqi.ui.preview.PadPreview
+import com.gbndt.shijiaoqi.ui.preview.PadPreviewTheme
 
 @Composable
 fun SplashScreen(
@@ -127,4 +129,10 @@ fun SplashScreen(
             )
         }
     }
+}
+
+@PadPreview
+@Composable
+private fun SplashScreenPreview() {
+    PadPreviewTheme { SplashScreen(onSplashFinished = {}) }
 }

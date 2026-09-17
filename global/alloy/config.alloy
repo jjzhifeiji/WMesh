@@ -1,0 +1,96 @@
+// 只采本 compose 项目的容器日志，推到 LOKI_URL。
+
+discovery.docker "containers" {
+	host             = "unix:///var/run/docker.sock"
+	refresh_interval = "5s"
+
+	filter {
+		name   = "label"
+		values = ["com.docker.compose.project=" + sys.env("COMPOSE_PROJECT_NAME")]
+	}
+}
+
+discovery.relabel "logs" {
+	targets = []
+
+	rule {
+		source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+		regex         = "app"
+		target_label  = "service_name"
+		replacement   = sys.env("WMESH_SIDE")
+	}
+
+	rule {
+		source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+		regex         = "(db|oss|alloy)"
+		target_label  = "service_name"
+		replacement   = sys.env("WMESH_SIDE") + "-${1}"
+	}
+
+	rule {
+		source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+		regex         = "app"
+		target_label  = "serviceName"
+		replacement   = "wmesh-" + sys.env("WMESH_SIDE")
+	}
+
+	rule {
+		source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+		regex         = "(db|oss|alloy)"
+		target_label  = "serviceName"
+		replacement   = "wmesh-" + sys.env("WMESH_SIDE") + "-${1}"
+	}
+
+	rule {
+		source_labels = ["__meta_docker_container_name"]
+		regex         = "/(.*)"
+		target_label  = "container"
+	}
+}
+
+loki.source.docker "containers" {
+	host          = "unix:///var/run/docker.sock"
+	targets       = discovery.docker.containers.targets
+	relabel_rules = discovery.relabel.logs.rules
+	labels        = {
+		job  = "wmesh",
+		side = sys.env("WMESH_SIDE"),
+	}
+	forward_to = [loki.process.app_json.receiver]
+}
+
+loki.process "app_json" {
+	forward_to = [loki.write.loki.receiver]
+
+	stage.match {
+		selector = "{service_name=\"" + sys.env("WMESH_SIDE") + "\"}"
+
+        stage.json {
+			expressions = {
+				ts      = `"@timestamp" || time`,
+				level   = "level",
+				factory = "factory",
+				client  = "client",
+			}
+		}
+
+		stage.timestamp {
+			source = "ts"
+			format = "RFC3339Nano"
+		}
+
+		stage.labels {
+			values = {
+				level   = "",
+				factory = "",
+				client  = "",
+			}
+		}
+	}
+}
+
+loki.write "loki" {
+	endpoint {
+		url = sys.env("LOKI_URL")
+	}
+}

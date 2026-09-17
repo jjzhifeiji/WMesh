@@ -19,9 +19,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.gbndt.shijiaoqi.model.CapturedPoint
 import com.gbndt.shijiaoqi.model.Oscillation
 import com.gbndt.shijiaoqi.model.Pose
 import com.gbndt.shijiaoqi.ui.component.ActionButton
+import com.gbndt.shijiaoqi.ui.preview.PadPreview
+import com.gbndt.shijiaoqi.ui.preview.PadPreviewTheme
+import com.gbndt.shijiaoqi.ui.preview.PadSamples
 import com.gbndt.shijiaoqi.ui.project.ProcessParamDropdown
 import com.gbndt.shijiaoqi.ui.theme.KeepFullscreen
 import com.gbndt.shijiaoqi.ui.project.ProcessParamRow
@@ -38,7 +42,79 @@ fun RobotTestScreen(
             Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
         }
     }
+    RobotTestScreen(
+        onBack = onBack,
+        connectionStatus = viewModel.connectionStatus,
+        alarmStatus = viewModel.alarmStatus,
+        livePose = viewModel.livePose,
+        liveJoints = viewModel.liveJoints,
+        startPoint = viewModel.startPoint,
+        endPoint = viewModel.endPoint,
+        oscillation = viewModel.oscillation,
+        showOscillationDialog = viewModel.showOscillationDialog,
+        speedPercent = viewModel.speedPercent,
+        offsetStepMm = viewModel.offsetStepMm,
+        weaveOffsetX = viewModel.weaveOffsetX,
+        weaveOffsetY = viewModel.weaveOffsetY,
+        weaveOffsetZ = viewModel.weaveOffsetZ,
+        onReconnect = viewModel::reconnect,
+        onCaptureStart = viewModel::captureStart,
+        onCaptureEnd = viewModel::captureEnd,
+        onStartRun = viewModel::startRun,
+        onStopRun = viewModel::stopRun,
+        onShowOscillation = { viewModel.showOscillationDialog = true },
+        onHideOscillation = { viewModel.showOscillationDialog = false },
+        onConfirmOscillation = { osc ->
+            viewModel.updateOscillation(osc)
+            viewModel.showOscillationDialog = false
+            viewModel.sendOscillationParams()
+        },
+        onIncreaseAmplitude = viewModel::increaseAmplitude,
+        onDecreaseAmplitude = viewModel::decreaseAmplitude,
+        onIncreaseFrequency = viewModel::increaseFrequency,
+        onDecreaseFrequency = viewModel::decreaseFrequency,
+        onIncreaseSpeed = viewModel::increaseSpeed,
+        onDecreaseSpeed = viewModel::decreaseSpeed,
+        onOffsetStepChange = { viewModel.offsetStepMm = it },
+        onSendOffset = viewModel::sendOffset,
+        onReserved = viewModel::onReservedButton,
+    )
+}
 
+@Composable
+fun RobotTestScreen(
+    onBack: () -> Unit,
+    connectionStatus: String,
+    alarmStatus: String,
+    livePose: Pose,
+    liveJoints: List<Double>,
+    startPoint: CapturedPoint?,
+    endPoint: CapturedPoint?,
+    oscillation: Oscillation,
+    showOscillationDialog: Boolean,
+    speedPercent: Int,
+    offsetStepMm: Double,
+    weaveOffsetX: Double,
+    weaveOffsetY: Double,
+    weaveOffsetZ: Double,
+    onReconnect: () -> Unit = {},
+    onCaptureStart: () -> Unit = {},
+    onCaptureEnd: () -> Unit = {},
+    onStartRun: () -> Unit = {},
+    onStopRun: () -> Unit = {},
+    onShowOscillation: () -> Unit = {},
+    onHideOscillation: () -> Unit = {},
+    onConfirmOscillation: (Oscillation) -> Unit = {},
+    onIncreaseAmplitude: () -> Unit = {},
+    onDecreaseAmplitude: () -> Unit = {},
+    onIncreaseFrequency: () -> Unit = {},
+    onDecreaseFrequency: () -> Unit = {},
+    onIncreaseSpeed: () -> Unit = {},
+    onDecreaseSpeed: () -> Unit = {},
+    onOffsetStepChange: (Double) -> Unit = {},
+    onSendOffset: (Char, Boolean) -> Unit = { _, _ -> },
+    onReserved: (Int) -> Unit = {},
+) {
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -59,16 +135,16 @@ fun RobotTestScreen(
             Text("指令测试", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
             Row(horizontalArrangement = Arrangement.spacedBy(16.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    text = "报警 ${viewModel.alarmStatus}",
-                    color = if (viewModel.alarmStatus == "无报警" || viewModel.alarmStatus == "无故障") Color(0xFF81C784) else Color(0xFFEF9A9A),
+                    text = "报警 ${alarmStatus}",
+                    color = if (alarmStatus == "无报警" || alarmStatus == "无故障") Color(0xFF81C784) else Color(0xFFEF9A9A),
                     fontSize = 13.sp
                 )
                 Text(
-                    text = "连接 ${viewModel.connectionStatus}",
-                    color = if (viewModel.connectionStatus == "已连接") Color(0xFF81C784) else Color(0xFFEF9A9A),
+                    text = "连接 ${connectionStatus}",
+                    color = if (connectionStatus == "已连接") Color(0xFF81C784) else Color(0xFFEF9A9A),
                     fontSize = 13.sp,
                     modifier = Modifier.clickable {
-                        if (viewModel.connectionStatus != "已连接") viewModel.reconnect()
+                        if (connectionStatus != "已连接") onReconnect()
                     }
                 )
             }
@@ -88,13 +164,13 @@ fun RobotTestScreen(
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 InfoCard(title = "实时位置 / 姿态") {
-                    PoseText(viewModel.livePose)
+                    PoseText(livePose)
                 }
                 InfoCard(title = "实时关节角度") {
-                    JointsText(viewModel.liveJoints)
+                    JointsText(liveJoints)
                 }
                 InfoCard(title = "采集起点") {
-                    val p = viewModel.startPoint
+                    val p = startPoint
                     if (p == null) {
                         Text("未采集", color = Color.Gray, fontSize = 13.sp)
                     } else {
@@ -104,7 +180,7 @@ fun RobotTestScreen(
                     }
                 }
                 InfoCard(title = "采集终点") {
-                    val p = viewModel.endPoint
+                    val p = endPoint
                     if (p == null) {
                         Text("未采集", color = Color.Gray, fontSize = 13.sp)
                     } else {
@@ -114,22 +190,22 @@ fun RobotTestScreen(
                     }
                 }
                 InfoCard(title = "摆动参数") {
-                    Text("类型: ${viewModel.oscillation.type}", fontSize = 13.sp)
+                    Text("类型: ${oscillation.type}", fontSize = 13.sp)
                     Text(
                         text = String.format(
                             Locale.US,
                             "频率 %.1f Hz   幅度 %.1f mm",
-                            viewModel.oscillation.frequency,
-                            viewModel.oscillation.amplitude
+                            oscillation.frequency,
+                            oscillation.amplitude
                         ),
                         fontSize = 13.sp
                     )
-                    Text("速度 SetSpeed(${viewModel.speedPercent})    偏移步进 ${viewModel.offsetStepMm} mm", fontSize = 13.sp)
+                    Text("速度 SetSpeed(${speedPercent})    偏移步进 ${offsetStepMm} mm", fontSize = 13.sp)
                     Text(
                         text = String.format(
                             Locale.US,
                             "摆动偏移  X=%.1f  Y=%.1f  Z=%.1f",
-                            viewModel.weaveOffsetX, viewModel.weaveOffsetY, viewModel.weaveOffsetZ
+                            weaveOffsetX, weaveOffsetY, weaveOffsetZ
                         ),
                         fontSize = 13.sp
                     )
@@ -144,20 +220,20 @@ fun RobotTestScreen(
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 ButtonRow {
-                    ActionButton("采集起点", onClick = { viewModel.captureStart() }, modifier = Modifier.weight(1f), height = 52.dp)
-                    ActionButton("采集终点", onClick = { viewModel.captureEnd() }, modifier = Modifier.weight(1f), height = 52.dp)
+                    ActionButton("采集起点", onClick = onCaptureStart, modifier = Modifier.weight(1f), height = 52.dp)
+                    ActionButton("采集终点", onClick = onCaptureEnd, modifier = Modifier.weight(1f), height = 52.dp)
                 }
                 ButtonRow {
                     ActionButton(
                         "开始运行",
-                        onClick = { viewModel.startRun() },
+                        onClick = onStartRun,
                         modifier = Modifier.weight(1f),
                         height = 52.dp,
                         containerColor = Color(0xFF2E7D32)
                     )
                     ActionButton(
                         "停止运行",
-                        onClick = { viewModel.stopRun() },
+                        onClick = onStopRun,
                         modifier = Modifier.weight(1f),
                         height = 52.dp,
                         containerColor = Color(0xFFC62828)
@@ -166,29 +242,29 @@ fun RobotTestScreen(
                 ButtonRow {
                     ActionButton(
                         "设置摆动参数",
-                        onClick = { viewModel.showOscillationDialog = true },
+                        onClick = onShowOscillation,
                         modifier = Modifier.weight(1f),
                         height = 52.dp,
                         containerColor = Color(0xFF1565C0)
                     )
                 }
                 ButtonRow {
-                    ActionButton("摆幅 +", onClick = { viewModel.increaseAmplitude() }, modifier = Modifier.weight(1f), height = 52.dp, containerColor = Color(0xFF00897B))
-                    ActionButton("摆幅 -", onClick = { viewModel.decreaseAmplitude() }, modifier = Modifier.weight(1f), height = 52.dp, containerColor = Color(0xFF00897B))
+                    ActionButton("摆幅 +", onClick = onIncreaseAmplitude, modifier = Modifier.weight(1f), height = 52.dp, containerColor = Color(0xFF00897B))
+                    ActionButton("摆幅 -", onClick = onDecreaseAmplitude, modifier = Modifier.weight(1f), height = 52.dp, containerColor = Color(0xFF00897B))
                 }
                 ButtonRow {
-                    ActionButton("频率 +", onClick = { viewModel.increaseFrequency() }, modifier = Modifier.weight(1f), height = 52.dp, containerColor = Color(0xFF00897B))
-                    ActionButton("频率 -", onClick = { viewModel.decreaseFrequency() }, modifier = Modifier.weight(1f), height = 52.dp, containerColor = Color(0xFF00897B))
+                    ActionButton("频率 +", onClick = onIncreaseFrequency, modifier = Modifier.weight(1f), height = 52.dp, containerColor = Color(0xFF00897B))
+                    ActionButton("频率 -", onClick = onDecreaseFrequency, modifier = Modifier.weight(1f), height = 52.dp, containerColor = Color(0xFF00897B))
                 }
                 ButtonRow {
-                    ActionButton("速度增加", onClick = { viewModel.increaseSpeed() }, modifier = Modifier.weight(1f), height = 52.dp)
-                    ActionButton("速度减小", onClick = { viewModel.decreaseSpeed() }, modifier = Modifier.weight(1f), height = 52.dp)
+                    ActionButton("速度增加", onClick = onIncreaseSpeed, modifier = Modifier.weight(1f), height = 52.dp)
+                    ActionButton("速度减小", onClick = onDecreaseSpeed, modifier = Modifier.weight(1f), height = 52.dp)
                 }
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("偏移步进", fontSize = 13.sp)
                     OutlinedTextField(
-                        value = viewModel.offsetStepMm.toString(),
-                        onValueChange = { viewModel.offsetStepMm = it.toDoubleOrNull() ?: viewModel.offsetStepMm },
+                        value = offsetStepMm.toString(),
+                        onValueChange = { onOffsetStepChange(it.toDoubleOrNull() ?: offsetStepMm) },
                         modifier = Modifier.width(100.dp).height(52.dp),
                         singleLine = true,
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
@@ -196,38 +272,57 @@ fun RobotTestScreen(
                     )
                 }
                 ButtonRow {
-                    ActionButton("X 正向", onClick = { viewModel.sendOffset('X', true) }, modifier = Modifier.weight(1f), height = 52.dp)
-                    ActionButton("X 反向", onClick = { viewModel.sendOffset('X', false) }, modifier = Modifier.weight(1f), height = 52.dp)
+                    ActionButton("X 正向", onClick = { onSendOffset('X', true) }, modifier = Modifier.weight(1f), height = 52.dp)
+                    ActionButton("X 反向", onClick = { onSendOffset('X', false) }, modifier = Modifier.weight(1f), height = 52.dp)
                 }
                 ButtonRow {
-                    ActionButton("Y 正向", onClick = { viewModel.sendOffset('Y', true) }, modifier = Modifier.weight(1f), height = 52.dp)
-                    ActionButton("Y 反向", onClick = { viewModel.sendOffset('Y', false) }, modifier = Modifier.weight(1f), height = 52.dp)
+                    ActionButton("Y 正向", onClick = { onSendOffset('Y', true) }, modifier = Modifier.weight(1f), height = 52.dp)
+                    ActionButton("Y 反向", onClick = { onSendOffset('Y', false) }, modifier = Modifier.weight(1f), height = 52.dp)
                 }
                 ButtonRow {
-                    ActionButton("Z 正向", onClick = { viewModel.sendOffset('Z', true) }, modifier = Modifier.weight(1f), height = 52.dp)
-                    ActionButton("Z 反向", onClick = { viewModel.sendOffset('Z', false) }, modifier = Modifier.weight(1f), height = 52.dp)
+                    ActionButton("Z 正向", onClick = { onSendOffset('Z', true) }, modifier = Modifier.weight(1f), height = 52.dp)
+                    ActionButton("Z 反向", onClick = { onSendOffset('Z', false) }, modifier = Modifier.weight(1f), height = 52.dp)
                 }
                 ButtonRow {
-                    ActionButton("预留1", onClick = { viewModel.onReservedButton(1) }, modifier = Modifier.weight(1f), height = 52.dp, containerColor = Color(0xFF78909C))
-                    ActionButton("预留2", onClick = { viewModel.onReservedButton(2) }, modifier = Modifier.weight(1f), height = 52.dp, containerColor = Color(0xFF78909C))
+                    ActionButton("预留1", onClick = { onReserved(1) }, modifier = Modifier.weight(1f), height = 52.dp, containerColor = Color(0xFF78909C))
+                    ActionButton("预留2", onClick = { onReserved(2) }, modifier = Modifier.weight(1f), height = 52.dp, containerColor = Color(0xFF78909C))
                 }
                 ButtonRow {
-                    ActionButton("预留3", onClick = { viewModel.onReservedButton(3) }, modifier = Modifier.weight(1f), height = 52.dp, containerColor = Color(0xFF78909C))
-                    ActionButton("预留4", onClick = { viewModel.onReservedButton(4) }, modifier = Modifier.weight(1f), height = 52.dp, containerColor = Color(0xFF78909C))
+                    ActionButton("预留3", onClick = { onReserved(3) }, modifier = Modifier.weight(1f), height = 52.dp, containerColor = Color(0xFF78909C))
+                    ActionButton("预留4", onClick = { onReserved(4) }, modifier = Modifier.weight(1f), height = 52.dp, containerColor = Color(0xFF78909C))
                 }
             }
         }
     }
 
-    if (viewModel.showOscillationDialog) {
+    if (showOscillationDialog) {
         OscillationEditDialog(
-            initial = viewModel.oscillation,
-            onDismiss = { viewModel.showOscillationDialog = false },
-            onConfirm = { osc ->
-                viewModel.updateOscillation(osc)
-                viewModel.showOscillationDialog = false
-                viewModel.sendOscillationParams()
-            }
+            initial = oscillation,
+            onDismiss = onHideOscillation,
+            onConfirm = onConfirmOscillation,
+        )
+    }
+}
+
+@PadPreview
+@Composable
+private fun RobotTestScreenPreview() {
+    PadPreviewTheme {
+        RobotTestScreen(
+            onBack = {},
+            connectionStatus = "已连接",
+            alarmStatus = "无报警",
+            livePose = PadSamples.pose,
+            liveJoints = PadSamples.captured.joints,
+            startPoint = PadSamples.captured,
+            endPoint = PadSamples.captured,
+            oscillation = PadSamples.oscillation,
+            showOscillationDialog = false,
+            speedPercent = 10,
+            offsetStepMm = 1.0,
+            weaveOffsetX = 0.0,
+            weaveOffsetY = 0.5,
+            weaveOffsetZ = 0.0,
         )
     }
 }
