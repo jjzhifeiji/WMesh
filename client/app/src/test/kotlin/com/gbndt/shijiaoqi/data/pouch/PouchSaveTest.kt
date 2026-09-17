@@ -30,6 +30,7 @@ class PouchSaveTest {
             MemoryEnvelopeStore(),
         )
         bag.login("http://f", UUID.randomUUID().toString(), "op", "p")
+        bag.matchArm("ARM-1")
 
         val factoryId = UUID.randomUUID()
         val factoryBody = ProcessJson.encode(WeldProcess(name = "厂", current = 180.0))

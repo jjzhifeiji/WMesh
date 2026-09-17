@@ -5,7 +5,6 @@ import com.gbndt.shijiaoqi.data.pouch.Pouch
 import com.gbndt.shijiaoqi.data.pouch.PouchProcessSource
 import com.gbndt.shijiaoqi.data.pouch.PouchSave
 import com.gbndt.shijiaoqi.data.session.BagSession
-import com.gbndt.shijiaoqi.data.session.LoginRejected
 import com.gbndt.shijiaoqi.data.session.SessionGate
 import com.gbndt.shijiaoqi.di.ApplicationScope
 import com.gbndt.shijiaoqi.di.IoDispatcher
@@ -56,8 +55,11 @@ class PouchRepository @Inject constructor(
 
     fun projectName(id: UUID): String? = _projects.value.firstOrNull { it.id == id }?.name
 
-    /** 重新快照内存袋，不碰库。 */
-    suspend fun refresh() = ioLocked(emitCatalog = true) { }
+    /** 重新快照内存袋；能连厂网就先拉后推。 */
+    suspend fun refresh() = ioLocked(emitCatalog = true) {
+        runCatching { session.syncWithFactory() }
+        Unit
+    }
 
     /** 打开工程正文副本；调用方用完必须抹掉。 */
     suspend fun openProjectBytes(id: UUID): ByteArray? = ioLocked(emitCatalog = false) {
@@ -80,20 +82,6 @@ class PouchRepository @Inject constructor(
     /** 激活工程并落库。 */
     suspend fun activate(id: UUID) = ioLocked { session.activate(id) }
 
-    /** 作业前本地核本厂设备号；失败返回中文原因。 */
-    suspend fun factoryArmError(): String? = ioLocked(emitCatalog = false) {
-        try {
-            session.ensureFactoryArm()
-            null
-        } catch (e: LoginRejected) {
-            when (e.code) {
-                "device serial is required" -> "读不到设备号"
-                "device serial does not match" -> "设备号未在本厂登记"
-                else -> e.code
-            }
-        }
-    }
-
     /** 焊接中不许切换缓存，靠这个标记挡住。 */
     suspend fun setWelding(on: Boolean) = ioLocked(emitCatalog = false) {
         runCatching { session.setWelding(on) }
@@ -108,6 +96,18 @@ class PouchRepository @Inject constructor(
             Wm2.zero(plain)
         }
     }
+
+    /** 本机新建工程：发个人级编号并入袋。 */
+    suspend fun issueProject(name: String, plain: ByteArray): UUID = ioLocked {
+        try {
+            session.issuePersonal(Pouch.KIND_PROJECT, name, plain).id
+        } finally {
+            Wm2.zero(plain)
+        }
+    }
+
+    /** 删本机个人级工艺或工程。 */
+    suspend fun deletePersonal(id: UUID) = ioLocked { session.dropPersonal(id) }
 
     /** 可复制工艺改正文：厂级/平台级另存个人级；保密拒绝。 */
     suspend fun saveProcess(id: UUID?, process: WeldProcess): UUID = ioLocked {
@@ -154,7 +154,7 @@ class PouchRepository @Inject constructor(
         val active = pouch.activeProject()
         _projects.value = pouch.exportClosures()
             .filter { it.kind == Pouch.KIND_PROJECT }
-            .map { ProjectChoice(it.assetId, it.name, it.revision, it.assetId == active) }
+            .map { ProjectChoice(it.assetId, it.name, it.revision, it.assetId == active, it.level) }
         _processes.value = pouch.listCachedProcesses().map {
             ProcessChoice(it.id, it.name, it.copyable, pouch.isDirty(it.id), it.level)
         }
@@ -164,7 +164,10 @@ class PouchRepository @Inject constructor(
         flushJob?.cancel()
         flushJob = scope.launch {
             delay(750)
-            flushMutex.withLock { runCatching { session.flushDirty() } }
+            flushMutex.withLock {
+                runCatching { session.syncWithFactory() }
+                emitCatalog()
+            }
         }
     }
 

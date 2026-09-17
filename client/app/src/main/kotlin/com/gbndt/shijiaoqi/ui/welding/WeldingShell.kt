@@ -2,7 +2,6 @@ package com.gbndt.shijiaoqi.ui.welding
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.border
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -12,13 +11,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import kotlinx.coroutines.launch
-import com.gbndt.shijiaoqi.model.WeldProcess
-import com.gbndt.shijiaoqi.ui.project.ProcessEditorDialog
-import java.util.UUID
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
@@ -43,7 +36,7 @@ sealed class WeldPage {
 
 /**
  * 三个焊接模式共用的外壳：状态栏、工具与姿态对话框、工程/工艺子屏、
- * 点动红框，以及登录后的设备号匹配。模式自己只画焊道那一块。
+ * 点动红框。连臂校验在示教会话里做。模式自己只画焊道那一块。
  */
 @Composable
 fun WeldingShell(
@@ -59,9 +52,6 @@ fun WeldingShell(
     val teachUi by teach.uiState.collectAsStateWithLifecycle()
     val shell by host.shellUi.collectAsStateWithLifecycle()
     var page by remember { mutableStateOf<WeldPage>(WeldPage.Path) }
-    var editingId by remember { mutableStateOf<UUID?>(null) }
-    var editorProcess by remember { mutableStateOf<WeldProcess?>(null) }
-    val scope = rememberCoroutineScope()
 
     val register = LocalWeldInput.current
     DisposableEffect(pad) {
@@ -71,16 +61,13 @@ fun WeldingShell(
 
     LaunchedEffect(host) {
         host.toastEvent.collect { message ->
+            PadLog.toast(message)
             Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
         }
     }
 
-    LaunchedEffect(teachUi.machineCode, sessionState.loggedIn) {
+    LaunchedEffect(teachUi.machineCode) {
         session.setDeviceSerial(teachUi.machineCode)
-        if (sessionState.loggedIn && teachUi.machineCode.isNotBlank()) {
-            runCatching { session.matchArm(teach.machineCode) }
-            host.syncFromPouch()
-        }
     }
     LaunchedEffect(sessionState.loggedIn, sessionState.armMatched) {
         if (sessionState.loggedIn) host.syncFromPouch()
@@ -133,6 +120,11 @@ fun WeldingShell(
                                 page = WeldPage.Path
                             },
                             onBack = { page = WeldPage.Path },
+                            onCreate = { name ->
+                                host.createPouchProject(name)
+                                page = WeldPage.Path
+                            },
+                            onDelete = { host.deletePouchProject(it) },
                         )
                     }
 
@@ -149,19 +141,9 @@ fun WeldingShell(
                                 host.cancelAddProcessVariant()
                                 page = WeldPage.Path
                             },
-                            onEdit = { item ->
-                                scope.launch {
-                                    editorProcess = host.loadProcessFromPouch(item.id) ?: WeldProcess(name = item.name)
-                                    editingId = item.id
-                                }
-                            },
-                            onCreate = {
-                                editingId = null
-                                editorProcess = WeldProcess()
-                            },
-                            onSecret = {
-                                Toast.makeText(context, "保密工艺只能焊接，不能查看或修改", Toast.LENGTH_SHORT).show()
-                            },
+                            onLoad = { host.loadProcessFromPouch(it) },
+                            onSave = { id, process -> host.saveProcessFromPouch(id, process) },
+                            onDelete = { host.deleteProcessFromPouch(it) },
                         )
                     }
                 }
@@ -177,21 +159,5 @@ fun WeldingShell(
                     .zIndex(100f),
             )
         }
-    }
-
-    editorProcess?.let { draft ->
-        ProcessEditorDialog(
-            title = if (editingId == null) "新建个人工艺" else "编辑工艺",
-            initial = draft,
-            onSave = { saved ->
-                host.saveProcessFromPouch(editingId, saved)
-                editorProcess = null
-                editingId = null
-            },
-            onDismiss = {
-                editorProcess = null
-                editingId = null
-            },
-        )
     }
 }

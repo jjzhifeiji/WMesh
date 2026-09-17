@@ -48,13 +48,13 @@ object PadSamples {
     )
 
     val projects: List<ProjectChoice> = listOf(
-        ProjectChoice(id = projectId, name = "厂端引用同步验收", revision = 3, active = true),
-        ProjectChoice(id = UUID.fromString("33333333-3333-4333-8333-333333333333"), name = "舷侧分段", revision = 1, active = false),
+        ProjectChoice(id = projectId, name = "厂端引用同步验收", revision = 3, active = true, level = "factory"),
+        ProjectChoice(id = UUID.fromString("33333333-3333-4333-8333-333333333333"), name = "舷侧分段", revision = 1, active = false, level = "personal"),
     )
 
     val processes: List<ProcessChoice> = listOf(
-        ProcessChoice(id = processId, name = "CO2 打底"),
-        ProcessChoice(id = UUID.fromString("44444444-4444-4444-8444-444444444444"), name = "CO2 盖面"),
+        ProcessChoice(id = processId, name = "CO2 打底", copyable = true, level = "factory"),
+        ProcessChoice(id = UUID.fromString("44444444-4444-4444-8444-444444444444"), name = "CO2 盖面", copyable = true, level = "personal"),
     )
 
     val captured: CapturedPoint = CapturedPoint(

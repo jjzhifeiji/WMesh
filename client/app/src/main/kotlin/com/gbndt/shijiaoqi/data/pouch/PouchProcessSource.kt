@@ -1,6 +1,7 @@
 package com.gbndt.shijiaoqi.data.pouch
 
 import com.gbndt.shijiaoqi.data.crypt.Wm2
+import com.gbndt.shijiaoqi.data.log.PadLog
 import com.gbndt.shijiaoqi.domain.shared.ProcessChoice
 import com.gbndt.shijiaoqi.domain.shared.ProcessJson
 import com.gbndt.shijiaoqi.domain.shared.ProcessSource
@@ -31,7 +32,8 @@ class PouchProcessSource(
         val bytes = openBytes(processId) ?: return null
         return try {
             ProcessJson.decode(bytes)
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            PadLog.warn("Pouch", "process decode failed id=$processId ${e.message}")
             null
         } finally {
             Wm2.zero(bytes)

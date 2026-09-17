@@ -1,8 +1,13 @@
 package com.gbndt.shijiaoqi.domain.shared
 
+import com.gbndt.shijiaoqi.model.Oscillation
 import com.gbndt.shijiaoqi.model.WeldProcess
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.jsonObject
 import java.util.UUID
 
 /** 按 processId 出库解开工艺；合到焊道后给界面和 Lua。 */
@@ -23,6 +28,7 @@ data class ProjectChoice(
     val name: String,
     val revision: Long,
     val active: Boolean,
+    val level: String = "", // factory / personal / platform
 )
 
 /** 把工艺 JSON 解成参数对象；身份不在这份 JSON 里。 */
@@ -33,11 +39,57 @@ object ProcessJson {
         coerceInputValues = true
     }
 
-    fun decode(bytes: ByteArray): WeldProcess =
-        json.decodeFromString(WeldProcess.serializer(), bytes.decodeToString())
+    fun decode(bytes: ByteArray): WeldProcess {
+        val obj = json.parseToJsonElement(bytes.decodeToString()).jsonObject
+        return WeldProcess(
+            name = obj.str("name", "默认工艺"),
+            offsetX = obj.str("offsetX", "0"),
+            offsetY = obj.str("offsetY", "0"),
+            offsetZ = obj.str("offsetZ", "0"),
+            current = obj.num("current", 170.0),
+            voltage = obj.num("voltage", 20.0),
+            speed = obj.num("speed", 10.0),
+            startArcTime = obj.num("startArcTime", 400.0),
+            endArcTime = obj.num("endArcTime", 400.0),
+            startArcCurrent = obj.num("startArcCurrent", 180.0),
+            endArcCurrent = obj.num("endArcCurrent", 160.0),
+            startArcVoltage = obj.num("startArcVoltage", 20.0),
+            endArcVoltage = obj.num("endArcVoltage", 20.0),
+            oscillation = oscOf(obj["oscillation"]),
+        )
+    }
 
     fun encode(process: WeldProcess): ByteArray =
         json.encodeToString(WeldProcess.serializer(), process).encodeToByteArray()
+
+    private fun oscOf(raw: JsonElement?): Oscillation {
+        val obj = raw as? JsonObject ?: return Oscillation()
+        return Oscillation(
+            type = obj.str("type", "无摆动"),
+            waitTime = obj.str("waitTime", "不包括"),
+            positionWait = obj.str("positionWait", "等待时间内位置继续移动"),
+            frequency = obj.num("frequency", 5.0),
+            amplitude = obj.num("amplitude", 1.0),
+            leftStopTime = obj.num("leftStopTime", 100.0),
+            rightStopTime = obj.num("rightStopTime", 100.0),
+            leftSideLength = obj.num("leftSideLength", 1.0),
+            rightSideLength = obj.num("rightSideLength", 1.0),
+            zeroTime = obj.num("zeroTime", 20.0),
+            callbackRatio = obj.num("callbackRatio", 10.0),
+            azimuth = obj.num("azimuth", 0.0),
+            inclination = obj.num("inclination", 0.0),
+        )
+    }
+
+    private fun JsonObject.str(key: String, def: String): String {
+        val p = this[key] as? JsonPrimitive ?: return def
+        return p.content.ifBlank { def }
+    }
+
+    private fun JsonObject.num(key: String, def: Double): Double {
+        val p = this[key] as? JsonPrimitive ?: return def
+        return p.content.toDoubleOrNull() ?: def
+    }
 }
 
 /** 焊道上的工艺引用；空 processId 表示未选。 */

@@ -59,10 +59,14 @@ class PouchIssueTest {
     fun missingOriginAndOverflowRefuse() {
         val p = Pouch()
         p.login(Wm2.randomKey(), UUID.randomUUID(), false)
-        assertReject(Pouch.ERR_CODE_MISSING) {
-            p.issuePersonal(Pouch.KIND_PROCESS, "无短码", """{"n":1}""".toByteArray())
-        }
+        val pending = p.issuePersonal(Pouch.KIND_PROCESS, "无短码", """{"n":1}""".toByteArray())
+        val pendingProj = p.issuePersonal(Pouch.KIND_PROJECT, "工程", """[]""".toByteArray())
+        assertEquals("", pending.code)
+        assertEquals("", pendingProj.code)
+        assertTrue(p.dirtyIds().contains(pending.id))
         p.setOrigin("C0008")
+        assertEquals("GY-C0008-000001", p.codeOf(pending.id))
+        assertEquals("GC-C0008-000001", p.codeOf(pendingProj.id))
         p.seedSeq(Pouch.KIND_PROCESS, 1_000_000)
         assertReject(Pouch.ERR_CODE_EXHAUSTED) {
             p.issuePersonal(Pouch.KIND_PROCESS, "溢出", """{"n":1}""".toByteArray())
@@ -160,6 +164,31 @@ class PouchIssueTest {
         q.setOrigin("C0008")
         val next = q.issuePersonal(Pouch.KIND_PROCESS, "焊2", """{"n":2}""".toByteArray())
         assertEquals("GY-C0008-000002", next.code)
+    }
+
+    @Test
+    fun dropPersonalProcessAndIdleProject() {
+        val p = logged("C0008")
+        val proc = p.issuePersonal(Pouch.KIND_PROCESS, "焊", """{"n":1}""".toByteArray())
+        val keep = p.issuePersonal(Pouch.KIND_PROJECT, "留", """[]""".toByteArray())
+        val gone = p.issuePersonal(Pouch.KIND_PROJECT, "删", """[]""".toByteArray())
+        p.activate(keep.id)
+        p.pinProcess(keep.id, proc.id)
+        p.dropPersonal(proc.id)
+        assertFalse(p.held(proc.id))
+        assertTrue(p.isDeleted(proc.id))
+        assertTrue(p.depsOf(keep.id).none { it.id == proc.id })
+        p.dropPersonal(gone.id)
+        assertFalse(p.held(gone.id))
+        assertTrue(p.isDeleted(gone.id))
+        assertReject(Pouch.ERR_FORBIDDEN) { p.dropPersonal(keep.id) }
+        val factoryId = UUID.randomUUID()
+        p.putPlain(factoryId, Pouch.LEVEL_FACTORY, "厂", 1, null, """{"f":1}""".toByteArray())
+        assertReject(Pouch.ERR_FORBIDDEN) { p.dropPersonal(factoryId) }
+        val other = logged("C0008")
+        other.restoreLedger(p.exportLedger())
+        assertTrue(other.isDeleted(proc.id))
+        assertTrue(other.isDeleted(gone.id))
     }
 
     private fun logged(short: String): Pouch {

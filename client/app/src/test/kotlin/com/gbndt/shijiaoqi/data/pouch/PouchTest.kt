@@ -136,4 +136,38 @@ class PouchTest {
         assertArrayEquals("""{"current":1}""".toByteArray(), p.open(secretId))
         assertTrue(p.isDirty(secretId))
     }
+
+    @Test
+    fun platformCopyableTrueIsKeptOnSameRevisionPull() {
+        val p = Pouch()
+        p.login(Wm2.randomKey(), UUID.randomUUID(), false)
+        val id = UUID.randomUUID()
+        val body = """{"name":"平台测试工艺 1","offsetX":0,"current":200}""".toByteArray()
+        p.putPlain(id, Pouch.LEVEL_PLATFORM, "平台测试工艺 1", 1, null, body)
+        assertFalse(p.copyableOf(id))
+        p.cacheTransit(
+            UUID.randomUUID(),
+            UUID.randomUUID(),
+            TransitClosure(
+                wrap = ByteArray(0),
+                members = listOf(
+                    TransitMember(
+                        id = id,
+                        level = Pouch.LEVEL_PLATFORM,
+                        name = "平台测试工艺 1",
+                        revision = 1,
+                        ownerId = null,
+                        content = body,
+                        kind = Pouch.KIND_PROCESS,
+                        copyable = true,
+                    ),
+                ),
+                assetId = id,
+                revision = 1,
+                kind = Pouch.KIND_PROCESS,
+            ),
+        )
+        assertTrue(p.copyableOf(id))
+        assertTrue(p.listCachedProcesses().single { it.id == id }.copyable)
+    }
 }

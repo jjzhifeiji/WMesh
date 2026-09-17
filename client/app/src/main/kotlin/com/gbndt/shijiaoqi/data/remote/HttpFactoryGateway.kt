@@ -143,6 +143,12 @@ class HttpFactoryGateway : FactoryGateway {
         return decodeAsset(text)
     }
 
+    override fun deleteAsset(baseUrl: String, factoryId: String, token: String, assetId: String) {
+        val (http, text) = post(baseUrl, "/v1/factories/$factoryId/assets/$assetId/delete", "{}", token)
+        if (http == 404) return
+        if (http !in 200..299) throw LoginRejected(parseError(http, text))
+    }
+
     private fun decodeAsset(text: String): RemoteAsset {
         val dto = json.decodeFromString(AssetDto.serializer(), text)
         return RemoteAsset(
@@ -201,7 +207,7 @@ class HttpFactoryGateway : FactoryGateway {
                     )
                 },
                 code = m.code,
-                copyable = m.copyable ?: (m.level != "platform"),
+                copyable = m.copyable ?: dto.snapshot.copyable ?: (m.level != "platform"),
             )
         }
         return TransitClosure(
@@ -392,6 +398,7 @@ class HttpFactoryGateway : FactoryGateway {
         val status: String = "",
         val digest: String = "",
         val targetClientId: String? = null,
+        val copyable: Boolean? = null,
         val members: List<MemberDto> = emptyList(),
     )
 

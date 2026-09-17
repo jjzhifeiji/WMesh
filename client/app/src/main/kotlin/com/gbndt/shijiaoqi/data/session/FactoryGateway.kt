@@ -78,6 +78,8 @@ interface FactoryGateway {
         expected: Long,
         deps: List<com.gbndt.shijiaoqi.data.pouch.AssetDep>,
     ): RemoteAsset
+    /** 删厂端这份；没有当成已删。 */
+    fun deleteAsset(baseUrl: String, factoryId: String, token: String, assetId: String)
 }
 
 /** 厂端资产元数据；不含正文。 */

@@ -33,6 +33,7 @@ class RobotRepository @Inject constructor(
     fun start() = bus.start()
     fun stop() = bus.stop()
     fun restart() = bus.restart()
+    fun dropLink() = bus.dropLink()
     fun sendControlCommand(command: String) = bus.sendControlCommand(command)
     fun sendBatchCommand(command: String) = bus.sendBatchCommand(command)
     suspend fun sendBatchCommandSync(command: String) = bus.sendBatchCommandSync(command)

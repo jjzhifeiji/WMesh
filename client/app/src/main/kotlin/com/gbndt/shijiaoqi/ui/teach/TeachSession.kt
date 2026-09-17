@@ -2,8 +2,10 @@ package com.gbndt.shijiaoqi.ui.teach
 
 import android.content.Context
 import android.speech.tts.TextToSpeech
+import android.widget.Toast
 import com.gbndt.shijiaoqi.data.prefs.DeviceSettingsStore
 import com.gbndt.shijiaoqi.data.repository.RobotRepository
+import com.gbndt.shijiaoqi.data.repository.SessionRepository
 import com.gbndt.shijiaoqi.data.robot.protocol.FrPacket
 import com.gbndt.shijiaoqi.data.robot.protocol.RobotCommands
 import com.gbndt.shijiaoqi.data.robot.protocol.RobotLink
@@ -30,6 +32,7 @@ import javax.inject.Singleton
 class TeachSession @Inject constructor(
     @param:ApplicationContext private val app: Context,
     private val robot: RobotRepository,
+    private val session: SessionRepository,
     private val settings: DeviceSettingsStore,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -125,7 +128,13 @@ class TeachSession @Inject constructor(
                     sendCurrentTool()
                     delay(200)
                     sendInstallPos()
+                    checkArmOnConnect()
                 }
+            }
+        }
+        scope.launch {
+            session.state.collect { st ->
+                if (st.loggedIn) checkArmOnConnect()
             }
         }
         scope.launch { robot.robotPose.collect { p -> if (p != null) _uiState.update { it.copy(pose = p) } } }
@@ -154,7 +163,11 @@ class TeachSession @Inject constructor(
         scope.launch {
             robot.receivedText.collect { text ->
                 val mac = Regex("/f/bIII\\d+III826III\\d+III(.+?)III/b/f").find(text)?.groupValues?.get(1)
-                if (mac != null) _uiState.update { it.copy(machineCode = mac) }
+                if (mac != null) {
+                    _uiState.update { it.copy(machineCode = mac) }
+                    session.setDeviceSerial(mac)
+                    checkArmOnConnect()
+                }
             }
         }
         scope.launch {
@@ -304,6 +317,31 @@ class TeachSession @Inject constructor(
     fun reconnect() {
         PadLog.info("Teach", "reconnect")
         robot.restart()
+    }
+
+    /** 套接字起来且读到号时核本厂名录；过了保持连接，不过立刻断。 */
+    private fun checkArmOnConnect() {
+        if (!session.state.value.loggedIn) return
+        if (uiState.value.connectionStatus != RobotLink.UP) return
+        val serial = uiState.value.machineCode.trim()
+        if (serial.isEmpty()) return
+        scope.launch {
+            try {
+                session.matchArm(serial)
+            } catch (e: Exception) {
+                PadLog.warn("Teach", "arm check failed ${e.message}")
+                dropLink()
+                val msg = session.state.value.error ?: "机械臂校验失败"
+                PadLog.toast(msg)
+                Toast.makeText(app, msg, Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    fun dropLink() {
+        PadLog.warn("Teach", "drop link")
+        robot.dropLink()
+        _uiState.update { it.copy(connectionStatus = RobotLink.DOWN) }
     }
 
     fun startWireFeed() = sendManualCommand(268, "SetForwardWireFeed(0,1)")

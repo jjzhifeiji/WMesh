@@ -200,6 +200,16 @@ class LiveRobotBus @Inject constructor(
         }
     }
 
+    /** 校验失败立刻拆掉三路套接字，等操作工再点连接。 */
+    fun dropLink() {
+        forceStop()
+        _isConnected8080.value = false
+        _isConnected8082.value = false
+        _isConnected8083.value = false
+        lastDataTime8083 = 0L
+        _connectionStatus.value = RobotLink.DOWN
+    }
+
     fun sendControlCommand(command: String) {
         socket8080?.send(command)
     }

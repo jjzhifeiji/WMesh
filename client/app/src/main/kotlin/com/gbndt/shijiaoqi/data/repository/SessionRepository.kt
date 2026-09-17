@@ -64,7 +64,7 @@ class SessionRepository @Inject constructor(
     /** 连上臂读到的识别号；只在内存里，进程死即失。 */
     fun setDeviceSerial(serial: String) = serials.set(serial)
 
-    /** 读到机械臂识别号后按本厂已落盘名录本地比对。 */
+    /** 连臂读到识别号后按本厂已落盘名录本地比对；失败由调用方断连。 */
     suspend fun matchArm(serial: String) = withContext(io) {
         gate.withLock { session.matchArm(serial) }
     }

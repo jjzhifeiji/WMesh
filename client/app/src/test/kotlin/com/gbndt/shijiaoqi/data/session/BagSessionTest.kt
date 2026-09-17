@@ -27,9 +27,10 @@ class BagSessionTest {
         val key = Wm2.randomKey()
         val person = UUID.randomUUID()
         val cid = UUID.randomUUID()
+        val factory = FakeFactory(key, person, devices = listOf(PadDevice(cid.toString(), "焊机", "ARM-1", "C0008", key.copyOf())))
         val bag = BagSession(
             { "" },
-            FakeFactory(key, person, devices = listOf(PadDevice(cid.toString(), "焊机", "ARM-1", "C0008", key.copyOf()))),
+            factory,
             MemoryIdentityStore(),
             MemoryEnvelopeStore(),
         )
@@ -38,13 +39,233 @@ class BagSessionTest {
         assertFalse(bag.armMatched)
         assertThrows(LoginRejected::class.java) { bag.matchArm("") }
         assertThrows(LoginRejected::class.java) { bag.matchArm("NOPE") }
+        val issued = bag.issuePersonal(Pouch.KIND_PROJECT, "新", """[]""".toByteArray())
+        assertEquals("GC-C0008-000001", issued.code)
+        bag.flushDirty()
+        assertEquals(issued.id, factory.padAssets[issued.id]?.id)
         bag.matchArm("ARM-1")
         assertTrue(bag.armMatched)
         assertEquals(cid.toString(), bag.savedClientId())
+        assertEquals("GC-C0008-000001", bag.pouch.codeOf(issued.id))
         bag.matchArm(" arm-1 ")
         assertTrue(bag.armMatched)
         bag.matchArm("ARM-1-extra")
         assertTrue(bag.armMatched)
+    }
+
+    @Test
+    fun multiDeviceStampsFirstShortAndUploadsOnLogin() {
+        val factory = FakeFactory(
+            devices = listOf(
+                PadDevice(UUID.randomUUID().toString(), "焊1", "ARM-1", "C0008"),
+                PadDevice(UUID.randomUUID().toString(), "焊2", "ARM-2", "C0009"),
+            ),
+        )
+        val bag = BagSession({ "" }, factory, MemoryIdentityStore(), MemoryEnvelopeStore())
+        bag.login("http://f", UUID.randomUUID().toString(), "op", "p")
+        val issued = bag.issuePersonal(Pouch.KIND_PROCESS, "新工艺", """{"n":1}""".toByteArray())
+        assertEquals("GY-C0008-000001", issued.code)
+        bag.flushDirty()
+        assertEquals(issued.id, factory.padAssets[issued.id]?.id)
+    }
+
+    @Test
+    fun keepsSavedShortWhenManyDevices() {
+        val identity = MemoryIdentityStore()
+        identity.clientShortCode = "C0009"
+        val factory = FakeFactory(
+            devices = listOf(
+                PadDevice(UUID.randomUUID().toString(), "焊1", "ARM-1", "C0008"),
+                PadDevice(UUID.randomUUID().toString(), "焊2", "ARM-2", "C0009"),
+            ),
+        )
+        val bag = BagSession({ "" }, factory, identity, MemoryEnvelopeStore())
+        bag.login("http://f", UUID.randomUUID().toString(), "op", "p")
+        val issued = bag.issuePersonal(Pouch.KIND_PROCESS, "新", """{"n":1}""".toByteArray())
+        assertEquals("GY-C0009-000001", issued.code)
+    }
+
+    @Test
+    fun syncPullsFactoryWhenCleanAndClientWinsWhenDirty() {
+        val factory = FakeFactory(
+            devices = listOf(PadDevice(UUID.randomUUID().toString(), "焊", "ARM-1", "C0008")),
+        )
+        val bag = BagSession({ "" }, factory, MemoryIdentityStore(), MemoryEnvelopeStore())
+        bag.login("http://f", UUID.randomUUID().toString(), "op", "p")
+
+        val cleanId = UUID.randomUUID()
+        val factoryBody = """{"n":9}""".toByteArray()
+        bag.pouch.putPlain(cleanId, Pouch.LEVEL_FACTORY, "厂改", 1, null, """{"n":1}""".toByteArray())
+        factory.padClosures = listOf(ClosureRef(cleanId, 2, ByteArray(0), "厂改", Pouch.LEVEL_FACTORY))
+        factory.padTransits = mapOf(
+            cleanId to TransitClosure(
+                wrap = ByteArray(0),
+                members = listOf(
+                    TransitMember(
+                        id = cleanId,
+                        level = Pouch.LEVEL_FACTORY,
+                        name = "厂改",
+                        revision = 2,
+                        ownerId = null,
+                        content = factoryBody,
+                        kind = Pouch.KIND_PROCESS,
+                        copyable = true,
+                    ),
+                ),
+                assetId = cleanId,
+                revision = 2,
+                kind = Pouch.KIND_PROCESS,
+            ),
+        )
+        bag.syncWithFactory()
+        assertArrayEquals(factoryBody, bag.open(cleanId))
+
+        val issued = bag.issuePersonal(Pouch.KIND_PROCESS, "我的", """{"n":1}""".toByteArray())
+        bag.flushDirty()
+        factory.padClosures = factory.padClosures + ClosureRef(issued.id, 3, ByteArray(0), "厂抢", Pouch.LEVEL_PERSONAL)
+        factory.padTransits = factory.padTransits + (
+            issued.id to TransitClosure(
+                wrap = ByteArray(0),
+                members = listOf(
+                    TransitMember(
+                        id = issued.id,
+                        level = Pouch.LEVEL_PERSONAL,
+                        name = "厂抢",
+                        revision = 3,
+                        ownerId = bag.pouch.personId(),
+                        content = """{"n":9}""".toByteArray(),
+                        kind = Pouch.KIND_PROCESS,
+                        copyable = true,
+                    ),
+                ),
+                assetId = issued.id,
+                revision = 3,
+                kind = Pouch.KIND_PROCESS,
+            )
+        )
+        bag.rewritePlain(issued.id, """{"n":7}""".toByteArray())
+        bag.syncWithFactory()
+        assertArrayEquals("""{"n":7}""".toByteArray(), factory.padContents[issued.id])
+        assertArrayEquals("""{"n":7}""".toByteArray(), bag.open(issued.id))
+    }
+
+    @Test
+    fun dropPersonalStaysGoneAfterSyncEvenIfFactoryStillListsIt() {
+        val factory = FakeFactory(
+            devices = listOf(PadDevice(UUID.randomUUID().toString(), "焊", "ARM-1", "C0008")),
+        )
+        val bag = BagSession({ "" }, factory, MemoryIdentityStore(), MemoryEnvelopeStore())
+        bag.login("http://f", UUID.randomUUID().toString(), "op", "p")
+        val issued = bag.issuePersonal(Pouch.KIND_PROCESS, "删", """{"n":1}""".toByteArray())
+        bag.flushDirty()
+        factory.padClosures = listOf(ClosureRef(issued.id, 1, ByteArray(0), "删", Pouch.LEVEL_PERSONAL))
+        factory.padTransits = mapOf(issued.id to processTransit(issued.id, "删", """{"n":1}""".toByteArray(), bag.pouch.personId()))
+        bag.dropPersonal(issued.id)
+        bag.syncWithFactory()
+        assertFalse(bag.pouch.held(issued.id))
+        assertFalse(factory.padAssets.containsKey(issued.id))
+        bag.syncWithFactory()
+        assertFalse(bag.pouch.held(issued.id))
+        assertFalse(bag.pouch.isDeleted(issued.id))
+    }
+
+    @Test
+    fun dropNeverUploadedClearsTombstoneOn404() {
+        val factory = FakeFactory(
+            devices = listOf(PadDevice(UUID.randomUUID().toString(), "焊", "ARM-1", "C0008")),
+        )
+        val bag = BagSession({ "" }, factory, MemoryIdentityStore(), MemoryEnvelopeStore())
+        bag.login("http://f", UUID.randomUUID().toString(), "op", "p")
+        val issued = bag.issuePersonal(Pouch.KIND_PROCESS, "未传", """{"n":1}""".toByteArray())
+        bag.dropPersonal(issued.id)
+        assertTrue(bag.pouch.isDeleted(issued.id))
+        bag.syncWithFactory()
+        assertFalse(bag.pouch.isDeleted(issued.id))
+        assertTrue(factory.padAssets.isEmpty())
+    }
+
+    @Test
+    fun dropReferencedByFactoryProjectComesBack() {
+        val factory = FakeFactory(
+            devices = listOf(PadDevice(UUID.randomUUID().toString(), "焊", "ARM-1", "C0008")),
+        )
+        val bag = BagSession({ "" }, factory, MemoryIdentityStore(), MemoryEnvelopeStore())
+        bag.login("http://f", UUID.randomUUID().toString(), "op", "p")
+        val issued = bag.issuePersonal(Pouch.KIND_PROCESS, "钉着", """{"n":1}""".toByteArray())
+        bag.flushDirty()
+        val body = """{"n":1}""".toByteArray()
+        val proj = UUID.randomUUID()
+        factory.padAssets[proj] = RemoteAsset(
+            id = proj,
+            kind = Pouch.KIND_PROJECT,
+            level = Pouch.LEVEL_FACTORY,
+            name = "厂工程",
+            code = "GC-F01-000001",
+            status = Pouch.STATUS_AVAILABLE,
+            copyable = true,
+            revision = 1,
+            digest = Digest.sum("""[]""".toByteArray()),
+            deps = listOf(AssetDep(issued.id, 1, Digest.sum(body))),
+        )
+        factory.padClosures = listOf(ClosureRef(issued.id, 1, ByteArray(0), "钉着", Pouch.LEVEL_PERSONAL))
+        factory.padTransits = mapOf(issued.id to processTransit(issued.id, "钉着", body, bag.pouch.personId()))
+        bag.dropPersonal(issued.id)
+        bag.syncWithFactory()
+        assertTrue(factory.padAssets.containsKey(issued.id))
+        assertTrue(bag.pouch.held(issued.id))
+        assertFalse(bag.pouch.isDeleted(issued.id))
+    }
+
+    @Test
+    fun factoryRemovedPersonalIsRecreatedFromPad() {
+        val factory = FakeFactory(
+            devices = listOf(PadDevice(UUID.randomUUID().toString(), "焊", "ARM-1", "C0008")),
+        )
+        val bag = BagSession({ "" }, factory, MemoryIdentityStore(), MemoryEnvelopeStore())
+        bag.login("http://f", UUID.randomUUID().toString(), "op", "p")
+        val issued = bag.issuePersonal(Pouch.KIND_PROCESS, "还在", """{"n":1}""".toByteArray())
+        bag.flushDirty()
+        factory.padAssets.remove(issued.id)
+        factory.padContents.remove(issued.id)
+        factory.padClosures = emptyList()
+        factory.padTransits = emptyMap()
+        bag.syncWithFactory()
+        assertEquals(issued.id, factory.padAssets[issued.id]?.id)
+        assertArrayEquals("""{"n":1}""".toByteArray(), factory.padContents[issued.id])
+    }
+
+    @Test
+    fun missingFactoryOriginalIsNotRecreatedAsPersonal() {
+        val factory = FakeFactory(
+            devices = listOf(PadDevice(UUID.randomUUID().toString(), "焊", "ARM-1", "C0008")),
+        )
+        val bag = BagSession({ "" }, factory, MemoryIdentityStore(), MemoryEnvelopeStore())
+        bag.login("http://f", UUID.randomUUID().toString(), "op", "p")
+        val factoryId = UUID.randomUUID()
+        bag.pouch.putPlain(factoryId, Pouch.LEVEL_FACTORY, "厂原件", 1, null, """{"n":1}""".toByteArray())
+        bag.syncWithFactory()
+        assertTrue(bag.pouch.held(factoryId))
+        assertFalse(bag.pouch.isDirty(factoryId))
+        assertTrue(factory.padAssets.isEmpty())
+    }
+
+    @Test
+    fun dropPinnedProcessUnpinsThenDeletesOnFactory() {
+        val factory = FakeFactory(
+            devices = listOf(PadDevice(UUID.randomUUID().toString(), "焊", "ARM-1", "C0008")),
+        )
+        val bag = BagSession({ "" }, factory, MemoryIdentityStore(), MemoryEnvelopeStore())
+        bag.login("http://f", UUID.randomUUID().toString(), "op", "p")
+        val proc = bag.issuePersonal(Pouch.KIND_PROCESS, "焊", """{"n":1}""".toByteArray())
+        val proj = bag.issuePersonal(Pouch.KIND_PROJECT, "工程", """[]""".toByteArray())
+        bag.pouch.pinProcess(proj.id, proc.id)
+        bag.flushDirty()
+        assertTrue(factory.padAssets[proj.id]!!.deps.any { it.id == proc.id })
+        bag.dropPersonal(proc.id)
+        bag.syncWithFactory()
+        assertTrue(factory.padAssets[proj.id]!!.deps.none { it.id == proc.id })
+        assertFalse(factory.padAssets.containsKey(proc.id))
+        assertFalse(bag.pouch.held(proc.id))
     }
 
     @Test
@@ -80,6 +301,7 @@ class BagSessionTest {
         )
         bag.login("http://10.0.0.8:52081", factoryId, "op", "p")
         assertTrue(shipped.any { it.first == "http://10.0.0.8:52081" && it.second == factoryId })
+        bag.matchArm("ARM-1")
         assertEquals(cid.toString(), bag.savedClientId())
     }
 
@@ -97,7 +319,8 @@ class BagSessionTest {
         assertFalse(bag.armMatched)
         val missing = assertThrows(PouchRejected::class.java) { bag.activate(UUID.randomUUID()) }
         assertEquals(Pouch.ERR_NOT_FOUND, missing.code)
-        assertThrows(LoginRejected::class.java) { bag.setWelding(true) }
+        bag.setWelding(true)
+        bag.setWelding(false)
         serial = "ARM-1"
         bag.matchArm(serial)
         bag.setWelding(true)
@@ -144,6 +367,8 @@ class BagSessionTest {
         assertEquals("ARM-1", store.loadDevices()[0].deviceSerial)
         val again = BagSession({ "arm-1" }, factory, identity, store, vault = vault, keys = keys)
         assertTrue(again.loggedIn)
+        assertFalse(again.armMatched)
+        again.matchArm("arm-1")
         assertTrue(again.armMatched)
         assertEquals(cid.toString(), again.savedClientId())
     }
@@ -556,7 +781,43 @@ internal class FakeFactory(
         padAssets[id] = next
         return next
     }
+
+    override fun deleteAsset(baseUrl: String, factoryId: String, token: String, assetId: String) {
+        val id = UUID.fromString(assetId)
+        if (id !in padAssets) return
+        val used = padAssets.any { (other, row) -> other != id && row.deps.any { it.id == id } }
+        if (used) throw LoginRejected("still referenced")
+        padAssets.remove(id)
+        padContents.remove(id)
+        padClosures = padClosures.filter { it.assetId != id }
+        padTransits = padTransits - id
+    }
 }
+
+private fun processTransit(
+    id: UUID,
+    name: String,
+    body: ByteArray,
+    ownerId: UUID?,
+    revision: Long = 1,
+): TransitClosure = TransitClosure(
+    wrap = ByteArray(0),
+    members = listOf(
+        TransitMember(
+            id = id,
+            level = Pouch.LEVEL_PERSONAL,
+            name = name,
+            revision = revision,
+            ownerId = ownerId,
+            content = body,
+            kind = Pouch.KIND_PROCESS,
+            copyable = true,
+        ),
+    ),
+    assetId = id,
+    revision = revision,
+    kind = Pouch.KIND_PROCESS,
+)
 
 private fun processMember(name: String, body: ByteArray): ClosureMemberPlain {
     return ClosureMemberPlain(

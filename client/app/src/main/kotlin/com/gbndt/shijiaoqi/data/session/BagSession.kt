@@ -7,6 +7,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import com.gbndt.shijiaoqi.data.pouch.AssetCode
 import com.gbndt.shijiaoqi.data.pouch.Digest
 import com.gbndt.shijiaoqi.data.pouch.Pouch
 import com.gbndt.shijiaoqi.data.pouch.PouchRejected
@@ -67,6 +68,7 @@ class BagSession(
                 hits.distinctBy { it.httpBase.trimEnd('/') }.forEach { o ->
                     runCatching { onFactoryNet(o.httpBase, o.factoryId) }
                 }
+                if (loggedIn) runCatching { syncWithFactory() }
             }
             return hits
         } catch (e: LoginRejected) {
@@ -89,7 +91,6 @@ class BagSession(
             identity.factoryUrl = baseUrl.trim()
             identity.factoryId = factoryId.trim()
             identity.clientId = ""
-            identity.clientShortCode = ""
             val sess = factory.loginPad(
                 identity.factoryUrl, identity.factoryId, loginName.trim(), password,
             )
@@ -108,10 +109,6 @@ class BagSession(
             }
             pouch.setRoles(sess.roles)
             token = sess.token
-            // 登录后立刻拉全量并落库，不依赖是否已有设备。
-            pullCatalog(sess)
-            persistPouch(store, pouch)
-            runCatching { flushDirty() }
             store.savePerson(sess.person, sess.roles)
             store.savePolicy(sess.policy)
             store.saveDevices(sess.devices)
@@ -120,6 +117,9 @@ class BagSession(
             store.saveSession(sess.token, if (ttlMs > 0) now + ttlMs else 0L, now)
             if (sess.policy.persistUnwrapKey) keys.save(pouchKey, sess.devices) else keys.clear()
             devices = sess.devices.map { it.copy(unwrapKey = ByteArray(0)) }
+            adoptOriginFromDevices()
+            persistPouch(store, pouch)
+            syncWithFactory()
             saveVault(sess)
             sess.devices.forEach { Wm2.zero(it.unwrapKey) }
             Wm2.zero(sess.unwrapKey)
@@ -132,10 +132,6 @@ class BagSession(
                     loggedIn = true,
                     armMatched = false,
                 )
-            }
-            val serial = serials.read().trim()
-            if (serial.isNotEmpty()) {
-                runCatching { matchArm(serial) }
             }
             runCatching { onFactoryNet(identity.factoryUrl, identity.factoryId) }
             PadLog.info("BagSession", "login ok factory=${identity.factoryId}")
@@ -158,7 +154,7 @@ class BagSession(
         ensureFactoryArm(serial)
     }
 
-    /** 作业前本地核：读到的号在登录落下的本厂设备名录里即可。 */
+    /** 连臂时本地核：号在本厂名录里才算过，失败由调用方断连。 */
     fun ensureFactoryArm(serial: String = serials.read()) {
         val got = serial.trim()
         if (!loggedIn) throw LoginRejected("unauthorized")
@@ -180,9 +176,11 @@ class BagSession(
         identity.clientShortCode = hit.shortCode
         pouch.bindClient(UUID.fromString(hit.id))
         if (hit.shortCode.isNotBlank()) pouch.setOrigin(hit.shortCode)
+        persistPouch(store, pouch)
         edit { it.copy(armMatched = true, error = null) }
         PadLog.info("BagSession", "arm matched client=${hit.id}")
         runCatching { onFactoryNet(identity.factoryUrl, identity.factoryId) }
+        syncWithFactory()
     }
 
     fun cachePlain(id: UUID, level: String, name: String, revision: Long, ownerId: UUID?, plain: ByteArray) {
@@ -215,7 +213,6 @@ class BagSession(
 
     fun setWelding(value: Boolean) {
         PadLog.info("BagSession", "welding=$value")
-        if (value) ensureFactoryArm()
         pouch.setWelding(value)
     }
 
@@ -233,6 +230,12 @@ class BagSession(
     fun issuePersonal(kind: String, name: String, content: ByteArray) =
         pouch.issuePersonal(kind, name, content).also { persistPouch(store, pouch) }
 
+    /** 删本机个人级工艺或工程，落盘。 */
+    fun dropPersonal(id: UUID) {
+        pouch.dropPersonal(id)
+        persistPouch(store, pouch)
+    }
+
     /** 可复制非个人级另存个人级；保密拒绝。 */
     fun ensurePersonalProcess(srcId: UUID, name: String, body: ByteArray): UUID {
         if (!pouch.copyableOf(srcId)) throw PouchRejected(Pouch.ERR_NOT_COPYABLE)
@@ -248,19 +251,38 @@ class BagSession(
         return issued.id
     }
 
+    /** 上线双向：先拉厂端（本机已脏跳过），再把本机脏项推上去；同文件以本机为准。 */
+    fun syncWithFactory() {
+        if (token == null || !pouch.hasUnwrapKey()) return
+        adoptOriginFromDevices()
+        runCatching { pullCatalog() }
+            .onFailure { PadLog.warn("BagSession", "catalog failed ${it.message}") }
+        runCatching { flushDirty() }
+            .onFailure { PadLog.warn("BagSession", "flush failed ${it.message}") }
+    }
+
     /** 把本机已改正文按内容摘要对齐到厂端；冲突则用厂端当前修订再写一次。 */
     fun flushDirty() {
-        if (!loggedIn) return
         val tok = token ?: return
         val base = identity.factoryUrl
         val fid = identity.factoryId
         if (base.isBlank() || fid.isBlank()) return
+        adoptOriginFromDevices()
         val processes = pouch.dirtyIds().filter { pouch.kindOf(it) == Pouch.KIND_PROCESS }
         val projects = pouch.dirtyIds().filter { pouch.kindOf(it) == Pouch.KIND_PROJECT }
-        for (id in processes) runCatching { flushOne(base, fid, tok, id) }
+        for (id in processes) {
+            runCatching { flushOne(base, fid, tok, id) }
+                .onFailure { PadLog.warn("BagSession", "flush process $id ${it.message}") }
+        }
         for (id in projects) {
             runCatching { flushDeps(base, fid, tok, id) }
+                .onFailure { PadLog.warn("BagSession", "flush deps $id ${it.message}") }
             runCatching { flushOne(base, fid, tok, id) }
+                .onFailure { PadLog.warn("BagSession", "flush project $id ${it.message}") }
+        }
+        for (id in pouch.deletedIds()) {
+            runCatching { flushDelete(base, fid, tok, id) }
+                .onFailure { PadLog.warn("BagSession", "flush delete $id ${it.message}") }
         }
         persistPouch(store, pouch)
     }
@@ -271,9 +293,14 @@ class BagSession(
             val text = String(plain, Charsets.UTF_8)
             val remote = factory.getAsset(base, fid, tok, id.toString())
             if (remote == null) {
+                val code = pouch.codeOf(id).orEmpty()
+                if (code.isBlank()) {
+                    PadLog.warn("BagSession", "flush skip $id no origin code")
+                    return
+                }
                 val row = factory.createPadAsset(
                     base, fid, tok, pouch.kindOf(id), pouch.nameOf(id), text,
-                    id.toString(), pouch.codeOf(id).orEmpty(), pouch.depsOf(id),
+                    id.toString(), code, pouch.depsOf(id),
                 )
                 pouch.acceptRemote(id, row.revision, row.digest)
                 return
@@ -317,6 +344,19 @@ class BagSession(
         }
     }
 
+    /** 厂端 404 当已删；仍被引用则撤回记账并拉回。 */
+    private fun flushDelete(base: String, fid: String, tok: String, id: UUID) {
+        try {
+            factory.deleteAsset(base, fid, tok, id.toString())
+            pouch.forgetDeleted(id)
+        } catch (e: LoginRejected) {
+            if (e.code != "still referenced") throw e
+            pouch.forgetDeleted(id)
+            PadLog.warn("BagSession", "delete $id still referenced")
+            pullOne(base, fid, tok, id)
+        }
+    }
+
     fun enqueueFact() = pouch.enqueueFact().also { persistPouch(store, pouch) }
 
     fun enqueueUpload(kind: String, content: ByteArray) =
@@ -345,13 +385,13 @@ class BagSession(
     }
 
     /** 按厂端同一份可见资产拉全量；工程明文，工艺用人钥解过站包。 */
-    private fun pullCatalog(sess: PadLoginResult) {
-        val tok = sess.token
+    private fun pullCatalog() {
+        val tok = token ?: return
+        val personId = pouch.personId() ?: return
         val fid = identity.factoryId
         val base = identity.factoryUrl
-        val factoryId = UUID.fromString(fid)
-        if (sess.unwrapKey.size != 32) return
-        val personId = sess.person.id
+        if (base.isBlank() || fid.isBlank() || !pouch.hasUnwrapKey()) return
+        val factoryId = runCatching { UUID.fromString(fid) }.getOrNull() ?: return
         PadLog.info("BagSession", "catalog loading")
         val box = try {
             factory.padInbox(base, fid, tok)
@@ -361,7 +401,10 @@ class BagSession(
         }
         var ok = 0
         var failed = 0
+        val inbox = LinkedHashSet<UUID>(box.closures.size)
         for (ref in box.closures) {
+            inbox.add(ref.assetId)
+            if (pouch.isDeleted(ref.assetId)) continue
             val t = try {
                 factory.padPullClosure(base, fid, ref.assetId.toString(), tok)
             } catch (_: LoginRejected) {
@@ -369,7 +412,7 @@ class BagSession(
                 continue
             }
             try {
-                pouch.cacheTransit(factoryId, personId, t, sess.unwrapKey)
+                pouch.cacheTransit(factoryId, personId, t)
                 ok++
             } catch (_: PouchRejected) {
                 failed++
@@ -377,7 +420,32 @@ class BagSession(
                 failed++
             }
         }
+        reclaimMissingPersonal(inbox)
         PadLog.info("BagSession", "catalog done listed=${box.closures.size} ok=$ok fail=$failed")
+        persistPouch(store, pouch)
+    }
+
+    /** 厂端单方面删了个人级、本机还在且未记账删除时，标脏回传。 */
+    private fun reclaimMissingPersonal(inbox: Set<UUID>) {
+        pouch.listCachedProcesses()
+            .filter { it.level == Pouch.LEVEL_PERSONAL && it.id !in inbox }
+            .forEach { pouch.noteUnsynced(it.id) }
+        pouch.exportClosures()
+            .filter { it.kind == Pouch.KIND_PROJECT && it.level == Pouch.LEVEL_PERSONAL && it.assetId !in inbox }
+            .forEach { pouch.noteUnsynced(it.assetId) }
+    }
+
+    private fun pullOne(base: String, fid: String, tok: String, id: UUID) {
+        val factoryId = runCatching { UUID.fromString(fid) }.getOrNull() ?: return
+        val personId = pouch.personId() ?: return
+        val t = try {
+            factory.padPullClosure(base, fid, id.toString(), tok)
+        } catch (e: LoginRejected) {
+            PadLog.warn("BagSession", "pull $id ${e.code}")
+            return
+        }
+        runCatching { pouch.cacheTransit(factoryId, personId, t) }
+            .onFailure { PadLog.warn("BagSession", "pull $id ${it.message}") }
     }
 
     private fun saveVault(sess: PadLoginResult) {
@@ -432,6 +500,8 @@ class BagSession(
             token = saved.token
             devices = store.loadDevices().ifEmpty { saved.devices }
             val person = store.loadPerson()
+            adoptOriginFromDevices()
+            persistPouch(store, pouch)
             edit {
                 it.copy(
                     personName = saved.personName.ifBlank { person?.displayName.orEmpty() },
@@ -442,11 +512,8 @@ class BagSession(
                     error = null,
                 )
             }
-            val serial = serials.read().trim()
-            if (serial.isNotEmpty()) {
-                runCatching { ensureFactoryArm(serial) }
-            }
             PadLog.info("BagSession", "restore ok")
+            syncWithFactory()
         } catch (_: Exception) {
             PadLog.warn("BagSession", "restore failed")
             dropPersistedSession()
@@ -454,7 +521,20 @@ class BagSession(
         }
     }
 
-    /** 去空白、忽略大小写；号对上或互相包含就算本厂设备。 */
+    /** 编号只跟本厂 Client 短号，不表示已经连上机械臂。 */
+    private fun adoptOriginFromDevices() {
+        val listed = devices.map { it.shortCode.trim() }.filter { AssetCode.validClientOrigin(it) }.distinct()
+        val saved = identity.clientShortCode.trim()
+        val held = pouch.origin()
+        val short = when {
+            held != null && (listed.isEmpty() || held in listed) -> held
+            AssetCode.validClientOrigin(saved) && (listed.isEmpty() || saved in listed) -> saved
+            listed.isNotEmpty() -> listed[0]
+            else -> return
+        }
+        if (pouch.origin() != short) pouch.setOrigin(short)
+        if (identity.clientShortCode != short) identity.clientShortCode = short
+    }
     private fun findLocalDevice(serial: String): PadDevice? {
         val want = foldSerial(serial)
         if (want.isEmpty()) return null

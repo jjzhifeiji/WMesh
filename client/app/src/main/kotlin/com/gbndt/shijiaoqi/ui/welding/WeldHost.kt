@@ -1,7 +1,5 @@
 package com.gbndt.shijiaoqi.ui.welding
 
-import com.gbndt.shijiaoqi.domain.shared.ProcessChoice
-import com.gbndt.shijiaoqi.domain.shared.ProjectChoice
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import java.util.UUID
@@ -28,4 +26,16 @@ interface WeldShellHost {
     fun cancelAddProcessVariant() {}
     suspend fun loadProcessFromPouch(id: UUID): com.gbndt.shijiaoqi.model.WeldProcess? = null
     fun saveProcessFromPouch(id: UUID?, process: com.gbndt.shijiaoqi.model.WeldProcess) {}
+    fun createPouchProject(name: String) {}
+    fun deletePouchProject(id: UUID) {}
+    fun deleteProcessFromPouch(id: UUID) {}
+}
+
+/** 袋操作失败给操作工看的短句。 */
+fun pouchUserMessage(e: Throwable): String = when (e.message) {
+    "asset origin code is not assigned" -> "本机短号未就绪"
+    "asset is not copyable" -> "保密工艺不能改"
+    "forbidden" -> "不能删除当前工程或非个人级"
+    "still referenced" -> "厂端工程还在用这份工艺"
+    else -> e.message ?: "操作失败"
 }

@@ -2,6 +2,7 @@ package com.gbndt.shijiaoqi.ui.theme
 
 import android.app.Activity
 import android.graphics.Color
+import android.graphics.drawable.ColorDrawable
 import android.os.Build
 import android.view.View
 import android.view.Window
@@ -48,10 +49,17 @@ fun KeepFullscreen() {
     val view = LocalView.current
     if (view.isInEditMode) return
     SideEffect {
-        val window = view.findDialogWindow()
+        val dialogWindow = view.findDialogWindow()
+        val window = dialogWindow
             ?: (view.context as? Activity)?.window
             ?: return@SideEffect
         hideSystemBars(window, view)
+        // 弹窗窗口默认透明，焊道会透过来。
+        if (dialogWindow != null) {
+            dialogWindow.setBackgroundDrawable(ColorDrawable(0xFFF5F5F5.toInt()))
+            dialogWindow.statusBarColor = 0xFFF5F5F5.toInt()
+            dialogWindow.navigationBarColor = 0xFFF5F5F5.toInt()
+        }
     }
 }
 

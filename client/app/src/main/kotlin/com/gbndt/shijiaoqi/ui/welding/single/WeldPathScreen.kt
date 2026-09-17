@@ -54,7 +54,6 @@ import kotlinx.coroutines.TimeoutCancellationException
 import kotlin.math.roundToInt
 import androidx.compose.ui.platform.LocalViewConfiguration
 import androidx.compose.ui.text.input.KeyboardType
-import com.gbndt.shijiaoqi.ui.project.ClosureProcessPicker
 import com.gbndt.shijiaoqi.ui.navigation.LocalTeach
 import com.gbndt.shijiaoqi.ui.theme.KeepFullscreen
 import com.gbndt.shijiaoqi.ui.welding.*
@@ -101,7 +100,6 @@ fun WeldPathScreen(
     var cornerWeldInitialParams by remember { mutableStateOf<com.gbndt.shijiaoqi.model.single.CornerGroupParams?>(null) }
     var show3DViewer by remember { mutableStateOf(false) }
     var weldPathToDeleteIndex by remember { mutableStateOf(-1) }
-    var showProcessPicker by remember { mutableStateOf(false) }
 
     if (show3DViewer) {
         Path3DViewerDialog(
@@ -157,18 +155,18 @@ fun WeldPathScreen(
                                 viewModel?.cancelAddProcessVariant()
                                 viewModel?.selectedWeldPathIndex = index
                                 viewModel?.refreshPouchLists()
-                                showProcessPicker = true
+                                onNavigateToProcessManagement(true)
                             },
                             onAddProcessVariant = {
                                 viewModel?.selectedWeldPathIndex = index
                                 viewModel?.beginAddProcessVariant(index)
                                 viewModel?.refreshPouchLists()
-                                showProcessPicker = true
+                                onNavigateToProcessManagement(true)
                             },
                             onReplaceExtraProcess = { extraIdx ->
                                 viewModel?.beginReplaceExtraProcess(index, extraIdx)
                                 viewModel?.refreshPouchLists()
-                                showProcessPicker = true
+                                onNavigateToProcessManagement(true)
                             },
                             onToggleExtraEnabled = { extraIdx -> viewModel?.toggleExtraProcessEnabled(index, extraIdx) },
                             onDeleteExtraProcess = { extraIdx -> viewModel?.deleteExtraProcess(index, extraIdx) },
@@ -494,19 +492,6 @@ fun WeldPathScreen(
             )
         }
     }
-
-    ClosureProcessPicker(
-        visible = showProcessPicker,
-        processes = ui.shell.pouchProcesses,
-        onPick = { id ->
-            viewModel?.bindProcessFromPouch(id)
-            showProcessPicker = false
-        },
-        onDismiss = {
-            viewModel?.cancelAddProcessVariant()
-            showProcessPicker = false
-        },
-    )
 
     // Missing Process Dialog
     if (ui.isMissingProcessDialogVisible) {

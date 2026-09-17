@@ -49,6 +49,7 @@ import com.gbndt.shijiaoqi.ui.welding.busy
 import com.gbndt.shijiaoqi.ui.welding.isPaused
 import com.gbndt.shijiaoqi.ui.welding.isSimulating
 import com.gbndt.shijiaoqi.ui.welding.isWelding
+import com.gbndt.shijiaoqi.ui.welding.pouchUserMessage
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -106,9 +107,9 @@ class TBarWeldViewModel @Inject constructor(
         pouch.processes,
     ) { s, projects, processes ->
         s.copy(shell = s.shell.copy(pouchProjects = projects, pouchProcesses = processes))
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), TBarUiState())
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, TBarUiState())
     override val shellUi: StateFlow<WeldShellUi> =
-        uiState.map { it.shell }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), WeldShellUi())
+        uiState.map { it.shell }.stateIn(viewModelScope, SharingStarted.Eagerly, WeldShellUi())
 
     var selectedWeldPathIndex: Int
         get() = _uiState.value.selectedWeldPathIndex
@@ -282,13 +283,44 @@ class TBarWeldViewModel @Inject constructor(
         viewModelScope.launch { pouch.refresh() }
     }
 
-    override suspend fun loadProcessFromPouch(id: UUID) = pouch.openProcess(id)
+    override suspend fun loadProcessFromPouch(id: UUID) =
+        if (pouch.processes.value.firstOrNull { it.id == id }?.copyable == false) null
+        else pouch.openProcess(id)
 
     override fun saveProcessFromPouch(id: UUID?, process: WeldProcess) {
         viewModelScope.launch {
             runCatching { pouch.saveProcess(id, process) }
                 .onSuccess { refreshPouchLists() }
-                .onFailure { e -> toast(if (e.message == "asset is not copyable") "保密工艺不能改" else (e.message ?: "无法保存工艺")) }
+                .onFailure { e -> toast(pouchUserMessage(e)) }
+        }
+    }
+
+    override fun createPouchProject(name: String) {
+        viewModelScope.launch {
+            runCatching {
+                val id = pouch.issueProject(name, TBarProject.encode(emptyList()))
+                pouch.activate(id)
+                pouchProjectId = id
+                weldPaths.clear()
+                addWeldPath()
+                patch { it.copy(shell = it.shell.copy(currentProjectName = name)) }
+            }.onFailure { e -> toast(pouchUserMessage(e)) }
+        }
+    }
+
+    override fun deletePouchProject(id: UUID) {
+        viewModelScope.launch {
+            runCatching { pouch.deletePersonal(id) }
+                .onSuccess { refreshPouchLists() }
+                .onFailure { e -> toast(pouchUserMessage(e)) }
+        }
+    }
+
+    override fun deleteProcessFromPouch(id: UUID) {
+        viewModelScope.launch {
+            runCatching { pouch.deletePersonal(id) }
+                .onSuccess { refreshPouchLists() }
+                .onFailure { e -> toast(pouchUserMessage(e)) }
         }
     }
 
@@ -578,7 +610,6 @@ class TBarWeldViewModel @Inject constructor(
             try {
                 if (!bindProcesses()) return@launch
                 val scripts = toScripts() ?: return@launch
-                pouch.factoryArmError()?.let { toast(it); return@launch }
                 val resume = stopResume
                 stopResume = null
                 val lua = try {

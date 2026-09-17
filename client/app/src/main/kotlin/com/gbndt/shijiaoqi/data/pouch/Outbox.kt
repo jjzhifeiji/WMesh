@@ -45,6 +45,7 @@ internal object LedgerCodec {
         facts: List<PendingFact>,
         uploads: List<HeldUpload>,
         dirty: List<UUID> = emptyList(),
+        deleted: List<UUID> = emptyList(),
         copyable: Map<UUID, Boolean> = emptyMap(),
         synced: Map<UUID, ByteArray> = emptyMap(),
     ): String = json.encodeToString(
@@ -65,6 +66,7 @@ internal object LedgerCodec {
                 )
             },
             dirty = dirty.map { it.toString() },
+            deleted = deleted.map { it.toString() },
             copyable = copyable.map { FlagDto(it.key.toString(), it.value) },
             synced = synced.map { HashDto(it.key.toString(), b64(it.value)) },
         ),
@@ -95,6 +97,7 @@ internal object LedgerCodec {
                 )
             },
             dirty = dto.dirty.mapNotNull { runCatching { UUID.fromString(it) }.getOrNull() },
+            deleted = dto.deleted.mapNotNull { runCatching { UUID.fromString(it) }.getOrNull() },
             copyable = dto.copyable.associate { UUID.fromString(it.id) to it.copyable },
             synced = dto.synced.associate { UUID.fromString(it.id) to unb64(it.digest) },
         )
@@ -109,6 +112,7 @@ internal object LedgerCodec {
         val facts: List<FactDto> = emptyList(),
         val uploads: List<UploadDto> = emptyList(),
         val dirty: List<String> = emptyList(),
+        val deleted: List<String> = emptyList(),
         val copyable: List<FlagDto> = emptyList(),
         val synced: List<HashDto> = emptyList(),
     )
@@ -150,6 +154,7 @@ internal data class LedgerState(
     val facts: List<PendingFact> = emptyList(), // 待汇聚事实
     val uploads: List<HeldUpload> = emptyList(), // 待发点云/图片
     val dirty: List<UUID> = emptyList(), // 本机已改未同步
+    val deleted: List<UUID> = emptyList(), // 本机已删待告知厂端
     val copyable: Map<UUID, Boolean> = emptyMap(), // 可否另存
     val synced: Map<UUID, ByteArray> = emptyMap(), // 上次对齐的内容摘要
 )

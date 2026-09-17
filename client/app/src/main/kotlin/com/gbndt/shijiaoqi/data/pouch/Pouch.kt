@@ -66,6 +66,7 @@ class Pouch {
     private var roles: Set<String> = emptySet()
     private val copyableById = LinkedHashMap<UUID, Boolean>()
     private val dirty = LinkedHashSet<UUID>()
+    private val deleted = LinkedHashSet<UUID>()
     private val synced = LinkedHashMap<UUID, ByteArray>()
 
     fun login(unwrapKey: ByteArray, personId: UUID, persistUnwrapKey: Boolean) {
@@ -118,6 +119,7 @@ class Pouch {
         byCode.clear()
         copyableById.clear()
         dirty.clear()
+        deleted.clear()
         synced.clear()
         origin = null
         nextN[KIND_PROCESS] = 1L
@@ -135,6 +137,8 @@ class Pouch {
     }
 
     fun boundClient(): UUID? = clientId
+
+    fun personId(): UUID? = person
 
     fun setWelding(value: Boolean) {
         welding = value
@@ -175,7 +179,9 @@ class Pouch {
     /** 袋内全部工艺信封，与厂端工艺列表对齐，不解开正文。 */
     fun listCachedProcesses(): List<CachedMember> {
         val projectIds = closures.keys
-        return items.values.filter { it.id !in projectIds }.map {
+        val who = person
+        return items.values.filter { it.id !in projectIds }.mapNotNull {
+            if (it.level == LEVEL_PERSONAL && it.ownerId != who) return@mapNotNull null
             CachedMember(
                 id = it.id,
                 kind = KIND_PROCESS,
@@ -312,8 +318,9 @@ class Pouch {
             for (m in members) {
                 val plain = Wm2.open(dek, m.content, Wm2.clientTransitAad(fid, pid, uuidBytes(m.id), m.revision))
                 try {
+                    if (m.id in deleted || isDirty(m.id)) continue
+                    rememberCopyable(m.id, m.copyable)
                     if (putPlainIfNewer(m.id, m.level, m.name, m.revision, m.ownerId, plain)) {
-                        rememberCopyable(m.id, m.copyable)
                         n++
                     }
                 } finally {
@@ -328,6 +335,7 @@ class Pouch {
 
     /** 解开厂端过路包后写入本机袋；工程明文不封，工艺密文用时再解。 */
     fun cacheTransit(factoryId: UUID, personId: UUID, t: TransitClosure, wrapKey: ByteArray? = null) {
+        if (t.assetId in deleted) return
         val plains = ArrayList<ClosureMemberPlain>(t.members.size)
         try {
             if (t.wrap.isEmpty()) {
@@ -382,17 +390,17 @@ class Pouch {
             val packKind = t.kind.ifBlank { plains.firstOrNull()?.kind.orEmpty() }
             if (packKind == KIND_PROCESS) {
                 for (m in plains) {
-                    applyRemotePlain(m)
+                    if (m.id !in deleted) applyRemotePlain(m)
                 }
                 return
             }
             val root = plains.firstOrNull { it.id == t.assetId } ?: plains.firstOrNull() ?: throw PouchRejected(ERR_INCOMPLETE)
-            if (!isDirty(root.id)) {
+            if (root.id !in deleted && !isDirty(root.id)) {
                 putProject(root)
                 markSynced(root.id, root.digest)
             }
             for (m in plains) {
-                if (m.kind == KIND_PROCESS) applyRemotePlain(m)
+                if (m.kind == KIND_PROCESS && m.id !in deleted) applyRemotePlain(m)
             }
         } finally {
             plains.forEach { Wm2.zero(it.content) }
@@ -459,6 +467,27 @@ class Pouch {
         dropUnreferenced(old.members)
     }
 
+    /** 只删本机个人级；厂级/平台级原件不动。 */
+    fun dropPersonal(id: UUID) {
+        if (!loggedIn()) throw PouchRejected(ERR_UNAUTHORIZED)
+        if (welding) throw PouchRejected(ERR_FORBIDDEN)
+        closures[id]?.let { cl ->
+            if (cl.level != LEVEL_PERSONAL) throw PouchRejected(ERR_FORBIDDEN)
+            val owner = cl.members.firstOrNull()?.ownerId
+            if (owner != person) throw PouchRejected(ERR_FORBIDDEN)
+            uncache(id)
+            rememberDeleted(id)
+            forgetAsset(id)
+            return
+        }
+        val env = items[id] ?: throw PouchRejected(ERR_NOT_FOUND)
+        if (env.level != LEVEL_PERSONAL || env.ownerId != person) throw PouchRejected(ERR_FORBIDDEN)
+        unpinPersonal(id)
+        items.remove(id)
+        rememberDeleted(id)
+        forgetAsset(id)
+    }
+
     fun open(id: UUID): ByteArray {
         if (!loggedIn()) throw SecurityException("unauthorized")
         val who = person ?: throw SecurityException("unauthorized")
@@ -497,6 +526,7 @@ class Pouch {
         val t = code.trim()
         if (!AssetCode.validClientOrigin(t)) throw PouchRejected(ERR_CODE_MISSING)
         origin = t
+        stampPendingCodes()
     }
 
     fun origin(): String? = origin
@@ -512,12 +542,8 @@ class Pouch {
 
     fun issuePersonal(kind: String, name: String, content: ByteArray): IssuedAsset {
         if (!loggedIn()) throw PouchRejected(ERR_UNAUTHORIZED)
-        val short = origin ?: throw PouchRejected(ERR_CODE_MISSING)
-        val n = nextN[kind] ?: 1L
-        val code = AssetCode.format(kind, short, n)
         val id = UUID.randomUUID()
-        bindCode(id, code)
-        nextN[kind] = n + 1
+        val code = takeNextCode(kind)
         if (kind == KIND_PROJECT) {
             putProject(
                 ClosureMemberPlain(
@@ -528,10 +554,50 @@ class Pouch {
             )
         } else {
             putPlain(id, LEVEL_PERSONAL, name, 1, person, content)
+            if (code.isNotBlank()) bindCode(id, code)
         }
         rememberCopyable(id, true)
         markDirty(id)
         return IssuedAsset(id, kind, code, LEVEL_PERSONAL)
+    }
+
+    /** 还没连臂就先建，短号空着；连上再发编号。 */
+    private fun takeNextCode(kind: String): String {
+        val short = origin ?: return ""
+        val n = nextN[kind] ?: 1L
+        val code = AssetCode.format(kind, short, n)
+        nextN[kind] = n + 1
+        return code
+    }
+
+    /** 连臂拿到短号后，给尚未编号的个人级补号。 */
+    private fun stampPendingCodes() {
+        val short = origin ?: return
+        stampPending(KIND_PROCESS, short)
+        stampPending(KIND_PROJECT, short)
+    }
+
+    private fun stampPending(kind: String, short: String) {
+        for (id in uncodedPersonal(kind)) {
+            val n = nextN[kind] ?: 1L
+            val code = AssetCode.format(kind, short, n)
+            nextN[kind] = n + 1
+            bindCode(id, code)
+            closures[id]?.let { c ->
+                closures[id] = c.copy(members = c.members.map { m ->
+                    if (m.id == id) m.copy(code = code) else m
+                })
+            }
+        }
+    }
+
+    private fun uncodedPersonal(kind: String): List<UUID> {
+        val ids = when (kind) {
+            KIND_PROCESS -> items.keys.filter { kindOf(it) == KIND_PROCESS && levelOf(it) == LEVEL_PERSONAL }
+            KIND_PROJECT -> closures.filter { it.value.level == LEVEL_PERSONAL }.keys
+            else -> emptyList()
+        }
+        return ids.filter { codes[it].isNullOrBlank() }.sortedBy { it.toString() }
     }
 
     fun bindCode(id: UUID, code: String) {
@@ -586,6 +652,7 @@ class Pouch {
         facts = facts,
         uploads = uploads,
         dirty = dirty.toList(),
+        deleted = deleted.toList(),
         copyable = copyableById.toMap(),
         synced = synced.mapValues { it.value.copyOf() },
     )
@@ -607,6 +674,8 @@ class Pouch {
         uploads.addAll(state.uploads)
         dirty.clear()
         dirty.addAll(state.dirty)
+        deleted.clear()
+        deleted.addAll(state.deleted)
         copyableById.clear()
         copyableById.putAll(state.copyable)
         synced.clear()
@@ -656,8 +725,28 @@ class Pouch {
             if (id !in ref) {
                 items.remove(id)
                 Wm2.zero(projectBodies.remove(id))
+                forgetAsset(id)
             }
         }
+    }
+
+    private fun unpinPersonal(processId: UUID) {
+        for (pid in closures.keys.toList()) {
+            val cl = closures[pid] ?: continue
+            if (cl.level != LEVEL_PERSONAL) continue
+            val root = cl.members.firstOrNull() ?: continue
+            if (root.deps.none { it.id == processId }) continue
+            val next = root.deps.filter { it.id != processId }
+            closures[pid] = cl.copy(members = listOf(root.copy(deps = next)) + cl.members.drop(1))
+            markDirty(pid)
+        }
+    }
+
+    private fun forgetAsset(id: UUID) {
+        codes.remove(id)?.let { byCode.remove(it) }
+        dirty.remove(id)
+        synced.remove(id)
+        copyableById.remove(id)
     }
 
     private fun referencedIds(): Set<UUID> {
@@ -745,6 +834,21 @@ class Pouch {
 
     fun dirtyIds(): List<UUID> = dirty.toList()
 
+    fun isDeleted(id: UUID): Boolean = id in deleted
+
+    fun deletedIds(): List<UUID> = deleted.toList()
+
+    fun forgetDeleted(id: UUID) {
+        deleted.remove(id)
+    }
+
+    /** 厂端没有这份个人级时标脏，回连再上传。 */
+    fun noteUnsynced(id: UUID) {
+        if (id in deleted) return
+        if (!items.containsKey(id) && !closures.containsKey(id)) return
+        markDirty(id)
+    }
+
     fun copyableOf(id: UUID, level: String = levelOf(id)): Boolean =
         copyableById[id] ?: (level != LEVEL_PLATFORM)
 
@@ -809,8 +913,13 @@ class Pouch {
         }
     }
 
+    private fun rememberDeleted(id: UUID) {
+        deleted.add(id)
+        dirty.remove(id)
+    }
+
     private fun applyRemotePlain(m: ClosureMemberPlain) {
-        if (isDirty(m.id)) return
+        if (m.id in deleted || isDirty(m.id)) return
         putPlain(m.id, m.level, m.name, m.revision, m.ownerId, m.content)
         rememberCopyable(m.id, m.copyable)
         markSynced(m.id, m.digest)
@@ -828,7 +937,6 @@ class Pouch {
     private fun markSynced(id: UUID, digest: ByteArray) {
         dirty.remove(id)
         synced[id] = digest.copyOf()
-        rememberCopyable(id, copyableOf(id))
     }
 
     companion object {

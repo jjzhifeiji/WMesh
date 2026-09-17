@@ -90,7 +90,6 @@ fun MultiLayerScreen(
     var showDeleteDialog by remember { mutableStateOf(false) }
     var show3DViewer by remember { mutableStateOf(false) }
     var weldPathToDeleteIndex by remember { mutableStateOf(-1) }
-    var showProcessPicker by remember { mutableStateOf(false) }
 
     if (show3DViewer) {
         Path3DViewerDialog(
@@ -153,13 +152,13 @@ fun MultiLayerScreen(
                                 viewModel?.selectedMultiLayerPathIndex = index
                                 viewModel?.selectedPassIndex = -1
                                 viewModel?.refreshPouchLists()
-                                showProcessPicker = true
+                                onNavigateToProcessManagement(true)
                             },
                             onProcessPass = { passIndex ->
                                 viewModel?.selectedMultiLayerPathIndex = index
                                 viewModel?.selectedPassIndex = passIndex
                                 viewModel?.refreshPouchLists()
-                                showProcessPicker = true
+                                onNavigateToProcessManagement(true)
                             },
                             onRename = {
                                 viewModel?.selectedMultiLayerPathIndex = index
@@ -468,16 +467,6 @@ fun MultiLayerScreen(
             }
         )
     }
-
-    ClosureProcessPicker(
-        visible = showProcessPicker,
-        processes = ui.shell.pouchProcesses,
-        onPick = { id ->
-            viewModel?.bindProcessFromPouch(id)
-            showProcessPicker = false
-        },
-        onDismiss = { showProcessPicker = false },
-    )
 
     // Missing Process Dialog
     if (ui.isMissingProcessDialogVisible) {

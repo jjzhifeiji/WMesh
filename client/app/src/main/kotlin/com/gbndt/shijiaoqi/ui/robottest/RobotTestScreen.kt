@@ -19,6 +19,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.gbndt.shijiaoqi.data.log.PadLog
 import com.gbndt.shijiaoqi.model.CapturedPoint
 import com.gbndt.shijiaoqi.model.Oscillation
 import com.gbndt.shijiaoqi.model.Pose
@@ -39,6 +40,7 @@ fun RobotTestScreen(
     val context = LocalContext.current
     LaunchedEffect(Unit) {
         viewModel.toastEvent.collect { message ->
+            PadLog.toast(message)
             Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
         }
     }

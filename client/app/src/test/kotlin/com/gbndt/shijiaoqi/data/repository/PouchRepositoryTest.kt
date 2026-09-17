@@ -73,5 +73,23 @@ class PouchRepositoryTest {
         assertEquals(1, repo.projects.value.count { it.active && it.id == rootId })
         val got = repo.openProjectBytes(rootId)
         assertArrayEquals(body, got)
+        assertEquals("factory", repo.projects.value.single { it.id == rootId }.level)
+    }
+
+    @Test
+    fun issueThenDeletePersonalProcess() = runBlocking {
+        val cid = UUID.randomUUID()
+        val bag = BagSession(
+            { "ARM-1" },
+            FakeFactory(devices = listOf(PadDevice(cid.toString(), "焊机", "ARM-1", "C0008"))),
+            MemoryIdentityStore(),
+            MemoryEnvelopeStore(),
+        )
+        bag.login("http://f", UUID.randomUUID().toString(), "op", "p")
+        val repo = PouchRepository(bag, SessionGate(), Dispatchers.Unconfined, kotlinx.coroutines.CoroutineScope(Dispatchers.Unconfined))
+        val issued = repo.issueProcess("焊", """{"name":"焊"}""".toByteArray())
+        assertEquals("personal", repo.processes.value.single { it.id == issued.id }.level)
+        repo.deletePersonal(issued.id)
+        assertEquals(0, repo.processes.value.size)
     }
 }
