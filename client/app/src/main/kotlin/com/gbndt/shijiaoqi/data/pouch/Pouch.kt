@@ -27,6 +27,7 @@ data class TransitMember(
     val digest: ByteArray = ByteArray(0), // 内容 SHA-256
     val deps: List<AssetDep> = emptyList(), // 工艺必须空
     val code: String = "", // 只读编号，跟身份走
+    val copyable: Boolean = true, // 可否另存；否即保密
 )
 
 /** 厂端过站包；工程明文 Wrap 为空，工艺成员仍是过站信封。 */
@@ -63,6 +64,9 @@ class Pouch {
     private val facts = ArrayList<PendingFact>()
     private val uploads = ArrayList<HeldUpload>()
     private var roles: Set<String> = emptySet()
+    private val copyableById = LinkedHashMap<UUID, Boolean>()
+    private val dirty = LinkedHashSet<UUID>()
+    private val synced = LinkedHashMap<UUID, ByteArray>()
 
     fun login(unwrapKey: ByteArray, personId: UUID, persistUnwrapKey: Boolean) {
         require(unwrapKey.size == Wm2.KEY_SIZE)
@@ -112,6 +116,9 @@ class Pouch {
         uploads.clear()
         codes.clear()
         byCode.clear()
+        copyableById.clear()
+        dirty.clear()
+        synced.clear()
         origin = null
         nextN[KIND_PROCESS] = 1L
         nextN[KIND_PROJECT] = 1L
@@ -160,6 +167,7 @@ class Pouch {
                 revision = d.revision,
                 digest = d.digest.copyOf(),
                 ownerId = env?.ownerId,
+                copyable = copyableOf(d.id, env?.level.orEmpty()),
             )
         }
     }
@@ -177,6 +185,7 @@ class Pouch {
                 revision = it.revision,
                 digest = ByteArray(0),
                 ownerId = it.ownerId,
+                copyable = copyableOf(it.id, it.level),
             )
         }
     }
@@ -188,6 +197,7 @@ class Pouch {
         list.forEach { c ->
             c.members.forEach { m ->
                 if (m.code.isNotBlank()) bindCode(m.id, m.code)
+                rememberCopyable(m.id, m.copyable)
             }
         }
     }
@@ -226,15 +236,18 @@ class Pouch {
     }
 
     fun putPlainIfNewer(id: UUID, level: String, name: String, revision: Long, ownerId: UUID?, plain: ByteArray): Boolean {
+        if (isDirty(id)) return false
         val held = items[id]
         if (held != null && held.revision >= revision) return false
         putPlain(id, level, name, revision, ownerId, plain)
+        markSynced(id, Digest.sum(plain))
         return true
     }
 
     fun rewrite(id: UUID, plain: ByteArray) {
         items[id]?.let {
             putPlain(id, it.level, it.name, it.revision, it.ownerId, plain)
+            markDirty(id)
             return
         }
         closures[id]?.let { c ->
@@ -244,8 +257,10 @@ class Pouch {
                     id = m.id, kind = m.kind, level = m.level, name = m.name,
                     status = m.status, revision = m.revision, content = plain,
                     digest = Digest.sum(plain), deps = m.deps, ownerId = m.ownerId, code = m.code,
+                    copyable = m.copyable,
                 ),
             )
+            markDirty(id)
             return
         }
         throw PouchRejected(ERR_NOT_FOUND)
@@ -279,10 +294,12 @@ class Pouch {
                     status = m.status.ifBlank { STATUS_AVAILABLE }, revision = m.revision,
                     digest = contentDigest,
                     deps = m.deps, ownerId = m.ownerId, code = m.code,
+                    copyable = m.copyable,
                 ),
             ),
         )
         if (m.code.isNotBlank()) bindCode(m.id, m.code)
+        rememberCopyable(m.id, m.copyable)
     }
 
     fun ingestTransit(factoryId: UUID, personId: UUID, wrap: ByteArray, members: List<TransitMember>): Int {
@@ -295,7 +312,10 @@ class Pouch {
             for (m in members) {
                 val plain = Wm2.open(dek, m.content, Wm2.clientTransitAad(fid, pid, uuidBytes(m.id), m.revision))
                 try {
-                    if (putPlainIfNewer(m.id, m.level, m.name, m.revision, m.ownerId, plain)) n++
+                    if (putPlainIfNewer(m.id, m.level, m.name, m.revision, m.ownerId, plain)) {
+                        rememberCopyable(m.id, m.copyable)
+                        n++
+                    }
                 } finally {
                     Wm2.zero(plain)
                 }
@@ -326,6 +346,7 @@ class Pouch {
                             deps = m.deps,
                             ownerId = m.ownerId,
                             code = m.code,
+                            copyable = m.copyable,
                         ),
                     )
                 }
@@ -350,6 +371,7 @@ class Pouch {
                                 deps = m.deps,
                                 ownerId = m.ownerId,
                                 code = m.code,
+                                copyable = m.copyable,
                             ),
                         )
                     }
@@ -360,16 +382,17 @@ class Pouch {
             val packKind = t.kind.ifBlank { plains.firstOrNull()?.kind.orEmpty() }
             if (packKind == KIND_PROCESS) {
                 for (m in plains) {
-                    putPlain(m.id, m.level, m.name, m.revision, m.ownerId, m.content)
+                    applyRemotePlain(m)
                 }
                 return
             }
             val root = plains.firstOrNull { it.id == t.assetId } ?: plains.firstOrNull() ?: throw PouchRejected(ERR_INCOMPLETE)
-            putProject(root)
+            if (!isDirty(root.id)) {
+                putProject(root)
+                markSynced(root.id, root.digest)
+            }
             for (m in plains) {
-                if (m.kind == KIND_PROCESS) {
-                    putPlain(m.id, m.level, m.name, m.revision, m.ownerId, m.content)
-                }
+                if (m.kind == KIND_PROCESS) applyRemotePlain(m)
             }
         } finally {
             plains.forEach { Wm2.zero(it.content) }
@@ -383,10 +406,16 @@ class Pouch {
         if (snap.kind != KIND_PROJECT) throw PouchRejected(ERR_FORBIDDEN)
         val held = closures[snap.assetId]
         if (held != null && held.revision >= snap.revision) return
+        if (isDirty(snap.assetId)) return
         bindMemberCodes(snap.members)
         val old = held?.members.orEmpty()
         for (m in snap.members) {
-            if (m.kind == KIND_PROJECT) putProject(m) else putPlain(m.id, m.level, m.name, m.revision, m.ownerId, m.content)
+            if (m.kind == KIND_PROJECT) {
+                putProject(m)
+            } else if (!isDirty(m.id)) {
+                putPlain(m.id, m.level, m.name, m.revision, m.ownerId, m.content)
+                rememberCopyable(m.id, m.copyable)
+            }
         }
         closures[snap.assetId] = metaFromSnap(snap.copy(targetClientId = null))
         dropUnreferenced(old)
@@ -494,12 +523,14 @@ class Pouch {
                 ClosureMemberPlain(
                     id = id, kind = KIND_PROJECT, level = LEVEL_PERSONAL, name = name,
                     status = STATUS_AVAILABLE, revision = 1, content = content,
-                    digest = Digest.sum(content), ownerId = person, code = code,
+                    digest = Digest.sum(content), ownerId = person, code = code, copyable = true,
                 ),
             )
         } else {
             putPlain(id, LEVEL_PERSONAL, name, 1, person, content)
         }
+        rememberCopyable(id, true)
+        markDirty(id)
         return IssuedAsset(id, kind, code, LEVEL_PERSONAL)
     }
 
@@ -554,6 +585,9 @@ class Pouch {
         codes = codes,
         facts = facts,
         uploads = uploads,
+        dirty = dirty.toList(),
+        copyable = copyableById.toMap(),
+        synced = synced.mapValues { it.value.copyOf() },
     )
 
     fun restoreLedger(raw: String) {
@@ -571,6 +605,12 @@ class Pouch {
         facts.addAll(state.facts)
         uploads.clear()
         uploads.addAll(state.uploads)
+        dirty.clear()
+        dirty.addAll(state.dirty)
+        copyableById.clear()
+        copyableById.putAll(state.copyable)
+        synced.clear()
+        state.synced.forEach { (id, hash) -> synced[id] = hash.copyOf() }
     }
 
     fun currentPerson(): UUID? = person
@@ -644,6 +684,7 @@ class Pouch {
             ClosureMemberPlain(
                 id = m.id, kind = m.kind, level = m.level, name = m.name, status = m.status,
                 revision = m.revision, content = plain, digest = m.digest, deps = m.deps, ownerId = m.ownerId, code = m.code,
+                copyable = m.copyable,
             )
         }
         return ClosureSnapshotPlain(
@@ -665,6 +706,7 @@ class Pouch {
             CachedMember(
                 id = it.id, kind = it.kind, level = it.level, name = it.name, status = it.status,
                 revision = it.revision, digest = it.digest.copyOf(), deps = it.deps, ownerId = it.ownerId, code = it.code,
+                copyable = it.copyable,
             )
         },
     )
@@ -699,6 +741,96 @@ class Pouch {
         }
     }
 
+    fun isDirty(id: UUID): Boolean = id in dirty
+
+    fun dirtyIds(): List<UUID> = dirty.toList()
+
+    fun copyableOf(id: UUID, level: String = levelOf(id)): Boolean =
+        copyableById[id] ?: (level != LEVEL_PLATFORM)
+
+    fun levelOf(id: UUID): String = closures[id]?.level ?: items[id]?.level.orEmpty()
+
+    fun kindOf(id: UUID): String = closures[id]?.kind ?: if (items.containsKey(id)) KIND_PROCESS else ""
+
+    fun nameOf(id: UUID): String = closures[id]?.name ?: items[id]?.name.orEmpty()
+
+    fun depsOf(id: UUID): List<AssetDep> = closures[id]?.members?.firstOrNull()?.deps.orEmpty()
+
+    /** 工程钉上这条工艺的当前修订和摘要。 */
+    fun pinProcess(projectId: UUID, processId: UUID) {
+        val cl = closures[projectId] ?: return
+        val root = cl.members.firstOrNull() ?: return
+        val env = items[processId] ?: return
+        val digest = try {
+            Digest.sum(open(processId))
+        } catch (_: Exception) {
+            return
+        }
+        val dep = AssetDep(processId, env.revision, digest)
+        val next = ArrayList<AssetDep>(root.deps.size + 1)
+        var found = false
+        for (d in root.deps) {
+            if (d.id == processId) {
+                next.add(dep)
+                found = true
+            } else {
+                next.add(d)
+            }
+        }
+        if (!found) next.add(dep)
+        closures[projectId] = cl.copy(members = listOf(root.copy(deps = next)) + cl.members.drop(1))
+        markDirty(projectId)
+    }
+
+    /** 上传成功后对齐厂端修订，并清掉脏标记。 */
+    fun acceptRemote(id: UUID, revision: Long, digest: ByteArray) {
+        val plain = open(id)
+        try {
+            items[id]?.let { env ->
+                putPlain(id, env.level, env.name, revision, env.ownerId, plain)
+                rememberCopyable(id, copyableOf(id, env.level))
+                markSynced(id, if (digest.size == 32) digest else Digest.sum(plain))
+                return
+            }
+            closures[id]?.let { c ->
+                val m = c.members.first()
+                putProject(
+                    ClosureMemberPlain(
+                        id = m.id, kind = m.kind, level = m.level, name = m.name,
+                        status = m.status, revision = revision, content = plain,
+                        digest = if (digest.size == 32) digest.copyOf() else Digest.sum(plain),
+                        deps = m.deps, ownerId = m.ownerId, code = m.code, copyable = m.copyable,
+                    ),
+                )
+                markSynced(id, if (digest.size == 32) digest else Digest.sum(plain))
+            }
+        } finally {
+            Wm2.zero(plain)
+        }
+    }
+
+    private fun applyRemotePlain(m: ClosureMemberPlain) {
+        if (isDirty(m.id)) return
+        putPlain(m.id, m.level, m.name, m.revision, m.ownerId, m.content)
+        rememberCopyable(m.id, m.copyable)
+        markSynced(m.id, m.digest)
+    }
+
+    private fun rememberCopyable(id: UUID, copyable: Boolean) {
+        copyableById[id] = copyable
+    }
+
+    private fun markDirty(id: UUID) {
+        dirty.add(id)
+        synced.remove(id)
+    }
+
+    private fun markSynced(id: UUID, digest: ByteArray) {
+        dirty.remove(id)
+        synced[id] = digest.copyOf()
+        rememberCopyable(id, copyableOf(id))
+    }
+
     companion object {
         const val LEVEL_FACTORY = "factory" // 本厂厂级
         const val LEVEL_PLATFORM = "platform" // 已下发平台级
@@ -713,6 +845,7 @@ class Pouch {
         const val ERR_MISMATCH = "closure revision mismatch" // 修订或摘要对不上
         const val ERR_INTEGRITY = "asset integrity check failed" // 摘要核验失败
         const val ERR_NOT_AVAILABLE = "asset is not available" // 工程不可用
+        const val ERR_NOT_COPYABLE = "asset is not copyable" // 保密工艺不得另存
         const val ERR_CODE_MISSING = AssetCode.ERR_MISSING // 缺本机短号
         const val ERR_CODE_CONFLICT = AssetCode.ERR_CONFLICT // 编号冲突
         const val ERR_CODE_EXHAUSTED = AssetCode.ERR_EXHAUSTED // 序号用尽

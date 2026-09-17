@@ -151,6 +151,7 @@ fun WeldPathScreen(
                         WeldPathItem(
                             weldPath = weldPath,
                             isSelected = index == ui.selectedWeldPathIndex,
+                            processVisible = { ui.shell.pouchProcesses.copyableOf(it) },
                             onSelect = { viewModel?.selectedWeldPathIndex = index },
                             onProcess = { 
                                 viewModel?.cancelAddProcessVariant()
@@ -640,7 +641,8 @@ fun WeldPathItem(
     index: Int,
     totalCount: Int,
     onMove: (Int, Int) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    processVisible: (String) -> Boolean = { true },
 ) {
     var itemHeight by remember { mutableStateOf(0) }
     var dragOffset by remember { mutableStateOf(0f) }
@@ -679,27 +681,14 @@ fun WeldPathItem(
                             color = Color(0xFF333333),
                             modifier = Modifier.clickable { onRename() }
                         )
-                        val processInfo = buildAnnotatedString {
-                            withStyle(style = SpanStyle(color = Color(0xFF2196F3), fontWeight = FontWeight.Bold)) {
-                                append(weldPath.process.name)
-                            }
-                            append(" | ")
-                            withStyle(style = SpanStyle(color = Color(0xFF2196F3), fontWeight = FontWeight.Bold)) {
-                                append("${weldPath.process.current}A")
-                            }
-                            append(" | ")
-                            withStyle(style = SpanStyle(color = Color(0xFF2196F3), fontWeight = FontWeight.Bold)) {
-                                append("${weldPath.process.voltage}V")
-                            }
-                            append(" | ")
-                            withStyle(style = SpanStyle(color = Color(0xFF2196F3), fontWeight = FontWeight.Bold)) {
-                                append("${weldPath.process.speed}mm/s")
-                            }
-                            append(" | ")
-                            withStyle(style = SpanStyle(color = Color(0xFF2196F3), fontWeight = FontWeight.Bold)) {
-                                append(weldPath.process.oscillation.type)
-                            }
-                        }
+                        val processInfo = processParamsCaption(
+                            weldPath.process.name,
+                            weldPath.process.current,
+                            weldPath.process.voltage,
+                            weldPath.process.speed,
+                            weldPath.process.oscillation.type,
+                            processVisible(weldPath.processId),
+                        )
                         Text(
                             text = processInfo,
                             fontSize = 12.sp,
@@ -805,7 +794,8 @@ fun WeldPathItem(
                                 index = extraIdx + 1,
                                 onProcess = { onReplaceExtraProcess(extraIdx) },
                                 onToggleEnabled = { onToggleExtraEnabled(extraIdx) },
-                                onDelete = { onDeleteExtraProcess(extraIdx) }
+                                onDelete = { onDeleteExtraProcess(extraIdx) },
+                                copyable = processVisible(slot.processId),
                             )
                         }
                         if (isSelected) {
@@ -839,7 +829,8 @@ private fun ExtraProcessRow(
     index: Int,
     onProcess: () -> Unit,
     onToggleEnabled: () -> Unit,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    copyable: Boolean = true,
 ) {
     val processLabel = slot.process.name.ifBlank { "未选工艺" }
     Surface(
@@ -862,7 +853,14 @@ private fun ExtraProcessRow(
                     color = Color(0xFF00695C)
                 )
                 Text(
-                    text = "${slot.process.current}A | ${slot.process.voltage}V | ${slot.process.speed}mm/s | ${slot.process.oscillation.type}",
+                    text = processParamsCaption(
+                        slot.process.name.ifBlank { "未选工艺" },
+                        slot.process.current,
+                        slot.process.voltage,
+                        slot.process.speed,
+                        slot.process.oscillation.type,
+                        copyable,
+                    ),
                     fontSize = 11.sp,
                     color = Color(0xFF546E7A)
                 )

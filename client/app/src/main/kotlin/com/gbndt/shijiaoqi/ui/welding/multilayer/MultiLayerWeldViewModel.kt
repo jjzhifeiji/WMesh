@@ -40,6 +40,7 @@ import com.gbndt.shijiaoqi.ui.welding.WeldRunUi
 import com.gbndt.shijiaoqi.ui.welding.WeldShellHost
 import com.gbndt.shijiaoqi.ui.welding.WeldShellUi
 import com.gbndt.shijiaoqi.ui.welding.asUiPath
+import com.gbndt.shijiaoqi.ui.welding.copyableOf
 import com.gbndt.shijiaoqi.ui.welding.busy
 import com.gbndt.shijiaoqi.ui.welding.isPaused
 import com.gbndt.shijiaoqi.ui.welding.isSimulating
@@ -176,6 +177,12 @@ class MultiLayerWeldViewModel @Inject constructor(
             currentProcess()?.oscillation = osc
             saveCurrentProject()
         },
+        paramsVisible = {
+            val mp = currentMulti()
+            val id = if (selectedPassIndex == -1) mp?.basePath?.processId.orEmpty()
+            else mp?.passes?.getOrNull(selectedPassIndex)?.processId.orEmpty()
+            _uiState.value.shell.pouchProcesses.copyableOf(id)
+        },
     )
 
     init {
@@ -279,6 +286,16 @@ class MultiLayerWeldViewModel @Inject constructor(
 
     override fun refreshPouchLists() {
         viewModelScope.launch { pouch.refresh() }
+    }
+
+    override suspend fun loadProcessFromPouch(id: UUID) = pouch.openProcess(id)
+
+    override fun saveProcessFromPouch(id: UUID?, process: WeldProcess) {
+        viewModelScope.launch {
+            runCatching { pouch.saveProcess(id, process) }
+                .onSuccess { refreshPouchLists() }
+                .onFailure { e -> toast(if (e.message == "asset is not copyable") "保密工艺不能改" else (e.message ?: "无法保存工艺")) }
+        }
     }
 
     override fun bindProcessFromPouch(processId: UUID?) {

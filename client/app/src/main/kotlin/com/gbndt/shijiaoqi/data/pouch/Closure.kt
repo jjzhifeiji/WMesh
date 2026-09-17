@@ -29,6 +29,7 @@ data class ClosureMemberPlain(
     val deps: List<AssetDep> = emptyList(), // 工艺必须空
     val ownerId: UUID? = null, // 个人级创建人；其余为空
     val code: String = "", // 只读编号，跟身份走
+    val copyable: Boolean = true, // 可否另存；否即保密
 )
 
 /** 一份工程的完整明文快照，不是新身份。 */
@@ -55,6 +56,7 @@ data class CachedMember(
     val deps: List<AssetDep> = emptyList(), // 工艺必须空
     val ownerId: UUID? = null, // 个人级创建人；其余为空
     val code: String = "", // 只读编号，跟身份走
+    val copyable: Boolean = true, // 可否另存；否即保密
 )
 
 /** 已缓存工程闭包元数据，不含工艺正文。 */
@@ -103,6 +105,7 @@ internal object ClosureCodec {
         val deps: List<DepDto> = emptyList(), // 工艺必须空
         val ownerId: String? = null, // 个人级创建人；其余为空
         val code: String = "", // 只读编号，跟身份走
+        val copyable: Boolean = true, // 可否另存；否即保密
     )
 
     @Serializable
@@ -139,6 +142,7 @@ internal object ClosureCodec {
                 deps = it.deps.map { d -> DepDto(d.id.toString(), d.revision, b64(d.digest)) },
                 ownerId = it.ownerId?.toString(),
                 code = it.code,
+                copyable = it.copyable,
             )
         },
     )
@@ -164,6 +168,7 @@ internal object ClosureCodec {
                 deps = it.deps.map { d -> AssetDep(UUID.fromString(d.id), d.revision, unb64(d.digest)) },
                 ownerId = it.ownerId?.let(UUID::fromString),
                 code = it.code,
+                copyable = it.copyable,
             )
         },
     )

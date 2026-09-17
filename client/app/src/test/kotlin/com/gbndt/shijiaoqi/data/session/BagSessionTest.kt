@@ -457,6 +457,8 @@ internal class FakeFactory(
 ) : FactoryGateway {
     var padClosures: List<ClosureRef> = emptyList()
     var padTransits: Map<UUID, TransitClosure> = emptyMap()
+    val padAssets = LinkedHashMap<UUID, RemoteAsset>()
+    val padContents = LinkedHashMap<UUID, ByteArray>()
     private fun policy() = PolicyMeta(0, persistUnwrapKey, keyTtlSeconds)
 
     override fun loginPad(
@@ -486,6 +488,73 @@ internal class FakeFactory(
     var lastPassword: String? = null
     override fun changePassword(baseUrl: String, factoryId: String, token: String, password: String) {
         lastPassword = password
+    }
+
+    override fun getAsset(baseUrl: String, factoryId: String, token: String, assetId: String): RemoteAsset? =
+        padAssets[UUID.fromString(assetId)]
+
+    override fun createPadAsset(
+        baseUrl: String,
+        factoryId: String,
+        token: String,
+        kind: String,
+        name: String,
+        content: String,
+        id: String,
+        code: String,
+        deps: List<AssetDep>,
+    ): RemoteAsset {
+        val body = content.toByteArray()
+        val assetId = if (id.isNotBlank()) UUID.fromString(id) else UUID.randomUUID()
+        val row = RemoteAsset(
+            id = assetId,
+            kind = kind,
+            level = Pouch.LEVEL_PERSONAL,
+            name = name,
+            code = code,
+            status = Pouch.STATUS_AVAILABLE,
+            copyable = true,
+            revision = 1,
+            digest = Digest.sum(body),
+            deps = deps,
+        )
+        padAssets[assetId] = row
+        padContents[assetId] = body
+        return row
+    }
+
+    override fun updateAssetContent(
+        baseUrl: String,
+        factoryId: String,
+        token: String,
+        assetId: String,
+        expected: Long,
+        content: String,
+    ): RemoteAsset {
+        val id = UUID.fromString(assetId)
+        val cur = padAssets[id] ?: throw LoginRejected("not found")
+        if (cur.revision != expected) throw LoginRejected("revision does not match")
+        val body = content.toByteArray()
+        val next = cur.copy(revision = cur.revision + 1, digest = Digest.sum(body))
+        padAssets[id] = next
+        padContents[id] = body
+        return next
+    }
+
+    override fun setAssetDeps(
+        baseUrl: String,
+        factoryId: String,
+        token: String,
+        assetId: String,
+        expected: Long,
+        deps: List<AssetDep>,
+    ): RemoteAsset {
+        val id = UUID.fromString(assetId)
+        val cur = padAssets[id] ?: throw LoginRejected("not found")
+        if (cur.revision != expected) throw LoginRejected("revision does not match")
+        val next = cur.copy(revision = cur.revision + 1, deps = deps)
+        padAssets[id] = next
+        return next
     }
 }
 

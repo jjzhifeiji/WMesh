@@ -25,6 +25,16 @@ data class WeldShellUi(
     val pouchProcesses: List<ProcessChoice> = emptyList(), // 袋内工艺
 )
 
+fun List<ProcessChoice>.copyableOf(processId: String): Boolean {
+    if (processId.isBlank()) return true
+    return firstOrNull { it.id.toString() == processId }?.copyable ?: true
+}
+
+fun processParamsCaption(name: String, current: Double, voltage: Double, speed: Double, osc: String, copyable: Boolean): String {
+    if (!copyable) return "$name | 保密"
+    return "$name | ${current}A | ${voltage}V | ${speed}mm/s | $osc"
+}
+
 /** 单层焊道屏状态。 */
 data class SingleWeldUiState(
     val run: WeldRunUi = WeldRunUi.Idle, // 开焊态

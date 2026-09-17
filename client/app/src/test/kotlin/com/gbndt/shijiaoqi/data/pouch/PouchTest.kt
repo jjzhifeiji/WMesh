@@ -73,4 +73,67 @@ class PouchTest {
         assertFalse(p.putPlainIfNewer(asset, Pouch.LEVEL_FACTORY, "工艺", 1, null, """{"current":1}""".toByteArray()))
         assertArrayEquals(plain, p.open(asset))
     }
+
+    @Test
+    fun dirtySkipPullAndSecretStaysUncopyable() {
+        val p = Pouch()
+        p.login(Wm2.randomKey(), UUID.randomUUID(), false)
+        val id = UUID.randomUUID()
+        p.putPlain(id, Pouch.LEVEL_FACTORY, "厂", 1, null, """{"n":1}""".toByteArray())
+        p.rewrite(id, """{"n":2}""".toByteArray())
+        assertTrue(p.isDirty(id))
+        assertFalse(p.putPlainIfNewer(id, Pouch.LEVEL_FACTORY, "厂", 9, null, """{"n":9}""".toByteArray()))
+        assertArrayEquals("""{"n":2}""".toByteArray(), p.open(id))
+
+        val secretId = UUID.randomUUID()
+        val secret = """{"current":180}""".toByteArray()
+        p.cacheTransit(
+            UUID.randomUUID(),
+            UUID.randomUUID(),
+            TransitClosure(
+                wrap = ByteArray(0),
+                members = listOf(
+                    TransitMember(
+                        id = secretId,
+                        level = Pouch.LEVEL_FACTORY,
+                        name = "保密",
+                        revision = 1,
+                        ownerId = null,
+                        content = secret,
+                        kind = Pouch.KIND_PROCESS,
+                        copyable = false,
+                    ),
+                ),
+                assetId = secretId,
+                revision = 1,
+                kind = Pouch.KIND_PROCESS,
+            ),
+        )
+        assertFalse(p.copyableOf(secretId))
+        p.rewrite(secretId, """{"current":1}""".toByteArray())
+        p.cacheTransit(
+            UUID.randomUUID(),
+            UUID.randomUUID(),
+            TransitClosure(
+                wrap = ByteArray(0),
+                members = listOf(
+                    TransitMember(
+                        id = secretId,
+                        level = Pouch.LEVEL_FACTORY,
+                        name = "保密",
+                        revision = 3,
+                        ownerId = null,
+                        content = """{"current":9}""".toByteArray(),
+                        kind = Pouch.KIND_PROCESS,
+                        copyable = false,
+                    ),
+                ),
+                assetId = secretId,
+                revision = 3,
+                kind = Pouch.KIND_PROCESS,
+            ),
+        )
+        assertArrayEquals("""{"current":1}""".toByteArray(), p.open(secretId))
+        assertTrue(p.isDirty(secretId))
+    }
 }

@@ -84,30 +84,36 @@ fun FineTuneDialog(fineTune: FineTuneSupport) {
                                 fontSize = 15.sp,
                                 fontFamily = FontFamily.Monospace
                             )
-                            Text(
-                                text = String.format(
-                                    Locale.US,
-                                    "设定  电流 %.1f A    电压 %.1f V",
-                                    fineTune.setCurrent,
-                                    fineTune.setVoltage
-                                ),
-                                fontSize = 15.sp,
-                                fontFamily = FontFamily.Monospace,
-                                fontWeight = FontWeight.Bold
-                            )
+                            if (fineTune.showProcessParams) {
+                                Text(
+                                    text = String.format(
+                                        Locale.US,
+                                        "设定  电流 %.1f A    电压 %.1f V",
+                                        fineTune.setCurrent,
+                                        fineTune.setVoltage
+                                    ),
+                                    fontSize = 15.sp,
+                                    fontFamily = FontFamily.Monospace,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            } else {
+                                Text("保密工艺，参数不可查看", fontSize = 14.sp, color = Color.Gray)
+                            }
                         }
-                        InfoCard("摆动") {
-                            Text("类型: ${fineTune.oscillationType}", fontSize = 15.sp)
-                            Text(
-                                text = String.format(
-                                    Locale.US,
-                                    "摆幅 %.0f mm    频率 %.0f Hz",
-                                    fineTune.amplitude,
-                                    fineTune.frequency
-                                ),
-                                fontSize = 15.sp,
-                                fontFamily = FontFamily.Monospace
-                            )
+                        if (fineTune.showProcessParams) {
+                            InfoCard("摆动") {
+                                Text("类型: ${fineTune.oscillationType}", fontSize = 15.sp)
+                                Text(
+                                    text = String.format(
+                                        Locale.US,
+                                        "摆幅 %.0f mm    频率 %.0f Hz",
+                                        fineTune.amplitude,
+                                        fineTune.frequency
+                                    ),
+                                    fontSize = 15.sp,
+                                    fontFamily = FontFamily.Monospace
+                                )
+                            }
                         }
                         InfoCard("速度 / 位置") {
                             Text("SetSpeed(${fineTune.speedPercent})", fontSize = 15.sp)
@@ -133,21 +139,23 @@ fun FineTuneDialog(fineTune: FineTuneSupport) {
                             .verticalScroll(rememberScrollState()),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        ButtonRow {
-                            ActionButton("电流 +", onClick = { fineTune.increaseCurrent() }, modifier = Modifier.weight(1f), height = 52.dp, containerColor = Color(0xFFE65100))
-                            ActionButton("电流 -", onClick = { fineTune.decreaseCurrent() }, modifier = Modifier.weight(1f), height = 52.dp, containerColor = Color(0xFFE65100))
-                        }
-                        ButtonRow {
-                            ActionButton("电压 +", onClick = { fineTune.increaseVoltage() }, modifier = Modifier.weight(1f), height = 52.dp, containerColor = Color(0xFFEF6C00))
-                            ActionButton("电压 -", onClick = { fineTune.decreaseVoltage() }, modifier = Modifier.weight(1f), height = 52.dp, containerColor = Color(0xFFEF6C00))
-                        }
-                        ButtonRow {
-                            ActionButton("摆幅 +", onClick = { fineTune.increaseAmplitude() }, modifier = Modifier.weight(1f), height = 52.dp, containerColor = Color(0xFF00897B))
-                            ActionButton("摆幅 -", onClick = { fineTune.decreaseAmplitude() }, modifier = Modifier.weight(1f), height = 52.dp, containerColor = Color(0xFF00897B))
-                        }
-                        ButtonRow {
-                            ActionButton("频率 +", onClick = { fineTune.increaseFrequency() }, modifier = Modifier.weight(1f), height = 52.dp, containerColor = Color(0xFF00897B))
-                            ActionButton("频率 -", onClick = { fineTune.decreaseFrequency() }, modifier = Modifier.weight(1f), height = 52.dp, containerColor = Color(0xFF00897B))
+                        if (fineTune.showProcessParams) {
+                            ButtonRow {
+                                ActionButton("电流 +", onClick = { fineTune.increaseCurrent() }, modifier = Modifier.weight(1f), height = 52.dp, containerColor = Color(0xFFE65100))
+                                ActionButton("电流 -", onClick = { fineTune.decreaseCurrent() }, modifier = Modifier.weight(1f), height = 52.dp, containerColor = Color(0xFFE65100))
+                            }
+                            ButtonRow {
+                                ActionButton("电压 +", onClick = { fineTune.increaseVoltage() }, modifier = Modifier.weight(1f), height = 52.dp, containerColor = Color(0xFFEF6C00))
+                                ActionButton("电压 -", onClick = { fineTune.decreaseVoltage() }, modifier = Modifier.weight(1f), height = 52.dp, containerColor = Color(0xFFEF6C00))
+                            }
+                            ButtonRow {
+                                ActionButton("摆幅 +", onClick = { fineTune.increaseAmplitude() }, modifier = Modifier.weight(1f), height = 52.dp, containerColor = Color(0xFF00897B))
+                                ActionButton("摆幅 -", onClick = { fineTune.decreaseAmplitude() }, modifier = Modifier.weight(1f), height = 52.dp, containerColor = Color(0xFF00897B))
+                            }
+                            ButtonRow {
+                                ActionButton("频率 +", onClick = { fineTune.increaseFrequency() }, modifier = Modifier.weight(1f), height = 52.dp, containerColor = Color(0xFF00897B))
+                                ActionButton("频率 -", onClick = { fineTune.decreaseFrequency() }, modifier = Modifier.weight(1f), height = 52.dp, containerColor = Color(0xFF00897B))
+                            }
                         }
                         ButtonRow {
                             ActionButton("速度增加", onClick = { fineTune.increaseSpeed() }, modifier = Modifier.weight(1f), height = 52.dp)

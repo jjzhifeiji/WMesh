@@ -44,6 +44,9 @@ internal object LedgerCodec {
         codes: Map<UUID, String>,
         facts: List<PendingFact>,
         uploads: List<HeldUpload>,
+        dirty: List<UUID> = emptyList(),
+        copyable: Map<UUID, Boolean> = emptyMap(),
+        synced: Map<UUID, ByteArray> = emptyMap(),
     ): String = json.encodeToString(
         LedgerDto(
             origin = origin,
@@ -61,6 +64,9 @@ internal object LedgerCodec {
                     content = b64(it.content),
                 )
             },
+            dirty = dirty.map { it.toString() },
+            copyable = copyable.map { FlagDto(it.key.toString(), it.value) },
+            synced = synced.map { HashDto(it.key.toString(), b64(it.value)) },
         ),
     )
 
@@ -88,6 +94,9 @@ internal object LedgerCodec {
                     content,
                 )
             },
+            dirty = dto.dirty.mapNotNull { runCatching { UUID.fromString(it) }.getOrNull() },
+            copyable = dto.copyable.associate { UUID.fromString(it.id) to it.copyable },
+            synced = dto.synced.associate { UUID.fromString(it.id) to unb64(it.digest) },
         )
     }
 
@@ -99,6 +108,9 @@ internal object LedgerCodec {
         val codes: List<CodeDto> = emptyList(),
         val facts: List<FactDto> = emptyList(),
         val uploads: List<UploadDto> = emptyList(),
+        val dirty: List<String> = emptyList(),
+        val copyable: List<FlagDto> = emptyList(),
+        val synced: List<HashDto> = emptyList(),
     )
 
     @Serializable
@@ -117,6 +129,12 @@ internal object LedgerCodec {
         val content: String = "",
     )
 
+    @Serializable
+    private data class FlagDto(val id: String, val copyable: Boolean = true)
+
+    @Serializable
+    private data class HashDto(val id: String, val digest: String = "")
+
     private fun b64(b: ByteArray): String =
         if (b.isEmpty()) "" else Base64.getEncoder().encodeToString(b)
 
@@ -131,4 +149,7 @@ internal data class LedgerState(
     val codes: Map<UUID, String> = emptyMap(), // 已发出的只读编号
     val facts: List<PendingFact> = emptyList(), // 待汇聚事实
     val uploads: List<HeldUpload> = emptyList(), // 待发点云/图片
+    val dirty: List<UUID> = emptyList(), // 本机已改未同步
+    val copyable: Map<UUID, Boolean> = emptyMap(), // 可否另存
+    val synced: Map<UUID, ByteArray> = emptyMap(), // 上次对齐的内容摘要
 )

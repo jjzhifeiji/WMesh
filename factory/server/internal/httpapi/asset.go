@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/google/uuid"
 
@@ -28,6 +29,7 @@ func (h *Handler) mountAsset(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/factories/{id}/assets/{assetId}/promote", h.promoteAsset)
 	mux.HandleFunc("POST /v1/factories/{id}/assets/{assetId}/deps", h.setAssetDeps)
 	mux.HandleFunc("POST /v1/factories/{id}/assets/sync", h.syncAssets)
+	mux.HandleFunc("POST /v1/factories/{id}/pad/assets", h.createPadAsset)
 }
 
 type createAssetReq struct {
@@ -38,6 +40,15 @@ type createAssetReq struct {
 	Direct    bool               `json:"direct"`    // 兼容旧客户端；未带节点时按工厂直属
 	OrgUnitID *string            `json:"orgUnitId"` // 未传则记工厂直属
 	Deps      []service.AssetDep `json:"deps"`      // 可空；新建从参数补
+}
+
+type padCreateAssetReq struct {
+	Kind    string             `json:"kind"`    // process / project
+	Name    string             `json:"name"`    // 显示名
+	Content string             `json:"content"` // UTF-8 正文
+	ID      string             `json:"id"`      // 本机已发身份；空则厂端发号
+	Code    string             `json:"code"`    // 本机只读编号；空则厂端发号
+	Deps    []service.AssetDep `json:"deps"`    // 工程可空；从正文补
 }
 
 type expectedReq struct {
@@ -146,6 +157,32 @@ func (h *Handler) createAsset(w http.ResponseWriter, r *http.Request) {
 			writeBadRequest(w, errInvalidID)
 			return
 		}
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusCreated, row)
+	})
+}
+
+// 平板新建个人级：保存即为可用，不走发布。
+func (h *Handler) createPadAsset(w http.ResponseWriter, r *http.Request) {
+	h.withFactory(w, r, func(svc *service.Service) {
+		var req padCreateAssetReq
+		if err := decodeJSON(r, &req); err != nil {
+			writeBadRequest(w, err)
+			return
+		}
+		var id uuid.UUID
+		if strings.TrimSpace(req.ID) != "" {
+			parsed, err := uuid.Parse(req.ID)
+			if err != nil {
+				writeBadRequest(w, errInvalidID)
+				return
+			}
+			id = parsed
+		}
+		row, err := svc.Assets.CreatePadPersonal(r.Context(), bearer(r), req.Kind, req.Name, []byte(req.Content), id, req.Code, req.Deps)
 		if err != nil {
 			writeErr(w, err)
 			return

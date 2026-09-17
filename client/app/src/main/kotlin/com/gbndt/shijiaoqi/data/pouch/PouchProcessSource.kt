@@ -21,7 +21,9 @@ class PouchProcessSource(
         }
 
         private fun listFrom(pouch: Pouch): () -> List<ProcessChoice> = {
-            pouch.listCachedProcesses().map { ProcessChoice(it.id, it.name) }
+            pouch.listCachedProcesses().map {
+                ProcessChoice(it.id, it.name, it.copyable, pouch.isDirty(it.id), it.level)
+            }
         }
     }
 

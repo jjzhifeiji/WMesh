@@ -26,4 +26,6 @@ interface WeldShellHost {
     fun bindProcessFromPouch(processId: UUID?)
     /** 取消挑工艺；多层没有附加工艺槽，默认什么都不做。 */
     fun cancelAddProcessVariant() {}
+    suspend fun loadProcessFromPouch(id: UUID): com.gbndt.shijiaoqi.model.WeldProcess? = null
+    fun saveProcessFromPouch(id: UUID?, process: com.gbndt.shijiaoqi.model.WeldProcess) {}
 }

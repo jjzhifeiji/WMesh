@@ -13,6 +13,9 @@ fun interface ProcessSource {
 data class ProcessChoice(
     val id: UUID,
     val name: String,
+    val copyable: Boolean = true, // 可否查看/另存；否即保密
+    val dirty: Boolean = false, // 本机已改未同步
+    val level: String = "", // factory / personal / platform
 )
 
 data class ProjectChoice(

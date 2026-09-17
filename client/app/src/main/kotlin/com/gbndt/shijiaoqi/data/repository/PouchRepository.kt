@@ -7,9 +7,11 @@ import com.gbndt.shijiaoqi.data.pouch.PouchSave
 import com.gbndt.shijiaoqi.data.session.BagSession
 import com.gbndt.shijiaoqi.data.session.LoginRejected
 import com.gbndt.shijiaoqi.data.session.SessionGate
+import com.gbndt.shijiaoqi.di.ApplicationScope
 import com.gbndt.shijiaoqi.di.IoDispatcher
 import com.gbndt.shijiaoqi.domain.shared.ProcessBind
 import com.gbndt.shijiaoqi.domain.shared.ProcessChoice
+import com.gbndt.shijiaoqi.domain.shared.ProcessJson
 import com.gbndt.shijiaoqi.domain.shared.ProcessRef
 import com.gbndt.shijiaoqi.domain.shared.ProcessSource
 import com.gbndt.shijiaoqi.domain.shared.ProjectChoice
@@ -17,9 +19,15 @@ import com.gbndt.shijiaoqi.model.WeldProcess
 import com.gbndt.shijiaoqi.model.multilayer.MultiLayerWeldPath
 import com.gbndt.shijiaoqi.model.single.WeldPath
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.util.UUID
 import javax.inject.Inject
@@ -31,7 +39,10 @@ class PouchRepository @Inject constructor(
     private val session: BagSession,
     private val gate: SessionGate,
     @param:IoDispatcher private val io: CoroutineDispatcher,
+    @param:ApplicationScope private val scope: CoroutineScope,
 ) {
+    private val flushMutex = Mutex()
+    private var flushJob: Job? = null
     private val _projects = MutableStateFlow<List<ProjectChoice>>(emptyList())
     private val _processes = MutableStateFlow<List<ProcessChoice>>(emptyList())
 
@@ -98,6 +109,20 @@ class PouchRepository @Inject constructor(
         }
     }
 
+    /** 可复制工艺改正文：厂级/平台级另存个人级；保密拒绝。 */
+    suspend fun saveProcess(id: UUID?, process: WeldProcess): UUID = ioLocked {
+        val body = ProcessJson.encode(process)
+        try {
+            if (id == null) {
+                session.issuePersonal(Pouch.KIND_PROCESS, process.name, body).id
+            } else {
+                session.ensurePersonalProcess(id, process.name, body)
+            }
+        } finally {
+            Wm2.zero(body)
+        }
+    }
+
     suspend fun saveWeldPath(path: WeldPath) = ioLocked { PouchSave.weldPath(session, path) }
 
     suspend fun saveWeldPaths(paths: List<WeldPath>) = ioLocked {
@@ -116,7 +141,10 @@ class PouchRepository @Inject constructor(
         gate.withLock {
             withContext(io) {
                 val result = block()
-                if (emitCatalog) emitCatalog()
+                if (emitCatalog) {
+                    emitCatalog()
+                    scheduleFlush()
+                }
                 result
             }
         }
@@ -127,7 +155,17 @@ class PouchRepository @Inject constructor(
         _projects.value = pouch.exportClosures()
             .filter { it.kind == Pouch.KIND_PROJECT }
             .map { ProjectChoice(it.assetId, it.name, it.revision, it.assetId == active) }
-        _processes.value = pouch.listCachedProcesses().map { ProcessChoice(it.id, it.name) }
+        _processes.value = pouch.listCachedProcesses().map {
+            ProcessChoice(it.id, it.name, it.copyable, pouch.isDirty(it.id), it.level)
+        }
+    }
+
+    private fun scheduleFlush() {
+        flushJob?.cancel()
+        flushJob = scope.launch {
+            delay(750)
+            flushMutex.withLock { runCatching { session.flushDirty() } }
+        }
     }
 
     private fun processSourceLocked(): ProcessSource = PouchProcessSource(

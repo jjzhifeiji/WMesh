@@ -50,7 +50,49 @@ interface FactoryGateway {
     fun padPullClosure(baseUrl: String, factoryId: String, assetId: String, token: String): TransitClosure
     fun discover(baseUrl: String): List<FactoryOffer>
     fun changePassword(baseUrl: String, factoryId: String, token: String, password: String)
+    fun getAsset(baseUrl: String, factoryId: String, token: String, assetId: String): RemoteAsset?
+    fun createPadAsset(
+        baseUrl: String,
+        factoryId: String,
+        token: String,
+        kind: String,
+        name: String,
+        content: String,
+        id: String,
+        code: String,
+        deps: List<com.gbndt.shijiaoqi.data.pouch.AssetDep>,
+    ): RemoteAsset
+    fun updateAssetContent(
+        baseUrl: String,
+        factoryId: String,
+        token: String,
+        assetId: String,
+        expected: Long,
+        content: String,
+    ): RemoteAsset
+    fun setAssetDeps(
+        baseUrl: String,
+        factoryId: String,
+        token: String,
+        assetId: String,
+        expected: Long,
+        deps: List<com.gbndt.shijiaoqi.data.pouch.AssetDep>,
+    ): RemoteAsset
 }
+
+/** 厂端资产元数据；不含正文。 */
+data class RemoteAsset(
+    val id: java.util.UUID,
+    val kind: String,
+    val level: String,
+    val name: String,
+    val code: String,
+    val status: String,
+    val copyable: Boolean,
+    val revision: Long,
+    val digest: ByteArray,
+    val deps: List<com.gbndt.shijiaoqi.data.pouch.AssetDep> = emptyList(),
+)
 
 /** 登录或绑定被拒绝，code 是英文原因。 */
 class LoginRejected(val code: String) : Exception(code)

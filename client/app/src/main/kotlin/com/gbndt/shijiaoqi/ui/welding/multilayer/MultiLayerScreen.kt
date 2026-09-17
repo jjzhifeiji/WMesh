@@ -33,10 +33,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.zIndex
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.onSizeChanged
-import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -182,7 +179,8 @@ fun MultiLayerScreen(
                             onSelectRefPoint = { type -> viewModel?.selectRefPointType(type) },
                             onDeleteRefPoint = { type -> viewModel?.deleteRefPoint(type) },
                             onUpdatePassOffset = { idx, field, value -> viewModel?.updatePassOffset(index, idx, field, value) },
-                            modifier = Modifier.animateItem()
+                            modifier = Modifier.animateItem(),
+                            processVisible = { ui.shell.pouchProcesses.copyableOf(it) },
                         )
                     }
                 }

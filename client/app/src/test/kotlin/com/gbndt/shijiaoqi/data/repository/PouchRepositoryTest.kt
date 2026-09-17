@@ -66,7 +66,7 @@ class PouchRepositoryTest {
                 members = members,
             ),
         )
-        val repo = PouchRepository(bag, SessionGate(), Dispatchers.Unconfined)
+        val repo = PouchRepository(bag, SessionGate(), Dispatchers.Unconfined, kotlinx.coroutines.CoroutineScope(Dispatchers.Unconfined))
         repo.refresh()
         repo.activate(rootId)
         assertEquals(rootId, repo.activeProjectId())

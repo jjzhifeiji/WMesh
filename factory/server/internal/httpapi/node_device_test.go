@@ -81,6 +81,10 @@ func TestClientDeviceLoginHTTP(t *testing.T) {
 		t.Fatalf("device key leaked %s", body)
 	}
 	padTok := gjson(t, body, "token")
+	code, body = do(t, srv, "POST", base+"/pad/assets", padTok, `{"kind":"process","name":"平板工艺","content":"{\"current\":170}","id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","code":"GY-C0008-000001"}`)
+	if code != http.StatusCreated || gjson(t, body, "status") != "available" || gjson(t, body, "level") != "personal" || gjson(t, body, "id") != "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" {
+		t.Fatalf("pad create %d %s", code, body)
+	}
 	code, body = do(t, srv, "GET", base+"/pad/inbox", padTok, "")
 	if code != http.StatusOK || !strings.Contains(body, `"closures"`) {
 		t.Fatalf("pad inbox %d %s", code, body)

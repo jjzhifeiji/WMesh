@@ -18,9 +18,12 @@ class FineTuneSupport(
     private val nextCommandId: () -> Int,
     private val toast: (String) -> Unit,
     private val currentProcess: () -> WeldProcess?,
-    private val onOscillationChanged: (Oscillation) -> Unit
+    private val onOscillationChanged: (Oscillation) -> Unit,
+    private val paramsVisible: () -> Boolean = { true },
 ) {
     var isDialogVisible by mutableStateOf(false)
+
+    val showProcessParams: Boolean get() = paramsVisible()
 
     var liveCurrent by mutableStateOf(0.0)
         private set
@@ -115,13 +118,25 @@ class FineTuneSupport(
         notify(cmd)
     }
 
-    fun increaseCurrent() = adjustCurrent(1.0)
+    fun increaseCurrent() {
+        if (!paramsVisible()) return
+        adjustCurrent(1.0)
+    }
 
-    fun decreaseCurrent() = adjustCurrent(-1.0)
+    fun decreaseCurrent() {
+        if (!paramsVisible()) return
+        adjustCurrent(-1.0)
+    }
 
-    fun increaseVoltage() = adjustVoltage(0.5)
+    fun increaseVoltage() {
+        if (!paramsVisible()) return
+        adjustVoltage(0.5)
+    }
 
-    fun decreaseVoltage() = adjustVoltage(-0.5)
+    fun decreaseVoltage() {
+        if (!paramsVisible()) return
+        adjustVoltage(-0.5)
+    }
 
     private fun adjustCurrent(delta: Double) {
         setCurrent = (setCurrent + delta).coerceIn(0.0, 1000.0)
@@ -140,6 +155,7 @@ class FineTuneSupport(
     }
 
     private fun adjustWeave(amplitudeDelta: Double = 0.0, frequencyDelta: Double = 0.0) {
+        if (!paramsVisible()) return
         val process = currentProcess()
         val base = process?.oscillation ?: Oscillation()
         val newAmp = (base.amplitude + amplitudeDelta).coerceAtLeast(1.0)

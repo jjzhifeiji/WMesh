@@ -12,7 +12,12 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.launch
+import com.gbndt.shijiaoqi.model.WeldProcess
+import com.gbndt.shijiaoqi.ui.project.ProcessEditorDialog
+import java.util.UUID
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -54,6 +59,9 @@ fun WeldingShell(
     val teachUi by teach.uiState.collectAsStateWithLifecycle()
     val shell by host.shellUi.collectAsStateWithLifecycle()
     var page by remember { mutableStateOf<WeldPage>(WeldPage.Path) }
+    var editingId by remember { mutableStateOf<UUID?>(null) }
+    var editorProcess by remember { mutableStateOf<WeldProcess?>(null) }
+    val scope = rememberCoroutineScope()
 
     val register = LocalWeldInput.current
     DisposableEffect(pad) {
@@ -141,6 +149,19 @@ fun WeldingShell(
                                 host.cancelAddProcessVariant()
                                 page = WeldPage.Path
                             },
+                            onEdit = { item ->
+                                scope.launch {
+                                    editorProcess = host.loadProcessFromPouch(item.id) ?: WeldProcess(name = item.name)
+                                    editingId = item.id
+                                }
+                            },
+                            onCreate = {
+                                editingId = null
+                                editorProcess = WeldProcess()
+                            },
+                            onSecret = {
+                                Toast.makeText(context, "保密工艺只能焊接，不能查看或修改", Toast.LENGTH_SHORT).show()
+                            },
                         )
                     }
                 }
@@ -156,5 +177,21 @@ fun WeldingShell(
                     .zIndex(100f),
             )
         }
+    }
+
+    editorProcess?.let { draft ->
+        ProcessEditorDialog(
+            title = if (editingId == null) "新建个人工艺" else "编辑工艺",
+            initial = draft,
+            onSave = { saved ->
+                host.saveProcessFromPouch(editingId, saved)
+                editorProcess = null
+                editingId = null
+            },
+            onDismiss = {
+                editorProcess = null
+                editingId = null
+            },
+        )
     }
 }

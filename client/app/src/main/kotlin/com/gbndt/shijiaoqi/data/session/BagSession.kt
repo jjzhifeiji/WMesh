@@ -7,6 +7,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import com.gbndt.shijiaoqi.data.pouch.Digest
 import com.gbndt.shijiaoqi.data.pouch.Pouch
 import com.gbndt.shijiaoqi.data.pouch.PouchRejected
 import java.util.UUID
@@ -110,6 +111,7 @@ class BagSession(
             // 登录后立刻拉全量并落库，不依赖是否已有设备。
             pullCatalog(sess)
             persistPouch(store, pouch)
+            runCatching { flushDirty() }
             store.savePerson(sess.person, sess.roles)
             store.savePolicy(sess.policy)
             store.saveDevices(sess.devices)
@@ -230,6 +232,90 @@ class BagSession(
 
     fun issuePersonal(kind: String, name: String, content: ByteArray) =
         pouch.issuePersonal(kind, name, content).also { persistPouch(store, pouch) }
+
+    /** 可复制非个人级另存个人级；保密拒绝。 */
+    fun ensurePersonalProcess(srcId: UUID, name: String, body: ByteArray): UUID {
+        if (!pouch.copyableOf(srcId)) throw PouchRejected(Pouch.ERR_NOT_COPYABLE)
+        if (pouch.levelOf(srcId) == Pouch.LEVEL_PERSONAL) {
+            rewritePlain(srcId, body)
+            pouch.activeProject()?.let { pouch.pinProcess(it, srcId) }
+            persistPouch(store, pouch)
+            return srcId
+        }
+        val issued = issuePersonal(Pouch.KIND_PROCESS, name.ifBlank { pouch.nameOf(srcId) }, body)
+        pouch.activeProject()?.let { pouch.pinProcess(it, issued.id) }
+        persistPouch(store, pouch)
+        return issued.id
+    }
+
+    /** 把本机已改正文按内容摘要对齐到厂端；冲突则用厂端当前修订再写一次。 */
+    fun flushDirty() {
+        if (!loggedIn) return
+        val tok = token ?: return
+        val base = identity.factoryUrl
+        val fid = identity.factoryId
+        if (base.isBlank() || fid.isBlank()) return
+        val processes = pouch.dirtyIds().filter { pouch.kindOf(it) == Pouch.KIND_PROCESS }
+        val projects = pouch.dirtyIds().filter { pouch.kindOf(it) == Pouch.KIND_PROJECT }
+        for (id in processes) runCatching { flushOne(base, fid, tok, id) }
+        for (id in projects) {
+            runCatching { flushDeps(base, fid, tok, id) }
+            runCatching { flushOne(base, fid, tok, id) }
+        }
+        persistPouch(store, pouch)
+    }
+
+    private fun flushOne(base: String, fid: String, tok: String, id: UUID) {
+        val plain = open(id)
+        try {
+            val text = String(plain, Charsets.UTF_8)
+            val remote = factory.getAsset(base, fid, tok, id.toString())
+            if (remote == null) {
+                val row = factory.createPadAsset(
+                    base, fid, tok, pouch.kindOf(id), pouch.nameOf(id), text,
+                    id.toString(), pouch.codeOf(id).orEmpty(), pouch.depsOf(id),
+                )
+                pouch.acceptRemote(id, row.revision, row.digest)
+                return
+            }
+            if (Digest.match(plain, remote.digest)) {
+                pouch.acceptRemote(id, remote.revision, remote.digest)
+                return
+            }
+            val row = try {
+                factory.updateAssetContent(base, fid, tok, id.toString(), remote.revision, text)
+            } catch (e: LoginRejected) {
+                if (e.code != "revision does not match") throw e
+                val again = factory.getAsset(base, fid, tok, id.toString()) ?: throw e
+                factory.updateAssetContent(base, fid, tok, id.toString(), again.revision, text)
+            }
+            pouch.acceptRemote(id, row.revision, row.digest)
+        } finally {
+            Wm2.zero(plain)
+        }
+    }
+
+    private fun flushDeps(base: String, fid: String, tok: String, id: UUID) {
+        val local = pouch.depsOf(id)
+        val remote = factory.getAsset(base, fid, tok, id.toString()) ?: return
+        if (depsMatch(local, remote.deps)) return
+        try {
+            factory.setAssetDeps(base, fid, tok, id.toString(), remote.revision, local)
+        } catch (e: LoginRejected) {
+            if (e.code != "revision does not match") throw e
+            val again = factory.getAsset(base, fid, tok, id.toString()) ?: throw e
+            factory.setAssetDeps(base, fid, tok, id.toString(), again.revision, local)
+        }
+    }
+
+    private fun depsMatch(a: List<com.gbndt.shijiaoqi.data.pouch.AssetDep>, b: List<com.gbndt.shijiaoqi.data.pouch.AssetDep>): Boolean {
+        if (a.size != b.size) return false
+        val byId = b.associateBy { it.id }
+        return a.all { d ->
+            val o = byId[d.id] ?: return false
+            o.revision == d.revision && java.security.MessageDigest.isEqual(o.digest, d.digest)
+        }
+    }
 
     fun enqueueFact() = pouch.enqueueFact().also { persistPouch(store, pouch) }
 

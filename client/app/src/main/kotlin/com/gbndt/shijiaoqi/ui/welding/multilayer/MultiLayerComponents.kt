@@ -24,10 +24,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
-import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -62,7 +59,8 @@ fun MultiLayerWeldPathItem(
     onSelectRefPoint: (MultiLayerWeldViewModel.RefPointType) -> Unit,
     onDeleteRefPoint: (MultiLayerWeldViewModel.RefPointType) -> Unit,
     onUpdatePassOffset: (Int, String, String) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    processVisible: (String) -> Boolean = { true },
 ) {
     var itemHeight by remember { mutableStateOf(0) }
     var dragOffset by remember { mutableStateOf(0f) }
@@ -155,28 +153,18 @@ fun MultiLayerWeldPathItem(
                     ) {
                         // Process Info
                         val process = multiPath.basePath.process
-                         val processInfo = buildAnnotatedString {
-                            withStyle(style = SpanStyle(color = Color(0xFF2196F3), fontWeight = FontWeight.Bold)) {
-                                append(process.name)
-                            }
-                            append(" | ")
-                            withStyle(style = SpanStyle(color = Color(0xFF2196F3), fontWeight = FontWeight.Bold)) {
-                                append("${process.current}A")
-                            }
-                            append(" | ")
-                            withStyle(style = SpanStyle(color = Color(0xFF2196F3), fontWeight = FontWeight.Bold)) {
-                                append("${process.voltage}V")
-                            }
-                            append(" | ")
-                            withStyle(style = SpanStyle(color = Color(0xFF2196F3), fontWeight = FontWeight.Bold)) {
-                                append("${process.speed}mm/s")
-                            }
-                            append(" | ")
-                            withStyle(style = SpanStyle(color = Color(0xFF2196F3), fontWeight = FontWeight.Bold)) {
-                                append(process.oscillation.type)
-                            }
-                        }
-                        Text(text = processInfo, fontSize = 12.sp, modifier = Modifier.weight(1f))
+                        Text(
+                            text = processParamsCaption(
+                                process.name,
+                                process.current,
+                                process.voltage,
+                                process.speed,
+                                process.oscillation.type,
+                                processVisible(multiPath.basePath.processId),
+                            ),
+                            fontSize = 12.sp,
+                            modifier = Modifier.weight(1f),
+                        )
                         
                         Row {
                             if (multiPath.isBaseCompleted) {
@@ -349,28 +337,18 @@ fun MultiLayerWeldPathItem(
                                     Spacer(modifier = Modifier.width(8.dp))
                                     
                                     // Process Info
-                                    val processInfo = buildAnnotatedString {
-                                        withStyle(style = SpanStyle(color = Color(0xFF2196F3), fontWeight = FontWeight.Bold)) {
-                                            append(pass.process.name)
-                                        }
-                                        append(" | ")
-                                        withStyle(style = SpanStyle(color = Color(0xFF2196F3), fontWeight = FontWeight.Bold)) {
-                                            append("${pass.process.current}A")
-                                        }
-                                        append(" | ")
-                                        withStyle(style = SpanStyle(color = Color(0xFF2196F3), fontWeight = FontWeight.Bold)) {
-                                            append("${pass.process.voltage}V")
-                                        }
-                                        append(" | ")
-                                        withStyle(style = SpanStyle(color = Color(0xFF2196F3), fontWeight = FontWeight.Bold)) {
-                                            append("${pass.process.speed}mm/s")
-                                        }
-                                        append(" | ")
-                                        withStyle(style = SpanStyle(color = Color(0xFF2196F3), fontWeight = FontWeight.Bold)) {
-                                            append(pass.process.oscillation.type)
-                                        }
-                                    }
-                                    Text(text = processInfo, fontSize = 12.sp, modifier = Modifier.weight(1f))
+                                    Text(
+                                        text = processParamsCaption(
+                                            pass.process.name,
+                                            pass.process.current,
+                                            pass.process.voltage,
+                                            pass.process.speed,
+                                            pass.process.oscillation.type,
+                                            processVisible(pass.processId),
+                                        ),
+                                        fontSize = 12.sp,
+                                        modifier = Modifier.weight(1f),
+                                    )
                                 }
 
                                 Row {

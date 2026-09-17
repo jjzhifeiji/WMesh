@@ -84,6 +84,9 @@ fun PouchProcessScreen(
     onRefresh: () -> Unit,
     onPick: (UUID?) -> Unit,
     onBack: () -> Unit,
+    onEdit: (ProcessChoice) -> Unit = {},
+    onCreate: () -> Unit = {},
+    onSecret: () -> Unit = {},
 ) {
     LaunchedEffect(Unit) { onRefresh() }
     Column(modifier = Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -94,21 +97,32 @@ fun PouchProcessScreen(
             LazyColumn(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 items(processes, key = { it.id }) { item ->
                     Card(
-                        modifier = Modifier.fillMaxWidth().then(
-                            if (picking) Modifier.clickable {
-                                PadLog.info("Pouch", "pick process id=${item.id} name=${item.name}")
-                                onPick(item.id)
-                            } else Modifier
-                        ),
+                        modifier = Modifier.fillMaxWidth().clickable {
+                            PadLog.info("Pouch", "process id=${item.id} name=${item.name} copyable=${item.copyable}")
+                            when {
+                                picking -> onPick(item.id)
+                                !item.copyable -> onSecret()
+                                else -> onEdit(item)
+                            }
+                        },
                     ) {
-                        Text(
-                            item.name.ifBlank { item.id.toString() },
-                            modifier = Modifier.padding(12.dp),
-                            fontSize = 16.sp,
-                        )
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            Text(item.name.ifBlank { item.id.toString() }, fontSize = 16.sp)
+                            Text(
+                                processMeta(item),
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                     }
                 }
             }
+        }
+        if (!picking) {
+            Button(onClick = {
+                PadLog.click("process create")
+                onCreate()
+            }, modifier = Modifier.fillMaxWidth()) { Text("新建个人工艺") }
         }
         if (picking) {
             TextButton(onClick = {
@@ -120,6 +134,22 @@ fun PouchProcessScreen(
             PadLog.click("process back")
             onBack()
         }, modifier = Modifier.fillMaxWidth()) { Text("返回") }
+    }
+}
+
+private fun processMeta(item: ProcessChoice): String = buildString {
+    append(if (item.copyable) "可复制" else "保密")
+    append("  ")
+    append(if (item.dirty) "未同步" else "已同步")
+    if (item.level.isNotBlank()) {
+        append("  ")
+        append(
+            when (item.level) {
+                "personal" -> "个人级"
+                "platform" -> "平台级"
+                else -> "厂级"
+            },
+        )
     }
 }
 

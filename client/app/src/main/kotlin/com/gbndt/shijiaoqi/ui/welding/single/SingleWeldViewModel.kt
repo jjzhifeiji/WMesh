@@ -45,6 +45,7 @@ import com.gbndt.shijiaoqi.ui.welding.WeldRunUi
 import com.gbndt.shijiaoqi.ui.welding.WeldShellHost
 import com.gbndt.shijiaoqi.ui.welding.WeldShellUi
 import com.gbndt.shijiaoqi.ui.welding.asUiPath
+import com.gbndt.shijiaoqi.ui.welding.copyableOf
 import com.gbndt.shijiaoqi.ui.welding.busy
 import com.gbndt.shijiaoqi.ui.welding.isPaused
 import com.gbndt.shijiaoqi.ui.welding.isSimulating
@@ -178,6 +179,7 @@ class SingleWeldViewModel @Inject constructor(
             currentPath()?.process?.oscillation = osc
             saveProject()
         },
+        paramsVisible = { _uiState.value.shell.pouchProcesses.copyableOf(currentPath()?.processId.orEmpty()) },
     )
 
     init {
@@ -280,6 +282,16 @@ class SingleWeldViewModel @Inject constructor(
 
     override fun refreshPouchLists() {
         viewModelScope.launch { pouch.refresh() }
+    }
+
+    override suspend fun loadProcessFromPouch(id: UUID) = pouch.openProcess(id)
+
+    override fun saveProcessFromPouch(id: UUID?, process: WeldProcess) {
+        viewModelScope.launch {
+            runCatching { pouch.saveProcess(id, process) }
+                .onSuccess { refreshPouchLists() }
+                .onFailure { e -> toast(if (e.message == "asset is not copyable") "保密工艺不能改" else (e.message ?: "无法保存工艺")) }
+        }
     }
 
     override fun bindProcessFromPouch(processId: UUID?) {

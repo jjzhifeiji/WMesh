@@ -17,6 +17,7 @@ import com.gbndt.shijiaoqi.data.session.PadDevice
 import com.gbndt.shijiaoqi.data.session.PadLoginResult
 import com.gbndt.shijiaoqi.data.session.PersonMeta
 import com.gbndt.shijiaoqi.data.session.PolicyMeta
+import com.gbndt.shijiaoqi.data.session.RemoteAsset
 import com.gbndt.shijiaoqi.data.log.HttpLog
 
 class HttpFactoryGateway : FactoryGateway {
@@ -85,6 +86,90 @@ class HttpFactoryGateway : FactoryGateway {
         if (code !in 200..299) throw LoginRejected(parseError(code, text))
     }
 
+    override fun getAsset(baseUrl: String, factoryId: String, token: String, assetId: String): RemoteAsset? {
+        val (code, text) = get(baseUrl, "/v1/factories/$factoryId/assets/$assetId", token)
+        if (code == 404) return null
+        if (code !in 200..299) throw LoginRejected(parseError(code, text))
+        return decodeAsset(text)
+    }
+
+    override fun createPadAsset(
+        baseUrl: String,
+        factoryId: String,
+        token: String,
+        kind: String,
+        name: String,
+        content: String,
+        id: String,
+        code: String,
+        deps: List<com.gbndt.shijiaoqi.data.pouch.AssetDep>,
+    ): RemoteAsset {
+        val body = buildString {
+            append("{\"kind\":${jsonStr(kind)},\"name\":${jsonStr(name)},\"content\":${jsonStr(content)}")
+            if (id.isNotBlank()) append(",\"id\":${jsonStr(id)}")
+            if (code.isNotBlank()) append(",\"code\":${jsonStr(code)}")
+            append(",\"deps\":"); append(depsJson(deps)); append('}')
+        }
+        val (http, text) = post(baseUrl, "/v1/factories/$factoryId/pad/assets", body, token)
+        if (http !in 200..299) throw LoginRejected(parseError(http, text))
+        return decodeAsset(text)
+    }
+
+    override fun updateAssetContent(
+        baseUrl: String,
+        factoryId: String,
+        token: String,
+        assetId: String,
+        expected: Long,
+        content: String,
+    ): RemoteAsset {
+        val body = """{"expected":$expected,"content":${jsonStr(content)}}"""
+        val (http, text) = post(baseUrl, "/v1/factories/$factoryId/assets/$assetId/content", body, token)
+        if (http !in 200..299) throw LoginRejected(parseError(http, text))
+        return decodeAsset(text)
+    }
+
+    override fun setAssetDeps(
+        baseUrl: String,
+        factoryId: String,
+        token: String,
+        assetId: String,
+        expected: Long,
+        deps: List<com.gbndt.shijiaoqi.data.pouch.AssetDep>,
+    ): RemoteAsset {
+        val body = """{"expected":$expected,"deps":${depsJson(deps)}}"""
+        val (http, text) = post(baseUrl, "/v1/factories/$factoryId/assets/$assetId/deps", body, token)
+        if (http !in 200..299) throw LoginRejected(parseError(http, text))
+        return decodeAsset(text)
+    }
+
+    private fun decodeAsset(text: String): RemoteAsset {
+        val dto = json.decodeFromString(AssetDto.serializer(), text)
+        return RemoteAsset(
+            id = UUID.fromString(dto.id),
+            kind = dto.kind,
+            level = dto.level,
+            name = dto.name,
+            code = dto.code,
+            status = dto.status,
+            copyable = dto.copyable,
+            revision = dto.revision,
+            digest = decodeB64(dto.digest),
+            deps = dto.deps.map { d ->
+                com.gbndt.shijiaoqi.data.pouch.AssetDep(UUID.fromString(d.id), d.revision, decodeB64(d.digest))
+            },
+        )
+    }
+
+    private fun depsJson(deps: List<com.gbndt.shijiaoqi.data.pouch.AssetDep>): String = buildString {
+        append('[')
+        deps.forEachIndexed { i, d ->
+            if (i > 0) append(',')
+            append("{\"id\":${jsonStr(d.id.toString())},\"revision\":${d.revision},\"digest\":${jsonStr(encodeB64(d.digest))}}")
+        }
+        append(']')
+    }
+
     private fun decodeInbox(text: String): ClientInbox {
         val dto = json.decodeFromString(InboxDto.serializer(), text)
         return ClientInbox(
@@ -116,6 +201,7 @@ class HttpFactoryGateway : FactoryGateway {
                     )
                 },
                 code = m.code,
+                copyable = m.copyable ?: (m.level != "platform"),
             )
         }
         return TransitClosure(
@@ -187,6 +273,9 @@ class HttpFactoryGateway : FactoryGateway {
     private fun decodeB64(s: String): ByteArray =
         if (s.isBlank()) ByteArray(0) else Base64.getDecoder().decode(s)
 
+    private fun encodeB64(b: ByteArray): String =
+        if (b.isEmpty()) "" else Base64.getEncoder().encodeToString(b)
+
     private fun decodeB64OrNull(s: String?): ByteArray? =
         if (s.isNullOrBlank()) null else Base64.getDecoder().decode(s)
 
@@ -223,6 +312,20 @@ class HttpFactoryGateway : FactoryGateway {
         val belongs: Boolean = false,
         val clientId: String = "",
         val clientName: String = "",
+    )
+
+    @Serializable
+    private data class AssetDto(
+        val id: String,
+        val kind: String = "",
+        val level: String = "",
+        val name: String = "",
+        val code: String = "",
+        val status: String = "",
+        val copyable: Boolean = true,
+        val revision: Long = 0,
+        val digest: String = "",
+        val deps: List<DepDto> = emptyList(),
     )
 
     @Serializable
@@ -305,6 +408,7 @@ class HttpFactoryGateway : FactoryGateway {
         val creatorId: String? = null,
         val deps: List<DepDto> = emptyList(),
         val code: String = "",
+        val copyable: Boolean? = null,
     )
 
     @Serializable

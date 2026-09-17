@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 
 	"wmesh/factory/internal/platform/audit"
+	"wmesh/factory/internal/platform/contenttpl"
 	"wmesh/factory/internal/platform/digest"
 	"wmesh/factory/internal/platform/domain"
 	"wmesh/factory/internal/store"
@@ -210,20 +211,70 @@ func (s *Assets) insertAuthored(ctx context.Context, acc Account, wc WorkContext
 
 // insertGoverned 落一条草稿；调用方已决定是否套过模版。
 func (s *Assets) insertGoverned(ctx context.Context, acc Account, unitID *uuid.UUID, path []PathNode, kind, level, name string, content []byte, deps []AssetDep) (Asset, error) {
-	// 落一条草稿，默认可复制。
-	row, err := s.store.InsertGovernedAsset(ctx, Asset{
+	return s.putGoverned(ctx, acc, unitID, path, Asset{
 		Kind: kind, Level: level, Name: name, Status: AssetDraft, Copyable: true,
 		Content: content, Digest: digest.Sum(content), CreatorID: acc.ID,
 		OrgUnitID: unitID, OrgPath: path, Deps: deps,
 	})
+}
+
+// putGoverned 写入本厂原件；状态由调用方决定，管理后台新建仍走草稿。
+func (s *Assets) putGoverned(ctx context.Context, acc Account, unitID *uuid.UUID, path []PathNode, in Asset) (Asset, error) {
+	row, err := s.store.InsertGovernedAsset(ctx, in)
 	if err != nil {
-		_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny, unitID, path)
+		_ = s.auditAt(ctx, &acc.ID, "create_asset", in.Name, audit.Deny, unitID, path)
 		return Asset{}, err
 	}
 	if err := s.auditAt(ctx, &acc.ID, "create_asset", assetTarget(row.ID, row.Revision), audit.Allow, unitID, path); err != nil {
 		return Asset{}, err
 	}
 	return stripContent(row), nil
+}
+
+// CreatePadPersonal 平板保存：个人级立刻可用，不走管理后台发布。
+func (s *Assets) CreatePadPersonal(ctx context.Context, token string, kind, name string, content []byte, id uuid.UUID, code string, deps []AssetDep) (Asset, error) {
+	acc, err := s.RequireActive(ctx, token)
+	if err != nil {
+		return Asset{}, err
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		_ = s.audit(ctx, &acc.ID, nil, "create_asset", kind, audit.Deny)
+		return Asset{}, domain.ErrInvalidName
+	}
+	if kind != KindProcess && kind != KindProject {
+		_ = s.audit(ctx, &acc.ID, nil, "create_asset", kind, audit.Deny)
+		return Asset{}, domain.ErrNotFound
+	}
+	unitID, path, err := s.resolveAuthorContext(ctx, acc, WorkContext{Direct: true})
+	if err != nil {
+		_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny, unitID, path)
+		return Asset{}, err
+	}
+	if kind == KindProject {
+		if err := contenttpl.RejectProcessPath(content); err != nil {
+			_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny, unitID, path)
+			return Asset{}, domain.ErrForbidden
+		}
+		deps, err = s.fillProjectDeps(ctx, acc, AssetLevelPersonal, content, deps)
+		if err != nil {
+			_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny, unitID, path)
+			return Asset{}, err
+		}
+		if err := s.assertPersonalProjectDeps(ctx, acc, deps); err != nil {
+			_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny, unitID, path)
+			return Asset{}, err
+		}
+		if err := s.assertProjectProcessIDs(ctx, content, deps); err != nil {
+			_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny, unitID, path)
+			return Asset{}, err
+		}
+	}
+	return s.putGoverned(ctx, acc, unitID, path, Asset{
+		ID: id, Kind: kind, Level: AssetLevelPersonal, Name: name, Code: strings.TrimSpace(code),
+		Status: AssetAvailable, Copyable: true, Content: content, Digest: digest.Sum(content),
+		CreatorID: acc.ID, OrgUnitID: unitID, OrgPath: path, Deps: deps,
+	})
 }
 
 // CopyProcess 可复制工艺另存为新草稿，原件正文原样拷贝，不套模版；平台级副本落成本厂厂级。
