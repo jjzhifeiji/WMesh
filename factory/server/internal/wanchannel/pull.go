@@ -1,6 +1,7 @@
 package wanchannel
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -17,7 +18,7 @@ import (
 	"wmesh/factory/internal/platform/nodekey"
 )
 
-const maxPullBytes = 64 << 20 // 软件包拉回上限，与 WAN 上传一致
+const maxPullBytes = 256 << 20 // 与 WAN 上传上限一致；JSON 带正文会再胀一截
 
 type puller struct {
 	wanHTTP   string
@@ -32,7 +33,7 @@ func newPuller(wanHTTP string, factoryID uuid.UUID, priv []byte) *puller {
 		wanHTTP:   strings.TrimRight(strings.TrimSpace(wanHTTP), "/"),
 		factoryID: factoryID,
 		priv:      priv,
-		client:    &http.Client{Timeout: 120 * time.Second},
+		client:    &http.Client{Timeout: 10 * time.Minute},
 	}
 }
 
@@ -95,6 +96,39 @@ func (p *puller) post(ctx context.Context, path string, dst any) error {
 	return nil
 }
 
+// 带厂钥签名 POST JSON 正文。
+func (p *puller) postJSON(ctx context.Context, path string, payload, dst any) error {
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return domain.ErrWANUnreachable
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.wanHTTP+path, bytes.NewReader(raw))
+	if err != nil {
+		return domain.ErrWANUnreachable
+	}
+	req.Header.Set("Content-Type", "application/json")
+	p.sign(req)
+	res, err := p.client.Do(req)
+	if err != nil {
+		return domain.ErrWANUnreachable
+	}
+	defer res.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(res.Body, 1<<20))
+	if err != nil {
+		return domain.ErrWANUnreachable
+	}
+	if res.StatusCode >= 300 {
+		return mapHTTPStatus(res.StatusCode, body)
+	}
+	if dst == nil {
+		return nil
+	}
+	if err := json.Unmarshal(body, dst); err != nil {
+		return domain.ErrWANUnreachable
+	}
+	return nil
+}
+
 // 写时间窗签名头。
 func (p *puller) sign(req *http.Request) {
 	unix := time.Now().Unix()
@@ -131,6 +165,6 @@ type indexResp struct {
 
 type leaseResp struct {
 	Typ      string `json:"typ"`      // lease
-	Lease    []byte `json:"lease"`     // 租约钥
+	Lease    []byte `json:"lease"`    // 租约钥
 	NotAfter string `json:"notAfter"` // 到期 RFC3339
 }

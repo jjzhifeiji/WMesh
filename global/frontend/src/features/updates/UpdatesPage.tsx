@@ -129,12 +129,12 @@ export function UpdatesPage() {
                 <Form.Item
                   name="file"
                   label={isAPK ? "APK" : "厂服务镜像"}
-                  extra={isAPK ? "Android 安装包。" : "docker save 导出的 tar，内含 API、管理台和 Flyway 迁库脚本。"}
+                  extra={isAPK ? "Android 安装包。" : "docker save 的 tar 或 gzip 压缩包（.tar / .tar.gz / .tgz）。"}
                   valuePropName="fileList"
                   getValueFromEvent={(e: { fileList?: UploadFile[] } | UploadFile[]) => (Array.isArray(e) ? e : (e?.fileList ?? []))}
                   rules={[{ required: true, message: "请选择文件" }]}
                 >
-                  <Upload maxCount={1} beforeUpload={() => false} accept={isAPK ? ".apk" : ".tar,.tar.gz"}>
+                  <Upload maxCount={1} beforeUpload={() => false} accept={isAPK ? ".apk,application/vnd.android.package-archive" : ".tar,.gz,.tgz,application/x-tar,application/gzip,application/x-gzip"}>
                     <Button>选择文件</Button>
                   </Upload>
                 </Form.Item>

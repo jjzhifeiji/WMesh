@@ -30,7 +30,7 @@ import (
 	"wmesh/global/migrations"
 )
 
-// version 由构建时 -ldflags "-X main.version=..." 注入，随探活返回。
+// version 由构建时 -ldflags 注入，随探活 build 返回。
 var version = "dev"
 
 // 启动进程，失败则退出。
@@ -116,7 +116,7 @@ func run(ctx context.Context, log *slog.Logger) error {
 		Addr:              cfg.HTTPAddr,
 		Handler:           httpapi.Wrap(log, mux),
 		ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout:       30 * time.Second,
+		ReadTimeout:       10 * time.Minute, // 软件包上传会到百兆，30 秒会掐
 		WriteTimeout:      0,
 		IdleTimeout:       120 * time.Second,
 	}

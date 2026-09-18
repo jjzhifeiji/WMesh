@@ -12,7 +12,7 @@ import (
 	"wmesh/global/internal/service"
 )
 
-const maxSoftwareUpload = 64 << 20 // 单次上传上限，挡住把通道和内存撑爆
+const maxSoftwareUpload = 256 << 20 // 厂服务 tar / APK；JSON 再 base64 会胀，64MiB 不够
 
 // 挂软件发布与按厂下发。
 func (h *Handler) mountUpdate(mux *http.ServeMux) {
