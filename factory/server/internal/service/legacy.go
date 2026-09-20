@@ -51,14 +51,14 @@ type LegacyImportResult struct {
 	Skipped   []LegacyReject `json:"skipped"`   // 同名跳过，沿用已有身份
 }
 
-// ImportLegacy 由本厂工艺工程师把旧文件收成厂级资产；超管拒绝。
+// ImportLegacy 由工厂超管或整厂管理员把旧文件收成厂级资产。
 func (s *Assets) ImportLegacy(ctx context.Context, token string, in LegacyImport) (LegacyImportResult, error) {
 	acc, err := s.RequireActive(ctx, token)
 	if err != nil {
 		return LegacyImportResult{}, err
 	}
-	// 只有整厂作用域的工艺工程师能导入；超管不代做。
-	if err := s.peCovers(ctx, acc, nil); err != nil {
+	// 管理员以上：工厂超管或整厂管理员。操作员和已删的工艺工程师不行。
+	if err := s.can(ctx, acc, permManageOrg, nil); err != nil {
 		_ = s.audit(ctx, &acc.ID, nil, "import_legacy", "factory", audit.Deny)
 		return LegacyImportResult{}, err
 	}

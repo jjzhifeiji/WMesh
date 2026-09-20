@@ -27,6 +27,7 @@ func TestImportLegacy(t *testing.T) {
 	saTok := mustLogin(t, ctx, fac, "sa", "sa-pass")
 	pe := mustCreateRole(t, ctx, fac, saTok, "pe", "pe-pass", factory.RoleProcessEngineer, factory.ScopeFactory, nil)
 	op := mustCreateRole(t, ctx, fac, saTok, "op", "op-pass", factory.RoleOperator, factory.ScopeFactory, nil)
+	oa := mustCreateRole(t, ctx, fac, saTok, "oa", "oa-pass", factory.RoleOrgAdmin, factory.ScopeFactory, nil)
 
 	procBody := []byte(`{"name":"角焊","current":170}`)
 	okProj := []byte(`[{"id":"w1","name":"焊道","processPath":"1焊角.json","points":[]}]`)
@@ -51,14 +52,24 @@ func TestImportLegacy(t *testing.T) {
 			{Path: "tbar/对接/project_data.json", Content: tbarProj},
 		},
 	}
-	if _, err := fac.ImportLegacy(ctx, saTok, in); !errors.Is(err, domain.ErrForbidden) {
-		t.Fatalf("sa import: %v", err)
+	if _, err := fac.ImportLegacy(ctx, "", in); !errors.Is(err, domain.ErrUnauthorized) {
+		t.Fatalf("anon import: %v", err)
 	}
-	if _, err := fac.ImportLegacy(ctx, op.tok, in); !errors.Is(err, domain.ErrForbidden) {
+	if _, err := fac.ImportLegacy(ctx, op.tok, factory.LegacyImport{}); !errors.Is(err, domain.ErrForbidden) {
 		t.Fatalf("op import: %v", err)
 	}
+	if _, err := fac.ImportLegacy(ctx, pe.tok, factory.LegacyImport{}); !errors.Is(err, domain.ErrForbidden) {
+		t.Fatalf("pe import: %v", err)
+	}
+	empty, err := fac.ImportLegacy(ctx, oa.tok, factory.LegacyImport{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(empty.Processes) != 0 || len(empty.Projects) != 0 {
+		t.Fatalf("oa empty %+v", empty)
+	}
 
-	got, err := fac.ImportLegacy(ctx, pe.tok, in)
+	got, err := fac.ImportLegacy(ctx, saTok, in)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,8 +170,7 @@ func TestImportLegacyMissingKeepsProcess(t *testing.T) {
 		t.Fatal(err)
 	}
 	saTok := mustLogin(t, ctx, fac, "sa", "sa-pass")
-	pe := mustCreateRole(t, ctx, fac, saTok, "pe", "pe-pass", factory.RoleProcessEngineer, factory.ScopeFactory, nil)
-	got, err := fac.ImportLegacy(ctx, pe.tok, factory.LegacyImport{
+	got, err := fac.ImportLegacy(ctx, saTok, factory.LegacyImport{
 		Processes: []factory.LegacyFile{{Path: "keep.json", Content: []byte(`{"name":"留","current":1}`)}},
 		Projects:  []factory.LegacyFile{{Path: "gone/project_data.json", Content: []byte(`[{"processPath":"missing.json"}]`)}},
 	})
@@ -170,7 +180,7 @@ func TestImportLegacyMissingKeepsProcess(t *testing.T) {
 	if len(got.Processes) != 1 || len(got.Projects) != 0 || len(got.Rejected) != 1 {
 		t.Fatalf("%+v", got)
 	}
-	empty, err := fac.ImportLegacy(ctx, pe.tok, factory.LegacyImport{})
+	empty, err := fac.ImportLegacy(ctx, saTok, factory.LegacyImport{})
 	if err != nil || empty.Processes == nil || empty.Projects == nil || empty.Rejected == nil || empty.Skipped == nil {
 		t.Fatalf("empty %+v %v", empty, err)
 	}
@@ -190,14 +200,13 @@ func TestImportLegacySameName(t *testing.T) {
 		t.Fatal(err)
 	}
 	saTok := mustLogin(t, ctx, fac, "sa", "sa-pass")
-	pe := mustCreateRole(t, ctx, fac, saTok, "pe", "pe-pass", factory.RoleProcessEngineer, factory.ScopeFactory, nil)
 	proc := factory.LegacyFile{Path: "1焊角.json", Content: []byte(`{"name":"角焊","current":170}`)}
 	proj := factory.LegacyFile{Path: "single_layer/平焊/project_data.json", Content: []byte(`[{"id":"w1","processPath":"1焊角.json","points":[]}]`)}
-	first, err := fac.ImportLegacy(ctx, pe.tok, factory.LegacyImport{Processes: []factory.LegacyFile{proc}, Projects: []factory.LegacyFile{proj}})
+	first, err := fac.ImportLegacy(ctx, saTok, factory.LegacyImport{Processes: []factory.LegacyFile{proc}, Projects: []factory.LegacyFile{proj}})
 	if err != nil || len(first.Processes) != 1 || len(first.Projects) != 1 {
 		t.Fatalf("first %+v %v", first, err)
 	}
-	skip, err := fac.ImportLegacy(ctx, pe.tok, factory.LegacyImport{
+	skip, err := fac.ImportLegacy(ctx, saTok, factory.LegacyImport{
 		Processes: []factory.LegacyFile{proc},
 		Projects: []factory.LegacyFile{
 			proj,
@@ -213,11 +222,11 @@ func TestImportLegacySameName(t *testing.T) {
 	if skip.Projects[0].Name != "另焊" {
 		t.Fatalf("new project %+v", skip.Projects[0])
 	}
-	full, err := fac.GetAsset(ctx, pe.tok, skip.Projects[0].ID)
+	full, err := fac.GetAsset(ctx, saTok, skip.Projects[0].ID)
 	if err != nil || len(full.Deps) != 1 || full.Deps[0].ID != first.Processes[0].ID {
 		t.Fatalf("pin %+v %v", full.Deps, err)
 	}
-	over, err := fac.ImportLegacy(ctx, pe.tok, factory.LegacyImport{
+	over, err := fac.ImportLegacy(ctx, saTok, factory.LegacyImport{
 		Overwrite: true,
 		Processes: []factory.LegacyFile{{Path: "1焊角.json", Content: []byte(`{"name":"角焊","current":999}`)}},
 		Projects:  []factory.LegacyFile{proj},
@@ -231,11 +240,11 @@ func TestImportLegacySameName(t *testing.T) {
 	if over.Processes[0].Revision <= first.Processes[0].Revision {
 		t.Fatalf("rev %d", over.Processes[0].Revision)
 	}
-	body, err := fac.ReadAssetContent(ctx, pe.tok, over.Processes[0].ID)
+	body, err := fac.ReadAssetContent(ctx, saTok, over.Processes[0].ID)
 	if err != nil || !bytes.Contains(body, []byte("999")) {
 		t.Fatalf("content %s %v", body, err)
 	}
-	ren, err := fac.ImportLegacy(ctx, pe.tok, factory.LegacyImport{
+	ren, err := fac.ImportLegacy(ctx, saTok, factory.LegacyImport{
 		Rename: true,
 		Processes: []factory.LegacyFile{
 			{Path: "yy/1焊角.json", Content: []byte(`{"name":"角焊","current":1}`)},
@@ -253,7 +262,7 @@ func TestImportLegacySameName(t *testing.T) {
 	if ren.Projects[0].ID == first.Projects[0].ID || ren.Projects[0].Name != "single_layer/平焊-多层" {
 		t.Fatalf("project name %+v", ren.Projects[0])
 	}
-	one, err := fac.ImportLegacy(ctx, pe.tok, factory.LegacyImport{
+	one, err := fac.ImportLegacy(ctx, saTok, factory.LegacyImport{
 		Processes: []factory.LegacyFile{
 			{Path: "1焊角.json", Content: []byte(`{"name":"角焊","current":1}`)},
 			{Path: "zz/1焊角.json", Content: []byte(`{"name":"角焊","current":2}`), Rename: true},
@@ -268,7 +277,7 @@ func TestImportLegacySameName(t *testing.T) {
 	if one.Processes[0].Name != "zz/1焊角" || one.Projects[0].ID != first.Projects[0].ID {
 		t.Fatalf("one names %+v %+v", one.Processes[0], one.Projects[0])
 	}
-	kept, err := fac.ReadAssetContent(ctx, pe.tok, first.Processes[0].ID)
+	kept, err := fac.ReadAssetContent(ctx, saTok, first.Processes[0].ID)
 	if err != nil || bytes.Contains(kept, []byte("\"current\":2")) {
 		t.Fatalf("process should stay %s %v", kept, err)
 	}

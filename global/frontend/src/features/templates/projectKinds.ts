@@ -1,4 +1,5 @@
 import type { TemplateField } from "./schema";
+import { newId } from "@/shared/id";
 
 export const ITEM_SINGLE = "single";
 export const ITEM_MULTI = "multi";
@@ -64,7 +65,7 @@ export function itemExtra(t: ProjectItemTemplate): boolean {
 export function templatesFromKinds(kinds: string[]): ProjectItemTemplate[] {
   const extra = kinds.includes(ITEM_EXTRA);
   return ROOT_KINDS.filter((k) => kinds.includes(k.key)).map((k) => ({
-    id: crypto.randomUUID(),
+    id: newId(),
     name: k.label,
     kind: k.key,
     extra: extra && k.key !== ITEM_MULTI,

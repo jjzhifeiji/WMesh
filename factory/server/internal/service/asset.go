@@ -102,12 +102,23 @@ func (s *kernel) loadCheckedMeta(ctx context.Context, id uuid.UUID) (Asset, erro
 	return s.store.GovernedAssetMetaByID(ctx, id)
 }
 
-// canAuthorFactory 本厂有效账号都能制作、改厂级；个人级正文仍只创建人。
+// canAuthorFactory 本厂有效账号都能制作、改厂级。
 func (s *kernel) canAuthorFactory(ctx context.Context, acc Account, unit *uuid.UUID) error {
 	_ = ctx
 	_ = acc
 	_ = unit
 	return nil
+}
+
+// canTouchPersonal 个人级正文：创建人或覆盖该处的管理员。
+func (s *kernel) canTouchPersonal(ctx context.Context, acc Account, a Asset) error {
+	if a.Level != AssetLevelPersonal {
+		return nil
+	}
+	if acc.ID == a.CreatorID {
+		return nil
+	}
+	return s.can(ctx, acc, permManageOrg, a.OrgUnitID)
 }
 
 // peCovers 下发仍按工艺工程师作用域；制作不再走这里。
@@ -306,9 +317,9 @@ func (s *Assets) CopyProcess(ctx context.Context, token string, assetID uuid.UUI
 		_ = s.audit(ctx, &acc.ID, nil, "create_asset", assetTarget(src.ID, src.Revision), audit.Deny)
 		return Asset{}, domain.ErrAssetNotCopyable
 	}
-	if src.Level == AssetLevelPersonal && acc.ID != src.CreatorID {
+	if err := s.canTouchPersonal(ctx, acc, src); err != nil {
 		_ = s.audit(ctx, &acc.ID, nil, "create_asset", assetTarget(src.ID, src.Revision), audit.Deny)
-		return Asset{}, domain.ErrForbidden
+		return Asset{}, err
 	}
 	src, err = s.loadAny(ctx, assetID)
 	if err != nil {
@@ -660,7 +671,7 @@ func (s *Assets) DeleteAsset(ctx context.Context, token string, assetID uuid.UUI
 	if err != nil {
 		return err
 	}
-	// 须有制作权；个人级仅创建人。失败一律记拒绝。
+	// 须有制作权；个人级另验创建人或管理员。失败一律记拒绝。
 	cur, err := s.loadCheckedMeta(ctx, assetID)
 	if err != nil {
 		_ = s.audit(ctx, &acc.ID, nil, "delete_asset", assetID.String(), audit.Deny)
@@ -670,9 +681,9 @@ func (s *Assets) DeleteAsset(ctx context.Context, token string, assetID uuid.UUI
 		_ = s.audit(ctx, &acc.ID, nil, "delete_asset", assetTarget(assetID, cur.Revision), audit.Deny)
 		return err
 	}
-	if cur.Level == AssetLevelPersonal && acc.ID != cur.CreatorID {
+	if err := s.canTouchPersonal(ctx, acc, cur); err != nil {
 		_ = s.audit(ctx, &acc.ID, nil, "delete_asset", assetTarget(assetID, cur.Revision), audit.Deny)
-		return domain.ErrForbidden
+		return err
 	}
 	// 仍被工程钉着则拒绝。
 	used, err := s.store.AssetIsReferenced(ctx, assetID)
@@ -691,9 +702,9 @@ func (s *Assets) DeleteAsset(ctx context.Context, token string, assetID uuid.UUI
 	return s.audit(ctx, &acc.ID, nil, "delete_asset", assetTarget(assetID, cur.Revision), audit.Allow)
 }
 
-// mutateAsset 按期望修订改本厂原件；个人级仅创建人。
+// mutateAsset 按期望修订改本厂原件；个人级须创建人或覆盖该处的管理员。
 func (s *kernel) mutateAsset(ctx context.Context, acc Account, assetID uuid.UUID, expected int64, action string, patch func(Asset) (store.AssetWrite, error)) (Asset, error) {
-	// 须有制作权；个人级仅创建人。失败一律记拒绝。
+	// 须有制作权；个人级另验创建人或管理员。失败一律记拒绝。
 	cur, err := s.loadCheckedMeta(ctx, assetID)
 	if err != nil {
 		_ = s.audit(ctx, &acc.ID, nil, action, assetTarget(assetID, expected), audit.Deny)
@@ -703,9 +714,9 @@ func (s *kernel) mutateAsset(ctx context.Context, acc Account, assetID uuid.UUID
 		_ = s.audit(ctx, &acc.ID, nil, action, assetTarget(assetID, cur.Revision), audit.Deny)
 		return Asset{}, err
 	}
-	if cur.Level == AssetLevelPersonal && acc.ID != cur.CreatorID {
+	if err := s.canTouchPersonal(ctx, acc, cur); err != nil {
 		_ = s.audit(ctx, &acc.ID, nil, action, assetTarget(assetID, cur.Revision), audit.Deny)
-		return Asset{}, domain.ErrForbidden
+		return Asset{}, err
 	}
 	w, err := patch(cur)
 	if err != nil {
@@ -827,13 +838,13 @@ func (s *Assets) GetAsset(ctx context.Context, token string, assetID uuid.UUID) 
 	return stripContent(a), nil
 }
 
-// ReadAssetContent 读正文并核对摘要；个人级仅创建人；不可复制的平台级不给人看。
+// ReadAssetContent 读正文并核对摘要；个人级创建人或管理员；不可复制的平台级不给人看。
 func (s *Assets) ReadAssetContent(ctx context.Context, token string, assetID uuid.UUID) ([]byte, error) {
 	acc, err := s.RequireActive(ctx, token)
 	if err != nil {
 		return nil, err
 	}
-	// 个人级仅创建人；不可复制平台级不给人看。失败一律记拒绝。
+	// 个人级创建人或覆盖该处的管理员；不可复制平台级不给人看。失败一律记拒绝。
 	meta, err := s.loadAnyMeta(ctx, assetID)
 	if err != nil {
 		_ = s.audit(ctx, &acc.ID, nil, "read_asset_content", assetID.String(), audit.Deny)
@@ -844,9 +855,9 @@ func (s *Assets) ReadAssetContent(ctx context.Context, token string, assetID uui
 		_ = s.audit(ctx, &acc.ID, nil, "read_asset_content", assetTarget(meta.ID, meta.Revision), audit.Deny)
 		return nil, domain.ErrForbidden
 	}
-	if meta.Level == AssetLevelPersonal && acc.ID != meta.CreatorID {
+	if err := s.canTouchPersonal(ctx, acc, meta); err != nil {
 		_ = s.audit(ctx, &acc.ID, nil, "read_asset_content", assetTarget(meta.ID, meta.Revision), audit.Deny)
-		return nil, domain.ErrForbidden
+		return nil, err
 	}
 	if err := s.canViewAssetMeta(ctx, acc, meta); err != nil {
 		_ = s.audit(ctx, &acc.ID, nil, "read_asset_content", assetTarget(meta.ID, meta.Revision), audit.Deny)

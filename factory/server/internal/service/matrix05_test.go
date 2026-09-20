@@ -136,8 +136,9 @@ func testAssetAuthorship(t *testing.T, run func(string, func(*testing.T))) {
 		}
 	})
 	run("7.2", func(t *testing.T) {
-		if _, err := facA.ReadAssetContent(ctx, saA, personal.ID); !errors.Is(err, domain.ErrForbidden) {
-			t.Fatalf("sa: %v", err)
+		got, err := facA.ReadAssetContent(ctx, saA, personal.ID)
+		if err != nil || !bytes.Equal(got, body) {
+			t.Fatalf("sa: %q %v", got, err)
 		}
 		if _, err := facA.ReadAssetContent(ctx, pe2.tok, personal.ID); !errors.Is(err, domain.ErrForbidden) {
 			t.Fatalf("pe2: %v", err)

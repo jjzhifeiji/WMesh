@@ -2,7 +2,7 @@ import { PlusOutlined } from "@ant-design/icons";
 import { App, Button, Card, Descriptions, Empty, Form, Input, Modal, Radio, Select, Space, Switch, Table, Tag, Typography, type TableColumnsType } from "antd";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { personName, useCatalog, type Catalog } from "@/features/catalog/api";
+import { personName, useCatalog, coversOrg, type Catalog } from "@/features/catalog/api";
 import { errorMessage, ApiError } from "@/shared/api/client";
 import { formatTime } from "@/shared/format";
 import { statusColor, statusLabel } from "@/shared/labels";
@@ -159,14 +159,15 @@ export function AssetsPage({ kind }: { kind: AssetKind }) {
 
   const covers = (row: Asset) => {
     if (row.level === "platform") return false;
-    if (row.level === "personal") return row.creatorId === meId;
+    if (row.level === "personal") return row.creatorId === meId || coversOrg(catalog.data, row.orgUnitId);
     return true;
   };
   const canMutate = (row: Asset) => covers(row) && row.status !== "disabled";
   // 不可复制的平台级是保密件，厂端不打开正文。
   const canRead = (row: Asset) => {
     if (row.level === "platform" && !row.copyable) return false;
-    return row.level !== "personal" || row.creatorId === meId;
+    if (row.level === "personal") return row.creatorId === meId || coversOrg(catalog.data, row.orgUnitId);
+    return true;
   };
   const canCopy = (row: Asset) => isProcess && row.copyable && row.status !== "disabled" && canRead(row);
   const onErr = (e: unknown) => message.error(errorMessage(e));

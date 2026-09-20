@@ -75,6 +75,22 @@ export function useIsSuperAdmin() {
   return data?.myGrants.some((g) => g.role === "factory_super_admin" && g.scopeKind === "factory") ?? false;
 }
 
+/** 超管或覆盖该节点的管理员；直属厂（无节点）要整厂作用域。 */
+export function coversOrg(catalog: Catalog | undefined, orgUnitId: string | null | undefined): boolean {
+  const grants = catalog?.myGrants ?? [];
+  if (grants.some((g) => g.role === "factory_super_admin" && g.scopeKind === "factory")) return true;
+  if (grants.some((g) => g.role === "org_admin" && g.scopeKind === "factory")) return true;
+  if (!orgUnitId) return false;
+  const byId = new Map((catalog?.orgUnits ?? []).map((u) => [u.id, u]));
+  const chain = new Set<string>();
+  let cur: string | null | undefined = orgUnitId;
+  while (cur) {
+    chain.add(cur);
+    cur = byId.get(cur)?.parentId;
+  }
+  return grants.some((g) => g.role === "org_admin" && g.scopeKind === "org_unit" && g.orgUnitId != null && chain.has(g.orgUnitId));
+}
+
 // 所有改名册的写操作都用它：成功后让名册失效重拉。
 export function useCatalogMutation<TData, TVars>(
   mutationFn: (vars: TVars) => Promise<TData>,

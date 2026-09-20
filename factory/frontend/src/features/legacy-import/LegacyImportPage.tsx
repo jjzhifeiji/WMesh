@@ -88,7 +88,7 @@ export function LegacyImportPage() {
     <>
       <PageHeader
         title="旧文件导入"
-        description="选示教器上的 processes / projects 目录（或整份 ShiJiaoQi）。只收本厂工艺工程师导入；缺路径的工程整份拒绝，已入工艺保留。同名会问覆盖、按路径重命名还是跳过。"
+        description="选示教器上的 processes / projects 目录（或整份 ShiJiaoQi）。工厂超管或整厂管理员可导入；缺路径的工程整份拒绝，已入工艺保留。同名会问覆盖、按路径重命名还是跳过。"
       />
       <Card style={{ maxWidth: 880 }}>
         <input

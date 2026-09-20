@@ -26,7 +26,7 @@ type legacyImportReq struct {
 	Rename    bool            `json:"rename"`    // 同名按路径另起新名；覆盖优先
 }
 
-// 工艺工程师导入旧工艺/工程；缺路径的工程拒绝，已入工艺保留。
+// 工厂超管或整厂管理员导入旧工艺/工程；缺路径的工程拒绝，已入工艺保留。
 func (h *Handler) importLegacy(w http.ResponseWriter, r *http.Request) {
 	h.withFactory(w, r, func(svc *service.Service) {
 		var req legacyImportReq

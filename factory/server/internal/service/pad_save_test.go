@@ -52,6 +52,20 @@ func TestPadSaveLandsAvailable(t *testing.T) {
 	if err != nil || !bytes.Equal(opened, body) {
 		t.Fatalf("read %q %v", opened, err)
 	}
+	asSA, err := fac.ReadAssetContent(ctx, sa, got.ID)
+	if err != nil || !bytes.Equal(asSA, body) {
+		t.Fatalf("sa read %q %v", asSA, err)
+	}
+	nextBody := []byte(`{"name":"mine","current":180}`)
+	edited, err := fac.UpdateAssetContent(ctx, sa, got.ID, got.Revision, nextBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = edited
+	body = nextBody
+	if _, err := fac.ReadAssetContent(ctx, pe.tok, got.ID); !errors.Is(err, domain.ErrForbidden) {
+		t.Fatalf("pe read: %v", err)
+	}
 
 	if _, err := fac.CreatePadPersonal(ctx, op.tok, factory.KindProcess, "重号", body, id.New(), "GY-C0008-000001", nil); !errors.Is(err, domain.ErrAssetCodeConflict) {
 		t.Fatalf("dup code: %v", err)

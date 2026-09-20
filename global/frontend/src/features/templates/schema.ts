@@ -1,4 +1,5 @@
 import { inferProjectKinds, isRootItem, itemFields, selectedFields, DEFAULT_TEMPLATES, itemExtra, lookupTemplate, templatesFromKinds, type ProjectItemTemplate } from "./projectKinds";
+import { newId } from "@/shared/id";
 
 export type FieldType = "string" | "number" | "bool" | "object" | "array" | "process";
 
@@ -106,7 +107,7 @@ export function defaultField(field: TemplateField): unknown {
     case "process":
       return typeof field.default === "string" ? field.default : "";
     case "string":
-      if (field.key === "id") return crypto.randomUUID(); // 设备侧身份不必手填
+      if (field.key === "id") return newId(); // 设备侧身份不必手填
       if (typeof field.default === "number") return field.default;
       return typeof field.default === "string" ? field.default : "";
     case "object":
