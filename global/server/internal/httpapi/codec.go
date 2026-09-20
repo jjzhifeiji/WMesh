@@ -77,14 +77,15 @@ func statusOf(err error) int {
 		errors.Is(err, domain.ErrDuplicateRoleGrant), errors.Is(err, domain.ErrDuplicateSession),
 		errors.Is(err, domain.ErrClientBound), errors.Is(err, domain.ErrClientKeyTaken),
 		errors.Is(err, domain.ErrRevisionConflict), errors.Is(err, domain.ErrFactoryKeyExists),
-		errors.Is(err, domain.ErrReferenced):
+		errors.Is(err, domain.ErrReferenced), errors.Is(err, domain.ErrDeviceSerialTaken),
+		errors.Is(err, domain.ErrSoftwareInstallFailed):
 		return http.StatusConflict
 	case errors.Is(err, domain.ErrFactoryBootstrap):
 		return http.StatusBadGateway
 	case errors.Is(err, domain.ErrFactoryOffline):
 		return http.StatusServiceUnavailable
 	case errors.Is(err, domain.ErrInvalidKey), errors.Is(err, domain.ErrUnbound),
-		errors.Is(err, domain.ErrInvalidName),
+		errors.Is(err, domain.ErrInvalidName), errors.Is(err, domain.ErrDeviceSerialRequired),
 		isDomain(err), errors.Is(err, errInvalidID):
 		return http.StatusBadRequest
 	default:

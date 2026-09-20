@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"net"
 	"net/url"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -18,6 +17,7 @@ import (
 
 	"wmesh/factory/internal/platform/domain"
 	"wmesh/factory/internal/platform/nodekey"
+	"wmesh/factory/internal/platform/release"
 )
 
 // 关掉 Paho 默认日志，避免噪声进 stdout。
@@ -25,7 +25,9 @@ func init() {
 	mqtt.ERROR, mqtt.CRITICAL, mqtt.WARN, mqtt.DEBUG = log.New(io.Discard, "", 0), log.New(io.Discard, "", 0), log.New(io.Discard, "", 0), log.New(io.Discard, "", 0)
 }
 
-var leaseEvery = time.Hour // 内容租约续期间隔
+var leaseEvery = time.Hour           // 内容租约续期间隔
+var aliveEvery = 20 * time.Second    // Broker 死后必须退回外层重拨，不能干等到租约点
+var softwareEvery = 15 * time.Minute // 通道一直连着也要问有没有新包
 
 // ClientSyncHandler 按索引里仍有效的绑定，把漏掉的本厂绑定作废。
 type ClientSyncHandler func(keep []uuid.UUID) error
@@ -48,9 +50,18 @@ func Hold(ctx context.Context, mqttURL, wanHTTP string, factoryID uuid.UUID, pri
 	opts.SetUsername(factoryID.String())
 	opts.SetPassword(nodekey.SignMQTTPassword(privateKey, factoryID, time.Now().Unix()))
 	opts.SetCleanSession(false)
+	// HMAC 有时间窗，禁止 Paho 自动重连；断线必须退回外层用新签名再拨。
 	opts.SetAutoReconnect(false)
 	opts.SetKeepAlive(15 * time.Second)
+	opts.SetPingTimeout(10 * time.Second)
 	opts.SetConnectTimeout(10 * time.Second)
+	lost := make(chan error, 1)
+	opts.SetConnectionLostHandler(func(_ mqtt.Client, err error) {
+		select {
+		case lost <- err:
+		default:
+		}
+	})
 	cli := mqtt.NewClient(opts)
 	tok := cli.Connect()
 	if !tok.WaitTimeout(15*time.Second) || tok.Error() != nil {
@@ -71,6 +82,10 @@ func Hold(ctx context.Context, mqttURL, wanHTTP string, factoryID uuid.UUID, pri
 	if !sub.WaitTimeout(10*time.Second) || sub.Error() != nil {
 		return domain.ErrWANUnreachable
 	}
+	// 连上后把本进程前端/服务版本报给 WAN，名录只在在线时展示。
+	if err := publishUp(cli, up, presenceCmd()); err != nil {
+		return err
+	}
 
 	pull := newPuller(wanHTTP, factoryID, privateKey)
 	var mu sync.Mutex
@@ -80,16 +95,30 @@ func Hold(ctx context.Context, mqttURL, wanHTTP string, factoryID uuid.UUID, pri
 		return applyCmd(ctx, cli, up, pull, cmd, apply, applyClient, applyClosure, applyTemplate, applySoftware, applyRetract, applyLease, onRequest)
 	}
 
-	if err := pullAndApply(ctx, pull, "", handle, syncClients); err != nil {
+	if err := pullAndApply(ctx, pull, "", handle, syncClients, applySoftware); err != nil {
 		return err
 	}
 
 	renew := time.NewTicker(leaseEvery)
 	defer renew.Stop()
+	alive := time.NewTicker(aliveEvery)
+	defer alive.Stop()
+	soft := time.NewTicker(softwareEvery)
+	defer soft.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case err := <-lost:
+			return mapMQTTDisconnect(err)
+		case <-alive.C:
+			if !cli.IsConnected() {
+				return domain.ErrWANUnreachable
+			}
+			// 半开 TCP 上探活会失败，立刻退回外层重拨。
+			if err := publishUp(cli, up, presenceCmd()); err != nil {
+				return err
+			}
 		case raw := <-msgs:
 			var cmd Cmd
 			if json.Unmarshal(raw, &cmd) != nil {
@@ -98,6 +127,9 @@ func Hold(ctx context.Context, mqttURL, wanHTTP string, factoryID uuid.UUID, pri
 			if err := handle(cmd); err != nil {
 				return err
 			}
+		case <-soft.C:
+			// 通道一直连着也去问最高版，有新包就静默拉。
+			syncSoftware(ctx, pull, applySoftware)
 		case <-renew.C:
 			if applyLease == nil {
 				continue
@@ -115,7 +147,7 @@ func Hold(ctx context.Context, mqttURL, wanHTTP string, factoryID uuid.UUID, pri
 			if req.Typ == "sync_templates" && kind == "" {
 				kind = ""
 			}
-			if err := pullAndApply(ctx, pull, kind, handle, syncClients); err != nil {
+			if err := pullAndApply(ctx, pull, kind, handle, syncClients, applySoftware); err != nil {
 				slog.Warn("wan index sync", "err", err)
 			}
 		}
@@ -123,7 +155,7 @@ func Hold(ctx context.Context, mqttURL, wanHTTP string, factoryID uuid.UUID, pri
 }
 
 // 先领租约再按索引逐条落地；有效厂再对账绑定。
-func pullAndApply(ctx context.Context, pull *puller, kind string, handle func(Cmd) error, syncClients ClientSyncHandler) error {
+func pullAndApply(ctx context.Context, pull *puller, kind string, handle func(Cmd) error, syncClients ClientSyncHandler, applySoftware ClosureHandler) error {
 	var lr leaseResp
 	if err := pull.get(ctx, "/v1/channel/lease", &lr); err != nil {
 		return err
@@ -155,10 +187,45 @@ func pullAndApply(ctx context.Context, pull *puller, kind string, handle func(Cm
 			}
 		}
 	}
+	if active {
+		// 回连补拉厂服务包和漏掉的 APK。
+		syncSoftware(ctx, pull, applySoftware)
+	}
 	if syncClients == nil || !active {
 		return nil
 	}
 	return syncClients(keep)
+}
+
+// 拉当前最高厂服务包和客户端包；没有或失败只记日志。
+func syncSoftware(ctx context.Context, pull *puller, applySoftware ClosureHandler) {
+	if applySoftware == nil {
+		return
+	}
+	for _, kind := range []string{"factory_service", "client_apk"} {
+		var meta struct {
+			Kind    string `json:"kind"`    // factory_service / client_apk
+			Version int64  `json:"version"` // 当前最高
+		}
+		if err := pull.get(ctx, "/v1/software/latest?kind="+url.QueryEscape(kind), &meta); err != nil {
+			continue
+		}
+		acceptSoftware(applySoftware, kind, meta.Version, "")
+	}
+}
+
+// 只把种类和版本交给本厂去拉；正文不进 MQTT，同版本由本厂跳过重下。
+func acceptSoftware(applySoftware ClosureHandler, kind string, version int64, versionName string) {
+	if applySoftware == nil || version < 1 {
+		return
+	}
+	snap, err := json.Marshal(Cmd{Typ: CmdSoftware, Kind: kind, Version: version, VersionName: versionName})
+	if err != nil {
+		return
+	}
+	if err := applySoftware(snap); err != nil {
+		slog.Warn("accept software", "kind", kind, "err", err)
+	}
 }
 
 // 按指令类型拉正文或回答升档问询。
@@ -207,17 +274,6 @@ func applyCmd(ctx context.Context, cli mqtt.Client, up string, pull *puller, cmd
 			return nil
 		}
 		return applyTemplate(snap)
-	case CmdSoftware:
-		if applySoftware == nil {
-			return nil
-		}
-		var snap json.RawMessage
-		path := "/v1/channel/pull/software?kind=" + url.QueryEscape(cmd.Kind) + "&version=" + strconv.FormatInt(cmd.Version, 10)
-		if err := pull.get(ctx, path, &snap); err != nil {
-			slog.Warn("pull software", "err", err)
-			return nil
-		}
-		return applySoftware(snap)
 	case CmdRetract:
 		if applyRetract == nil || cmd.AssetID == "" {
 			return nil
@@ -227,6 +283,12 @@ func applyCmd(ctx context.Context, cli mqtt.Client, up string, pull *puller, cmd
 			return nil
 		}
 		return applyRetract(id)
+	case CmdSoftware:
+		if cmd.Kind != "client_apk" && cmd.Kind != "factory_service" {
+			return nil
+		}
+		acceptSoftware(applySoftware, cmd.Kind, cmd.Version, cmd.VersionName)
+		return nil
 	case CmdAssetList, CmdAssetSnapshot:
 		return replyRequest(cli, up, cmd, onRequest)
 	default:
@@ -254,7 +316,7 @@ func parseCmdClient(cmd Cmd) (ClientIntent, error) {
 	}
 	return ClientIntent{
 		Typ: cmd.Typ, ClientID: cid, Name: cmd.ClientName, ShortCode: cmd.ClientShortCode,
-		PublicKey: cmd.PublicKey, Revision: cmd.BindingRevision,
+		DeviceSerial: cmd.DeviceSerial, PublicKey: cmd.PublicKey, Revision: cmd.BindingRevision,
 	}, nil
 }
 
@@ -308,6 +370,14 @@ func resolveMQTT(mqttURL, wanHTTP string) (string, error) {
 	return "tcp://" + net.JoinHostPort(u.Hostname(), "52183"), nil
 }
 
+// 本进程正在跑的前端/服务版本，名录在线时展示。
+func presenceCmd() Cmd {
+	return Cmd{
+		Typ: CmdPresence, WebVersion: release.WebCode, WebVersionName: release.WebName,
+		ServiceVersion: release.Code, ServiceVersionName: release.Name,
+	}
+}
+
 // 把 Broker 拒绝收成未授权或不可达。
 func mapMQTTConnect(err error) error {
 	if err == nil {
@@ -318,4 +388,9 @@ func mapMQTTConnect(err error) error {
 		return domain.ErrUnauthorized
 	}
 	return domain.ErrWANUnreachable
+}
+
+// 会话丢失一律当通道不可达，外层用新 HMAC 再拨。
+func mapMQTTDisconnect(err error) error {
+	return mapMQTTConnect(err)
 }

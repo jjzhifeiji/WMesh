@@ -3,7 +3,9 @@ import { http } from "@/shared/api/client";
 
 export type Health = {
   status: "ok" | "degraded";
-  version: string;
+  version: number; // 服务版本号
+  versionName: string; // 服务版本名
+  build: string; // 构建串
   db: "ok" | "down";
   oss: "ok" | "down" | "off";
 };

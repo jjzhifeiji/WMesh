@@ -1,17 +1,20 @@
 // Package httpapi 把厂内应用服务适配成 JSON HTTP。不绕过 Service，不把 SQL 原文抛给前端。
-// 文件按域拆：auth / site / org / node / asset / template / update / policy / legacy；本文件只装配路由、探活和建厂引导。
+// 文件按域拆：auth / site / org / node / asset / template / update / policy / legacy / stats；本文件只装配路由、探活和建厂引导。
 package httpapi
 
 import (
 	"context"
 	"log/slog"
+	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 
 	"wmesh/factory/internal/hub"
 	"wmesh/factory/internal/platform/domain"
+	"wmesh/factory/internal/platform/release"
 	"wmesh/factory/internal/platform/secret"
 	"wmesh/factory/internal/service"
 )
@@ -21,14 +24,33 @@ type Handler struct {
 	Hub            *hub.Hub
 	BootstrapToken string                      // 建厂引导共享密码，只用于 /internal/bootstrap
 	WANURL         string                      // WAN 根地址，厂出站认领用；空则不能认领
-	Version        string                      // 构建版本，随探活返回，便于核对升级是否生效
+	Version        string                      // 构建串，随探活 build 返回
+	VersionCode    int64                       // 本进程版本号，来自 release 常量
+	VersionName    string                      // 本进程版本名，来自 release 常量
 	OSSProbe       func(context.Context) error // 探对象存储是否在线；空表示本厂未接 OSS
-	ClientMQTTURL  string                      // 回给平板的 MQTT 地址；空则登录不带
+	ClientMQTTURL  string                      // 回给平板的 MQTT 地址；空则按请求主机拼
+	ClientMQTTPort string                      // 登录回包 MQTT 端口；空则 52184
+}
+
+// clientMQTTURL 登录回给平板的 Broker 地址；显式配置优先，否则用本次请求主机。
+func (h *Handler) clientMQTTURL(r *http.Request) string {
+	if u := strings.TrimSpace(h.ClientMQTTURL); u != "" {
+		return u
+	}
+	host := r.Host
+	if hst, _, err := net.SplitHostPort(host); err == nil {
+		host = hst
+	}
+	port := strings.TrimSpace(h.ClientMQTTPort)
+	if port == "" {
+		port = "52184"
+	}
+	return "tcp://" + net.JoinHostPort(host, port)
 }
 
 // New 组装厂内 HTTP 适配器。
 func New(h *hub.Hub, bootstrapToken, wanURL string) *Handler {
-	return &Handler{Hub: h, BootstrapToken: bootstrapToken, WANURL: wanURL, Version: "dev"}
+	return &Handler{Hub: h, BootstrapToken: bootstrapToken, WANURL: wanURL, Version: "dev", VersionCode: release.Code, VersionName: release.Name}
 }
 
 // Router 只装配探活、建厂引导和各域路由；未知 API 路径统一回 JSON 404。
@@ -48,6 +70,7 @@ func (h *Handler) Router() http.Handler {
 	h.mountUpdate(mux)
 	h.mountPolicy(mux)
 	h.mountChannel(mux)
+	h.mountStats(mux)
 	return mux
 }
 
@@ -63,17 +86,19 @@ type bootResp struct {
 }
 
 type healthResp struct {
-	Status  string `json:"status"`  // ok 或 degraded
-	Version string `json:"version"` // 构建版本
-	DB      string `json:"db"`      // ok 或 down
-	OSS     string `json:"oss"`     // ok / down / off（未配置）
+	Status      string `json:"status"`      // ok 或 degraded
+	Version     int64  `json:"version"`     // 版本号
+	VersionName string `json:"versionName"` // 版本名
+	Build       string `json:"build"`       // 构建串
+	DB          string `json:"db"`          // ok 或 down
+	OSS         string `json:"oss"`         // ok / down / off（未配置）
 }
 
 // healthz 库不通回 503 让编排判定不健康；OSS 掉线只标 degraded，不影响账号管理继续服务。
 func (h *Handler) healthz(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 	defer cancel()
-	resp := healthResp{Status: "ok", Version: h.Version, DB: "ok", OSS: "off"}
+	resp := healthResp{Status: "ok", Version: h.VersionCode, VersionName: h.VersionName, Build: h.Version, DB: "ok", OSS: "off"}
 	code := http.StatusOK
 	if err := h.Hub.Ping(ctx); err != nil {
 		resp.Status, resp.DB, code = "degraded", "down", http.StatusServiceUnavailable

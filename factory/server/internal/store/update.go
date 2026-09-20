@@ -28,13 +28,13 @@ func (WANTrust) TableName() string { return "wan_trust" }
 
 // SoftwareReplica 是已送达本厂的一份软件版本元数据，不含字节。
 type SoftwareReplica struct {
-	Kind        string    `json:"kind"`        // factory_service / client_apk
-	Version     int64     `json:"version"`     // 送达版本
-	VersionName string    `json:"versionName"` // 给人看的版本名
-	Digest      []byte    `json:"digest"`      // SHA-256
-	ObjectKey   string    `json:"objectKey"`   // 本厂对象键
-	Signature   []byte    `json:"signature"`   // WAN 对目标本厂的签名
-	ReceivedAt  time.Time `json:"receivedAt"`  // 收到时间
+	Kind        string    `json:"kind"`                // factory_service / client_apk
+	Version     int64     `json:"version"`             // 送达版本
+	VersionName string    `json:"versionName"`         // 给人看的版本名
+	Digest      []byte    `json:"digest"`              // SHA-256
+	ObjectKey   string    `json:"objectKey"`           // 本厂对象键
+	Signature   []byte    `json:"signature,omitempty"` // 旧行可能有签名；新拉入为空
+	ReceivedAt  time.Time `json:"receivedAt"`          // 收到时间
 }
 
 type softwareReplicaRow struct {
@@ -43,7 +43,7 @@ type softwareReplicaRow struct {
 	VersionName string    `gorm:"not null"`            // 版本名
 	Digest      []byte    `gorm:"type:bytea;not null"` // SHA-256
 	ObjectKey   string    `gorm:"not null"`            // 对象键
-	Signature   []byte    `gorm:"type:bytea;not null"` // WAN 签名
+	Signature   []byte    `gorm:"type:bytea"`          // 旧签名可空；新拉入不写
 	ReceivedAt  time.Time `gorm:"not null"`            // 收到时间
 }
 
@@ -118,7 +118,7 @@ func (s *Store) InsertSoftwareReplica(ctx context.Context, in SoftwareReplica) (
 	}
 	got, err := s.SoftwareReplica(ctx, in.Kind, in.Version)
 	if err == nil {
-		if !bytes.Equal(got.Digest, in.Digest) || !bytes.Equal(got.Signature, in.Signature) {
+		if !bytes.Equal(got.Digest, in.Digest) {
 			return SoftwareReplica{}, domain.ErrIntegrity
 		}
 		return got, nil
@@ -152,6 +152,35 @@ func (s *Store) SoftwareReplica(ctx context.Context, kind string, version int64)
 		return SoftwareReplica{}, err
 	}
 	return softwareReplicaFromRow(row), nil
+}
+
+// ListSoftwareReplicas 列出已收副本；kind 空则两类都给，高版本在前。
+func (s *Store) ListSoftwareReplicas(ctx context.Context, kind string) ([]SoftwareReplica, error) {
+	q := s.db.WithContext(ctx).Model(&softwareReplicaRow{}).Order("kind ASC, version DESC")
+	if kind != "" {
+		q = q.Where("kind = ?", kind)
+	}
+	var rows []softwareReplicaRow
+	if err := q.Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	out := make([]SoftwareReplica, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, softwareReplicaFromRow(row))
+	}
+	return out, nil
+}
+
+// DeleteSoftwareReplica 删掉该（种类, 版本）副本行。
+func (s *Store) DeleteSoftwareReplica(ctx context.Context, kind string, version int64) error {
+	res := s.db.WithContext(ctx).Where("kind = ? AND version = ?", kind, version).Delete(&softwareReplicaRow{})
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
 }
 
 // MaxSoftwareReplica 该种类已收最高版本；没有则为 0。

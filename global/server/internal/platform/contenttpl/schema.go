@@ -522,24 +522,6 @@ func pathFields() []Field {
 	}
 }
 
-// cornerFields 包角几何加工艺引用，不嵌工艺参数。
-func cornerFields() []Field {
-	return []Field{
-		str("groupId", "包角组", ""),
-		str("refPathAId", "参考路径 A", ""),
-		str("refPathBId", "参考路径 B", ""),
-		num("layerCount", "层数", "", 0),
-		num("initialLength", "初始长", "mm", 0),
-		num("upwardOffset", "上偏", "mm", 0),
-		num("lengthReduction", "长度递减", "mm", 0),
-		flag("isMaster", "主焊道", false),
-		num("torchRx", "焊枪 Rx", "°", 0),
-		num("torchRy", "焊枪 Ry", "°", 0),
-		num("torchRz", "焊枪 Rz", "°", 0),
-		procRef("processId", "工艺"),
-	}
-}
-
 // defaultProcess 设备侧已有的工艺字段表。
 func defaultProcess() Schema {
 	osc := Field{Key: "oscillation", Label: "摆动", Type: TypeObject, Fields: []Field{

@@ -12,9 +12,10 @@ import (
 )
 
 const (
-	TypPolicy  = "policy"  // 本厂 Client 策略，只含键与修订
-	TypClosure = "closure" // 闭包就绪：身份、修订、摘要，不含正文
-	TypAck     = "ack"     // Client 回执
+	TypPolicy   = "policy"   // 本厂 Client 策略，只含键与修订
+	TypClosure  = "closure"  // 闭包就绪：身份、修订、摘要，不含正文
+	TypAck      = "ack"      // Client 回执
+	TypPresence = "presence" // 示教器自报正在跑的 APK 版本
 )
 
 // Intent 是厂→Client 控制面小信封，禁止夹带正文。

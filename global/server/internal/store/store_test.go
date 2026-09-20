@@ -100,22 +100,25 @@ func TestWANClientBinding(t *testing.T) {
 	}
 
 	cPub, _ := mustEd25519(t)
-	c, err := s.CreateClient(ctx, id.New(), "焊机-A", cPub)
+	c, err := s.CreateClient(ctx, id.New(), "焊机-A", cPub, "ARM-A")
 	if err != nil {
 		t.Fatalf("create client: %v", err)
 	}
-	if c.Name != "焊机-A" || c.FactoryID != nil || c.BindingRevision != 0 {
+	if c.Name != "焊机-A" || c.FactoryID != nil || c.BindingRevision != 0 || c.DeviceSerial != "ARM-A" {
 		t.Fatalf("unbound: %+v", c)
 	}
-	pending, err := s.CreateClient(ctx, id.New(), "待上线", nil)
+	pending, err := s.CreateClient(ctx, id.New(), "待上线", nil, "")
 	if err != nil || pending.Name != "待上线" || len(pending.PublicKey) != 0 {
 		t.Fatalf("no pubkey: %+v %v", pending, err)
 	}
-	if _, err := s.CreateClient(ctx, id.New(), "  ", nil); err != domain.ErrInvalidName {
+	if _, err := s.CreateClient(ctx, id.New(), "  ", nil, ""); err != domain.ErrInvalidName {
 		t.Fatalf("empty name: %v", err)
 	}
-	if _, err := s.CreateClient(ctx, id.New(), "焊机-A2", cPub); err != domain.ErrClientKeyTaken {
+	if _, err := s.CreateClient(ctx, id.New(), "焊机-A2", cPub, "ARM-A2"); err != domain.ErrClientKeyTaken {
 		t.Fatalf("dup pubkey: %v", err)
+	}
+	if _, err := s.CreateClient(ctx, id.New(), "焊机-A3", nil, "ARM-A"); err != domain.ErrDeviceSerialTaken {
+		t.Fatalf("dup serial: %v", err)
 	}
 
 	bound, err := s.BindClient(ctx, c.ID, a.ID)
@@ -141,7 +144,7 @@ func TestWANClientBinding(t *testing.T) {
 	}
 
 	unboundPub, _ := mustEd25519(t)
-	u, err := s.CreateClient(ctx, id.New(), "焊机-U", unboundPub)
+	u, err := s.CreateClient(ctx, id.New(), "焊机-U", unboundPub, "")
 	if err != nil {
 		t.Fatal(err)
 	}

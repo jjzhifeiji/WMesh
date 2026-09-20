@@ -79,7 +79,7 @@ client/
 ### 改写后才能进焊接域
 
 - 焊道挂钩：`processPath` → `processId`；禁止工程正文再嵌电流电压
-- 元素带 `templateId`，按已收工程模版添加单层 / 多层 / 包角
+- 元素带 `templateId`，按已收工程模版添加单层 / 多层 / T排对接
 - 打开工程 = 激活本机袋里那一份闭包，不是打开文件夹
 - 选工艺 = 闭包成员下拉，不是逛 `ShiJiaoQi/processes`
 

@@ -1,8 +1,8 @@
 package service
 
 import (
-	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"strconv"
 
@@ -11,52 +11,50 @@ import (
 	"wmesh/factory/internal/platform/audit"
 	"wmesh/factory/internal/platform/blob"
 	"wmesh/factory/internal/platform/digest"
+	"wmesh/factory/internal/platform/disk"
 	"wmesh/factory/internal/platform/domain"
-	"wmesh/factory/internal/platform/nodekey"
-	"wmesh/factory/internal/platform/softwaresign"
 	"wmesh/factory/internal/store"
 )
 
 const (
 	SoftwareFactoryService = store.SoftwareFactoryService // 厂端服务包
 	SoftwareClientAPK      = store.SoftwareClientAPK      // 客户端 APK
+	SoftwareWANService     = "wan_service"                // 云端包，本厂不得收
 )
 
-// SoftwareSnapshot 是云端下到本厂的一份软件包；本圈可带正文。
-type SoftwareSnapshot struct {
-	Kind            string    `json:"kind"`            // factory_service / client_apk
-	Version         int64     `json:"version"`         // 单调整数
-	VersionName     string    `json:"versionName"`     // 给人看的版本名
-	Digest          []byte    `json:"digest"`          // 包文件 SHA-256
-	Signature       []byte    `json:"signature"`       // WAN 对目标本厂的签名
-	WANPublicKey    []byte    `json:"wanPublicKey"`    // 须与本厂 wan_trust 一致
-	TargetFactoryID uuid.UUID `json:"targetFactoryId"` // 目标厂
-	Body            []byte    `json:"body"`            // 包字节
+// SoftwareMeta 是一份软件包的元数据，不含字节。
+type SoftwareMeta struct {
+	Kind        string `json:"kind"`        // factory_service / client_apk
+	Version     int64  `json:"version"`     // 单调整数
+	VersionName string `json:"versionName"` // 给人看的版本名
+	Digest      []byte `json:"digest"`      // SHA-256
 }
 
-// ClientUpdateReady 是本厂签给某平板的客户端包就绪信封。
-type ClientUpdateReady struct {
-	Kind        string    `json:"kind"`        // 固定 client_apk
-	Version     int64     `json:"version"`     // 版本
-	VersionName string    `json:"versionName"` // 版本名
-	Digest      []byte    `json:"digest"`      // SHA-256
-	Signature   []byte    `json:"signature"`   // 本厂对目标 Client 的签名
-	ClientID    uuid.UUID `json:"clientId"`    // 目标平板
-	Body        []byte    `json:"body"`        // 包字节
+// SoftwareOffer 是带正文的一份软件包。
+type SoftwareOffer struct {
+	Kind        string `json:"kind"`        // factory_service / client_apk
+	Version     int64  `json:"version"`     // 单调整数
+	VersionName string `json:"versionName"` // 给人看的版本名
+	Digest      []byte `json:"digest"`      // SHA-256
+	Body        []byte `json:"body"`        // 包字节
 }
 
-// FactoryInstaller 确认后替换厂服务包；不得覆盖库与对象存储。
-type FactoryInstaller interface {
-	// Apply 安装该版本厂服务包；失败须保持旧进程可继续。
-	Apply(ctx context.Context, version int64, body []byte) error
+// SoftwareSource 从已认领厂会话背后的 WAN 拉最高包。
+type SoftwareSource interface {
+	Latest(ctx context.Context, kind string) (SoftwareMeta, error)
+	Pull(ctx context.Context, kind string, version int64) ([]byte, error)
 }
 
-type okInstaller struct{}
+// ApplyOutcome 决定确认后是否立刻记已装；测试夹具用，生产默认只落盘。
+type ApplyOutcome int
 
-// Apply 测试默认成功，不碰 Docker；生产由 hub 注入 docker load。
-func (okInstaller) Apply(context.Context, int64, []byte) error { return nil }
+const (
+	ApplyDefer ApplyOutcome = iota // 只写待切换，不记已装
+	ApplyOK                        // 夹具宣称落地成功
+	ApplyFail                      // 夹具宣称落地失败
+)
 
-// Updates 管本厂收软件包、超管确认厂服务、本机确认客户端。
+// Updates 管本厂自拉软件包、超管确认厂服务、本机确认客户端。
 type Updates struct{ *kernel }
 
 // softwareTarget 审计对象：种类和版本。
@@ -64,91 +62,208 @@ func softwareTarget(kind string, version int64) string {
 	return kind + " v" + strconv.FormatInt(version, 10)
 }
 
-// validSoftwareKind 只认厂服务包和客户端包。
-func validSoftwareKind(kind string) bool {
+// factoryPullKind 本厂只收厂服务包和客户端包。
+func factoryPullKind(kind string) bool {
 	return kind == SoftwareFactoryService || kind == SoftwareClientAPK
 }
 
-// SetFactoryInstaller 测试注入失败；生产由 hub 注入 docker 安装器。
-func (s *Updates) SetFactoryInstaller(in FactoryInstaller) {
-	if in == nil {
-		in = okInstaller{}
+// SetApplyOutcome 测试注入落地结果；生产保持默认只落盘。
+func (s *Updates) SetApplyOutcome(out ApplyOutcome) { s.applyOutcome = out }
+
+// SetSoftwareSource 注入厂→WAN 拉包；测试用内存源，生产由通道挂上。
+func (s *Updates) SetSoftwareSource(src SoftwareSource) { s.softwareSource = src }
+
+// completeReplica 本厂已收且摘要对得上的那一份；不完整当没有。
+func (s *Updates) completeReplica(ctx context.Context, kind string, version int64) (SoftwareReplica, bool, error) {
+	row, err := s.store.SoftwareReplica(ctx, kind, version)
+	if errors.Is(err, domain.ErrNotFound) {
+		return SoftwareReplica{}, false, nil
 	}
-	s.installer = in
+	if err != nil {
+		return SoftwareReplica{}, false, err
+	}
+	body, err := s.blobs.Get(ctx, row.ObjectKey)
+	if err != nil || !digest.Match(body, row.Digest) {
+		return SoftwareReplica{}, false, nil
+	}
+	return row, true, nil
 }
 
-// SetWANPublicKey 夹具登记 WAN 验签公钥；换钥拒绝。
-func (s *Updates) SetWANPublicKey(ctx context.Context, publicKey []byte) error {
-	return s.store.PutWANTrust(ctx, publicKey)
-}
-
-// AcceptSoftwareDelivery 先验 WAN 签名和摘要，再留下只读副本。
-func (s *Updates) AcceptSoftwareDelivery(ctx context.Context, snap SoftwareSnapshot) error {
-	target := softwareTarget(snap.Kind, snap.Version)
-	if !validSoftwareKind(snap.Kind) || snap.Version < 1 {
-		_ = s.audit(ctx, nil, nil, "accept_software", target, audit.Deny)
+// EnsureSoftware 本厂没有完整副本才去 WAN 拉；同版本进行中不重下。
+func (s *Updates) EnsureSoftware(ctx context.Context, kind string, version int64) error {
+	if !factoryPullKind(kind) || version < 1 {
+		if kind == SoftwareWANService {
+			return domain.ErrForbidden
+		}
 		return domain.ErrInvalidName
 	}
-	fid := s.store.FactoryID()
-	if snap.TargetFactoryID != fid {
-		_ = s.audit(ctx, nil, nil, "accept_software", target, audit.Deny)
-		return domain.ErrForbidden
+	if _, ok, err := s.completeReplica(ctx, kind, version); err != nil || ok {
+		return err
 	}
-	trust, err := s.store.WANTrust(ctx)
-	if errors.Is(err, domain.ErrNotFound) {
-		// 通道首次送达记下快照公钥；换钥仍拒绝。
-		if err := s.store.PutWANTrust(ctx, snap.WANPublicKey); err != nil {
-			_ = s.audit(ctx, nil, nil, "accept_software", target, audit.Deny)
+	key := kind + "/" + strconv.FormatInt(version, 10)
+	s.softwareMu.Lock()
+	if s.softwareIn == nil {
+		s.softwareIn = map[string]*softwareWait{}
+	}
+	if w, ok := s.softwareIn[key]; ok {
+		s.softwareMu.Unlock()
+		<-w.done
+		return w.err
+	}
+	w := &softwareWait{done: make(chan struct{})}
+	s.softwareIn[key] = w
+	s.softwareMu.Unlock()
+	err := s.pullSoftwareOnce(ctx, kind, version)
+	w.err = err
+	close(w.done)
+	s.softwareMu.Lock()
+	delete(s.softwareIn, key)
+	s.softwareMu.Unlock()
+	return err
+}
+
+// 真正去源侧拉一份并落副本；调用方已占住单飞。
+func (s *Updates) pullSoftwareOnce(ctx context.Context, kind string, version int64) error {
+	if _, ok, err := s.completeReplica(ctx, kind, version); err != nil || ok {
+		return err
+	}
+	if s.softwareSource == nil {
+		return domain.ErrNotFound
+	}
+	var name string
+	var want []byte
+	if meta, err := s.softwareSource.Latest(ctx, kind); err == nil && meta.Version == version {
+		name = meta.VersionName
+		want = meta.Digest
+	}
+	body, err := s.softwareSource.Pull(ctx, kind, version)
+	if err != nil {
+		return err
+	}
+	if len(want) > 0 && !digest.Match(body, want) {
+		return domain.ErrIntegrity
+	}
+	return s.IngestSoftware(ctx, SoftwareOffer{
+		Kind: kind, Version: version, VersionName: name, Digest: digest.Sum(body), Body: body,
+	})
+}
+
+// SetPendingSink 生产写入更新目录；测试可空。
+func (s *Updates) SetPendingSink(sink PendingSink) { s.pendingSink = sink }
+
+// MarkInstalled updater 探活通过后记已装；已是该版本则幂等。
+func (s *Updates) MarkInstalled(ctx context.Context, kind string, version int64) error {
+	target := softwareTarget(kind, version)
+	if err := s.store.PutInstalledSoftware(ctx, kind, version); err != nil {
+		if errors.Is(err, domain.ErrStaleRevision) {
+			return nil
+		}
+		_ = s.audit(ctx, nil, nil, "apply_software", target, audit.Deny)
+		return err
+	}
+	return s.audit(ctx, nil, nil, "apply_software", target, audit.Allow)
+}
+
+// IngestSoftware 收下已由本厂会话拉回的包；只核摘要，不验签名。
+func (s *Updates) IngestSoftware(ctx context.Context, offer SoftwareOffer) error {
+	target := softwareTarget(offer.Kind, offer.Version)
+	if !factoryPullKind(offer.Kind) || offer.Version < 1 {
+		_ = s.audit(ctx, nil, nil, "pull_software", target, audit.Deny)
+		if offer.Kind == SoftwareWANService {
+			return domain.ErrForbidden
+		}
+		return domain.ErrInvalidName
+	}
+	if !digest.Match(offer.Body, offer.Digest) {
+		_ = s.audit(ctx, nil, nil, "pull_software", target, audit.Deny)
+		return domain.ErrIntegrity
+	}
+	// 已有副本先对摘要，避免不同正文覆盖对象。
+	got, err := s.store.SoftwareReplica(ctx, offer.Kind, offer.Version)
+	if err == nil {
+		if !digest.Match(offer.Body, got.Digest) {
+			_ = s.audit(ctx, nil, nil, "pull_software", target, audit.Deny)
+			return domain.ErrIntegrity
+		}
+		// 同摘要再收把对象补回，避免进程重启丢内存存根后确认失败。
+		if err := s.blobs.Put(ctx, got.ObjectKey, offer.Body); err != nil {
+			_ = s.audit(ctx, nil, nil, "pull_software", target, audit.Deny)
 			return err
 		}
-		trust, err = s.store.WANTrust(ctx)
+		return s.audit(ctx, nil, nil, "pull_software", target, audit.Allow)
 	}
-	if err != nil {
-		_ = s.audit(ctx, nil, nil, "accept_software", target, audit.Deny)
+	if !errors.Is(err, domain.ErrNotFound) {
 		return err
 	}
-	if !bytes.Equal(trust.PublicKey, snap.WANPublicKey) {
-		_ = s.audit(ctx, nil, nil, "accept_software", target, audit.Deny)
-		return domain.ErrIntegrity
+	if offer.Kind == SoftwareFactoryService {
+		installed, err := s.store.InstalledSoftware(ctx, offer.Kind)
+		if err != nil {
+			return err
+		}
+		if offer.Version < installed {
+			_ = s.audit(ctx, nil, nil, "pull_software", target, audit.Deny)
+			return domain.ErrStaleRevision
+		}
 	}
-	if !digest.Match(snap.Body, snap.Digest) {
-		_ = s.audit(ctx, nil, nil, "accept_software", target, audit.Deny)
-		return domain.ErrIntegrity
-	}
-	msg := softwaresign.Message(snap.Kind, snap.Version, snap.Digest, fid)
-	if !nodekey.Verify(trust.PublicKey, msg, snap.Signature) {
-		_ = s.audit(ctx, nil, nil, "accept_software", target, audit.Deny)
-		return domain.ErrIntegrity
-	}
-	installed, err := s.store.InstalledSoftware(ctx, snap.Kind)
+	max, err := s.store.MaxSoftwareReplica(ctx, offer.Kind)
 	if err != nil {
 		return err
 	}
-	if snap.Kind == SoftwareFactoryService && snap.Version < installed {
-		_ = s.audit(ctx, nil, nil, "accept_software", target, audit.Deny)
+	if offer.Version < max {
+		_ = s.audit(ctx, nil, nil, "pull_software", target, audit.Deny)
 		return domain.ErrStaleRevision
 	}
-	max, err := s.store.MaxSoftwareReplica(ctx, snap.Kind)
-	if err != nil {
-		return err
-	}
-	if snap.Version < max {
-		_ = s.audit(ctx, nil, nil, "accept_software", target, audit.Deny)
-		return domain.ErrStaleRevision
-	}
-	key := store.SoftwareObjectKey(snap.Kind, snap.Version)
-	if err := s.blobs.Put(ctx, key, snap.Body); err != nil {
-		_ = s.audit(ctx, nil, nil, "accept_software", target, audit.Deny)
+	key := store.SoftwareObjectKey(offer.Kind, offer.Version)
+	if err := s.blobs.Put(ctx, key, offer.Body); err != nil {
+		_ = s.audit(ctx, nil, nil, "pull_software", target, audit.Deny)
 		return err
 	}
 	if _, err := s.store.InsertSoftwareReplica(ctx, SoftwareReplica{
-		Kind: snap.Kind, Version: snap.Version, VersionName: snap.VersionName,
-		Digest: snap.Digest, ObjectKey: key, Signature: snap.Signature,
+		Kind: offer.Kind, Version: offer.Version, VersionName: offer.VersionName,
+		Digest: offer.Digest, ObjectKey: key,
 	}); err != nil {
-		_ = s.audit(ctx, nil, nil, "accept_software", target, audit.Deny)
+		_ = s.audit(ctx, nil, nil, "pull_software", target, audit.Deny)
 		return err
 	}
-	return s.audit(ctx, nil, nil, "accept_software", target, audit.Allow)
+	return s.audit(ctx, nil, nil, "pull_software", target, audit.Allow)
+}
+
+// SyncFactorySoftware 超管触发问最高版并静默拉；已有完整副本则不再下。
+func (s *Updates) SyncFactorySoftware(ctx context.Context, token, kind string) (SoftwareReplica, error) {
+	acc, err := s.RequireActive(ctx, token)
+	if err != nil {
+		return SoftwareReplica{}, err
+	}
+	target := softwareTarget(kind, 0)
+	if err := s.can(ctx, acc, permManageAccount, nil); err != nil {
+		_ = s.audit(ctx, &acc.ID, nil, "pull_software", target, audit.Deny)
+		return SoftwareReplica{}, err
+	}
+	if !factoryPullKind(kind) {
+		_ = s.audit(ctx, &acc.ID, nil, "pull_software", kind, audit.Deny)
+		return SoftwareReplica{}, domain.ErrForbidden
+	}
+	if s.softwareSource == nil {
+		_ = s.audit(ctx, &acc.ID, nil, "pull_software", kind, audit.Deny)
+		return SoftwareReplica{}, domain.ErrNotFound
+	}
+	meta, err := s.softwareSource.Latest(ctx, kind)
+	if err != nil {
+		_ = s.audit(ctx, &acc.ID, nil, "pull_software", kind, audit.Deny)
+		return SoftwareReplica{}, err
+	}
+	// 只问最高版；正文有完整副本就不再下。
+	if err := s.EnsureSoftware(ctx, meta.Kind, meta.Version); err != nil {
+		return SoftwareReplica{}, err
+	}
+	row, ok, err := s.completeReplica(ctx, kind, meta.Version)
+	if err != nil {
+		return SoftwareReplica{}, err
+	}
+	if !ok {
+		return SoftwareReplica{}, domain.ErrIntegrity
+	}
+	return row, nil
 }
 
 // CurrentFactorySoftware 本厂已确认安装的厂服务版本；未装过则版本为 0。
@@ -170,7 +285,7 @@ func (s *Updates) CurrentFactorySoftware(ctx context.Context, token string) (Sof
 	return row, err
 }
 
-// PendingFactorySoftware 超管看待确认的厂服务包；没有则空。
+// PendingFactorySoftware 超管看本厂已收完整、高于已装的厂服务包；没有则空。
 func (s *Updates) PendingFactorySoftware(ctx context.Context, token string) (*SoftwareReplica, error) {
 	acc, err := s.RequireActive(ctx, token)
 	if err != nil {
@@ -203,14 +318,11 @@ func (s *Updates) pendingReplica(ctx context.Context, kind string, installed int
 	if max <= installed {
 		return SoftwareReplica{}, false, nil
 	}
-	row, err := s.store.SoftwareReplica(ctx, kind, max)
-	if err != nil {
-		return SoftwareReplica{}, false, err
-	}
-	return row, true, nil
+	// 提示只认本厂已收完整副本，不完整当没有。
+	return s.completeReplica(ctx, kind, max)
 }
 
-// ConfirmFactoryUpdate 仅本厂超管确认后才替换厂服务；安装失败保持旧版本。
+// ConfirmFactoryUpdate 仅本厂超管确认后才写待切换；落地成功才记已装。
 func (s *Updates) ConfirmFactoryUpdate(ctx context.Context, token, kind string, version int64) error {
 	acc, err := s.RequireActive(ctx, token)
 	if err != nil {
@@ -248,73 +360,71 @@ func (s *Updates) ConfirmFactoryUpdate(ctx context.Context, token, kind string, 
 		_ = s.audit(ctx, &acc.ID, nil, "confirm_software", target, audit.Deny)
 		return domain.ErrIntegrity
 	}
-	if err := s.installer.Apply(ctx, version, body); err != nil {
-		_ = s.audit(ctx, &acc.ID, nil, "confirm_software", target, audit.Deny)
-		return domain.ErrSoftwareInstallFailed
+	if s.pendingSink != nil {
+		if err := s.pendingSink.Stage(kind, version, pending.Digest, body); err != nil {
+			_ = s.audit(ctx, &acc.ID, nil, "confirm_software", target, audit.Deny)
+			return err
+		}
 	}
-	if err := s.store.PutInstalledSoftware(ctx, kind, version); err != nil {
-		_ = s.audit(ctx, &acc.ID, nil, "confirm_software", target, audit.Deny)
-		return err
-	}
-	return s.audit(ctx, &acc.ID, nil, "confirm_software", target, audit.Allow)
+	return s.finishApply(ctx, &acc.ID, kind, version, target)
 }
 
-// ReadyClientUpdate 给已绑定平板签一份当前最高客户端包就绪信封。
-func (s *Updates) ReadyClientUpdate(ctx context.Context, clientID uuid.UUID) (ClientUpdateReady, error) {
-	cl, err := s.store.ClientByID(ctx, clientID)
+// ApplyProgress 超管看本机更换进度；就绪则补记已装。
+type ApplyProgress struct {
+	Phase   string `json:"phase"`           // idle / applying / ok / fail
+	Kind    string `json:"kind"`            // 待切换或已落地种类
+	Version int64  `json:"version"`         // 对应版本；idle 为 0
+	Error   string `json:"error,omitempty"` // fail 时 updater 原因
+}
+
+// ApplyProgress 读盘上进度；探活通过才记已装。
+func (s *Updates) ApplyProgress(ctx context.Context, token string) (ApplyProgress, error) {
+	acc, err := s.RequireActive(ctx, token)
 	if err != nil {
-		_ = s.audit(ctx, nil, nil, "ready_software", clientID.String(), audit.Deny)
-		return ClientUpdateReady{}, err
+		return ApplyProgress{}, err
 	}
-	if cl.Status != ClientStatusBound {
-		_ = s.audit(ctx, nil, nil, "ready_software", clientID.String(), audit.Deny)
-		return ClientUpdateReady{}, domain.ErrBindingVoid
+	if err := s.can(ctx, acc, permManageAccount, nil); err != nil {
+		return ApplyProgress{}, err
 	}
-	max, err := s.store.MaxSoftwareReplica(ctx, SoftwareClientAPK)
+	if s.applyReporter == nil {
+		return ApplyProgress{Phase: "idle"}, nil
+	}
+	phase, kind, version, errMsg, err := s.applyReporter.Progress()
 	if err != nil {
-		return ClientUpdateReady{}, err
+		return ApplyProgress{}, err
 	}
-	if max < 1 {
-		_ = s.audit(ctx, nil, nil, "ready_software", clientID.String(), audit.Deny)
-		return ClientUpdateReady{}, domain.ErrNotFound
-	}
-	rep, err := s.store.SoftwareReplica(ctx, SoftwareClientAPK, max)
-	if err != nil {
-		_ = s.audit(ctx, nil, nil, "ready_software", clientID.String(), audit.Deny)
-		return ClientUpdateReady{}, err
-	}
-	body, err := s.blobs.Get(ctx, rep.ObjectKey)
-	if err != nil {
-		_ = s.audit(ctx, nil, nil, "ready_software", clientID.String(), audit.Deny)
-		if errors.Is(err, blob.ErrNotFound) {
-			return ClientUpdateReady{}, domain.ErrIntegrity
+	if phase == "ok" && kind != "" && version > 0 {
+		// updater 写就绪可能晚于新进程启动，这里补记已装。
+		if err := s.MarkInstalled(ctx, kind, version); err != nil {
+			return ApplyProgress{}, err
 		}
-		return ClientUpdateReady{}, err
 	}
-	key, err := s.ensureSigningKey(ctx)
-	if err != nil {
-		return ClientUpdateReady{}, err
+	return ApplyProgress{Phase: phase, Kind: kind, Version: version, Error: errMsg}, nil
+}
+
+// finishApply 按夹具结果记已装或保持待切换。
+func (s *Updates) finishApply(ctx context.Context, actor *uuid.UUID, kind string, version int64, target string) error {
+	switch s.applyOutcome {
+	case ApplyFail:
+		_ = s.audit(ctx, actor, nil, "confirm_software", target, audit.Deny)
+		return domain.ErrSoftwareInstallFailed
+	case ApplyOK:
+		if err := s.store.PutInstalledSoftware(ctx, kind, version); err != nil {
+			_ = s.audit(ctx, actor, nil, "confirm_software", target, audit.Deny)
+			return err
+		}
+		return s.audit(ctx, actor, nil, "confirm_software", target, audit.Allow)
+	default:
+		return s.audit(ctx, actor, nil, "confirm_software", target, audit.Allow)
 	}
-	sig := nodekey.Sign(key.PrivateKey, softwaresign.Message(rep.Kind, rep.Version, rep.Digest, clientID))
-	if err := s.audit(ctx, nil, nil, "ready_software", softwareTarget(rep.Kind, rep.Version)+" client="+clientID.String(), audit.Allow); err != nil {
-		return ClientUpdateReady{}, err
-	}
-	return ClientUpdateReady{
-		Kind: rep.Kind, Version: rep.Version, VersionName: rep.VersionName,
-		Digest: rep.Digest, Signature: sig, ClientID: clientID, Body: body,
-	}, nil
 }
 
 // ConfirmClientUpdate 当前登录者确认后才记下本机已装版本；焊接中拒绝。
-func (s *Updates) ConfirmClientUpdate(ctx context.Context, bag *Bag, clocks Clocks, ready ClientUpdateReady) error {
-	target := softwareTarget(ready.Kind, ready.Version)
+func (s *Updates) ConfirmClientUpdate(ctx context.Context, bag *Bag, clocks Clocks, version int64) error {
+	target := softwareTarget(SoftwareClientAPK, version)
 	src := bagTimeSource(*bag)
 	if bag.OperatorID == nil {
 		_ = s.auditTimed(ctx, nil, nil, "confirm_software", target, audit.Deny, src)
-		return domain.ErrForbidden
-	}
-	if ready.Kind != SoftwareClientAPK || ready.ClientID != bag.ClientID {
-		_ = s.auditTimed(ctx, personActor(bag), nil, "confirm_software", target, audit.Deny, src)
 		return domain.ErrForbidden
 	}
 	if bag.Welding {
@@ -330,7 +440,7 @@ func (s *Updates) ConfirmClientUpdate(ctx context.Context, bag *Bag, clocks Cloc
 		_ = s.auditTimed(ctx, personActor(bag), nil, "confirm_software", target, audit.Deny, src)
 		return err
 	}
-	if ready.Version <= bag.SoftwareVersion {
+	if version <= bag.SoftwareVersion {
 		_ = s.auditTimed(ctx, personActor(bag), nil, "confirm_software", target, audit.Deny, src)
 		return domain.ErrStaleRevision
 	}
@@ -338,23 +448,14 @@ func (s *Updates) ConfirmClientUpdate(ctx context.Context, bag *Bag, clocks Cloc
 	if err != nil {
 		return err
 	}
-	if !ok || pending.Version != ready.Version {
+	if !ok || pending.Version != version {
 		_ = s.auditTimed(ctx, personActor(bag), nil, "confirm_software", target, audit.Deny, src)
 		if !ok {
 			return domain.ErrNotFound
 		}
 		return domain.ErrStaleRevision
 	}
-	if !digest.Match(ready.Body, ready.Digest) || !bytes.Equal(ready.Digest, pending.Digest) {
-		_ = s.auditTimed(ctx, personActor(bag), nil, "confirm_software", target, audit.Deny, src)
-		return domain.ErrIntegrity
-	}
-	msg := softwaresign.Message(ready.Kind, ready.Version, ready.Digest, bag.ClientID)
-	if !nodekey.Verify(bag.FactoryPublic, msg, ready.Signature) {
-		_ = s.auditTimed(ctx, personActor(bag), nil, "confirm_software", target, audit.Deny, src)
-		return domain.ErrIntegrity
-	}
-	bag.SoftwareVersion = ready.Version
+	bag.SoftwareVersion = version
 	return s.auditTimed(ctx, personActor(bag), nil, "confirm_software", target, audit.Allow, src)
 }
 
@@ -363,7 +464,6 @@ func (s *Updates) PadClientSoftware(ctx context.Context, token string) (*Softwar
 	if _, err := s.RequireActive(ctx, token); err != nil {
 		return nil, err
 	}
-	// 只给最高已收客户端包，不含字节。
 	max, err := s.store.MaxSoftwareReplica(ctx, SoftwareClientAPK)
 	if err != nil {
 		return nil, err
@@ -371,8 +471,8 @@ func (s *Updates) PadClientSoftware(ctx context.Context, token string) (*Softwar
 	if max < 1 {
 		return nil, nil
 	}
-	row, err := s.store.SoftwareReplica(ctx, SoftwareClientAPK, max)
-	if err != nil {
+	row, ok, err := s.completeReplica(ctx, SoftwareClientAPK, max)
+	if err != nil || !ok {
 		return nil, err
 	}
 	return &row, nil
@@ -395,7 +495,6 @@ func (s *Updates) PullPadClientSoftware(ctx context.Context, token string, versi
 		_ = s.audit(ctx, &acc.ID, nil, "pull_software", target, audit.Deny)
 		return nil, err
 	}
-	// 取出包字节，摘要对不上不给平板。
 	body, err := s.blobs.Get(ctx, row.ObjectKey)
 	if err != nil {
 		_ = s.audit(ctx, &acc.ID, nil, "pull_software", target, audit.Deny)
@@ -412,4 +511,245 @@ func (s *Updates) PullPadClientSoftware(ctx context.Context, token string, versi
 		return nil, err
 	}
 	return body, nil
+}
+
+const (
+	SoftwareKeepLatest    = "latest"    // 该种类当前最高，提示或平板还要用
+	SoftwareKeepInstalled = "installed" // 本厂正在跑
+)
+
+// SoftwareItem 是带保留原因的本厂副本行。
+type SoftwareItem struct {
+	SoftwareReplica
+	Keep string `json:"keep"` // latest / installed / 空则可清
+}
+
+// ImagePrune 是本机清镜像进度。
+type ImagePrune struct {
+	Ready     bool   `json:"ready"`               // updater 已写结果
+	OK        bool   `json:"ok"`                  // 清完
+	Reclaimed string `json:"reclaimed,omitempty"` // 回报空间
+}
+
+// ListFactorySoftware 超管看本厂已收副本，按种类分列。
+func (s *Updates) ListFactorySoftware(ctx context.Context, token, kind string) ([]SoftwareItem, error) {
+	acc, err := s.RequireActive(ctx, token)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.can(ctx, acc, permManageAccount, nil); err != nil {
+		_ = s.audit(ctx, &acc.ID, nil, "list_software", kind, audit.Deny)
+		return nil, err
+	}
+	if kind != "" && !factoryPullKind(kind) {
+		return nil, domain.ErrInvalidName
+	}
+	rows, err := s.store.ListSoftwareReplicas(ctx, kind)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]SoftwareItem, 0, len(rows))
+	for _, row := range rows {
+		keep, err := s.softwareKeep(ctx, row.Kind, row.Version)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, SoftwareItem{SoftwareReplica: row, Keep: keep})
+	}
+	return out, nil
+}
+
+// 已装和当前最高必须留着。
+func (s *Updates) softwareKeep(ctx context.Context, kind string, version int64) (string, error) {
+	max, err := s.store.MaxSoftwareReplica(ctx, kind)
+	if err != nil {
+		return "", err
+	}
+	installed := int64(0)
+	if kind == SoftwareFactoryService {
+		installed, err = s.store.InstalledSoftware(ctx, kind)
+		if err != nil {
+			return "", err
+		}
+	}
+	if version == installed && installed > 0 {
+		return SoftwareKeepInstalled, nil
+	}
+	if version == max && max > 0 {
+		return SoftwareKeepLatest, nil
+	}
+	return "", nil
+}
+
+// DeleteFactorySoftware 清掉一份不是最高也不是已装的本厂旧副本。
+func (s *Updates) DeleteFactorySoftware(ctx context.Context, token, kind string, version int64) error {
+	acc, err := s.RequireActive(ctx, token)
+	if err != nil {
+		return err
+	}
+	target := softwareTarget(kind, version)
+	if err := s.can(ctx, acc, permManageAccount, nil); err != nil {
+		_ = s.audit(ctx, &acc.ID, nil, "prune_software", target, audit.Deny)
+		return err
+	}
+	if !factoryPullKind(kind) || version < 1 {
+		_ = s.audit(ctx, &acc.ID, nil, "prune_software", target, audit.Deny)
+		return domain.ErrInvalidName
+	}
+	keep, err := s.softwareKeep(ctx, kind, version)
+	if err != nil {
+		return err
+	}
+	if keep != "" {
+		_ = s.audit(ctx, &acc.ID, nil, "prune_software", target, audit.Deny)
+		return domain.ErrReferenced
+	}
+	row, err := s.store.SoftwareReplica(ctx, kind, version)
+	if err != nil {
+		_ = s.audit(ctx, &acc.ID, nil, "prune_software", target, audit.Deny)
+		return err
+	}
+	if err := s.blobs.Delete(ctx, row.ObjectKey); err != nil {
+		_ = s.audit(ctx, &acc.ID, nil, "prune_software", target, audit.Deny)
+		return err
+	}
+	if err := s.store.DeleteSoftwareReplica(ctx, kind, version); err != nil {
+		_ = s.audit(ctx, &acc.ID, nil, "prune_software", target, audit.Deny)
+		return err
+	}
+	return s.audit(ctx, &acc.ID, nil, "prune_software", target, audit.Allow)
+}
+
+// PruneFactorySoftware 清掉该种类所有可删旧副本；kind 空则两类都清。
+func (s *Updates) PruneFactorySoftware(ctx context.Context, token, kind string) (int, error) {
+	items, err := s.ListFactorySoftware(ctx, token, kind)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, item := range items {
+		if item.Keep != "" {
+			continue
+		}
+		if err := s.DeleteFactorySoftware(ctx, token, item.Kind, item.Version); err != nil {
+			return n, err
+		}
+		n++
+	}
+	return n, nil
+}
+
+// RequestImagePrune 请本机 updater 清无用 app 镜像。
+func (s *Updates) RequestImagePrune(ctx context.Context, token string) error {
+	acc, err := s.RequireActive(ctx, token)
+	if err != nil {
+		return err
+	}
+	if err := s.can(ctx, acc, permManageAccount, nil); err != nil {
+		_ = s.audit(ctx, &acc.ID, nil, "prune_images", "docker", audit.Deny)
+		return err
+	}
+	if s.imageJanitor == nil {
+		return s.audit(ctx, &acc.ID, nil, "prune_images", "docker", audit.Allow)
+	}
+	if err := s.imageJanitor.RequestPrune(); err != nil {
+		_ = s.audit(ctx, &acc.ID, nil, "prune_images", "docker", audit.Deny)
+		return err
+	}
+	return s.audit(ctx, &acc.ID, nil, "prune_images", "docker", audit.Allow)
+}
+
+// ImagePruneProgress 超管看 updater 清镜像结果。
+func (s *Updates) ImagePruneProgress(ctx context.Context, token string) (ImagePrune, error) {
+	acc, err := s.RequireActive(ctx, token)
+	if err != nil {
+		return ImagePrune{}, err
+	}
+	if err := s.can(ctx, acc, permManageAccount, nil); err != nil {
+		return ImagePrune{}, err
+	}
+	if s.imageJanitor == nil {
+		return ImagePrune{Ready: true, OK: true, Reclaimed: "0B"}, nil
+	}
+	reclaimed, ok, present, err := s.imageJanitor.PruneResult()
+	if err != nil {
+		return ImagePrune{}, err
+	}
+	return ImagePrune{Ready: present, OK: ok, Reclaimed: reclaimed}, nil
+}
+
+// BlobUsage 是对象存储已用，没有配额。
+type BlobUsage struct {
+	Used    int64  `json:"used"`             // 对象字节合计
+	Objects int64  `json:"objects"`          // 对象个数
+	Bucket  string `json:"bucket,omitempty"` // 桶名；内存存根为空
+}
+
+// ImageItem 是本机一条 app 镜像标签。
+type ImageItem struct {
+	Ref  string `json:"ref"`  // repository:tag
+	ID   string `json:"id"`   // docker 镜像短号
+	Size int64  `json:"size"` // 该标签字节
+	Keep string `json:"keep"` // current / previous / 空则可清
+}
+
+// ImageUsage 是本机 app 镜像占用，由 updater 写入。
+type ImageUsage struct {
+	Kind  string      `json:"kind"`  // 本机服务种类
+	Used  int64       `json:"used"`  // 去重后字节
+	Count int         `json:"count"` // 去重后个数
+	Items []ImageItem `json:"items"` // 标签列表
+}
+
+// StorageUsage 是本侧磁盘、对象存储、库和本机 app 镜像占用。
+type StorageUsage struct {
+	Disk     disk.Space `json:"disk"`     // 本机根盘
+	OSS      BlobUsage  `json:"oss"`      // 本侧桶内对象
+	Database int64      `json:"database"` // 当前厂库字节
+	Images   ImageUsage `json:"images"`   // 本机 app 镜像
+}
+
+// StorageUsage 超管看本机磁盘余量、对象存储已用、本厂库占用和本机 app 镜像。
+func (s *Updates) StorageUsage(ctx context.Context, token string) (StorageUsage, error) {
+	acc, err := s.RequireActive(ctx, token)
+	if err != nil {
+		return StorageUsage{}, err
+	}
+	if err := s.can(ctx, acc, permManageAccount, nil); err != nil {
+		return StorageUsage{}, err
+	}
+	out := StorageUsage{}
+	if space, err := disk.Of("/"); err == nil {
+		out.Disk = space
+	}
+	if s.blobs != nil {
+		used, objects, err := s.blobs.Usage(ctx)
+		if err != nil {
+			return StorageUsage{}, err
+		}
+		out.OSS = BlobUsage{Used: used, Objects: objects}
+		if named, ok := s.blobs.(interface{ Bucket() string }); ok {
+			out.OSS.Bucket = named.Bucket()
+		}
+	}
+	n, err := s.store.DatabaseSize(ctx)
+	if err != nil {
+		return StorageUsage{}, err
+	}
+	out.Database = n
+	if s.imageJanitor != nil {
+		raw, err := s.imageJanitor.ImagesJSON()
+		if err != nil {
+			return StorageUsage{}, err
+		}
+		if len(raw) > 0 {
+			if err := json.Unmarshal(raw, &out.Images); err != nil {
+				return StorageUsage{}, err
+			}
+		}
+	}
+	if out.Images.Items == nil {
+		out.Images.Items = []ImageItem{}
+	}
+	return out, nil
 }

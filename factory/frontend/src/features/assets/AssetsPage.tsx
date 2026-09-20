@@ -111,6 +111,8 @@ export function AssetsPage({ kind }: { kind: AssetKind }) {
   const [levelFilter, setLevelFilter] = useState<"all" | AssetLevel>("all");
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
+  const [sortKey, setSortKey] = useState<"name" | "code" | "createdAt">("createdAt");
+  const [sortAsc, setSortAsc] = useState(false);
   const [open, setOpen] = useState(false);
   const [copyFor, setCopyFor] = useState<Asset | null>(null);
   const [detailFor, setDetailFor] = useState<Asset | null>(null);
@@ -133,7 +135,7 @@ export function AssetsPage({ kind }: { kind: AssetKind }) {
 
   const rows = useMemo(() => {
     const needle = query.trim().toLowerCase();
-    return (assets.data ?? []).filter((a) => {
+    const filtered = (assets.data ?? []).filter((a) => {
       if (levelFilter !== "all" && a.level !== levelFilter) return false;
       if (statusFilter !== "all" && a.status !== statusFilter) return false;
       if (!needle) return true;
@@ -141,7 +143,15 @@ export function AssetsPage({ kind }: { kind: AssetKind }) {
       const creator = creatorText(a, catalog.data).toLowerCase();
       return a.name.toLowerCase().includes(needle) || creator.includes(needle);
     });
-  }, [assets.data, levelFilter, statusFilter, query, catalog.data]);
+    const collator = new Intl.Collator("zh");
+    return [...filtered].sort((a, b) => {
+      let cmp = 0;
+      if (sortKey === "name") cmp = collator.compare(a.name || "", b.name || "");
+      else if (sortKey === "code") cmp = (a.code || "").localeCompare(b.code || "", "zh", { numeric: true });
+      else cmp = Date.parse(a.createdAt || "") - Date.parse(b.createdAt || "");
+      return sortAsc ? cmp : -cmp;
+    });
+  }, [assets.data, levelFilter, statusFilter, query, catalog.data, sortKey, sortAsc]);
 
   useEffect(() => {
     if (copyFor) copyForm.setFieldsValue({ name: `${copyFor.name}-副本` });
@@ -169,10 +179,11 @@ export function AssetsPage({ kind }: { kind: AssetKind }) {
   };
   const detailing = detailFor ? (assets.data?.find((a) => a.id === detailFor.id) ?? detailFor) : null;
   const editing = editFor ? (assets.data?.find((a) => a.id === editFor.id) ?? editFor) : null;
+  const sortOrder = (key: "name" | "code" | "createdAt") => (sortKey === key ? (sortAsc ? "ascend" : "descend") : undefined);
 
   const columns: TableColumnsType<Asset> = [
-    { title: isProcess ? "工艺名称" : "工程名称", dataIndex: "name", width: 180, ellipsis: true, render: (name: string) => <Typography.Text strong>{name}</Typography.Text> },
-    { title: "编号", dataIndex: "code", width: 150, render: (code: string) => <Typography.Text copyable={{ text: code }}>{code || "—"}</Typography.Text> },
+    { title: isProcess ? "工艺名称" : "工程名称", dataIndex: "name", width: 180, ellipsis: true, sorter: true, sortOrder: sortOrder("name"), render: (name: string) => <Typography.Text strong>{name}</Typography.Text> },
+    { title: "编号", dataIndex: "code", width: 150, sorter: true, sortOrder: sortOrder("code"), render: (code: string) => <Typography.Text copyable={{ text: code }}>{code || "—"}</Typography.Text> },
     {
       title: "级别",
       dataIndex: "level",
@@ -198,7 +209,7 @@ export function AssetsPage({ kind }: { kind: AssetKind }) {
           } satisfies TableColumnsType<Asset>[number],
         ]
       : []),
-    { title: "创建时间", dataIndex: "createdAt", width: 160, render: (v: string) => formatTime(v) },
+    { title: "创建时间", dataIndex: "createdAt", width: 160, sorter: true, sortOrder: sortOrder("createdAt"), render: (v: string) => formatTime(v) },
     {
       title: "操作",
       key: "actions",
@@ -335,6 +346,12 @@ export function AssetsPage({ kind }: { kind: AssetKind }) {
             <Radio.Button value="personal">个人级</Radio.Button>
             <Radio.Button value="platform">平台级</Radio.Button>
           </Radio.Group>
+          <Radio.Group value={sortKey} onChange={(e) => setSortKey(e.target.value)}>
+            <Radio.Button value="name">按名称</Radio.Button>
+            <Radio.Button value="code">按编号</Radio.Button>
+            <Radio.Button value="createdAt">按时间</Radio.Button>
+          </Radio.Group>
+          <Button onClick={() => setSortAsc((v) => !v)}>{sortAsc ? "升序 ↑" : "降序 ↓"}</Button>
         </Space>
         <Table<Asset>
           rowKey="id"
@@ -343,6 +360,18 @@ export function AssetsPage({ kind }: { kind: AssetKind }) {
           loading={assets.isLoading}
           scroll={{ x: 1280 }}
           pagination={{ pageSize: 20, hideOnSinglePage: true }}
+          onChange={(_p, _f, sorter) => {
+            const s = Array.isArray(sorter) ? sorter[0] : sorter;
+            const field = s?.field;
+            if (field !== "name" && field !== "code" && field !== "createdAt") return;
+            if (!s.order) {
+              setSortKey("createdAt");
+              setSortAsc(false);
+              return;
+            }
+            setSortKey(field);
+            setSortAsc(s.order === "ascend");
+          }}
           locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={emptyText} /> }}
         />
       </Card>

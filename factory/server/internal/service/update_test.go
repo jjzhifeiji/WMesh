@@ -1,33 +1,74 @@
-// 软件更新服务层矩阵 U1～U20（厂内侧送达、确认、本机袋）。
+// 软件更新服务层矩阵：厂自拉、确认、本机袋。
 package service_test
 
 import (
 	"bytes"
 	"context"
 	"errors"
+	"strconv"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 
 	"wmesh/factory/internal/platform/audit"
+	"wmesh/factory/internal/platform/blob"
 	"wmesh/factory/internal/platform/digest"
 	"wmesh/factory/internal/platform/domain"
 	"wmesh/factory/internal/platform/id"
 	"wmesh/factory/internal/platform/nodekey"
-	"wmesh/factory/internal/platform/softwaresign"
 	factory "wmesh/factory/internal/service"
 )
 
 var matrixSoftwareIDs = []string{
-	"U1", "U2", "U3", "U4", "U5", "U6", "U7", "U8", "U9", "U10",
-	"U11", "U12", "U13", "U14", "U15", "U16", "U17", "U18", "U19", "U20",
+	"U2", "U3", "U4", "U5", "U8", "U9", "U10", "U11", "U12", "U13",
+	"U14", "U16", "U17", "U19", "U20", "U21", "U22", "U23", "U28", "U29", "U30", "U31",
 }
 
-type failInstaller struct{}
+type memSource struct {
+	mu     sync.Mutex
+	deny   bool
+	offers map[string]factory.SoftwareOffer
+	pulls  int
+}
 
-func (failInstaller) Apply(context.Context, int64, []byte) error {
-	return errors.New("boom")
+func (m *memSource) put(o factory.SoftwareOffer) {
+	if m.offers == nil {
+		m.offers = map[string]factory.SoftwareOffer{}
+	}
+	m.offers[o.Kind] = o
+}
+
+func (m *memSource) Latest(_ context.Context, kind string) (factory.SoftwareMeta, error) {
+	if m.deny {
+		return factory.SoftwareMeta{}, domain.ErrForbidden
+	}
+	o, ok := m.offers[kind]
+	if !ok {
+		return factory.SoftwareMeta{}, domain.ErrNotFound
+	}
+	return factory.SoftwareMeta{Kind: o.Kind, Version: o.Version, VersionName: o.VersionName, Digest: o.Digest}, nil
+}
+
+func (m *memSource) Pull(_ context.Context, kind string, version int64) ([]byte, error) {
+	m.mu.Lock()
+	m.pulls++
+	m.mu.Unlock()
+	if m.deny {
+		return nil, domain.ErrForbidden
+	}
+	o, ok := m.offers[kind]
+	if !ok || o.Version != version {
+		return nil, domain.ErrNotFound
+	}
+	return o.Body, nil
+}
+
+func offerOf(kind string, version int64, name string, body []byte) factory.SoftwareOffer {
+	return factory.SoftwareOffer{
+		Kind: kind, Version: version, VersionName: name, Digest: digest.Sum(body), Body: body,
+	}
 }
 
 func TestMatrixSoftware(t *testing.T) {
@@ -57,11 +98,8 @@ func TestMatrixSoftware(t *testing.T) {
 		t.Fatal(err)
 	}
 	saA := mustLogin(t, ctx, facA, "sa-a", "sa-pass")
-	seedB, facB, err := h.Provision(ctx, "sa-b", "超管B")
+	_, facB, err := h.Provision(ctx, "sa-b", "超管B")
 	if err != nil {
-		t.Fatal(err)
-	}
-	if err := facB.Activate(ctx, "sa-b", seedB.ActivationToken, "sa-b-pass"); err != nil {
 		t.Fatal(err)
 	}
 	op := mustCreateRole(t, ctx, facA, saA, "op-a", "op-pass", factory.RoleOperator, factory.ScopeFactory, nil)
@@ -70,36 +108,17 @@ func TestMatrixSoftware(t *testing.T) {
 	clocks := factory.Clocks{Server: now, Local: now}
 	nb, na := now.Add(-time.Hour), now.Add(24*time.Hour)
 
-	wanPub, wanPriv, err := nodekey.Generate()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := facA.SetWANPublicKey(ctx, wanPub); err != nil {
-		t.Fatal(err)
-	}
-	if err := facB.SetWANPublicKey(ctx, wanPub); err != nil {
-		t.Fatal(err)
-	}
+	src := &memSource{}
+	src.put(offerOf(factory.SoftwareFactoryService, 5, "1.5.0", []byte("factory-svc-5")))
+	facA.Updates.SetSoftwareSource(src)
 
-	sign := func(kind string, version int64, name string, body []byte, facID uuid.UUID) factory.SoftwareSnapshot {
-		t.Helper()
-		sum := digest.Sum(body)
-		return factory.SoftwareSnapshot{
-			Kind: kind, Version: version, VersionName: name, Digest: sum,
-			Signature:    nodekey.Sign(wanPriv, softwaresign.Message(kind, version, sum, facID)),
-			WANPublicKey: wanPub, TargetFactoryID: facID, Body: body,
-		}
-	}
-
-	body5 := []byte("factory-svc-5")
-	snap5 := sign(factory.SoftwareFactoryService, 5, "1.5.0", body5, seedA.ID)
-
-	run("U1", func(t *testing.T) {
-		if err := facA.AcceptSoftwareDelivery(ctx, snap5); err != nil {
-			t.Fatal(err)
+	run("U2", func(t *testing.T) {
+		got, err := facA.SyncFactorySoftware(ctx, saA, factory.SoftwareFactoryService)
+		if err != nil || got.Version != 5 {
+			t.Fatalf("%+v %v", got, err)
 		}
 	})
-	run("U2", func(t *testing.T) {
+	run("U3", func(t *testing.T) {
 		got, err := facA.Store().InstalledSoftware(ctx, factory.SoftwareFactoryService)
 		if err != nil || got != 0 {
 			t.Fatalf("installed %d %v", got, err)
@@ -109,22 +128,18 @@ func TestMatrixSoftware(t *testing.T) {
 			t.Fatalf("pending %+v %v", p, err)
 		}
 	})
-	run("U4", func(t *testing.T) {
+	run("U5", func(t *testing.T) {
 		if err := facA.ConfirmFactoryUpdate(ctx, op.tok, factory.SoftwareFactoryService, 5); !errors.Is(err, domain.ErrForbidden) {
 			t.Fatalf("got %v", err)
 		}
 	})
-	run("U5", func(t *testing.T) {
-		if err := facA.ConfirmFactoryUpdate(ctx, "", factory.SoftwareFactoryService, 5); !errors.Is(err, domain.ErrUnauthorized) {
-			t.Fatalf("got %v", err)
-		}
-	})
 	var weldingBag factory.Bag
-	run("U3", func(t *testing.T) {
+	run("U4", func(t *testing.T) {
 		cid, bag := boundBag(t, ctx, facA, saA, seedA.ID, op.acc.ID, nb, na)
 		_ = cid
 		bag.Welding = true
 		weldingBag = bag
+		facA.Updates.SetApplyOutcome(factory.ApplyOK)
 		if err := facA.ConfirmFactoryUpdate(ctx, saA, factory.SoftwareFactoryService, 5); err != nil {
 			t.Fatal(err)
 		}
@@ -132,12 +147,8 @@ func TestMatrixSoftware(t *testing.T) {
 		if err != nil || got != 5 {
 			t.Fatalf("installed %d %v", got, err)
 		}
-		cur, err := facA.CurrentFactorySoftware(ctx, saA)
-		if err != nil || cur.Version != 5 || cur.VersionName != "1.5.0" {
-			t.Fatalf("current %+v %v", cur, err)
-		}
 	})
-	run("U19", func(t *testing.T) {
+	run("U22", func(t *testing.T) {
 		if !weldingBag.Welding {
 			t.Fatal("welding cleared")
 		}
@@ -146,33 +157,26 @@ func TestMatrixSoftware(t *testing.T) {
 			t.Fatalf("weld decision %v", ev.Decision)
 		}
 	})
-	run("U6", func(t *testing.T) {
-		apk := sign(factory.SoftwareClientAPK, 3, "6.1.0", []byte("apk-3"), seedA.ID)
-		if err := facA.AcceptSoftwareDelivery(ctx, apk); err != nil {
+	run("U8", func(t *testing.T) {
+		src.put(offerOf(factory.SoftwareClientAPK, 3, "6.1.0", []byte("apk-3")))
+		if _, err := facA.SyncFactorySoftware(ctx, saA, factory.SoftwareClientAPK); err != nil {
 			t.Fatal(err)
 		}
 	})
 	cid1, bag1 := boundBag(t, ctx, facA, saA, seedA.ID, op.acc.ID, nb, na)
-	cid2, bag2 := boundBag(t, ctx, facA, saA, seedA.ID, pe.acc.ID, nb, na)
-	run("U7", func(t *testing.T) {
-		ready, err := facA.ReadyClientUpdate(ctx, cid1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := facA.ConfirmClientUpdate(ctx, &bag1, clocks, ready); err != nil {
+	_, bag2 := boundBag(t, ctx, facA, saA, seedA.ID, pe.acc.ID, nb, na)
+	_ = cid1
+	run("U9", func(t *testing.T) {
+		if err := facA.ConfirmClientUpdate(ctx, &bag1, clocks, 3); err != nil {
 			t.Fatal(err)
 		}
 		if bag1.SoftwareVersion != 3 {
 			t.Fatalf("ver %d", bag1.SoftwareVersion)
 		}
 	})
-	run("U8", func(t *testing.T) {
-		ready, err := facA.ReadyClientUpdate(ctx, cid2)
-		if err != nil {
-			t.Fatal(err)
-		}
+	run("U10", func(t *testing.T) {
 		bag2.Welding = true
-		if err := facA.ConfirmClientUpdate(ctx, &bag2, clocks, ready); !errors.Is(err, domain.ErrForbidden) {
+		if err := facA.ConfirmClientUpdate(ctx, &bag2, clocks, 3); !errors.Is(err, domain.ErrForbidden) {
 			t.Fatalf("got %v", err)
 		}
 		if bag2.SoftwareVersion != 0 {
@@ -180,88 +184,110 @@ func TestMatrixSoftware(t *testing.T) {
 		}
 		bag2.Welding = false
 	})
-	run("U9", func(t *testing.T) {
-		ready, err := facA.ReadyClientUpdate(ctx, cid2)
-		if err != nil {
-			t.Fatal(err)
-		}
+	run("U11", func(t *testing.T) {
 		loggedOut := bag2
 		loggedOut.OperatorID = nil
-		if err := facA.ConfirmClientUpdate(ctx, &loggedOut, clocks, ready); !errors.Is(err, domain.ErrForbidden) {
+		if err := facA.ConfirmClientUpdate(ctx, &loggedOut, clocks, 3); !errors.Is(err, domain.ErrForbidden) {
 			t.Fatalf("got %v", err)
 		}
 	})
-	run("U10", func(t *testing.T) {
+	run("U12", func(t *testing.T) {
 		p, err := facA.PendingFactorySoftware(ctx, saA)
 		if err != nil || p != nil {
 			t.Fatalf("factory pending after install %+v %v", p, err)
 		}
-		apk4 := sign(factory.SoftwareClientAPK, 4, "6.2.0", []byte("apk-4"), seedA.ID)
-		if err := facA.AcceptSoftwareDelivery(ctx, apk4); err != nil {
+		src.put(offerOf(factory.SoftwareClientAPK, 4, "6.2.0", []byte("apk-4")))
+		if _, err := facA.SyncFactorySoftware(ctx, saA, factory.SoftwareClientAPK); err != nil {
 			t.Fatal(err)
 		}
 		if bag2.SoftwareVersion != 0 {
 			t.Fatal("unconfirmed tablet changed")
 		}
 	})
-	run("U20", func(t *testing.T) {
+	run("U23", func(t *testing.T) {
 		if bag1.SoftwareVersion != 3 || bag2.SoftwareVersion != 0 {
 			t.Fatalf("mixed %d %d", bag1.SoftwareVersion, bag2.SoftwareVersion)
 		}
 	})
-	run("U12", func(t *testing.T) {
-		apk6 := sign(factory.SoftwareClientAPK, 6, "6.3.0", []byte("apk-6"), seedA.ID)
-		if err := facA.AcceptSoftwareDelivery(ctx, apk6); err != nil {
+	run("U14", func(t *testing.T) {
+		src.put(offerOf(factory.SoftwareClientAPK, 6, "6.3.0", []byte("apk-6")))
+		if _, err := facA.SyncFactorySoftware(ctx, saA, factory.SoftwareClientAPK); err != nil {
 			t.Fatal(err)
 		}
-		ready, err := facA.ReadyClientUpdate(ctx, cid2)
-		if err != nil || ready.Version != 6 {
-			t.Fatalf("%+v %v", ready, err)
-		}
-		ready.Version = 4
-		if err := facA.ConfirmClientUpdate(ctx, &bag2, clocks, ready); !errors.Is(err, domain.ErrStaleRevision) && !errors.Is(err, domain.ErrIntegrity) {
+		if err := facA.ConfirmClientUpdate(ctx, &bag2, clocks, 4); !errors.Is(err, domain.ErrStaleRevision) {
 			t.Fatalf("got %v", err)
 		}
 	})
-	run("U11", func(t *testing.T) {
-		old := sign(factory.SoftwareFactoryService, 4, "1.4.0", []byte("factory-svc-4"), seedA.ID)
-		if err := facA.AcceptSoftwareDelivery(ctx, old); !errors.Is(err, domain.ErrStaleRevision) {
-			t.Fatalf("got %v", err)
+	run("U29", func(t *testing.T) {
+		rows, err := facA.ListFactorySoftware(ctx, saA, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		keep := map[string]string{}
+		for _, row := range rows {
+			keep[row.Kind+":"+strconv.FormatInt(row.Version, 10)] = row.Keep
+		}
+		if keep[factory.SoftwareClientAPK+":6"] != factory.SoftwareKeepLatest {
+			t.Fatalf("apk latest %q", keep[factory.SoftwareClientAPK+":6"])
+		}
+		if keep[factory.SoftwareFactoryService+":5"] != factory.SoftwareKeepInstalled {
+			t.Fatalf("svc installed %q", keep[factory.SoftwareFactoryService+":5"])
+		}
+		if keep[factory.SoftwareClientAPK+":3"] != "" || keep[factory.SoftwareClientAPK+":4"] != "" {
+			t.Fatalf("old keep %+v", keep)
+		}
+		if err := facA.DeleteFactorySoftware(ctx, saA, factory.SoftwareClientAPK, 3); err != nil {
+			t.Fatal(err)
+		}
+		n, err := facA.PruneFactorySoftware(ctx, saA, factory.SoftwareClientAPK)
+		if err != nil || n != 1 {
+			t.Fatalf("prune %d %v", n, err)
+		}
+	})
+	run("U30", func(t *testing.T) {
+		if err := facA.DeleteFactorySoftware(ctx, saA, factory.SoftwareClientAPK, 6); !errors.Is(err, domain.ErrReferenced) {
+			t.Fatalf("latest %v", err)
+		}
+		if err := facA.DeleteFactorySoftware(ctx, saA, factory.SoftwareFactoryService, 5); !errors.Is(err, domain.ErrReferenced) {
+			t.Fatalf("installed %v", err)
+		}
+		if err := facA.DeleteFactorySoftware(ctx, op.tok, factory.SoftwareClientAPK, 4); !errors.Is(err, domain.ErrForbidden) {
+			t.Fatalf("op %v", err)
+		}
+	})
+	run("U31", func(t *testing.T) {
+		if err := facA.RequestImagePrune(ctx, saA); err != nil {
+			t.Fatal(err)
+		}
+		if err := facA.RequestImagePrune(ctx, op.tok); !errors.Is(err, domain.ErrForbidden) {
+			t.Fatalf("op %v", err)
 		}
 	})
 	run("U13", func(t *testing.T) {
-		if err := facA.AcceptSoftwareDelivery(ctx, snap5); err != nil {
-			t.Fatal(err)
-		}
-	})
-	run("U14", func(t *testing.T) {
-		bad := snap5
-		bad.Body = []byte("tampered")
-		if err := facA.AcceptSoftwareDelivery(ctx, bad); !errors.Is(err, domain.ErrIntegrity) {
-			t.Fatalf("got %v", err)
-		}
-		bad = snap5
-		bad.Signature = bytes.Repeat([]byte{1}, 64)
-		if err := facA.AcceptSoftwareDelivery(ctx, bad); !errors.Is(err, domain.ErrIntegrity) {
-			t.Fatalf("got %v", err)
-		}
-	})
-	run("U15", func(t *testing.T) {
-		if err := facB.AcceptSoftwareDelivery(ctx, snap5); !errors.Is(err, domain.ErrForbidden) {
+		if err := facA.IngestSoftware(ctx, offerOf(factory.SoftwareFactoryService, 4, "1.4.0", []byte("factory-svc-4"))); !errors.Is(err, domain.ErrStaleRevision) {
 			t.Fatalf("got %v", err)
 		}
 	})
 	run("U16", func(t *testing.T) {
-		ready, err := facA.ReadyClientUpdate(ctx, cid2)
-		if err != nil {
-			t.Fatal(err)
-		}
-		ready.Signature = nodekey.Sign(wanPriv, softwaresign.Message(ready.Kind, ready.Version, ready.Digest, cid2))
-		if err := facA.ConfirmClientUpdate(ctx, &bag2, clocks, ready); !errors.Is(err, domain.ErrIntegrity) {
+		bad := offerOf(factory.SoftwareFactoryService, 8, "1.8.0", []byte("factory-svc-8"))
+		bad.Body = []byte("tampered")
+		if err := facA.IngestSoftware(ctx, bad); !errors.Is(err, domain.ErrIntegrity) {
 			t.Fatalf("got %v", err)
 		}
 	})
 	run("U17", func(t *testing.T) {
+		srcB := &memSource{deny: true}
+		facB.Updates.SetSoftwareSource(srcB)
+		if _, err := facB.Store().SoftwareReplica(ctx, factory.SoftwareFactoryService, 5); !errors.Is(err, domain.ErrNotFound) {
+			t.Fatalf("b replica %v", err)
+		}
+	})
+	run("U19", func(t *testing.T) {
+		if err := facA.IngestSoftware(ctx, offerOf(factory.SoftwareWANService, 1, "w", []byte("wan"))); !errors.Is(err, domain.ErrForbidden) {
+			t.Fatalf("got %v", err)
+		}
+	})
+	run("U20", func(t *testing.T) {
 		before, err := facA.ListAssets(ctx, saA, factory.KindProcess)
 		if err != nil {
 			t.Fatal(err)
@@ -275,12 +301,11 @@ func TestMatrixSoftware(t *testing.T) {
 			t.Fatalf("assets leaked into software %d %d %v", n, len(after), err)
 		}
 	})
-	run("U18", func(t *testing.T) {
-		next := sign(factory.SoftwareFactoryService, 7, "1.7.0", []byte("factory-svc-7"), seedA.ID)
-		if err := facA.AcceptSoftwareDelivery(ctx, next); err != nil {
+	run("U21", func(t *testing.T) {
+		if err := facA.IngestSoftware(ctx, offerOf(factory.SoftwareFactoryService, 7, "1.7.0", []byte("factory-svc-7"))); err != nil {
 			t.Fatal(err)
 		}
-		facA.SetFactoryInstaller(failInstaller{})
+		facA.Updates.SetApplyOutcome(factory.ApplyFail)
 		if err := facA.ConfirmFactoryUpdate(ctx, saA, factory.SoftwareFactoryService, 7); !errors.Is(err, domain.ErrSoftwareInstallFailed) {
 			t.Fatalf("got %v", err)
 		}
@@ -288,7 +313,56 @@ func TestMatrixSoftware(t *testing.T) {
 		if err != nil || got != 5 {
 			t.Fatalf("rolled %d %v", got, err)
 		}
-		facA.SetFactoryInstaller(nil)
+		facA.Updates.SetApplyOutcome(factory.ApplyDefer)
+	})
+	run("U28", func(t *testing.T) {
+		src.mu.Lock()
+		src.pulls = 0
+		src.mu.Unlock()
+		if err := facA.Updates.EnsureSoftware(ctx, factory.SoftwareFactoryService, 7); err != nil {
+			t.Fatal(err)
+		}
+		src.mu.Lock()
+		first := src.pulls
+		src.mu.Unlock()
+		if first != 0 {
+			t.Fatalf("re-pulled complete %d", first)
+		}
+		src.put(offerOf(factory.SoftwareFactoryService, 8, "1.8.0", []byte("factory-svc-8")))
+		var wg sync.WaitGroup
+		errCh := make(chan error, 2)
+		for range 2 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				errCh <- facA.Updates.EnsureSoftware(ctx, factory.SoftwareFactoryService, 8)
+			}()
+		}
+		wg.Wait()
+		close(errCh)
+		for err := range errCh {
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		src.mu.Lock()
+		got := src.pulls
+		src.mu.Unlock()
+		if got != 1 {
+			t.Fatalf("pulls %d", got)
+		}
+		p, err := facA.PendingFactorySoftware(ctx, saA)
+		if err != nil || p == nil || p.Version != 8 {
+			t.Fatalf("pending %+v %v", p, err)
+		}
+		facA.Updates.SetBlobs(blob.NewMemory())
+		p, err = facA.PendingFactorySoftware(ctx, saA)
+		if err != nil || p != nil {
+			t.Fatalf("incomplete pending %+v %v", p, err)
+		}
+		if err := facA.ConfirmFactoryUpdate(ctx, saA, factory.SoftwareFactoryService, 8); !errors.Is(err, domain.ErrNotFound) && !errors.Is(err, domain.ErrIntegrity) {
+			t.Fatalf("confirm incomplete %v", err)
+		}
 	})
 
 	rows, err := facA.ListAudit(ctx)
@@ -296,8 +370,8 @@ func TestMatrixSoftware(t *testing.T) {
 		t.Fatal(err)
 	}
 	dump := audit.Dump(rows)
-	if audit.ContainsAny(dump, string(wanPriv), string(body5)) {
-		t.Fatal("secret or package bytes in audit")
+	if audit.ContainsAny(dump, "factory-svc-5") {
+		t.Fatal("package bytes in audit")
 	}
 	if !audit.HasResult(rows, "confirm_software", audit.Allow) || !audit.HasResult(rows, "confirm_software", audit.Deny) {
 		t.Fatal("missing confirm audit")
@@ -330,29 +404,6 @@ func boundBag(t *testing.T, ctx context.Context, fac *factory.Service, sa string
 	return cid, bag
 }
 
-func TestAcceptSoftwareFirstTrust(t *testing.T) {
-	ctx := context.Background()
-	h := New(t)
-	seed, fac, err := h.Provision(ctx, "sa-t", "超管")
-	if err != nil {
-		t.Fatal(err)
-	}
-	wanPub, wanPriv, err := nodekey.Generate()
-	if err != nil {
-		t.Fatal(err)
-	}
-	body := []byte("svc-tofu")
-	sum := digest.Sum(body)
-	snap := factory.SoftwareSnapshot{
-		Kind: factory.SoftwareFactoryService, Version: 1, VersionName: "1.0.0", Digest: sum,
-		Signature:    nodekey.Sign(wanPriv, softwaresign.Message(factory.SoftwareFactoryService, 1, sum, seed.ID)),
-		WANPublicKey: wanPub, TargetFactoryID: seed.ID, Body: body,
-	}
-	if err := fac.AcceptSoftwareDelivery(ctx, snap); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func TestPadClientSoftwarePull(t *testing.T) {
 	ctx := context.Background()
 	h := New(t)
@@ -371,21 +422,8 @@ func TestPadClientSoftwarePull(t *testing.T) {
 	if _, err := fac.PadClientSoftware(ctx, ""); !errors.Is(err, domain.ErrUnauthorized) {
 		t.Fatalf("anon %v", err)
 	}
-	wanPub, wanPriv, err := nodekey.Generate()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := fac.SetWANPublicKey(ctx, wanPub); err != nil {
-		t.Fatal(err)
-	}
 	apk := []byte("apk-pad-51")
-	sum := digest.Sum(apk)
-	snap := factory.SoftwareSnapshot{
-		Kind: factory.SoftwareClientAPK, Version: 51, VersionName: "6.1.0", Digest: sum,
-		Signature:    nodekey.Sign(wanPriv, softwaresign.Message(factory.SoftwareClientAPK, 51, sum, seed.ID)),
-		WANPublicKey: wanPub, TargetFactoryID: seed.ID, Body: apk,
-	}
-	if err := fac.AcceptSoftwareDelivery(ctx, snap); err != nil {
+	if err := fac.IngestSoftware(ctx, offerOf(factory.SoftwareClientAPK, 51, "6.1.0", apk)); err != nil {
 		t.Fatal(err)
 	}
 	row, err := fac.PadClientSoftware(ctx, tok)
@@ -401,5 +439,66 @@ func TestPadClientSoftwarePull(t *testing.T) {
 	}
 	if _, err := fac.PullPadClientSoftware(ctx, "", 51); !errors.Is(err, domain.ErrUnauthorized) {
 		t.Fatalf("anon pull %v", err)
+	}
+}
+
+func TestStorageUsage(t *testing.T) {
+	ctx := context.Background()
+	h := New(t)
+	seed, fac, err := h.Provision(ctx, "sa-st", "超管")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fac.Activate(ctx, "sa-st", seed.ActivationToken, "sa-pass"); err != nil {
+		t.Fatal(err)
+	}
+	tok := mustLogin(t, ctx, fac, "sa-st", "sa-pass")
+	if err := fac.IngestSoftware(ctx, offerOf(factory.SoftwareClientAPK, 2, "6.0.0", []byte("apk-st"))); err != nil {
+		t.Fatal(err)
+	}
+	got, err := fac.StorageUsage(ctx, tok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.OSS.Used != int64(len("apk-st")) || got.OSS.Objects != 1 {
+		t.Fatalf("oss %+v", got.OSS)
+	}
+	if got.Disk.Total <= 0 || got.Database <= 0 {
+		t.Fatalf("disk/db %+v", got)
+	}
+	if got.Images.Count != 0 || got.Images.Used != 0 {
+		t.Fatalf("images %+v", got.Images)
+	}
+	if _, err := fac.StorageUsage(ctx, ""); !errors.Is(err, domain.ErrUnauthorized) {
+		t.Fatalf("anon %v", err)
+	}
+}
+
+type reportJanitor struct{ raw []byte }
+
+func (reportJanitor) RequestPrune() error { return nil }
+
+func (reportJanitor) PruneResult() (string, bool, bool, error) { return "0B", true, true, nil }
+
+func (j reportJanitor) ImagesJSON() ([]byte, error) { return j.raw, nil }
+
+func TestImageOccupancy(t *testing.T) {
+	ctx := context.Background()
+	h := New(t)
+	seed, fac, err := h.Provision(ctx, "sa-img", "超管")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fac.Activate(ctx, "sa-img", seed.ActivationToken, "sa-pass"); err != nil {
+		t.Fatal(err)
+	}
+	tok := mustLogin(t, ctx, fac, "sa-img", "sa-pass")
+	fac.SetImageJanitor(reportJanitor{raw: []byte(`{"kind":"factory_service","used":8,"count":1,"items":[{"ref":"app:dev","id":"y","size":8,"keep":"current"}]}`)})
+	got, err := fac.StorageUsage(ctx, tok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Images.Kind != "factory_service" || got.Images.Used != 8 || got.Images.Count != 1 || len(got.Images.Items) != 1 {
+		t.Fatalf("images %+v", got.Images)
 	}
 }

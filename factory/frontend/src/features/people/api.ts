@@ -1,3 +1,4 @@
+import { useQuery } from "@tanstack/react-query";
 import { useCatalogMutation, type Account, type RoleGrant } from "@/features/catalog/api";
 import { http } from "@/shared/api/client";
 import { fpath } from "@/shared/auth/session";
@@ -44,4 +45,29 @@ export function useGrantRole() {
 // 收回后旧会话上的新操作立刻按新角色判定；最后一名有效超管的角色不能收。
 export function useRevokeRole() {
   return useCatalogMutation((grantId: string) => http.post<void>(fpath(`/grants/${grantId}/revoke`)));
+}
+
+export type PersonLoginLog = {
+  id: string; // 登录记录稳定身份
+  personId: string; // 本厂登录人
+  kind: string; // pad / client / mqtt
+  occurredAt: string; // 服务端记下的时间
+  appVersion: number; // 示教器 versionCode；0 表示没报
+  appVersionName: string; // 示教器 versionName
+  deviceSerial: string; // 机械臂识别号
+  deviceModel: string; // 平板型号
+  deviceManufacturer: string; // 平板厂商
+  androidRelease: string; // 平板系统版本
+  networkName: string; // 当时 WiFi 名
+  clientId?: string; // 已匹配本机
+  clientName: string; // 当时设备名快照
+};
+
+// 超管点开某个人的示教器登录现场。
+export function usePersonLogins(personId: string | null) {
+  return useQuery({
+    queryKey: ["person-logins", personId],
+    queryFn: ({ signal }) => http.get<PersonLoginLog[]>(fpath(`/people/${personId}/logins`), signal),
+    enabled: Boolean(personId),
+  });
 }

@@ -38,7 +38,8 @@ export function ClientsPage() {
 
   const columns: TableColumnsType<Client> = [
     { title: "名称", dataIndex: "name", width: 140, ellipsis: true, render: (name: string) => <Typography.Text strong>{name}</Typography.Text> },
-    { title: "识别号", dataIndex: "id", width: 280, render: (id: string) => <IdText id={id} /> },
+    { title: "识别号", dataIndex: "deviceSerial", width: 160, render: (v: string | undefined) => v || "—" },
+    { title: "身份", dataIndex: "id", width: 280, render: (id: string) => <IdText id={id} /> },
     {
       title: "状态",
       dataIndex: "status",
@@ -117,7 +118,7 @@ export function ClientsPage() {
 
   return (
     <>
-      <PageHeader title="设备" description="云端把设备分到本厂后会自动出现。识别号固定；运行许可仍由本厂签发或撤销。" />
+      <PageHeader title="设备" description="云端把设备分到本厂后会自动出现。识别号由云端登记；运行许可仍由本厂签发或撤销。" />
       <Card>
         <Table<Client> rowKey="id" columns={columns} dataSource={clients.data ?? []} loading={clients.isLoading || grants.isLoading} pagination={{ pageSize: 20, hideOnSinglePage: true }} />
       </Card>

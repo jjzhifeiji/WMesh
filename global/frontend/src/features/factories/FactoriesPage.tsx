@@ -2,7 +2,7 @@ import { PlusOutlined, ReloadOutlined } from "@ant-design/icons";
 import { Alert, App, Button, Card, Popconfirm, Space, Table, Tag, type TableColumnsType } from "antd";
 import { useMemo, useState } from "react";
 import { errorMessage } from "@/shared/api/client";
-import { formatDateTime, formatTime } from "@/shared/format";
+import { formatDateTime, formatRelease, formatTime } from "@/shared/format";
 import { IdText } from "@/shared/ui/IdText";
 import { PageHeader } from "@/shared/ui/PageHeader";
 import { CreateFactoryModal } from "./CreateFactoryModal";
@@ -44,6 +44,8 @@ export function FactoriesPage() {
   const columns: TableColumnsType<Row> = [
     { title: "工厂名称", dataIndex: "name", width: 180 },
     { title: "状态", width: 100, render: (_, row) => channelStatus(row) },
+    { title: "前端版本", width: 140, render: (_, row) => formatRelease(row.channelOnline, row.webVersion, row.webVersionName) },
+    { title: "服务版本", width: 140, render: (_, row) => formatRelease(row.channelOnline, row.serviceVersion, row.serviceVersionName) },
     { title: "上线时间", dataIndex: "channelConnectedAt", width: 180, render: (v?: string) => formatDateTime(v) },
     { title: "离线时间", dataIndex: "channelDisconnectedAt", width: 180, render: (v?: string) => formatDateTime(v) },
     { title: "最近心跳", dataIndex: "channelLastSeenAt", width: 180, render: (v?: string) => formatDateTime(v) },

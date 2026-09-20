@@ -20,6 +20,7 @@ import (
 
 	"wmesh/global/internal/httpapi"
 	"wmesh/global/internal/platform/applog"
+	"wmesh/global/internal/platform/appupdate"
 	"wmesh/global/internal/platform/config"
 	"wmesh/global/internal/platform/migrate"
 	"wmesh/global/internal/platform/mqttbroker"
@@ -66,6 +67,16 @@ func run(ctx context.Context, log *slog.Logger) error {
 	}
 
 	svc := service.NewService(store.Open(db))
+	// 确认只把 tar 落到更新目录；真正换容器由本机 updater 做。
+	updateDir := appupdate.Dir(cfg.UpdateDir)
+	svc.Updates.SetPendingSink(updateDir)
+	svc.Updates.SetApplyReporter(updateDir)
+	svc.Updates.SetImageJanitor(updateDir)
+	if kind, version, ok, present, err := updateDir.Report(); err == nil && present && ok {
+		if err := svc.Updates.MarkInstalled(ctx, kind, version); err != nil {
+			log.Warn("mark wan software installed", "err", err)
+		}
+	}
 	if err := svc.ResetChannelPresence(ctx); err != nil {
 		return fmt.Errorf("reset channel presence: %w", err)
 	}
@@ -94,11 +105,13 @@ func run(ctx context.Context, log *slog.Logger) error {
 
 	api := httpapi.New(svc, version)
 	if cfg.OSS.Enabled() {
-		store := oss.New(cfg.OSS.Endpoint, cfg.OSS.Bucket, cfg.OSS.AccessKey, cfg.OSS.SecretKey)
+		ossStore := oss.New(cfg.OSS.Endpoint, cfg.OSS.Bucket, cfg.OSS.AccessKey, cfg.OSS.SecretKey)
+		// 软件包字节进对象存储，不进进程内存。
+		svc.SetBlobs(ossStore)
 		// 探活顺带保证桶在：对象存储晚起或被清空后能自愈，不用重启应用。
-		api.OSSProbe = store.EnsureBucket
+		api.OSSProbe = ossStore.EnsureBucket
 		// 启动时只提醒不拦截：OSS 掉线不该让名录管理起不来。
-		if err := store.EnsureBucketRetry(ctx, 5, 2*time.Second); err != nil {
+		if err := ossStore.EnsureBucketRetry(ctx, 5, 2*time.Second); err != nil {
 			log.Warn("oss bucket not ready at startup", "endpoint", cfg.OSS.Endpoint, "bucket", cfg.OSS.Bucket, "err", err)
 		} else {
 			log.Info("oss bucket ready", "endpoint", cfg.OSS.Endpoint, "bucket", cfg.OSS.Bucket)

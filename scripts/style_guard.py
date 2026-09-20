@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""WMesh 治理门禁：拦住缺注释和分层回退。对齐 HTGlobal 的 orm/service/sql Guard。"""
+"""WMesh 治理门禁：拦住缺注释和分层回退"""
 
 from __future__ import annotations
 

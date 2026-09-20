@@ -5,8 +5,9 @@ import { fpath } from "@/shared/auth/session";
 export type ClientStatus = "bound" | "void";
 
 export type Client = {
-  id: string; // 固定识别号，与 WAN 相同的全局身份
+  id: string; // 稳定身份，与 WAN 相同
   name: string; // 给人看的名字，可改
+  deviceSerial?: string; // 机械臂识别号；未登记为空
   publicKey?: string | null; // 本机公钥；未上线为空
   bindingRevision: number; // 已接受的绑定修订
   status: ClientStatus; // bound / void

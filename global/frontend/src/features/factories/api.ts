@@ -13,6 +13,10 @@ export type Factory = {
   channelConnectedAt?: string; // 当前这条通道连上的时间
   channelLastSeenAt?: string; // 最近一次心跳或握手
   channelDisconnectedAt?: string; // 最近一次断开
+  webVersion: number; // 厂端前端版本号；离线为 0
+  webVersionName: string; // 厂端前端版本名
+  serviceVersion: number; // 厂端服务版本号；离线为 0
+  serviceVersionName: string; // 厂端服务版本名
 };
 
 export type InitialSuperAdmin = {

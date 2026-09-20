@@ -1,4 +1,4 @@
-// 工程焊道引用工艺身份；F2 空库四份、已有三份不自动插 T 排。
+// 工程焊道引用工艺身份；F2 空库三份、已有份不自动插 T 排。
 package service_test
 
 import (
@@ -158,7 +158,7 @@ func TestProjectProcessRefs(t *testing.T) {
 		t.Fatal(err)
 	}
 	list, err := h.WAN.ListProjectTemplates(ctx, tok)
-	if err != nil || len(list) != 4 {
+	if err != nil || len(list) != 3 {
 		t.Fatalf("list %d %v", len(list), err)
 	}
 	foundTBar := false
@@ -249,7 +249,7 @@ func TestExistingProjectTemplatesKeepThree(t *testing.T) {
 		t.Fatal(err)
 	}
 	list, err := h.WAN.ListProjectTemplates(ctx, tok)
-	if err != nil || len(list) != 4 {
+	if err != nil || len(list) != 3 {
 		t.Fatalf("seed %d %v", len(list), err)
 	}
 	var tbarID = list[0].ID
@@ -267,7 +267,7 @@ func TestExistingProjectTemplatesKeepThree(t *testing.T) {
 		t.Fatal(err)
 	}
 	again, err := h.WAN.ListProjectTemplates(ctx, tok)
-	if err != nil || len(again) != 3 {
+	if err != nil || len(again) != 2 {
 		t.Fatalf("after delete %d %v", len(again), err)
 	}
 	for _, row := range again {

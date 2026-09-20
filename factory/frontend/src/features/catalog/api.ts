@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient, type UseMutationOptions } from "@tanstack/react-query";
+import { keepPreviousData, useMutation, useQuery, useQueryClient, type UseMutationOptions } from "@tanstack/react-query";
 import { http } from "@/shared/api/client";
 import { fpath } from "@/shared/auth/session";
 import type { ScopeKind } from "@/shared/labels";
@@ -13,6 +13,12 @@ export type Account = {
   loginName: string; // 本厂内唯一登录名，不是身份
   displayName: string; // 显示名，可改
   status: AccountStatus; // pending / active / disabled
+  appOnline: boolean; // 示教器 MQTT 连着才算在线；管理端登录不算
+  appLastSeenAt?: string; // 最近一次示教器登录或 MQTT 见到
+  appVersion: number; // 示教器自报 versionCode；0 表示还没报到
+  appVersionName: string; // 示教器自报 versionName
+  appClientName: string; // 最近一次登录用过的设备名
+  appDeviceSerial: string; // 最近一次登录用过的识别号
 };
 
 export type OrgUnit = {
@@ -58,6 +64,8 @@ export function useCatalog() {
   return useQuery({
     queryKey: catalogKeys.all,
     queryFn: ({ signal }) => http.get<Catalog>(fpath("/catalog"), signal),
+    refetchInterval: 5000,
+    placeholderData: keepPreviousData,
   });
 }
 

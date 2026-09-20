@@ -1,6 +1,6 @@
-// Package store 只碰 WAN 库：管理员、工厂名录、初始超管对账、现场设备名录、平台级资产、内容模版、下发授权、软件发布、通道在线、内容租约和审计。
+// Package store 只碰 WAN 库：管理员、工厂名录、初始超管对账、现场设备名录、平台级资产、内容模版、下发授权、软件发布、通道在线、内容租约、焊汇总和审计。
 // 不判定允许/拒绝，也不回调应用服务；不见厂内人员、组织。
-// 文件按域拆：account / directory / channel / client / asset / template / closure / lease / update。
+// 文件按域拆：account / directory / channel / client / asset / template / closure / lease / update / stats。
 package store
 
 import (
@@ -26,6 +26,13 @@ func Open(db *gorm.DB) *Store {
 // Ping 只确认 WAN 库连接可用。
 func (s *Store) Ping(ctx context.Context) error {
 	return s.db.WithContext(ctx).Exec("SELECT 1").Error
+}
+
+// DatabaseSize 当前库占用的字节，给超管看存储。
+func (s *Store) DatabaseSize(ctx context.Context) (int64, error) {
+	var n int64
+	err := s.db.WithContext(ctx).Raw("SELECT pg_database_size(current_database())").Scan(&n).Error
+	return n, err
 }
 
 // AppendAudit 把一条审计写入 WAN 库；缺身份则现场发号。

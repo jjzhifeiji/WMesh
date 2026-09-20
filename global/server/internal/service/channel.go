@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"github.com/google/uuid"
 
@@ -125,6 +126,15 @@ func (s *Channel) MarkChannelOffline(ctx context.Context, factoryID uuid.UUID) e
 // ResetChannelPresence WAN 进程起来时清掉上一轮残留的在线标记。
 func (s *Channel) ResetChannelPresence(ctx context.Context) error {
 	return s.store.ResetChannelPresence(ctx)
+}
+
+// ReportFactoryRelease 记下该厂自报的前端和服务版本；心跳不上审计。
+func (s *Channel) ReportFactoryRelease(ctx context.Context, factoryID uuid.UUID, webCode int64, webName string, svcCode int64, svcName string) error {
+	if webCode < 1 || svcCode < 1 || strings.TrimSpace(webName) == "" || strings.TrimSpace(svcName) == "" {
+		return domain.ErrInvalidName
+	}
+	// 把厂端自报版本写入名录，离线展示时再清掉。
+	return s.store.PutFactoryRelease(ctx, factoryID, webCode, strings.TrimSpace(webName), svcCode, strings.TrimSpace(svcName))
 }
 
 // IssueContentLease 给该厂签发或续期内容租约；同一把 L，窗口最多 24 小时。

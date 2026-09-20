@@ -1,8 +1,9 @@
 import { Card, Col, Descriptions, Row, Space, Statistic, Tag } from "antd";
 import { useCatalog, useIsSuperAdmin, unitName } from "@/features/catalog/api";
-import { useCurrentFactorySoftware } from "@/features/updates/api";
 import { roleLabel, scopeLabel } from "@/shared/labels";
+import { UpdatesPanel } from "@/features/updates/UpdatesPage";
 import { PageHeader } from "@/shared/ui/PageHeader";
+import { VERSION_CODE, VERSION_NAME } from "@/shared/version";
 import { useHealth } from "./api";
 
 function healthTag(v?: string) {
@@ -17,7 +18,6 @@ export function DashboardPage() {
   const catalog = useCatalog();
   const isSA = useIsSuperAdmin();
   const health = useHealth();
-  const software = useCurrentFactorySoftware();
   const c = catalog.data;
   const count = (status: string) => c?.people.filter((p) => p.status === status).length ?? 0;
 
@@ -25,7 +25,7 @@ export function DashboardPage() {
     <>
       <PageHeader
         title="概览"
-        description={isSA ? "本厂人员、组织与角色都由你在这里维护；WAN 不代管。" : "当前账号不是工厂超管，组织与人员由超管维护；账号在右上角。"}
+        description={isSA ? "本厂人员、组织与软件包都在这里看；WAN 不代管。" : "当前账号不是工厂超管，组织与人员由超管维护；账号在右上角。"}
       />
       {isSA ? (
         <Row gutter={[16, 16]}>
@@ -66,14 +66,16 @@ export function DashboardPage() {
           </Card>
         </Col>
         <Col xs={24} lg={12}>
-          <Card title="服务状态" loading={health.isLoading || software.isLoading}>
+          <Card title="服务状态" loading={health.isLoading}>
             <Descriptions
               column={1}
               size="small"
               items={[
-                { key: "version", label: "版本号", children: software.data && software.data.version > 0 ? software.data.version : "—" },
-                { key: "versionName", label: "版本名", children: software.data?.versionName || "—" },
-                { key: "build", label: "构建", children: health.data?.version ?? "—" },
+                { key: "webVersion", label: "前端版本号", children: VERSION_CODE },
+                { key: "webVersionName", label: "前端版本名", children: VERSION_NAME },
+                { key: "svcVersion", label: "服务版本号", children: health.data && health.data.version > 0 ? health.data.version : "—" },
+                { key: "svcVersionName", label: "服务版本名", children: health.data?.versionName || "—" },
+                { key: "build", label: "构建", children: health.data?.build ?? "—" },
                 { key: "db", label: "数据库", children: healthTag(health.data?.db) },
                 { key: "oss", label: "对象存储", children: healthTag(health.data?.oss) },
               ]}
@@ -81,6 +83,11 @@ export function DashboardPage() {
           </Card>
         </Col>
       </Row>
+      {isSA ? (
+        <div style={{ marginTop: 16 }}>
+          <UpdatesPanel />
+        </div>
+      ) : null}
     </>
   );
 }

@@ -134,3 +134,20 @@ func (s *Store) ResetChannelPresence(ctx context.Context) error {
 			"channel_disconnected_at": now,
 		}).Error
 }
+
+// PutFactoryRelease 记下该厂自报的前端和服务版本。
+func (s *Store) PutFactoryRelease(ctx context.Context, factoryID uuid.UUID, webCode int64, webName string, svcCode int64, svcName string) error {
+	res := s.db.WithContext(ctx).Model(&Factory{}).Where("id = ?", factoryID).Updates(map[string]any{
+		"web_version":          webCode,
+		"web_version_name":     webName,
+		"service_version":      svcCode,
+		"service_version_name": svcName,
+	})
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}

@@ -52,20 +52,24 @@ func (s *Channel) VerifyFactoryProof(ctx context.Context, factoryID uuid.UUID, u
 	return nil
 }
 
-// HandleFactoryUp 处理无问询号的上行；目前只续内容租约。
+// HandleFactoryUp 处理无问询号的上行：续内容租约，或收下厂端正在跑的版本。
 func (s *Channel) HandleFactoryUp(ctx context.Context, factoryID uuid.UUID, payload []byte) {
 	var cmd Cmd
 	if json.Unmarshal(payload, &cmd) != nil {
 		return
 	}
-	if cmd.Typ != CmdLeaseRenew {
-		return
+	switch cmd.Typ {
+	case CmdPresence:
+		// 会话仍在线才刷新最近见到；离线行不动。
+		_ = s.TouchChannel(ctx, factoryID)
+		_ = s.ReportFactoryRelease(ctx, factoryID, cmd.WebVersion, cmd.WebVersionName, cmd.ServiceVersion, cmd.ServiceVersionName)
+	case CmdLeaseRenew:
+		lease, err := s.IssueContentLease(ctx, factoryID)
+		if err != nil {
+			return
+		}
+		s.kernel.publishFactory(factoryID, leaseCmd(lease))
 	}
-	lease, err := s.IssueContentLease(ctx, factoryID)
-	if err != nil {
-		return
-	}
-	s.kernel.publishFactory(factoryID, leaseCmd(lease))
 }
 
 // CallFactory 经 MQTT 问该厂升档清单或快照。
@@ -202,9 +206,23 @@ func (k *kernel) notifyRemainingTemplates(ctx context.Context) {
 	}
 }
 
-// 软件下发后只通知目标厂去拉。
-func (k *kernel) notifySoftware(factoryID uuid.UUID, kind string, version int64) {
-	k.publishFactory(factoryID, Cmd{Typ: CmdSoftware, Kind: kind, Version: version})
+// 厂服务包或客户端包发布后通知已认领有效厂去拉，不含字节。
+func (k *kernel) notifyFactoryPack(ctx context.Context, row SoftwareRelease) {
+	if row.Version < 1 || (row.Kind != SoftwareClientAPK && row.Kind != SoftwareFactoryService) {
+		return
+	}
+	facs, err := k.store.ListFactories(ctx)
+	if err != nil {
+		return
+	}
+	cmd := Cmd{Typ: CmdSoftware, Kind: row.Kind, Version: row.Version, VersionName: row.VersionName}
+	for _, fac := range facs {
+		// 未认领或已停用/注销的厂没有通道，不必通知。
+		if fac.Status != FactoryActive || fac.EnrolledAt == nil {
+			continue
+		}
+		k.publishFactory(fac.ID, cmd)
+	}
 }
 
 // 治理状态变更立刻推给该厂。
@@ -231,7 +249,8 @@ func (k *kernel) notifyClient(row Client, oldFactory *uuid.UUID) {
 	if row.FactoryID != nil {
 		k.publishFactory(*row.FactoryID, Cmd{
 			Typ: CmdClientBind, ClientID: row.ID.String(), ClientName: row.Name,
-			ClientShortCode: row.ShortCode, PublicKey: row.PublicKey, BindingRevision: row.BindingRevision,
+			ClientShortCode: row.ShortCode, DeviceSerial: row.DeviceSerial,
+			PublicKey: row.PublicKey, BindingRevision: row.BindingRevision,
 		})
 	}
 }

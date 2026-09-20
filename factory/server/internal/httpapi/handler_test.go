@@ -20,8 +20,7 @@ import (
 	"wmesh/factory/internal/hub"
 	"wmesh/factory/internal/platform/digest"
 	"wmesh/factory/internal/platform/id"
-	"wmesh/factory/internal/platform/nodekey"
-	"wmesh/factory/internal/platform/softwaresign"
+	"wmesh/factory/internal/platform/release"
 	"wmesh/factory/internal/platform/testpg"
 	"wmesh/factory/internal/service"
 )
@@ -41,7 +40,7 @@ func TestFactoryHTTP(t *testing.T) {
 	base := "/v1/factories/" + fid.String()
 
 	code, body := do(t, srv, "GET", "/healthz", "", "")
-	if code != http.StatusOK || gjson(t, body, "db") != "ok" || gjson(t, body, "oss") != "off" {
+	if code != http.StatusOK || gjson(t, body, "db") != "ok" || gjson(t, body, "oss") != "off" || gjson(t, body, "version") != strconv.FormatInt(release.Code, 10) || gjson(t, body, "versionName") != release.Name {
 		t.Fatalf("healthz %d %s", code, body)
 	}
 	code, body = do(t, srv, "GET", "/v1/site", "", "")
@@ -410,28 +409,25 @@ func TestFactorySoftwareHTTP(t *testing.T) {
 	if code != http.StatusOK || gjson(t, body, "version") != "0" {
 		t.Fatalf("empty current %d %s", code, body)
 	}
+	code, body = do(t, srv, "GET", base+"/software/apply", tok, "")
+	if code != http.StatusOK || gjson(t, body, "phase") != "idle" {
+		t.Fatalf("idle apply %d %s", code, body)
+	}
 	code, body = do(t, srv, "GET", base+"/software/pending", tok, "")
 	if code != http.StatusOK || strings.TrimSpace(body) != "null" {
 		t.Fatalf("empty pending %d %s", code, body)
 	}
-	wanPub, wanPriv, err := nodekey.Generate()
-	if err != nil {
-		t.Fatal(err)
-	}
 	pkg := []byte("svc-2")
-	sum := digest.Sum(pkg)
-	snap := service.SoftwareSnapshot{
-		Kind: service.SoftwareFactoryService, Version: 2, VersionName: "1.2.0", Digest: sum,
-		Signature:    nodekey.Sign(wanPriv, softwaresign.Message(service.SoftwareFactoryService, 2, sum, fid)),
-		WANPublicKey: wanPub, TargetFactoryID: fid, Body: pkg,
-	}
-	if err := svc.Updates.AcceptSoftwareDelivery(context.Background(), snap); err != nil {
-		t.Fatalf("accept: %v", err)
+	if err := svc.Updates.IngestSoftware(context.Background(), service.SoftwareOffer{
+		Kind: service.SoftwareFactoryService, Version: 2, VersionName: "1.2.0", Digest: digest.Sum(pkg), Body: pkg,
+	}); err != nil {
+		t.Fatalf("ingest: %v", err)
 	}
 	code, body = do(t, srv, "GET", base+"/software/pending", tok, "")
 	if code != http.StatusOK || gjson(t, body, "version") != "2" || gjson(t, body, "versionName") != "1.2.0" {
 		t.Fatalf("pending %d %s", code, body)
 	}
+	svc.Updates.SetApplyOutcome(service.ApplyOK)
 	code, body = do(t, srv, "POST", base+"/software/confirm", tok, `{"kind":"factory_service","version":2}`)
 	if code != http.StatusNoContent {
 		t.Fatalf("confirm %d %s", code, body)
@@ -488,19 +484,11 @@ func TestPadClientSoftwareHTTP(t *testing.T) {
 	if code != http.StatusOK || strings.TrimSpace(body) != "null" {
 		t.Fatalf("empty %d %s", code, body)
 	}
-	wanPub, wanPriv, err := nodekey.Generate()
-	if err != nil {
-		t.Fatal(err)
-	}
 	apk := []byte("apk-http-51")
-	sum := digest.Sum(apk)
-	snap := service.SoftwareSnapshot{
-		Kind: service.SoftwareClientAPK, Version: 51, VersionName: "6.1.0", Digest: sum,
-		Signature:    nodekey.Sign(wanPriv, softwaresign.Message(service.SoftwareClientAPK, 51, sum, fid)),
-		WANPublicKey: wanPub, TargetFactoryID: fid, Body: apk,
-	}
-	if err := svc.Updates.AcceptSoftwareDelivery(context.Background(), snap); err != nil {
-		t.Fatalf("accept: %v", err)
+	if err := svc.Updates.IngestSoftware(context.Background(), service.SoftwareOffer{
+		Kind: service.SoftwareClientAPK, Version: 51, VersionName: "6.1.0", Digest: digest.Sum(apk), Body: apk,
+	}); err != nil {
+		t.Fatalf("ingest: %v", err)
 	}
 	code, body = do(t, srv, "GET", base+"/pad/software/client", padTok, "")
 	if code != http.StatusOK || gjson(t, body, "version") != "51" || gjson(t, body, "versionName") != "6.1.0" {

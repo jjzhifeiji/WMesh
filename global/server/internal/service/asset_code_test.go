@@ -94,7 +94,7 @@ func TestPlatformAssetCodes(t *testing.T) {
 	if a.Factory.ShortCode != "F01" || b.Factory.ShortCode != "F02" {
 		t.Fatalf("factory codes %s %s", a.Factory.ShortCode, b.Factory.ShortCode)
 	}
-	c, err := h.WAN.RegisterClient(ctx, tok, "焊机", id.New(), a.Factory.ID, nil)
+	c, err := h.WAN.RegisterClient(ctx, tok, "焊机", id.New(), a.Factory.ID, nil, "ARM-1")
 	if err != nil {
 		t.Fatal(err)
 	}

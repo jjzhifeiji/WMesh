@@ -39,8 +39,10 @@ var (
 	ErrClientKeyTaken      = errors.New("client public key already registered") // 该公钥已被别的 Client 占用
 	ErrFactoryKeyExists    = errors.New("factory public key already registered") // 该厂公钥已登记，不能改绑
 	ErrSigningKeyExists    = errors.New("wan signing key already set")           // 云端一把签发钥，不能换
-	ErrClientBound         = errors.New("client already bound to a factory")      // 已属一厂，不能再绑到另一厂
-	ErrUnbound             = errors.New("client is not bound")                    // 未绑定不能改绑
+	ErrClientBound           = errors.New("client already bound to a factory")    // 已属一厂，不能再绑到另一厂
+	ErrUnbound               = errors.New("client is not bound")                  // 未绑定不能改绑
+	ErrDeviceSerialRequired  = errors.New("device serial is required")            // 登记必须填写机械臂识别号
+	ErrDeviceSerialTaken     = errors.New("device serial already bound")          // 该识别号已登记在另一台设备
 	ErrStaleRevision       = errors.New("revision is not strictly newer")         // 只接受更高软件版本或节点修订
 	ErrRevisionConflict    = errors.New("revision does not match")                // 资产期望修订对不上
 	ErrIntegrity           = errors.New("asset integrity check failed")           // 正文与摘要不一致或摘要长度不对
@@ -54,5 +56,6 @@ var (
 	ErrTemplateInvalid     = errors.New("content template is invalid")    // 字段表不合法
 	ErrAssetCodeMissing    = errors.New("asset origin code is not assigned") // 未齐创建端短码，不得新建
 	ErrAssetCodeConflict   = errors.New("asset code already exists")       // 同号不同身份，或同身份编号不一致
-	ErrOriginCodeExhausted = errors.New("origin code exhausted")            // 短码用尽或编号序号溢出
+	ErrOriginCodeExhausted   = errors.New("origin code exhausted")            // 短码用尽或编号序号溢出
+	ErrSoftwareInstallFailed = errors.New("software install failed")         // 确认后落地失败，旧版本继续跑
 )

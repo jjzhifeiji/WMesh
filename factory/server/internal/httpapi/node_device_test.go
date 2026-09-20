@@ -35,6 +35,7 @@ func TestClientDeviceLoginHTTP(t *testing.T) {
 	if code != http.StatusCreated {
 		t.Fatalf("bootstrap %d %s", code, body)
 	}
+	saID := gjson(t, body, "personId")
 	svc, err := h.Service(context.Background(), fid)
 	if err != nil {
 		t.Fatalf("service: %v", err)
@@ -73,14 +74,29 @@ func TestClientDeviceLoginHTTP(t *testing.T) {
 		t.Fatalf("pin %d %s", code, body)
 	}
 
-	code, body = do(t, srv, "POST", base+"/pad/login", "", `{"loginName":"sa","password":"secret"}`)
+	code, body = do(t, srv, "POST", base+"/pad/login", "", `{"loginName":"sa","password":"secret","appVersion":52,"appVersionName":"6.1.1","deviceModel":"TB-X606F","deviceManufacturer":"Lenovo","androidRelease":"10","networkName":"Factory-WiFi"}`)
 	if code != http.StatusOK || gjson(t, body, "token") == "" || gjson(t, body, "unwrapKey") == "" || !strings.Contains(body, `"deviceSerial":"ARM-1"`) {
 		t.Fatalf("pad login %d %s", code, body)
+	}
+	if mqtt := gjson(t, body, "mqttUrl"); !strings.HasPrefix(mqtt, "tcp://") || !strings.Contains(mqtt, ":52184") {
+		t.Fatalf("pad mqttUrl %s", mqtt)
 	}
 	if strings.Contains(body, `"deviceSerial":"ARM-1","unwrapKey"`) {
 		t.Fatalf("device key leaked %s", body)
 	}
 	padTok := gjson(t, body, "token")
+	code, body = do(t, srv, "GET", base+"/people/"+saID+"/logins", tok, "")
+	if code != http.StatusOK || !strings.Contains(body, `"kind":"pad"`) || !strings.Contains(body, `"deviceModel":"TB-X606F"`) || !strings.Contains(body, `"networkName":"Factory-WiFi"`) || strings.Contains(body, "secret") {
+		t.Fatalf("login logs %d %s", code, body)
+	}
+	code, body = do(t, srv, "POST", base+"/pad/login-log", padTok, `{"appVersion":52,"appVersionName":"6.1.1","deviceSerial":"ARM-1","deviceModel":"TB-X606F","deviceManufacturer":"Lenovo","androidRelease":"10","networkName":"Factory-WiFi","clientId":"`+cid+`"}`)
+	if code != http.StatusNoContent {
+		t.Fatalf("login-log %d %s", code, body)
+	}
+	code, body = do(t, srv, "GET", base+"/people/"+saID+"/logins", tok, "")
+	if code != http.StatusOK || !strings.Contains(body, `"deviceSerial":"ARM-1"`) || !strings.Contains(body, `"clientName":"焊机"`) || !strings.Contains(body, cid) {
+		t.Fatalf("login-log rows %d %s", code, body)
+	}
 	code, body = do(t, srv, "POST", base+"/pad/assets", padTok, `{"kind":"process","name":"平板工艺","content":"{\"current\":170}","id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","code":"GY-C0008-000001"}`)
 	if code != http.StatusCreated || gjson(t, body, "status") != "available" || gjson(t, body, "level") != "personal" || gjson(t, body, "id") != "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" {
 		t.Fatalf("pad create %d %s", code, body)

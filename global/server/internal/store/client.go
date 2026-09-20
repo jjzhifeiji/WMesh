@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
@@ -31,6 +33,7 @@ type Client struct {
 	BindingRevision int64      `gorm:"not null" json:"bindingRevision"` // 绑定修订；未分配为 0，改分必须升高
 	BoundAt         *time.Time `json:"boundAt"`                         // 当前这次分配生效时间；未分配为空
 	ShortCode       string     `gorm:"not null" json:"shortCode"`       // Client 短码 C0001…C9999，登记后不改
+	DeviceSerial    string     `json:"deviceSerial,omitempty"`         // 机械臂识别号；未填为空，不当身份
 	CreatedAt       time.Time  `gorm:"not null" json:"createdAt"`       // 身份登记时间
 }
 
@@ -78,13 +81,26 @@ func normalizePublicKey(publicKey []byte) []byte {
 	return publicKey
 }
 
-// CreateClient 登记一台未分配节点；名字必填，公钥可空，身份由调用方给出或现场发号。
-func (s *Store) CreateClient(ctx context.Context, clientID uuid.UUID, name string, publicKey []byte) (Client, error) {
+// normalizeStoredSerial 去掉首尾空白；空号允许，超过 128 字拒绝。
+func normalizeStoredSerial(serial string) (string, error) {
+	serial = strings.TrimSpace(serial)
+	if utf8.RuneCountInString(serial) > 128 {
+		return "", domain.ErrDeviceSerialRequired
+	}
+	return serial, nil
+}
+
+// CreateClient 登记一台未分配节点；名字必填，公钥可空，识别号可空，身份由调用方给出或现场发号。
+func (s *Store) CreateClient(ctx context.Context, clientID uuid.UUID, name string, publicKey []byte, deviceSerial string) (Client, error) {
 	if clientID == uuid.Nil {
 		clientID = id.New()
 	}
+	serial, err := normalizeStoredSerial(deviceSerial)
+	if err != nil {
+		return Client{}, err
+	}
 	var row Client
-	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		short, err := nextOriginCode(tx, originKindClient)
 		if err != nil {
 			return err
@@ -95,10 +111,14 @@ func (s *Store) CreateClient(ctx context.Context, clientID uuid.UUID, name strin
 			PublicKey:       normalizePublicKey(publicKey),
 			BindingRevision: 0,
 			ShortCode:       short,
+			DeviceSerial:    serial,
 			CreatedAt:       time.Now().UTC(),
 		}
 		if err := tx.Create(&row).Error; err != nil {
 			if domain.IsUniqueViolation(err) {
+				if strings.Contains(domain.UniqueConstraint(err), "device_serial") {
+					return domain.ErrDeviceSerialTaken
+				}
 				return domain.ErrClientKeyTaken
 			}
 			if domain.IsCheckViolation(err) {

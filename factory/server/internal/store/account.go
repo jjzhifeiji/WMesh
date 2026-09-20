@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -21,7 +22,7 @@ const (
 	StatusRevoked  = "revoked"  // 角色已收回，行留下做历史
 
 	RoleFactorySuperAdmin = "factory_super_admin" // 工厂超级管理员，只能挂 Factory 作用域
-	RoleOrgAdmin          = "org_admin"           // 组织管理员，只管本节点及当前子树
+	RoleOrgAdmin          = "org_admin"           // 组织管理员，可挂整厂或某个节点及当前子树
 	RoleOrgLead           = "org_lead"            // 组织负责人，子树只读
 	RoleProcessEngineer   = "process_engineer"    // 历史角色，新授予不再提供；制作不依赖它
 	RoleOperator          = "operator"            // 操作员，可产生运行事实
@@ -29,6 +30,9 @@ const (
 
 	ScopeFactory = "factory"  // 覆盖本厂及当时全部组织节点
 	ScopeOrgUnit = "org_unit" // 只覆盖该节点及当时子树
+
+	SessionKindWeb = "web" // 管理端登录，不计入 APP 在线
+	SessionKindApp = "app" // 示教器登录；名册在线按未过期会话计
 )
 
 // Person 是本厂一个自然人账号，固定只属于本厂库，不属于任何组织节点。
@@ -39,9 +43,12 @@ type Person struct {
 	Status              string    `gorm:"not null" json:"status"`              // pending / active / disabled
 	PasswordHash        *string   `json:"-"`                                   // 日常密码哈希，只存在本厂；激活前为空
 	ActivationTokenHash *string   `json:"-"`                                   // 一次性 8 位激活码哈希，激活后清空
-	IsInitialSuperAdmin bool      `gorm:"not null" json:"isInitialSuperAdmin"` // 本厂唯一的 WAN 下发初始超管
-	CreatedAt           time.Time `gorm:"not null" json:"createdAt"`           // 账号创建时间
-	UnwrapKey           []byte    `json:"-"`                                   // 登录人解封钥；焊机不持钥
+	IsInitialSuperAdmin bool       `gorm:"not null" json:"isInitialSuperAdmin"` // 本厂唯一的 WAN 下发初始超管
+	CreatedAt           time.Time  `gorm:"not null" json:"createdAt"`           // 账号创建时间
+	UnwrapKey           []byte     `json:"-"`                                  // 登录人解封钥；焊机不持钥
+	AppLastSeenAt       *time.Time `json:"appLastSeenAt,omitempty"`            // 最近一次示教器登录或 MQTT 见到
+	AppVersion          int64      `json:"appVersion"`                         // 示教器自报 versionCode；0 表示还没报到
+	AppVersionName      string     `json:"appVersionName"`                     // 示教器自报 versionName
 }
 
 func (Person) TableName() string { return "people" }
@@ -51,6 +58,7 @@ type Session struct {
 	ID        uuid.UUID `gorm:"type:uuid;primaryKey" json:"id"`     // 会话稳定身份
 	PersonID  uuid.UUID `gorm:"type:uuid;not null" json:"personId"` // 持有该会话的本厂人员
 	TokenHash string    `gorm:"not null;uniqueIndex" json:"-"`      // 会话令牌哈希，不存原文
+	Kind      string    `gorm:"not null" json:"kind"`               // web / app；名册 APP 在线只认 app
 	CreatedAt time.Time `gorm:"not null" json:"createdAt"`          // 会话建立时间
 	ExpiresAt time.Time `gorm:"not null" json:"expiresAt"`          // 过期后立刻无效
 }
@@ -132,6 +140,7 @@ func (s *Store) CreateSession(ctx context.Context, personID uuid.UUID, tokenHash
 		ID:        id.New(),
 		PersonID:  personID,
 		TokenHash: tokenHash,
+		Kind:      SessionKindWeb,
 		CreatedAt: time.Now().UTC(),
 		ExpiresAt: expiresAt,
 	}
@@ -142,6 +151,50 @@ func (s *Store) CreateSession(ctx context.Context, personID uuid.UUID, tokenHash
 		return Session{}, err
 	}
 	return row, nil
+}
+
+// CreateAppSession 写入示教器会话，给 12 小时令牌用；名册在线看 MQTT。
+func (s *Store) CreateAppSession(ctx context.Context, personID uuid.UUID, tokenHash string, expiresAt time.Time) (Session, error) {
+	if err := s.assertPersonExists(ctx, personID); err != nil {
+		return Session{}, err
+	}
+	row := Session{
+		ID:        id.New(),
+		PersonID:  personID,
+		TokenHash: tokenHash,
+		Kind:      SessionKindApp,
+		CreatedAt: time.Now().UTC(),
+		ExpiresAt: expiresAt,
+	}
+	if err := s.db.WithContext(ctx).Create(&row).Error; err != nil {
+		if domain.IsUniqueViolation(err) {
+			return Session{}, domain.ErrDuplicateSession
+		}
+		return Session{}, err
+	}
+	return row, nil
+}
+
+// NotePersonApp 刷新示教器最近见到；有版本才覆盖上次自报。
+func (s *Store) NotePersonApp(ctx context.Context, personID uuid.UUID, version int64, versionName string) error {
+	now := time.Now().UTC()
+	updates := map[string]any{"app_last_seen_at": now}
+	versionName = strings.TrimSpace(versionName)
+	if utf8Len := len([]rune(versionName)); utf8Len > 80 {
+		versionName = string([]rune(versionName)[:80])
+	}
+	if version > 0 || versionName != "" {
+		updates["app_version"] = version
+		updates["app_version_name"] = versionName
+	}
+	res := s.db.WithContext(ctx).Model(&Person{}).Where("id = ?", personID).Updates(updates)
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
 }
 
 // PersonByLogin 按本厂登录名取账号。

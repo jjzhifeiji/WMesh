@@ -44,13 +44,13 @@ func (s *Org) CreatePerson(ctx context.Context, token, loginName, displayName st
 	return accountOf(p), nil
 }
 
-// CreateOrgUnit 挂本厂组织节点。无父节点表示直挂工厂，只有超管能建这种根节点。
+// CreateOrgUnit 挂本厂组织节点。无父节点表示直挂工厂，须整厂管理权。
 func (s *Org) CreateOrgUnit(ctx context.Context, token, name string, parentID *uuid.UUID) (OrgUnit, error) {
 	acc, err := s.RequireActive(ctx, token)
 	if err != nil {
 		return OrgUnit{}, err
 	}
-	// 挂到父节点须对该父有组织管理权；无父则仅超管。失败一律记拒绝。
+	// 挂到父节点须对该父有组织管理权；无父须整厂管理权。失败一律记拒绝。
 	if err := s.can(ctx, acc, permManageOrg, parentID); err != nil {
 		_ = s.audit(ctx, &acc.ID, nil, "create_org_unit", name, audit.Deny)
 		return OrgUnit{}, err
@@ -134,7 +134,7 @@ func (s *Org) Unassign(ctx context.Context, token string, personID, unitID uuid.
 	return s.audit(ctx, &acc.ID, nil, "unassign", personID.String(), audit.Allow)
 }
 
-// GrantRole 授予带作用域的固定角色；组织管理员不能授工厂超管，也不能授到子树外。
+// GrantRole 授予带作用域的固定角色；组织管理员不能授工厂超管，也不能授到作用域外。
 func (s *Org) GrantRole(ctx context.Context, token string, personID uuid.UUID, role, scopeKind string, orgUnitID *uuid.UUID) (RoleGrant, error) {
 	acc, err := s.RequireActive(ctx, token)
 	if err != nil {
@@ -275,4 +275,16 @@ func (s *Org) RenameOrgUnit(ctx context.Context, token string, unitID uuid.UUID,
 		return err
 	}
 	return s.audit(ctx, &acc.ID, nil, "rename_org_unit", unitID.String(), audit.Allow)
+}
+
+// ListPersonLogins 给能管账号的人看这个人的示教器登录现场。
+func (s *Org) ListPersonLogins(ctx context.Context, token string, personID uuid.UUID) ([]PersonLoginLog, error) {
+	acc, err := s.RequireActive(ctx, token)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.can(ctx, acc, permManageAccount, nil); err != nil {
+		return nil, err
+	}
+	return s.store.ListPersonLogins(ctx, personID)
 }

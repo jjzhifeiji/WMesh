@@ -21,8 +21,7 @@ func TestCollectProcessIDs(t *testing.T) {
 	sch := projectSchema(t)
 	raw := []byte(`[
 		{"kind":"single","processId":"A","extraProcesses":[{"id":"x","processId":"C"}]},
-		{"kind":"multi","basePath":{"processId":"A"},"passes":[{"processId":"B"}]},
-		{"kind":"corner","processId":"D","cornerGroupParams":{"processId":"D"}}
+		{"kind":"multi","basePath":{"processId":"A"},"passes":[{"processId":"B"}]}
 	]`)
 	ids, err := CollectProcessIDs(sch, raw)
 	if err != nil {
@@ -30,7 +29,7 @@ func TestCollectProcessIDs(t *testing.T) {
 	}
 	got := append([]string(nil), ids...)
 	slices.Sort(got)
-	if !slices.Equal(got, []string{"A", "B", "C", "D"}) {
+	if !slices.Equal(got, []string{"A", "B", "C"}) {
 		t.Fatalf("%v", ids)
 	}
 	ids, err = CollectProcessIDs(sch, []byte("job"))

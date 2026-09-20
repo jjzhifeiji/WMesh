@@ -12,6 +12,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 
+	"wmesh/factory/internal/platform/blob"
 	"wmesh/factory/internal/platform/domain"
 	"wmesh/factory/internal/platform/nodekey"
 	"wmesh/factory/internal/platform/provision"
@@ -28,19 +29,20 @@ type tenant struct {
 
 // Hub 按工厂稳定身份选库；没有库就当作工厂还不存在。
 type Hub struct {
-	mu         sync.Mutex
-	presenceMu sync.Mutex
-	adminDSN   string
-	admin      *gorm.DB
-	tenants    map[uuid.UUID]*tenant
-	presence   map[uuid.UUID]context.CancelFunc          // 每厂一条出站通道
-	syncReq    map[uuid.UUID]chan wanchannel.SyncRequest // 进页补拉，Hold 在线才有
-	wanURL     string                                    // WAN 根地址，空则不连
-	mqttURL    string                                    // WAN MQTT 地址
-	run        context.Context                           // 进程生命周期，给通道重连用
-	installer  service.FactoryInstaller                  // 超管确认后换 Docker；空则测试用空实现
-	clientMu   sync.Mutex                                // 护着本厂 Client Broker
-	clientBus  clientBroker                              // 厂→Client MQTT；未起则为空
+	mu          sync.Mutex
+	presenceMu  sync.Mutex
+	adminDSN    string
+	admin       *gorm.DB
+	tenants     map[uuid.UUID]*tenant
+	presence    map[uuid.UUID]context.CancelFunc          // 每厂一条出站通道
+	syncReq     map[uuid.UUID]chan wanchannel.SyncRequest // 进页补拉，Hold 在线才有
+	wanURL      string                                    // WAN 根地址，空则不连
+	mqttURL     string                                    // WAN MQTT 地址
+	run         context.Context                           // 进程生命周期，给通道重连用
+	pendingSink service.PendingSink                       // 确认后落盘；空则只走夹具
+	blobs       blob.Store                                // 软件包字节；空则各厂用内存
+	clientMu    sync.Mutex                                // 护着本厂 Client Broker
+	clientBus   clientBroker                              // 厂→Client MQTT；未起则为空
 }
 
 // New 连维护库（用来建厂库），不预先打开任何厂库。
@@ -59,11 +61,18 @@ func New(adminDSN string) (*Hub, error) {
 	return &Hub{adminDSN: adminDSN, admin: admin, tenants: map[uuid.UUID]*tenant{}, presence: map[uuid.UUID]context.CancelFunc{}, syncReq: map[uuid.UUID]chan wanchannel.SyncRequest{}}, nil
 }
 
-// SetFactoryInstaller 生产注入 docker load；须在打开厂库之前调用。
-func (h *Hub) SetFactoryInstaller(in service.FactoryInstaller) {
+// SetPendingSink 生产写入更新目录；须在打开厂库之前调用。
+func (h *Hub) SetPendingSink(sink service.PendingSink) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.installer = in
+	h.pendingSink = sink
+}
+
+// SetBlobs 生产改用对象存储；须在打开厂库之前调用。
+func (h *Hub) SetBlobs(store blob.Store) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.blobs = store
 }
 
 // Ping 只确认维护库连接可用，给探活用；不打开任何厂库。
@@ -130,10 +139,27 @@ func (h *Hub) ensure(factoryID uuid.UUID) (*service.Service, error) {
 	}
 	// 按工厂身份打开本厂库并组装应用服务。
 	svc := service.NewService(store.Open(db, factoryID))
-	if h.installer != nil {
-		svc.Updates.SetFactoryInstaller(h.installer)
+	if h.blobs != nil {
+		svc.SetBlobs(h.blobs)
+	}
+	if h.pendingSink != nil {
+		svc.Updates.SetPendingSink(h.pendingSink)
+		if r, ok := h.pendingSink.(service.ApplyReporter); ok {
+			svc.Updates.SetApplyReporter(r)
+		}
+		if j, ok := h.pendingSink.(service.ImageJanitor); ok {
+			svc.Updates.SetImageJanitor(j)
+		}
+		h.completeStaged(svc)
+	}
+	h.presenceMu.Lock()
+	wanURL := h.wanURL
+	h.presenceMu.Unlock()
+	if k, err := svc.Store().SigningKey(context.Background()); err == nil && wanURL != "" {
+		h.attachSoftwareSource(factoryID, svc, wanURL, k.PrivateKey)
 	}
 	svc.SetClientDown(h)
+	svc.SetWeldWANPoster(h)
 	h.tenants[factoryID] = &tenant{db: db, svc: svc}
 	return svc, nil
 }

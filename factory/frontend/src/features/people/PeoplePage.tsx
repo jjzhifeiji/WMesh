@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import { unitName, useCatalog, type Account } from "@/features/catalog/api";
 import { buildUnitTree, type UnitTreeNode } from "@/features/org/api";
 import { errorMessage } from "@/shared/api/client";
+import { formatAppRelease, formatDateTime, formatTime } from "@/shared/format";
 import { ROLES, roleLabel, roleScopes, scopeLabel, type Role, type ScopeKind } from "@/shared/labels";
 import { IdText } from "@/shared/ui/IdText";
 import { PageHeader } from "@/shared/ui/PageHeader";
@@ -13,11 +14,37 @@ import {
   useDisablePerson,
   useEnablePerson,
   useGrantRole,
+  usePersonLogins,
   useResetPersonPassword,
   useRevokeRole,
   type CreatePersonInput,
   type GrantRoleInput,
+  type PersonLoginLog,
 } from "./api";
+
+function loginKindLabel(kind: string) {
+  switch (kind) {
+    case "pad":
+      return "厂网登录";
+    case "client":
+      return "本机登录";
+    case "mqtt":
+      return "通道回连";
+    default:
+      return kind || "—";
+  }
+}
+
+function dash(v?: string | null) {
+  return v ? v : "—";
+}
+
+function deviceLabel(name?: string | null, serial?: string | null) {
+  const n = name?.trim() ?? "";
+  const s = serial?.trim() ?? "";
+  if (n && s) return `${n}（${s}）`;
+  return n || s || "—";
+}
 
 type TreeOption = { value: string; title: string; children?: TreeOption[] };
 
@@ -42,6 +69,8 @@ export function PeoplePage() {
   const [grantTarget, setGrantTarget] = useState<Account | null>(null);
   const [form] = Form.useForm<CreatePersonInput>();
   const [grantForm] = Form.useForm<GrantRoleInput>();
+  const [logPerson, setLogPerson] = useState<Account | null>(null);
+  const logins = usePersonLogins(logPerson?.id ?? null);
   const role = Form.useWatch("role", grantForm) as Role | undefined;
   const scopeKind = Form.useWatch("scopeKind", grantForm) as ScopeKind | undefined;
 
@@ -64,6 +93,25 @@ export function PeoplePage() {
     { title: "登录名", dataIndex: "loginName", width: 140 },
     { title: "显示名", dataIndex: "displayName", width: 140 },
     { title: "状态", dataIndex: "status", width: 90, render: (s: string) => <StatusTag status={s} /> },
+    {
+      title: "APP",
+      key: "appOnline",
+      width: 80,
+      render: (_, p) => (p.appOnline ? <Tag color="green">在线</Tag> : <Tag>离线</Tag>),
+    },
+    { title: "最后在线", dataIndex: "appLastSeenAt", width: 160, render: (v?: string) => formatTime(v) },
+    {
+      title: "APP 版本",
+      key: "appVersion",
+      width: 140,
+      render: (_, p) => formatAppRelease(p.appVersion, p.appVersionName),
+    },
+    {
+      title: "最近设备",
+      key: "lastDevice",
+      width: 180,
+      render: (_, p) => deviceLabel(p.appClientName, p.appDeviceSerial),
+    },
     {
       title: "角色",
       key: "roles",
@@ -94,16 +142,19 @@ export function PeoplePage() {
     {
       title: "操作",
       key: "actions",
-      width: 220,
-      render: (_, p) => {
-        if (p.id === c?.me.id) return null;
-        return (
-          <Space size={4} wrap>
-            {p.status !== "disabled" ? (
-              <Button size="small" onClick={() => openGrant(p)}>
-                授角色
-              </Button>
-            ) : null}
+      width: 280,
+      render: (_, p) => (
+        <Space size={4} wrap>
+          <Button size="small" onClick={() => setLogPerson(p)}>
+            登录日志
+          </Button>
+          {p.id === c?.me.id ? null : (
+            <>
+              {p.status !== "disabled" ? (
+                <Button size="small" onClick={() => openGrant(p)}>
+                  授角色
+                </Button>
+              ) : null}
             {p.status === "disabled" ? (
               <Button
                 size="small"
@@ -144,9 +195,10 @@ export function PeoplePage() {
             >
               <Button size="small">重置密码</Button>
             </Popconfirm>
-          </Space>
-        );
-      },
+            </>
+          )}
+        </Space>
+      ),
     },
   ];
 
@@ -300,6 +352,31 @@ export function PeoplePage() {
             />
           </Form.Item>
         </Form>
+      </Modal>
+      <Modal
+        title={logPerson ? `${logPerson.displayName} 的登录日志` : "登录日志"}
+        open={Boolean(logPerson)}
+        onCancel={() => setLogPerson(null)}
+        footer={null}
+        width={960}
+        destroyOnHidden
+      >
+        <Table<PersonLoginLog>
+          rowKey="id"
+          size="small"
+          loading={logins.isLoading}
+          dataSource={logins.data ?? []}
+          pagination={{ pageSize: 10, hideOnSinglePage: true }}
+          columns={[
+            { title: "时间", dataIndex: "occurredAt", width: 170, render: (v: string) => formatDateTime(v) },
+            { title: "方式", dataIndex: "kind", width: 100, render: (k: string) => loginKindLabel(k) },
+            { title: "APP 版本", key: "app", width: 140, render: (_, r) => formatAppRelease(r.appVersion, r.appVersionName) },
+            { title: "设备", key: "device", width: 180, render: (_, r) => deviceLabel(r.clientName, r.deviceSerial) },
+            { title: "型号", dataIndex: "deviceModel", width: 140, render: dash },
+            { title: "系统", dataIndex: "androidRelease", width: 80, render: dash },
+            { title: "网络", dataIndex: "networkName", width: 140, render: dash },
+          ]}
+        />
       </Modal>
     </>
   );

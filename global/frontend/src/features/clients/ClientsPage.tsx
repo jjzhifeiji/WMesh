@@ -40,7 +40,8 @@ export function ClientsPage() {
 
   const columns: TableColumnsType<Client> = [
     { title: "名称", dataIndex: "name" },
-    { title: "识别号", dataIndex: "id", width: 280, render: (id: string) => <IdText id={id} /> },
+    { title: "识别号", dataIndex: "deviceSerial", width: 180, render: (v: string | undefined) => v || "—" },
+    { title: "身份", dataIndex: "id", width: 280, render: (id: string) => <IdText id={id} /> },
     { title: "所属工厂", dataIndex: "factoryId", render: (id: string | null) => factoryName(id) },
     { title: "创建时间", dataIndex: "createdAt", width: 170, render: (v: string) => formatTime(v) },
     { title: "分配时间", dataIndex: "boundAt", width: 170, render: (v: string | null) => formatTime(v) },
@@ -71,7 +72,7 @@ export function ClientsPage() {
     <>
       <PageHeader
         title="设备"
-        description="先起一个给人看的名字，再分给工厂。识别号由系统给出，不能改。"
+        description="填名称和识别号，再分给工厂。识别号登记后不能改。"
         extra={
           <Button type="primary" icon={<PlusOutlined />} onClick={() => setOpen(true)}>
             登记设备
@@ -96,7 +97,7 @@ export function ClientsPage() {
           requiredMark={false}
           onFinish={(values) =>
             register.mutate(
-              { name: values.name, factoryId: values.factoryId || undefined },
+              { name: values.name, deviceSerial: values.deviceSerial, factoryId: values.factoryId || undefined },
               {
                 onSuccess: () => {
                   message.success(values.factoryId ? "已登记并分配到工厂" : "已登记，稍后分配");
@@ -108,8 +109,11 @@ export function ClientsPage() {
             )
           }
         >
-          <Form.Item name="name" label="名称" extra="给现场看的名字，可随时改；识别号登记后自动给出。" rules={[{ required: true, message: "请输入名称" }, { max: 64, message: "最多 64 个字" }]}>
+          <Form.Item name="name" label="名称" extra="给现场看的名字，可随时改。" rules={[{ required: true, message: "请输入名称" }, { max: 64, message: "最多 64 个字" }]}>
             <Input autoFocus maxLength={64} placeholder="例如 焊机-12" />
+          </Form.Item>
+          <Form.Item name="deviceSerial" label="识别号" extra="机械臂上的识别号，登记后不能改。" rules={[{ required: true, message: "请输入识别号" }, { max: 128, message: "最多 128 个字" }]}>
+            <Input maxLength={128} placeholder="从设备读到或铭牌上的号" />
           </Form.Item>
           <Form.Item name="factoryId" label="分给工厂" extra="不选则先进入名录。">
             <Select allowClear placeholder="稍后分配" options={factories.filter((f) => f.status === "active").map((f) => ({ value: f.id, label: f.name }))} />

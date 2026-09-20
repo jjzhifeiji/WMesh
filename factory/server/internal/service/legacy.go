@@ -13,35 +13,42 @@ import (
 
 	"wmesh/factory/internal/platform/audit"
 	"wmesh/factory/internal/platform/contenttpl"
+	"wmesh/factory/internal/platform/digest"
 	"wmesh/factory/internal/platform/domain"
+	"wmesh/factory/internal/store"
 )
 
 var gapFolderRe = regexp.MustCompile(`^(\d+)H-(\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)`) // 目录名：层H-最小-最大
 
 // LegacyFile 是一次导入里的一份旧 JSON，路径相对工艺/工程根。
 type LegacyFile struct {
-	Path    string // 相对路径，如 Standard/1T1.2/1K.json 或 tbar/x/project_data.json
-	Name    string // 给人看的名字；空则从路径或正文取
-	Content []byte // UTF-8 JSON
+	Path      string // 相对路径，如 Standard/1T1.2/1K.json 或 tbar/x/project_data.json
+	Name      string // 给人看的名字；空则从路径或正文取
+	Content   []byte // UTF-8 JSON
+	Overwrite bool   // 本份同名改正文；可盖过整批
+	Rename    bool   // 本份同名按路径另起；可盖过整批
 }
 
 // LegacyImport 厂端一次性导入：先工艺后工程。
 type LegacyImport struct {
 	Processes []LegacyFile // 工艺文件，同一路径只入一次
 	Projects  []LegacyFile // 工程文件；缺路径则该份拒绝
+	Overwrite bool         // 同名改正文保留身份；否就跳过同名
+	Rename    bool         // 同名按路径另起新名新建；覆盖优先
 }
 
 // LegacyReject 是未入库的一份工程或坏工艺，已入工艺仍保留。
 type LegacyReject struct {
-	Path   string // 相对路径
-	Reason string // 英文原因，无正文
+	Path   string `json:"path"`   // 相对路径
+	Reason string `json:"reason"` // 英文原因，无正文
 }
 
 // LegacyImportResult 是本批导入结果；部分工程拒绝时其它份仍可成功。
 type LegacyImportResult struct {
-	Processes []Asset        `json:"processes"` // 已入本厂工艺
-	Projects  []Asset        `json:"projects"`  // 已入本厂工程
+	Processes []Asset        `json:"processes"` // 新建或覆盖后的本厂工艺
+	Projects  []Asset        `json:"projects"`  // 新建或覆盖后的本厂工程
 	Rejected  []LegacyReject `json:"rejected"`  // 未入的工程或坏文件
+	Skipped   []LegacyReject `json:"skipped"`   // 同名跳过，沿用已有身份
 }
 
 // ImportLegacy 由本厂工艺工程师把旧文件收成厂级资产；超管拒绝。
@@ -55,7 +62,16 @@ func (s *Assets) ImportLegacy(ctx context.Context, token string, in LegacyImport
 		_ = s.audit(ctx, &acc.ID, nil, "import_legacy", "factory", audit.Deny)
 		return LegacyImportResult{}, err
 	}
-	out := LegacyImportResult{}
+	out := LegacyImportResult{
+		Processes: []Asset{},
+		Projects:  []Asset{},
+		Rejected:  []LegacyReject{},
+		Skipped:   []LegacyReject{},
+	}
+	names, err := s.factoryImportNames(ctx)
+	if err != nil {
+		return LegacyImportResult{}, err
+	}
 	idx := newPathIndex()
 	wc := WorkContext{Direct: true}
 	seen := map[string]struct{}{}
@@ -77,6 +93,27 @@ func (s *Assets) ImportLegacy(ctx context.Context, token string, in LegacyImport
 		if name == "" {
 			name = processDisplayName(f.Content, rel)
 		}
+		overwrite, rename := importFileFlags(in, f)
+		if cur, ok := names[importNameKey(KindProcess, name)]; ok {
+			if !overwrite {
+				if !rename {
+					idx.add(rel, cur.ID)
+					out.Skipped = append(out.Skipped, LegacyReject{Path: rel, Reason: "name exists"})
+					continue
+				}
+				name = uniqueImportName(names, KindProcess, name, rel)
+			} else {
+				row, err := s.overwriteImported(ctx, acc, token, cur, f.Content)
+				if err != nil {
+					out.Rejected = append(out.Rejected, LegacyReject{Path: rel, Reason: err.Error()})
+					continue
+				}
+				rememberImportName(names, row)
+				idx.add(rel, row.ID)
+				out.Processes = append(out.Processes, row)
+				continue
+			}
+		}
 		row, err := s.CreateFactoryProcess(ctx, token, wc, name, f.Content)
 		if err != nil {
 			out.Rejected = append(out.Rejected, LegacyReject{Path: rel, Reason: err.Error()})
@@ -87,20 +124,39 @@ func (s *Assets) ImportLegacy(ctx context.Context, token string, in LegacyImport
 			out.Rejected = append(out.Rejected, LegacyReject{Path: rel, Reason: err.Error()})
 			continue
 		}
+		rememberImportName(names, row)
 		idx.add(rel, row.ID)
 		out.Processes = append(out.Processes, row)
 	}
 	bands := idx.gapBands()
 	for _, f := range in.Projects {
 		rel := normalizeLegacyPath(f.Path)
+		name := strings.TrimSpace(f.Name)
+		if name == "" {
+			name = projectDisplayName(rel)
+		}
+		overwrite, rename := importFileFlags(in, f)
+		if _, ok := names[importNameKey(KindProject, name)]; ok && !overwrite {
+			if !rename {
+				out.Skipped = append(out.Skipped, LegacyReject{Path: rel, Reason: "name exists"})
+				continue
+			}
+			name = uniqueImportName(names, KindProject, name, rel)
+		}
 		body, err := rewriteLegacyProject(f.Content, rel, idx, bands)
 		if err != nil {
 			out.Rejected = append(out.Rejected, LegacyReject{Path: rel, Reason: err.Error()})
 			continue
 		}
-		name := strings.TrimSpace(f.Name)
-		if name == "" {
-			name = projectDisplayName(rel)
+		if cur, ok := names[importNameKey(KindProject, name)]; ok {
+			row, err := s.overwriteImported(ctx, acc, token, cur, body)
+			if err != nil {
+				out.Rejected = append(out.Rejected, LegacyReject{Path: rel, Reason: err.Error()})
+				continue
+			}
+			rememberImportName(names, row)
+			out.Projects = append(out.Projects, row)
+			continue
 		}
 		row, err := s.insertImportedProject(ctx, acc, wc, name, body)
 		if err != nil {
@@ -112,9 +168,10 @@ func (s *Assets) ImportLegacy(ctx context.Context, token string, in LegacyImport
 			out.Rejected = append(out.Rejected, LegacyReject{Path: rel, Reason: err.Error()})
 			continue
 		}
+		rememberImportName(names, row)
 		out.Projects = append(out.Projects, row)
 	}
-	target := "processes=" + strconv.Itoa(len(out.Processes)) + " projects=" + strconv.Itoa(len(out.Projects)) + " rejected=" + strconv.Itoa(len(out.Rejected))
+	target := "processes=" + strconv.Itoa(len(out.Processes)) + " projects=" + strconv.Itoa(len(out.Projects)) + " rejected=" + strconv.Itoa(len(out.Rejected)) + " skipped=" + strconv.Itoa(len(out.Skipped))
 	if err := s.audit(ctx, &acc.ID, nil, "import_legacy", target, audit.Allow); err != nil {
 		return LegacyImportResult{}, err
 	}
@@ -128,21 +185,58 @@ func (s *Assets) insertImportedProject(ctx context.Context, acc Account, wc Work
 		_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny, unitID, path)
 		return Asset{}, err
 	}
-	ids, err := contenttpl.CollectProcessIDsFromItems(contenttpl.SeedProjectItems(), content)
+	deps, err := s.importedProjectDeps(ctx, content)
 	if err != nil {
 		_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny, unitID, path)
-		return Asset{}, domain.ErrAssetDependency
+		return Asset{}, err
+	}
+	return s.insertGoverned(ctx, acc, unitID, path, KindProject, AssetLevelFactory, name, content, deps)
+}
+
+// overwriteImported 改正文（工程同时改依赖），身份不变；草稿顺带发布。
+func (s *Assets) overwriteImported(ctx context.Context, acc Account, token string, cur Asset, content []byte) (Asset, error) {
+	deps := []AssetDep{}
+	if cur.Kind == KindProject {
+		d, err := s.importedProjectDeps(ctx, content)
+		if err != nil {
+			return Asset{}, err
+		}
+		deps = d
+	}
+	row, err := s.mutateAsset(ctx, acc, cur.ID, cur.Revision, "update_asset", func(live Asset) (store.AssetWrite, error) {
+		if live.Status == AssetDisabled {
+			return store.AssetWrite{}, domain.ErrAssetNotAvailable
+		}
+		if live.Kind == KindProject {
+			if err := s.assertProjectProcessIDs(ctx, content, deps); err != nil {
+				return store.AssetWrite{}, err
+			}
+		}
+		return store.AssetWrite{Name: live.Name, Content: content, Digest: digest.Sum(content), Copyable: live.Copyable, Status: live.Status, Deps: deps}, nil
+	})
+	if err != nil {
+		return Asset{}, err
+	}
+	if row.Status == AssetDraft {
+		return s.PublishAsset(ctx, token, row.ID, row.Revision)
+	}
+	return row, nil
+}
+
+// importedProjectDeps 按改写后正文钉当前可用工艺，不套模版。
+func (s *Assets) importedProjectDeps(ctx context.Context, content []byte) ([]AssetDep, error) {
+	ids, err := contenttpl.CollectProcessIDsFromItems(contenttpl.SeedProjectItems(), content)
+	if err != nil {
+		return nil, domain.ErrAssetDependency
 	}
 	deps, err := mergeProjectDeps(nil, ids, func(id uuid.UUID) (AssetDep, error) {
 		return s.pinFactoryProcess(ctx, id)
 	})
 	if err != nil {
-		_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny, unitID, path)
-		return Asset{}, err
+		return nil, err
 	}
 	if err := s.assertFactoryProcessDeps(ctx, deps); err != nil {
-		_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny, unitID, path)
-		return Asset{}, err
+		return nil, err
 	}
 	allowed := map[string]struct{}{}
 	for _, d := range deps {
@@ -150,11 +244,40 @@ func (s *Assets) insertImportedProject(ctx context.Context, acc Account, wc Work
 	}
 	for _, id := range ids {
 		if _, ok := allowed[id]; !ok {
-			_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny, unitID, path)
-			return Asset{}, domain.ErrAssetDependency
+			return nil, domain.ErrAssetDependency
 		}
 	}
-	return s.insertGoverned(ctx, acc, unitID, path, KindProject, AssetLevelFactory, name, content, deps)
+	return deps, nil
+}
+
+// factoryImportNames 未停用厂级按种类+显示名取最新一条，个人级不参与。
+func (s *Assets) factoryImportNames(ctx context.Context) (map[string]Asset, error) {
+	rows, err := s.store.ListGovernedAssets(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]Asset{}
+	for _, a := range rows {
+		if a.Level != AssetLevelFactory || a.Status == AssetDisabled {
+			continue
+		}
+		k := importNameKey(a.Kind, a.Name)
+		if _, ok := out[k]; ok {
+			continue
+		}
+		out[k] = a
+	}
+	return out, nil
+}
+
+// importNameKey 同级同名对照键。
+func importNameKey(kind, name string) string {
+	return kind + "\n" + name
+}
+
+// rememberImportName 本批新建或覆盖后立刻可被后续同名命中。
+func rememberImportName(names map[string]Asset, row Asset) {
+	names[importNameKey(row.Kind, row.Name)] = row
 }
 
 type pathIndex struct {
@@ -306,9 +429,6 @@ func stampTemplate(obj map[string]any, kind string, bands []any) {
 	case contenttpl.ItemMulti:
 		obj["templateId"] = contenttpl.SeedTplMulti
 		obj["kind"] = contenttpl.ItemMulti
-	case contenttpl.ItemCorner:
-		obj["templateId"] = contenttpl.SeedTplCorner
-		obj["kind"] = contenttpl.ItemCorner
 	case contenttpl.ItemTBar:
 		obj["templateId"] = contenttpl.SeedTplTBar
 		obj["kind"] = contenttpl.ItemTBar
@@ -403,4 +523,48 @@ func projectDisplayName(rel string) string {
 		return base
 	}
 	return "imported-project"
+}
+
+// importFileFlags 单份覆盖/重命名可盖过整批；覆盖仍优先。
+func importFileFlags(in LegacyImport, f LegacyFile) (overwrite, rename bool) {
+	return in.Overwrite || f.Overwrite, in.Rename || f.Rename
+}
+
+// uniqueImportName 同名按相对路径另起；仍撞则加序号。
+func uniqueImportName(names map[string]Asset, kind, name, rel string) string {
+	label := strings.TrimSpace(legacyPathLabel(rel))
+	if label != "" && label != name {
+		if _, ok := names[importNameKey(kind, label)]; !ok {
+			return label
+		}
+		name = label
+	}
+	for i := 2; i < 1000; i++ {
+		n := name + " (" + strconv.Itoa(i) + ")"
+		if _, ok := names[importNameKey(kind, n)]; !ok {
+			return n
+		}
+	}
+	return name
+}
+
+// legacyPathLabel 用去掉后缀的相对路径当新名；多层工程另标一层。
+func legacyPathLabel(rel string) string {
+	rel = normalizeLegacyPath(rel)
+	if rel == "" {
+		return ""
+	}
+	stem := strings.TrimSuffix(rel, path.Ext(rel))
+	base := path.Base(stem)
+	if base != "project_data" && base != "multilayer_data" {
+		return stem
+	}
+	dir := path.Dir(stem)
+	if dir == "." || dir == "/" {
+		dir = base
+	}
+	if base == "multilayer_data" {
+		return dir + "-多层"
+	}
+	return dir
 }

@@ -4,6 +4,7 @@ package service_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -94,12 +95,23 @@ func TestChannelPresence(t *testing.T) {
 	if err := h.WAN.MarkChannelOnline(ctx, fid); err != nil {
 		t.Fatal(err)
 	}
+	raw, err := json.Marshal(map[string]any{
+		"typ": "presence", "webVersion": 2, "webVersionName": "1.1.0",
+		"serviceVersion": 3, "serviceVersionName": "1.2.0",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.WAN.Channel.HandleFactoryUp(ctx, fid, raw)
 	dir, err := h.WAN.Directory(ctx, tok)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(dir.Factories) != 1 || !dir.Factories[0].ChannelOnline || dir.Factories[0].ChannelConnectedAt == nil {
 		t.Fatalf("online: %+v", dir.Factories)
+	}
+	if dir.Factories[0].WebVersion != 2 || dir.Factories[0].WebVersionName != "1.1.0" || dir.Factories[0].ServiceVersion != 3 || dir.Factories[0].ServiceVersionName != "1.2.0" {
+		t.Fatalf("release: %+v", dir.Factories[0])
 	}
 	if err := h.WAN.TouchChannel(ctx, fid); err != nil {
 		t.Fatal(err)
@@ -113,6 +125,9 @@ func TestChannelPresence(t *testing.T) {
 	}
 	if dir.Factories[0].ChannelOnline || dir.Factories[0].ChannelDisconnectedAt == nil {
 		t.Fatalf("offline: %+v", dir.Factories[0])
+	}
+	if dir.Factories[0].WebVersion != 0 || dir.Factories[0].ServiceVersion != 0 {
+		t.Fatalf("offline still showing release: %+v", dir.Factories[0])
 	}
 	if err := h.WAN.MarkChannelOnline(ctx, fid); err != nil {
 		t.Fatal(err)

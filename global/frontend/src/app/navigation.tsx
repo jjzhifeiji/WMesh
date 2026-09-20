@@ -51,9 +51,10 @@ export const navTree: NavEntry[] = [
       { key: paths.projects, label: "平台工程", description: "平台级工程及其依赖工艺的治理。" },
       { key: paths.templates, label: "工艺模版", description: "平台工艺当前字段表。" },
       { key: paths.projectTemplates, label: "工程模版", description: "独立命名模版，可新建编辑删除。" },
+      { key: paths.legacyImport, label: "旧文件导入", description: "把示教器旧工艺/工程收成平台级资产，路径换成身份。" },
     ],
   },
-  { key: paths.updates, label: "软件更新", icon: <CloudUploadOutlined />, description: "上传厂服务包和客户端包，按已认领工厂下发。" },
+  { key: paths.updates, label: "软件更新", icon: <CloudUploadOutlined />, description: "选 pack.sh 的 dist 目录发布；厂自己来拉。" },
   {
     key: "audit",
     label: "审计",
@@ -63,7 +64,7 @@ export const navTree: NavEntry[] = [
       { key: paths.auditStats, label: "汇总", placeholder: true, description: "跨厂汇总，不含厂内人员明细与点云原件。" },
     ],
   },
-  { key: paths.reports, label: "报表", icon: <BarChartOutlined />, placeholder: true, description: "跨厂报表查询，不含厂内人员明细与点云原件。" },
+  { key: paths.reports, label: "报表", icon: <BarChartOutlined />, description: "跨厂报表查询，不含厂内人员明细与点云原件。" },
 ];
 
 export function openGroupFor(pathname: string): string[] {

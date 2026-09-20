@@ -58,10 +58,65 @@ export async function request<T>(path: string, init: RequestInitLite = {}): Prom
   return data as T;
 }
 
+export type FormProgress = { loaded: number; total: number };
+
+function parseApiBody(status: number, text: string, token: string | null): unknown {
+  let data: unknown;
+  try {
+    data = text ? JSON.parse(text) : undefined;
+  } catch {
+    data = undefined;
+  }
+  if (status === 204) return undefined;
+  if (status >= 200 && status < 300) return data;
+  const code = (data as { error?: string } | undefined)?.error ?? "request failed";
+  if (status === 401 && token) session.clear();
+  throw new ApiError(status, code, translateError(code));
+}
+
+// 带上传进度的表单；大包才走这条，普通 JSON 仍用 request。
+export function postFormProgress<T>(
+  path: string,
+  form: FormData,
+  onProgress?: (ev: FormProgress) => void,
+  signal?: AbortSignal,
+): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    const token = session.token;
+    xhr.open("POST", path);
+    if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+    const onAbort = () => xhr.abort();
+    signal?.addEventListener("abort", onAbort);
+    xhr.upload.addEventListener("progress", (e) => {
+      onProgress?.({ loaded: e.loaded, total: e.lengthComputable ? e.total : 0 });
+    });
+    xhr.addEventListener("load", () => {
+      signal?.removeEventListener("abort", onAbort);
+      try {
+        resolve(parseApiBody(xhr.status, xhr.responseText, token) as T);
+      } catch (err) {
+        reject(err);
+      }
+    });
+    xhr.addEventListener("error", () => {
+      signal?.removeEventListener("abort", onAbort);
+      reject(new ApiError(0, "network error", "网络中断，请重试"));
+    });
+    xhr.addEventListener("abort", () => {
+      signal?.removeEventListener("abort", onAbort);
+      reject(new DOMException("Aborted", "AbortError"));
+    });
+    xhr.send(form);
+  });
+}
+
 export const http = {
   get: <T>(path: string, signal?: AbortSignal) => request<T>(path, { signal }),
   post: <T>(path: string, body?: unknown) => request<T>(path, { method: "POST", body }),
   postForm: <T>(path: string, form: FormData, signal?: AbortSignal) => request<T>(path, { method: "POST", form, signal }),
+  postFormProgress: <T>(path: string, form: FormData, onProgress?: (ev: FormProgress) => void, signal?: AbortSignal) =>
+    postFormProgress<T>(path, form, onProgress, signal),
   patch: <T>(path: string, body?: unknown) => request<T>(path, { method: "PATCH", body }),
   del: <T>(path: string) => request<T>(path, { method: "DELETE" }),
 };

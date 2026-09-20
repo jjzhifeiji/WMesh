@@ -1,4 +1,4 @@
-import { createBrowserRouter } from "react-router";
+import { Navigate, createBrowserRouter } from "react-router";
 import { AssetsPage } from "@/features/assets/AssetsPage";
 import { AccountPage } from "@/features/account/AccountPage";
 import { AssignmentsPage } from "@/features/assignments/AssignmentsPage";
@@ -11,6 +11,7 @@ import { DashboardPage } from "@/features/dashboard/DashboardPage";
 import { LegacyImportPage } from "@/features/legacy-import/LegacyImportPage";
 import { OrgUnitsPage } from "@/features/org/OrgUnitsPage";
 import { PeoplePage } from "@/features/people/PeoplePage";
+import { ReportsPage } from "@/features/reports/ReportsPage";
 import { AdminLayout } from "@/layouts/AdminLayout";
 import { AuthLayout } from "@/layouts/AuthLayout";
 import { RequireAuth } from "@/shared/auth/RequireAuth";
@@ -40,6 +41,7 @@ export const router = createBrowserRouter([
     ),
     children: [
       { index: true, element: <DashboardPage /> },
+      { path: paths.updates, element: <Navigate to={paths.dashboard} replace /> },
       { path: paths.orgUnits, element: sa(<OrgUnitsPage />) },
       { path: paths.people, element: sa(<PeoplePage />) },
       { path: paths.assignments, element: sa(<AssignmentsPage />) },
@@ -49,6 +51,7 @@ export const router = createBrowserRouter([
       { path: paths.projects, element: <AssetsPage kind="project" /> },
       { path: paths.legacyImport, element: <LegacyImportPage /> },
       { path: paths.account, element: <AccountPage /> },
+      { path: paths.reports, element: <ReportsPage /> },
       ...placeholderPaths.map((path) => ({ path, element: <PlaceholderPage /> })),
       { path: "*", element: <NotFoundPage /> },
     ],

@@ -8,7 +8,8 @@ node_modules/
 dist/
 docs/device-date/projects/license.key
 
-# Android Client
+# Android Client（独立 git，不纳入本仓）
+client/ShiJiaoQi-New/
 client/.gradle/
 client/.idea/
 client/local.properties

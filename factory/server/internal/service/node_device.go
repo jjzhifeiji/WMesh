@@ -94,9 +94,11 @@ func (s *Node) LoginOnClient(ctx context.Context, clientID uuid.UUID, serial, lo
 	if err != nil {
 		return ClientSession{}, err
 	}
-	if _, err := s.store.CreateSession(ctx, p.ID, secret.TokenHash(token), time.Now().UTC().Add(sessionTTL)); err != nil {
+	if _, err := s.store.CreateAppSession(ctx, p.ID, secret.TokenHash(token), time.Now().UTC().Add(sessionTTL)); err != nil {
 		return ClientSession{}, err
 	}
+	// 示教器登录立刻记最近见到，版本由 HTTP 层补。
+	_ = s.store.NotePersonApp(ctx, p.ID, 0, "")
 	if err := s.store.ClearOperatorForPersonExcept(ctx, p.ID, clientID); err != nil {
 		_ = s.store.DeleteSessionByTokenHash(ctx, secret.TokenHash(token))
 		return ClientSession{}, err
@@ -159,6 +161,7 @@ type PadSession struct {
 	MqttURL          string       `json:"mqttUrl,omitempty"`          // 本厂 Client MQTT 地址；HTTP 层可补
 	Roles            []string     `json:"roles,omitempty"`            // 当前登录人有效角色
 	Devices          []PadDevice  `json:"devices"`                    // 本厂未作废设备；连臂时再按识别号匹配
+	Work             PadWorkSnap  `json:"work"`                       // 当时分配快照，供焊事实用
 }
 
 // LoginPad 本厂有效账号在厂网登录，领取人钥和设备名录；不校验机械臂号，不占操作员位。
@@ -198,9 +201,11 @@ func (s *Node) LoginPad(ctx context.Context, loginName, password string) (PadSes
 	if err != nil {
 		return PadSession{}, err
 	}
-	if _, err := s.store.CreateSession(ctx, p.ID, secret.TokenHash(token), time.Now().UTC().Add(sessionTTL)); err != nil {
+	if _, err := s.store.CreateAppSession(ctx, p.ID, secret.TokenHash(token), time.Now().UTC().Add(sessionTTL)); err != nil {
 		return PadSession{}, err
 	}
+	// 示教器登录立刻记最近见到，版本由 HTTP 层补。
+	_ = s.store.NotePersonApp(ctx, p.ID, 0, "")
 	rows, err := s.store.ListClients(ctx)
 	if err != nil {
 		_ = s.store.DeleteSessionByTokenHash(ctx, secret.TokenHash(token))
@@ -237,12 +242,17 @@ func (s *Node) LoginPad(ctx context.Context, loginName, password string) (PadSes
 		}
 		devices = append(devices, PadDevice{ID: row.ID, Name: row.Name, DeviceSerial: row.DeviceSerial, ShortCode: row.ShortCode})
 	}
+	work, err := s.personWorkSnap(ctx, p.ID)
+	if err != nil {
+		_ = s.store.DeleteSessionByTokenHash(ctx, secret.TokenHash(token))
+		return PadSession{}, err
+	}
 	if err := s.audit(ctx, &p.ID, &loginName, "pad_login", s.store.FactoryID().String(), audit.Allow); err != nil {
 		_ = s.store.DeleteSessionByTokenHash(ctx, secret.TokenHash(token))
 		return PadSession{}, err
 	}
 	return PadSession{
 		Token: token, UnwrapKey: append([]byte(nil), who.UnwrapKey...), Account: accountOf(p), Policy: pol,
-		SigningPublicKey: pub, Roles: roles, Devices: devices,
+		SigningPublicKey: pub, Roles: roles, Devices: devices, Work: work,
 	}, nil
 }

@@ -62,7 +62,7 @@ func (s *kernel) ensureTemplate(ctx context.Context, kind string) (ContentTempla
 	return openTemplate(row)
 }
 
-// ensureProjectItems 工程模版多份独立行；旧登记簿拆开，空库落下四份明细。
+// ensureProjectItems 工程模版多份独立行；旧登记簿拆开，空库落下三份明细。
 func (s *kernel) ensureProjectItems(ctx context.Context) ([]ContentTemplate, error) {
 	rows, err := s.store.TemplatesByKind(ctx, KindProject)
 	if err != nil {

@@ -78,12 +78,13 @@ type State struct {
 
 // ClientIntent 是 WAN 推来的设备分配或作废。
 type ClientIntent struct {
-	Typ       string    // client_bind / client_void
-	ClientID  uuid.UUID // 固定识别号
-	Name      string    // 给人看的设备名
-	ShortCode string    // Client 短码
-	PublicKey []byte    // 本机公钥，可空
-	Revision  int64     // 绑定修订
+	Typ          string    // client_bind / client_void
+	ClientID     uuid.UUID // 固定识别号
+	Name         string    // 给人看的设备名
+	ShortCode    string    // Client 短码
+	DeviceSerial string    // 机械臂识别号；未填为空
+	PublicKey    []byte    // 本机公钥，可空
+	Revision     int64     // 绑定修订
 }
 
 // RequestHandler 回答 WAN 经通道问本厂的升档问询；失败不拆连接。

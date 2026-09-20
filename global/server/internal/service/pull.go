@@ -27,7 +27,8 @@ func (s *Service) IndexForFactory(ctx context.Context, factoryID uuid.UUID, kind
 	for _, row := range rows {
 		out = append(out, Cmd{
 			Typ: CmdClientBind, ClientID: row.ID.String(), ClientName: row.Name,
-			ClientShortCode: row.ShortCode, PublicKey: row.PublicKey, BindingRevision: row.BindingRevision,
+			ClientShortCode: row.ShortCode, DeviceSerial: row.DeviceSerial,
+			PublicKey: row.PublicKey, BindingRevision: row.BindingRevision,
 		})
 	}
 	var snaps []ClosureSnapshot
@@ -55,20 +56,6 @@ func (s *Service) IndexForFactory(ctx context.Context, factoryID uuid.UUID, kind
 		}
 	}
 	if kind == "" {
-		// 只列还能拉到正文的当前版本，避免索引指向空包。
-		snaps, err := s.Updates.SnapshotsForFactory(ctx, factoryID)
-		if err != nil {
-			return nil, err
-		}
-		latest := map[string]int64{}
-		for _, snap := range snaps {
-			if snap.Version > latest[snap.Kind] {
-				latest[snap.Kind] = snap.Version
-			}
-		}
-		for kind, version := range latest {
-			out = append(out, Cmd{Typ: CmdSoftware, Kind: kind, Version: version})
-		}
 		ids, err := s.ListRetractions(ctx)
 		if err != nil {
 			return nil, err
@@ -105,24 +92,4 @@ func (s *Closure) PullClosureForFactory(ctx context.Context, factoryID, assetID 
 // PullTemplateForFactory 组这一份模版给该厂。
 func (s *Templates) PullTemplateForFactory(ctx context.Context, factoryID, templateID uuid.UUID) (TemplateSnapshot, error) {
 	return s.SnapshotForFactory(ctx, factoryID, templateID)
-}
-
-// PullSoftwareForFactory 按已下发记录给出带正文的软件包。
-func (s *Updates) PullSoftwareForFactory(ctx context.Context, factoryID uuid.UUID, kind string, version int64) (SoftwareSnapshot, error) {
-	if !validSoftwareKind(kind) || version < 1 {
-		return SoftwareSnapshot{}, domain.ErrNotFound
-	}
-	if _, err := s.store.SoftwareDistribution(ctx, kind, version, factoryID); err != nil {
-		return SoftwareSnapshot{}, err
-	}
-	snaps, err := s.SnapshotsForFactory(ctx, factoryID)
-	if err != nil {
-		return SoftwareSnapshot{}, err
-	}
-	for _, snap := range snaps {
-		if snap.Kind == kind && snap.Version == version {
-			return snap, nil
-		}
-	}
-	return SoftwareSnapshot{}, domain.ErrNotFound
 }

@@ -16,6 +16,7 @@ func (h *Handler) mountOrg(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/factories/{id}/org-units/{unitId}/enable", h.enableOrgUnit)
 	mux.HandleFunc("DELETE /v1/factories/{id}/org-units/{unitId}", h.deleteOrgUnit)
 	mux.HandleFunc("POST /v1/factories/{id}/people", h.createPerson)
+	mux.HandleFunc("GET /v1/factories/{id}/people/{personId}/logins", h.listPersonLogins)
 	mux.HandleFunc("POST /v1/factories/{id}/people/{personId}/disable", h.disablePerson)
 	mux.HandleFunc("POST /v1/factories/{id}/people/{personId}/enable", h.enablePerson)
 	mux.HandleFunc("POST /v1/factories/{id}/people/{personId}/reset-password", h.resetPersonPassword)
@@ -147,6 +148,23 @@ func (h *Handler) createPerson(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusCreated, createdPersonResp{Account: acc})
+	})
+}
+
+// 超管看这个人的示教器登录现场；不含密码和令牌。
+func (h *Handler) listPersonLogins(w http.ResponseWriter, r *http.Request) {
+	h.withFactory(w, r, func(svc *service.Service) {
+		personID, err := uuid.Parse(r.PathValue("personId"))
+		if err != nil {
+			writeBadRequest(w, errInvalidID)
+			return
+		}
+		rows, err := svc.Org.ListPersonLogins(r.Context(), bearer(r), personID)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, rows)
 	})
 }
 

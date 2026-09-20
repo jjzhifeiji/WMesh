@@ -20,6 +20,9 @@ services:
       WMESH_OSS_ACCESS_KEY: ${OSS_ACCESS_KEY:-wmesh}
       WMESH_OSS_SECRET_KEY: ${OSS_SECRET_KEY:?set OSS_SECRET_KEY in .env}
       WMESH_LOG_LEVEL: ${WMESH_LOG_LEVEL:-info}
+      WMESH_UPDATE_DIR: /var/lib/wmesh/update
+    volumes:
+      - update:/var/lib/wmesh/update
     ports:
       - "${HTTP_PORT:-52080}:8080"
       - "${MQTT_PORT:-52183}:1883"
@@ -30,12 +33,35 @@ services:
         condition: service_healthy
       oss:
         condition: service_healthy
+      updater:
+        condition: service_started
     restart: unless-stopped
     logging: &logging
       driver: json-file
       options:
         max-size: "10m"
         max-file: "5"
+
+  updater:
+    image: docker:27-cli
+    user: "0:0"
+    environment:
+      WMESH_UPDATE_DIR: /var/lib/wmesh/update
+      COMPOSE_PROJECT_NAME: wmesh-global
+      APP_SERVICE: app
+      APP_IMAGE: ${WMESH_REGISTRY:-}wmesh-global-app:${WMESH_VERSION:-dev}
+      APP_KIND: wan_service
+      COMPOSE_FILE: /work/docker-compose.yml
+    working_dir: /work
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - update:/var/lib/wmesh/update
+      - ./docker-compose.yml:/work/docker-compose.yml:ro
+      - ./.env:/work/.env:ro
+      - ./updater/apply.sh:/apply.sh:ro
+    command: ["sh", "/apply.sh"]
+    restart: unless-stopped
+    logging: *logging
 
   db:
     image: postgres:18-alpine
@@ -106,6 +132,7 @@ services:
     logging: *logging
 
 volumes:
+  update:
   pgdata:
   ossdata:
   osslogs:

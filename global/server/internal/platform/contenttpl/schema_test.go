@@ -245,11 +245,11 @@ func TestApplyProcessID(t *testing.T) {
 
 func TestDefaultProjectRefsProcessID(t *testing.T) {
 	s := Default(KindProject)
-	if len(s.Templates) != 3 || s.Item != nil || len(s.Kinds) != 0 {
+	if len(s.Templates) != 2 || s.Item != nil || len(s.Kinds) != 0 {
 		t.Fatalf("templates %+v item %v kinds %v", s.Templates, s.Item, s.Kinds)
 	}
 	var keys []string
-	for _, k := range []string{ItemSingle, ItemMulti, ItemCorner} {
+	for _, k := range []string{ItemSingle, ItemMulti, ItemTBar} {
 		fields := ItemFields(k, true)
 		item := Field{Type: TypeObject, Fields: fields}
 		keys = append(keys, fieldKeys(&item)...)
@@ -264,29 +264,29 @@ func TestDefaultProjectRefsProcessID(t *testing.T) {
 	if has["process"] != 0 {
 		t.Fatalf("nested process still in catalog: %v", keys)
 	}
-	if has["processId"] < 5 {
-		t.Fatalf("processId count %d want >=5 in %v", has["processId"], keys)
+	if has["processId"] < 4 {
+		t.Fatalf("processId count %d want >=4 in %v", has["processId"], keys)
 	}
 	n := 0
-	for _, k := range []string{ItemSingle, ItemMulti, ItemCorner} {
+	for _, k := range []string{ItemSingle, ItemMulti, ItemTBar} {
 		item := Field{Type: TypeObject, Fields: ItemFields(k, true)}
 		n += countProcessType(&item)
 	}
 	if n < 5 {
 		t.Fatalf("process type count %d want >=5", n)
 	}
-	if has["cornerGroupParams"] != 1 {
-		t.Fatalf("corner missing: %v", keys)
+	if has["cornerGroupParams"] != 0 {
+		t.Fatalf("corner still in catalog: %v", keys)
 	}
 }
 
-func TestSeedProjectItemsFour(t *testing.T) {
+func TestSeedProjectItemsThree(t *testing.T) {
 	seed := SeedProjectItems()
-	if len(seed) != 4 {
+	if len(seed) != 3 {
 		t.Fatalf("seed %d", len(seed))
 	}
 	legacy := LegacyProjectItems()
-	if len(legacy) != 3 {
+	if len(legacy) != 2 {
 		t.Fatalf("legacy %d", len(legacy))
 	}
 	var tbar *ProjectItemSchema
@@ -310,7 +310,7 @@ func TestSeedProjectItemsFour(t *testing.T) {
 		t.Fatalf("processPath in tbar: %v", keys)
 	}
 	got := ExpandLegacyProject(Default(KindProject))
-	if len(got) != 3 {
+	if len(got) != 2 {
 		t.Fatalf("expand default %d", len(got))
 	}
 	if InferItemKind(map[string]any{"gapBands": []any{}}) != ItemTBar {
@@ -318,6 +318,16 @@ func TestSeedProjectItemsFour(t *testing.T) {
 	}
 	if InferItemKind(map[string]any{"points": []any{map[string]any{"type": "GROOVE_A_LOWER"}}}) != ItemTBar {
 		t.Fatalf("infer groove")
+	}
+	if InferItemKind(map[string]any{"cornerGroupParams": map[string]any{}}) != ItemSingle {
+		t.Fatalf("infer corner")
+	}
+	dropped := ExpandLegacyProject(Schema{Root: RootArray, Templates: []ProjectTemplate{
+		{ID: defaultTplSingle, Name: "单层焊道", Kind: ItemSingle, Extra: true},
+		{ID: "33333333-3333-4333-8333-333333333333", Name: "包角", Kind: "corner", Extra: true},
+	}})
+	if len(dropped) != 1 || dropped[0].ID != defaultTplSingle {
+		t.Fatalf("drop corner %+v", dropped)
 	}
 }
 

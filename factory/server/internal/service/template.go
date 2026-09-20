@@ -89,7 +89,7 @@ func (s *kernel) normalizeContent(ctx context.Context, kind string, content []by
 	return out, nil
 }
 
-// collectProjectProcessIDs 有已收对象模版用各份字段；没有则用空库四份明细扫引用。
+// collectProjectProcessIDs 有已收对象模版用各份字段；没有则用空库三份明细扫引用。
 func (s *kernel) collectProjectProcessIDs(ctx context.Context, content []byte) ([]string, error) {
 	items, err := s.projectItems(ctx)
 	if err != nil {

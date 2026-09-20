@@ -7,6 +7,8 @@ export type LegacyFile = {
   path: string; // 相对路径
   name?: string; // 显示名，可空
   content: string; // UTF-8 JSON
+  overwrite?: boolean; // 本份覆盖
+  rename?: boolean; // 本份按路径重命名
 };
 
 export type LegacyReject = {
@@ -15,15 +17,16 @@ export type LegacyReject = {
 };
 
 export type LegacyImportResult = {
-  processes: Asset[]; // 已入本厂工艺
-  projects: Asset[]; // 已入本厂工程
+  processes: Asset[]; // 新建或覆盖后的本厂工艺
+  projects: Asset[]; // 新建或覆盖后的本厂工程
   rejected: LegacyReject[]; // 未入的工程或坏文件
+  skipped: LegacyReject[]; // 同名跳过
 };
 
 export function useImportLegacy() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (input: { processes: LegacyFile[]; projects: LegacyFile[] }) =>
+    mutationFn: (input: { processes: LegacyFile[]; projects: LegacyFile[]; overwrite: boolean; rename: boolean }) =>
       http.post<LegacyImportResult>(fpath("/legacy-import"), input),
     onSuccess: async () => {
       await qc.invalidateQueries({ queryKey: assetKeys.all });

@@ -22,3 +22,24 @@ export function shortHash(h?: string | null) {
   if (!h) return "—";
   return h.length > 16 ? `${h.slice(0, 10)}…` : h;
 }
+
+// 包大小、上传进度用人话写。
+export function formatBytes(n: number) {
+  if (!Number.isFinite(n) || n < 0) return "—";
+  if (n < 1024) return `${Math.round(n)} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
+// 上传速率，按每秒字节。
+export function formatSpeed(bytesPerSec: number) {
+  if (!Number.isFinite(bytesPerSec) || bytesPerSec <= 0) return "—";
+  return `${formatBytes(bytesPerSec)}/s`;
+}
+
+// 在线才展示厂端自报版本；离线不当正在跑。
+export function formatRelease(online: boolean, code?: number, name?: string) {
+  if (!online || !code) return "—";
+  return name ? `${name}（${code}）` : String(code);
+}

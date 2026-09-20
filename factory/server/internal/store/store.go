@@ -1,8 +1,6 @@
-// Package store 只读写本厂库：人员、组织、角色、会话、归属桩、本厂 Client 凭证、本厂工艺/工程、已收平台级副本、内容模版副本、内容主钥包装、软件副本和上传记录。
+// Package store 只读写本厂库：人员、组织、角色、会话、归属桩、焊事实、本厂 Client 凭证、本厂工艺/工程、已收平台级副本、内容模版副本、内容主钥包装、软件副本和上传记录。
 // 不判定允许/拒绝，也不回调应用服务。
-// 文件按域拆：account / org / attr / node / asset / template / closure / policy / sync / lifecycle / crypt / update。
-// 不判定允许/拒绝，也不回调应用服务。
-// 文件按域拆：account / org / attr / node / asset / template / closure / policy / sync / lifecycle / crypt / update。
+// 文件按域拆：account / org / attr / node / asset / template / closure / policy / sync / lifecycle / crypt / update / stats。
 package store
 
 import (
@@ -33,6 +31,13 @@ func Open(db *gorm.DB, factoryID uuid.UUID) *Store {
 // FactoryID 返回本厂选库用的稳定身份。
 func (s *Store) FactoryID() uuid.UUID { return s.factoryID }
 
+// DatabaseSize 当前厂库占用的字节，给超管看存储。
+func (s *Store) DatabaseSize(ctx context.Context) (int64, error) {
+	var n int64
+	err := s.db.WithContext(ctx).Raw("SELECT pg_database_size(current_database())").Scan(&n).Error
+	return n, err
+}
+
 // AppendAudit 写入本厂审计；缺身份则现场发号，并带上本厂。
 func (s *Store) AppendAudit(ctx context.Context, e audit.Event) error {
 	if e.ID == uuid.Nil {
@@ -62,7 +67,7 @@ func hasRows(db *gorm.DB, model any, query string, args ...any) (bool, error) {
 // pathMentions 看事实/资产路径快照里是否出现过该身份。
 func pathMentions(db *gorm.DB, key string, id uuid.UUID) (bool, error) {
 	payload := fmt.Sprintf(`[{"%s":"%s"}]`, key, id)
-	for _, table := range []string{"fact_stubs", "personal_asset_stubs", "assets"} {
+	for _, table := range []string{"fact_stubs", "personal_asset_stubs", "assets", "weld_facts"} {
 		var n int64
 		err := db.Raw("SELECT COUNT(*) FROM "+table+" WHERE org_path @> ?::jsonb", payload).Scan(&n).Error
 		if err != nil {

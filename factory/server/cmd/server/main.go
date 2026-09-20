@@ -15,26 +15,18 @@ import (
 	"wmesh/factory/internal/httpapi"
 	"wmesh/factory/internal/hub"
 	"wmesh/factory/internal/platform/applog"
+	"wmesh/factory/internal/platform/appupdate"
 	"wmesh/factory/internal/platform/config"
-	"wmesh/factory/internal/platform/dockerupdate"
 	"wmesh/factory/internal/platform/oss"
 	"wmesh/factory/internal/web"
 )
 
-// version 由构建时 -ldflags "-X main.version=..." 注入，随探活返回。
+// version 由构建时 -ldflags 注入，随探活 build 返回。
 var version = "dev"
 
 // 启动进程，失败则退出。
 func main() {
 	log := applog.New(os.Stdout, "wmesh-factory", "factory", version)
-	if len(os.Args) > 1 && os.Args[1] == "docker-swap" {
-		// 帮手容器入口：load、建新容器、再停旧起新。
-		if err := dockerupdate.Swap(os.Args[2:]); err != nil {
-			log.Error("docker-swap", "err", err)
-			os.Exit(1)
-		}
-		return
-	}
 	if err := run(context.Background(), log); err != nil {
 		log.Error("factory server exit", "err", err)
 		os.Exit(1)
@@ -56,13 +48,18 @@ func run(ctx context.Context, log *slog.Logger) error {
 		return fmt.Errorf("open admin db: %w", err)
 	}
 	defer h.Close()
-	if cfg.DockerUpdate {
-		// 确认后 docker load 换本容器；套接字不在则拒绝启动。
-		inst, err := dockerupdate.New(cfg.DockerHost, cfg.DockerUpdateDir)
-		if err != nil {
-			return fmt.Errorf("docker update: %w", err)
+	// 确认只把 tar 落到更新目录；真正换容器由本机 updater 做。
+	h.SetPendingSink(appupdate.Dir(cfg.DockerUpdateDir))
+	var ossStore *oss.Client
+	if cfg.OSS.Enabled() {
+		ossStore = oss.New(cfg.OSS.Endpoint, cfg.OSS.Bucket, cfg.OSS.AccessKey, cfg.OSS.SecretKey)
+		// 软件包字节进对象存储；须在打开厂库和通道之前挂上。
+		h.SetBlobs(ossStore)
+		if err := ossStore.EnsureBucketRetry(ctx, 5, 2*time.Second); err != nil {
+			log.Warn("oss bucket not ready at startup", "endpoint", cfg.OSS.Endpoint, "bucket", cfg.OSS.Bucket, "err", err)
+		} else {
+			log.Info("oss bucket ready", "endpoint", cfg.OSS.Endpoint, "bucket", cfg.OSS.Bucket)
 		}
-		h.SetFactoryInstaller(inst)
 	}
 
 	if cfg.WANURL != "" {
@@ -75,19 +72,9 @@ func run(ctx context.Context, log *slog.Logger) error {
 	api := httpapi.New(h, cfg.BootstrapToken, cfg.WANURL)
 	api.Version = version
 	api.ClientMQTTURL = cfg.ClientMQTTURL
-	if api.ClientMQTTURL == "" && h.ClientMQTTAddr() != "" {
-		api.ClientMQTTURL = "tcp://" + h.ClientMQTTAddr()
-	}
-	if cfg.OSS.Enabled() {
-		store := oss.New(cfg.OSS.Endpoint, cfg.OSS.Bucket, cfg.OSS.AccessKey, cfg.OSS.SecretKey)
-		// 探活顺带保证桶在：对象存储晚起或被清空后能自愈，不用重启应用。
-		api.OSSProbe = store.EnsureBucket
-		// 启动时只提醒不拦截：OSS 掉线不该让账号管理起不来。
-		if err := store.EnsureBucketRetry(ctx, 5, 2*time.Second); err != nil {
-			log.Warn("oss bucket not ready at startup", "endpoint", cfg.OSS.Endpoint, "bucket", cfg.OSS.Bucket, "err", err)
-		} else {
-			log.Info("oss bucket ready", "endpoint", cfg.OSS.Endpoint, "bucket", cfg.OSS.Bucket)
-		}
+	api.ClientMQTTPort = cfg.ClientMQTTPort
+	if ossStore != nil {
+		api.OSSProbe = ossStore.EnsureBucket
 	}
 
 	mux := http.NewServeMux()
@@ -98,17 +85,12 @@ func run(ctx context.Context, log *slog.Logger) error {
 	if cfg.WebDir != "" {
 		mux.Handle("/", web.Handler(cfg.WebDir))
 	}
-	writeTimeout := 60 * time.Second
-	if cfg.DockerUpdate {
-		// docker load 大镜像时确认接口还占着这条连接。
-		writeTimeout = 15 * time.Minute
-	}
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
 		Handler:           httpapi.Wrap(log, mux),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      writeTimeout,
+		WriteTimeout:      60 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
 	errCh := make(chan error, 1)

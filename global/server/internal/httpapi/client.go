@@ -19,10 +19,11 @@ func (h *Handler) mountClient(mux *http.ServeMux) {
 }
 
 type registerClientReq struct {
-	ID        string `json:"id"`        // 稳定身份；空则由服务发号
-	Name      string `json:"name"`      // 给人看的名字
-	FactoryID string `json:"factoryId"` // 可当场分给这家厂
-	PublicKey string `json:"publicKey"` // 可选；现场上线后再登记
+	ID           string `json:"id"`           // 稳定身份；空则由服务发号
+	Name         string `json:"name"`         // 给人看的名字
+	DeviceSerial string `json:"deviceSerial"` // 机械臂识别号，登记必填
+	FactoryID    string `json:"factoryId"`    // 可当场分给这家厂
+	PublicKey    string `json:"publicKey"`    // 可选；现场上线后再登记
 }
 
 type renameClientReq struct {
@@ -75,7 +76,7 @@ func (h *Handler) registerClient(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	row, err := h.svc.Clients.RegisterClient(r.Context(), bearer(r), req.Name, cid, fid, pub)
+	row, err := h.svc.Clients.RegisterClient(r.Context(), bearer(r), req.Name, cid, fid, pub, req.DeviceSerial)
 	if err != nil {
 		writeErr(w, err)
 		return

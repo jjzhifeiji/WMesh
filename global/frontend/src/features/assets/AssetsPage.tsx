@@ -1,5 +1,5 @@
 import { PlusOutlined } from "@ant-design/icons";
-import { App, Button, Card, Descriptions, Empty, Form, Input, Modal, Select, Space, Switch, Table, Tag, Typography, type TableColumnsType } from "antd";
+import { App, Button, Card, Descriptions, Empty, Form, Input, Modal, Radio, Select, Space, Switch, Table, Tag, Typography, type TableColumnsType } from "antd";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { errorMessage } from "@/shared/api/client";
 import { formatTime } from "@/shared/format";
@@ -111,6 +111,8 @@ export function AssetsPage({ kind }: { kind: AssetKind }) {
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [sourceFilter, setSourceFilter] = useState("all");
+  const [sortKey, setSortKey] = useState<"name" | "code" | "createdAt">("createdAt");
+  const [sortAsc, setSortAsc] = useState(false);
   const [form] = Form.useForm<CreateForm>();
   const [copyForm] = Form.useForm<{ name: string }>();
   const promotable = usePromotableAssets(promoteOpen ? factoryId : null, kind);
@@ -131,7 +133,7 @@ export function AssetsPage({ kind }: { kind: AssetKind }) {
   };
   const rows = useMemo(() => {
     const needle = query.trim().toLowerCase();
-    return (assets.data ?? []).filter((a) => {
+    const filtered = (assets.data ?? []).filter((a) => {
       if (statusFilter !== "all" && a.status !== statusFilter) return false;
       if (sourceFilter !== "all" && (a.sourceFactory || "本端新建") !== sourceFilter) return false;
       if (!needle) return true;
@@ -139,7 +141,15 @@ export function AssetsPage({ kind }: { kind: AssetKind }) {
       const source = (a.sourceFactory || "本端新建").toLowerCase();
       return a.name.toLowerCase().includes(needle) || source.includes(needle);
     });
-  }, [assets.data, query, statusFilter, sourceFilter]);
+    const collator = new Intl.Collator("zh");
+    return [...filtered].sort((a, b) => {
+      let cmp = 0;
+      if (sortKey === "name") cmp = collator.compare(a.name || "", b.name || "");
+      else if (sortKey === "code") cmp = (a.code || "").localeCompare(b.code || "", "zh", { numeric: true });
+      else cmp = Date.parse(a.createdAt || "") - Date.parse(b.createdAt || "");
+      return sortAsc ? cmp : -cmp;
+    });
+  }, [assets.data, query, statusFilter, sourceFilter, sortKey, sortAsc]);
   const sourceOptions = useMemo(() => {
     const opts = [{ value: "all", label: "全部来源" }];
     const seen = new Set<string>();
@@ -154,6 +164,7 @@ export function AssetsPage({ kind }: { kind: AssetKind }) {
 
   const detailing = detailFor ? (assets.data?.find((a) => a.id === detailFor.id) ?? detailFor) : null;
   const editing = editFor ? (assets.data?.find((a) => a.id === editFor.id) ?? editFor) : null;
+  const sortOrder = (key: "name" | "code" | "createdAt") => (sortKey === key ? (sortAsc ? "ascend" : "descend") : undefined);
 
   const openPromote = () => {
     const online = factories.find((f) => f.channelOnline);
@@ -188,9 +199,11 @@ export function AssetsPage({ kind }: { kind: AssetKind }) {
       dataIndex: "name",
       width: 180,
       ellipsis: true,
+      sorter: true,
+      sortOrder: sortOrder("name"),
       render: (name: string) => <Typography.Text strong>{name}</Typography.Text>,
     },
-    { title: "编号", dataIndex: "code", width: 150, render: (code: string) => <Typography.Text copyable={{ text: code }}>{code}</Typography.Text> },
+    { title: "编号", dataIndex: "code", width: 150, sorter: true, sortOrder: sortOrder("code"), render: (code: string) => <Typography.Text copyable={{ text: code }}>{code}</Typography.Text> },
     { title: "状态", dataIndex: "status", width: 90, render: (s: string) => <Tag color={statusColor(s)}>{statusLabel(s)}</Tag> },
     { title: "可复制", dataIndex: "copyable", width: 80, render: (ok: boolean) => (ok ? "是" : "否") },
     { title: "修订", dataIndex: "revision", width: 70 },
@@ -210,7 +223,7 @@ export function AssetsPage({ kind }: { kind: AssetKind }) {
           } satisfies TableColumnsType<Asset>[number],
         ]
       : []),
-    { title: "创建时间", dataIndex: "createdAt", width: 160, render: (v: string) => formatTime(v) },
+    { title: "创建时间", dataIndex: "createdAt", width: 160, sorter: true, sortOrder: sortOrder("createdAt"), render: (v: string) => formatTime(v) },
     {
       title: "操作",
       key: "actions",
@@ -335,6 +348,12 @@ export function AssetsPage({ kind }: { kind: AssetKind }) {
             ]}
           />
           <Select value={sourceFilter} onChange={setSourceFilter} style={{ width: 200 }} options={sourceOptions} />
+          <Radio.Group value={sortKey} onChange={(e) => setSortKey(e.target.value)}>
+            <Radio.Button value="name">按名称</Radio.Button>
+            <Radio.Button value="code">按编号</Radio.Button>
+            <Radio.Button value="createdAt">按时间</Radio.Button>
+          </Radio.Group>
+          <Button onClick={() => setSortAsc((v) => !v)}>{sortAsc ? "升序 ↑" : "降序 ↓"}</Button>
         </Space>
         <Table<Asset>
           rowKey="id"
@@ -343,6 +362,18 @@ export function AssetsPage({ kind }: { kind: AssetKind }) {
           loading={assets.isLoading}
           scroll={{ x: 1200 }}
           pagination={{ pageSize: 20, hideOnSinglePage: true }}
+          onChange={(_p, _f, sorter) => {
+            const s = Array.isArray(sorter) ? sorter[0] : sorter;
+            const field = s?.field;
+            if (field !== "name" && field !== "code" && field !== "createdAt") return;
+            if (!s.order) {
+              setSortKey("createdAt");
+              setSortAsc(false);
+              return;
+            }
+            setSortKey(field);
+            setSortAsc(s.order === "ascend");
+          }}
           locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={`还没有${title}。可在本页新建，或从在线工厂升档。`} /> }}
         />
       </Card>
@@ -469,8 +500,8 @@ export function AssetsPage({ kind }: { kind: AssetKind }) {
             ),
           }}
           columns={[
-            { title: isProcess ? "工艺名称" : "工程名称", dataIndex: "name", ellipsis: true },
-            { title: "编号", dataIndex: "code", width: 150 },
+            { title: isProcess ? "工艺名称" : "工程名称", dataIndex: "name", ellipsis: true, sorter: (a, b) => a.name.localeCompare(b.name, "zh") },
+            { title: "编号", dataIndex: "code", width: 150, sorter: (a, b) => (a.code || "").localeCompare(b.code || "", "zh", { numeric: true }) },
             {
               title: "级别",
               dataIndex: "level",

@@ -14,7 +14,7 @@ const (
 	StatusRevoked  = store.StatusRevoked  // 角色已收回，行留下做历史
 
 	RoleFactorySuperAdmin = store.RoleFactorySuperAdmin // 工厂超管，只能挂本厂作用域
-	RoleOrgAdmin          = store.RoleOrgAdmin          // 组织管理员，只管本节点及当前子树
+	RoleOrgAdmin          = store.RoleOrgAdmin          // 组织管理员，可挂整厂或某个节点及当前子树
 	RoleOrgLead           = store.RoleOrgLead           // 组织负责人，子树只读
 	RoleProcessEngineer   = store.RoleProcessEngineer   // 工艺工程师，下发仍按作用域
 	RoleOperator          = store.RoleOperator          // 操作员，可产生运行事实
@@ -42,6 +42,10 @@ const (
 
 	UploadPointCloud = store.UploadPointCloud // 点云上传
 	UploadImage      = store.UploadImage      // 图片上传
+
+	LoginKindPad    = store.LoginKindPad    // 厂网示教器登录
+	LoginKindClient = store.LoginKindClient // 已钉设备号的本机登录
+	LoginKindMQTT   = store.LoginKindMQTT   // 本厂 MQTT 回连补现场快照
 )
 
 // 授角色时与落库用同一条作用域规则。
@@ -66,9 +70,11 @@ type (
 	FactStub      = store.FactStub
 	PersonalAsset = store.PersonalAsset
 
-	Client       = store.Client
-	SigningKey   = store.SigningKey
-	RuntimeGrant = store.RuntimeGrant
+	Client         = store.Client
+	SigningKey     = store.SigningKey
+	RuntimeGrant   = store.RuntimeGrant
+	LoginSnap      = store.LoginSnap
+	PersonLoginLog = store.PersonLoginLog
 
 	Asset         = store.Asset
 	AssetDep      = store.AssetDep
@@ -83,6 +89,8 @@ type (
 	ClientPolicy    = store.ClientPolicy
 
 	UploadRecord = store.UploadRecord
+	WeldFact     = store.WeldFact
+	WeldTotals   = store.WeldTotals
 
 	SoftwareReplica = store.SoftwareReplica
 	WANTrust        = store.WANTrust

@@ -3,6 +3,8 @@ package service
 import (
 	"context"
 
+	"github.com/google/uuid"
+
 	"wmesh/factory/internal/platform/audit"
 )
 
@@ -35,6 +37,14 @@ func (s *Org) Catalog(ctx context.Context, token string) (Catalog, error) {
 	} else if mine != nil {
 		out.MyGrants = mine
 	}
+	online := s.appMQTTPersonIDs()
+	// 名册在线只认本厂示教器 MQTT 连着；管理端登录和 12 小时会话都不算。
+	markAppOnline(&out.Me, online)
+	devices, err := s.store.LatestLoginDevices(ctx)
+	if err != nil {
+		return Catalog{}, err
+	}
+	markLastDevice(&out.Me, devices)
 	if err := s.can(ctx, acc, permManageAccount, nil); err != nil {
 		_ = s.audit(ctx, &acc.ID, nil, "catalog", "self", audit.Allow)
 		return out, nil
@@ -45,7 +55,10 @@ func (s *Org) Catalog(ctx context.Context, token string) (Catalog, error) {
 		return Catalog{}, err
 	}
 	for _, p := range people {
-		out.People = append(out.People, accountOf(p))
+		row := accountOf(p)
+		markAppOnline(&row, online)
+		markLastDevice(&row, devices)
+		out.People = append(out.People, row)
 	}
 	if out.OrgUnits, err = s.store.ListOrgUnits(ctx); err != nil {
 		return Catalog{}, err
@@ -60,4 +73,25 @@ func (s *Org) Catalog(ctx context.Context, token string) (Catalog, error) {
 		return Catalog{}, err
 	}
 	return out, nil
+}
+
+// 有效账号且示教器 MQTT 连着才标在线。
+func markAppOnline(acc *Account, online map[uuid.UUID]struct{}) {
+	if acc == nil || acc.Status != StatusActive {
+		return
+	}
+	_, acc.AppOnline = online[acc.ID]
+}
+
+// 最近一次带上设备的登录现场；没有则空。
+func markLastDevice(acc *Account, devices map[uuid.UUID]PersonLoginLog) {
+	if acc == nil || devices == nil {
+		return
+	}
+	row, ok := devices[acc.ID]
+	if !ok {
+		return
+	}
+	acc.AppClientName = row.ClientName
+	acc.AppDeviceSerial = row.DeviceSerial
 }

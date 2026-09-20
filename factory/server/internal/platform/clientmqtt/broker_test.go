@@ -15,14 +15,14 @@ func TestBrokerACLLocksOwnTopics(t *testing.T) {
 	fid := id.New()
 	a, b := id.New(), id.New()
 	bus, err := Listen("127.0.0.1:0", Hooks{
-		Auth: func(factoryID, clientID uuid.UUID, token string) error {
+		Auth: func(factoryID, clientID uuid.UUID, token string) (uuid.UUID, error) {
 			if factoryID != fid {
-				return errIntent("factory")
+				return uuid.Nil, errIntent("factory")
 			}
 			if (clientID == a && token == "tokA") || (clientID == b && token == "tokB") {
-				return nil
+				return clientID, nil
 			}
-			return errIntent("token")
+			return uuid.Nil, errIntent("token")
 		},
 	})
 	if err != nil {

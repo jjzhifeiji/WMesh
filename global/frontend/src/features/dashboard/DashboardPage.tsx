@@ -2,12 +2,12 @@ import { Card, Col, Row, Statistic, Table, Tag, type TableColumnsType } from "an
 import { Link } from "react-router";
 import { paths } from "@/app/routes";
 import { useDirectory, type Factory } from "@/features/factories/api";
-import { formatTime } from "@/shared/format";
-import { IdText } from "@/shared/ui/IdText";
+import { formatRelease } from "@/shared/format";
 import { PageHeader } from "@/shared/ui/PageHeader";
+import { VERSION_CODE, VERSION_NAME } from "@/shared/version";
 import { useHealth } from "./api";
 
-const recentColumns: TableColumnsType<Factory> = [
+const factoryColumns: TableColumnsType<Factory> = [
   { title: "工厂名称", dataIndex: "name" },
   {
     title: "状态",
@@ -25,8 +25,8 @@ const recentColumns: TableColumnsType<Factory> = [
         <Tag>未认领</Tag>
       ),
   },
-  { title: "工厂 ID", dataIndex: "id", width: 280, render: (id: string) => <IdText id={id} /> },
-  { title: "创建时间", dataIndex: "createdAt", width: 170, render: (v: string) => formatTime(v) },
+  { title: "前端版本", width: 140, render: (_, f) => formatRelease(f.channelOnline, f.webVersion, f.webVersionName) },
+  { title: "服务版本", width: 140, render: (_, f) => formatRelease(f.channelOnline, f.serviceVersion, f.serviceVersionName) },
 ];
 
 function statusTag(v?: string) {
@@ -42,7 +42,6 @@ export function DashboardPage() {
   const health = useHealth();
   const factories = dir.data?.factories ?? [];
   const online = factories.filter((f) => f.channelOnline && (f.status ?? "active") === "active").length;
-  const recent = factories.toSorted((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 5);
 
   return (
     <>
@@ -60,7 +59,22 @@ export function DashboardPage() {
         </Col>
         <Col xs={24} sm={12} lg={6}>
           <Card>
-            <Statistic title="服务版本" value={health.data?.version ?? "—"} loading={health.isLoading} />
+            <Statistic title="前端版本号" value={VERSION_CODE} />
+          </Card>
+        </Col>
+        <Col xs={24} sm={12} lg={6}>
+          <Card>
+            <Statistic title="前端版本名" value={VERSION_NAME} />
+          </Card>
+        </Col>
+        <Col xs={24} sm={12} lg={6}>
+          <Card>
+            <Statistic title="服务版本号" value={health.data && health.data.version > 0 ? health.data.version : "—"} loading={health.isLoading} />
+          </Card>
+        </Col>
+        <Col xs={24} sm={12} lg={6}>
+          <Card>
+            <Statistic title="服务版本名" value={health.data?.versionName || "—"} loading={health.isLoading} />
           </Card>
         </Col>
         <Col xs={24} sm={12} lg={6}>
@@ -74,8 +88,8 @@ export function DashboardPage() {
           </Card>
         </Col>
       </Row>
-      <Card title="最近创建的工厂" extra={<Link to={paths.factories}>全部名录</Link>} style={{ marginTop: 16 }}>
-        <Table<Factory> rowKey="id" columns={recentColumns} dataSource={recent} loading={dir.isLoading} pagination={false} size="small" />
+      <Card title="工厂" extra={<Link to={paths.factories}>全部名录</Link>} style={{ marginTop: 16 }}>
+        <Table<Factory> rowKey="id" columns={factoryColumns} dataSource={factories} loading={dir.isLoading} pagination={false} size="small" />
       </Card>
     </>
   );

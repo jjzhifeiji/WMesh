@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 
 	"github.com/google/uuid"
 
@@ -23,9 +24,9 @@ type ClosureRef struct {
 
 // ClientInbox 登录或回连后要对账的策略和获准闭包清单。
 type ClientInbox struct {
-	Policy             ClientPolicy `json:"policy"`             // 本厂现行策略
-	Closures           []ClosureRef `json:"closures"`           // 可见资产；操作员 current 时为空
-	SigningPublicKey   []byte       `json:"signingPublicKey"`   // 验下行 Intent
+	Policy           ClientPolicy `json:"policy"`           // 本厂现行策略
+	Closures         []ClosureRef `json:"closures"`         // 可见资产；操作员 current 时为空
+	SigningPublicKey []byte       `json:"signingPublicKey"` // 验下行 Intent
 }
 
 // TransitClosure 过站包：工艺成员是过站信封；工程根是明文，Wrap 为空。
@@ -34,23 +35,25 @@ type TransitClosure struct {
 	Snapshot ClosureSnapshot `json:"snapshot"`       // 工艺为过站信封，工程根为明文
 }
 
-// AuthClientMQTT 本机 MQTT CONNECT：会话令牌对得上当前登录人且绑定有效。
-func (s *Node) AuthClientMQTT(ctx context.Context, clientID uuid.UUID, token string) error {
+// AuthClientMQTT 厂网或本机 CONNECT：令牌有效；已登记 Client 须绑定未作废；未登记身份允许厂网登录人收听回连。
+func (s *Node) AuthClientMQTT(ctx context.Context, clientID uuid.UUID, token string) (Account, error) {
 	acc, err := s.RequireActive(ctx, token)
 	if err != nil {
-		return err
+		return Account{}, err
 	}
+	// CONNECT 成功记下见到；在线由 MQTT 会话钩子另计。
+	_ = s.store.NotePersonApp(ctx, acc.ID, 0, "")
 	cli, err := s.store.ClientByID(ctx, clientID)
 	if err != nil {
-		return err
+		if errors.Is(err, domain.ErrNotFound) {
+			return acc, nil
+		}
+		return acc, err
 	}
 	if cli.Status != ClientStatusBound {
-		return domain.ErrBindingVoid
+		return acc, domain.ErrBindingVoid
 	}
-	if cli.OperatorID == nil || *cli.OperatorID != acc.ID {
-		return domain.ErrForbidden
-	}
-	return nil
+	return acc, nil
 }
 
 // ClientInbox 登录人在这台上要对账的策略和获准闭包；不含正文。

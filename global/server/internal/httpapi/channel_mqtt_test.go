@@ -31,8 +31,29 @@ func TestChannelPresence(t *testing.T) {
 	srv, mqttAddr := startChannel(t, svc)
 	cli := connectMQTT(t, mqttAddr, fid, priv)
 	assertOnline(t, srv, tok, true)
-	cli.Disconnect(250)
-	assertOnline(t, srv, tok, false)
+	raw, err := json.Marshal(service.Cmd{
+		Typ: service.CmdPresence, WebVersion: 2, WebVersionName: "1.1.0",
+		ServiceVersion: 3, ServiceVersionName: "1.2.0",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tokPub := cli.Publish("wan/"+fid.String()+"/up", 1, false, raw)
+	if !tokPub.WaitTimeout(5*time.Second) || tokPub.Error() != nil {
+		t.Fatalf("presence: %v", tokPub.Error())
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		_, body := do(t, srv, "GET", "/v1/directory", tok, "")
+		var dir service.Directory
+		if json.Unmarshal([]byte(body), &dir) == nil && len(dir.Factories) == 1 && dir.Factories[0].WebVersion == 2 && dir.Factories[0].ServiceVersion == 3 && dir.Factories[0].WebVersionName == "1.1.0" && dir.Factories[0].ServiceVersionName == "1.2.0" {
+			cli.Disconnect(250)
+			assertOnline(t, srv, tok, false)
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatal("directory missing factory release")
 }
 
 func TestChannelPlatformClosure(t *testing.T) {
@@ -192,12 +213,12 @@ func TestChannelClientBind(t *testing.T) {
 	svc, tok, fid, priv := enrolledFactory(t)
 	srv, mqttAddr := startChannel(t, svc)
 	cmds := subscribeDown(t, mqttAddr, fid, priv)
-	code, body := do(t, srv, "POST", "/v1/clients", tok, `{"name":"焊机-1","factoryId":"`+fid.String()+`"}`)
+	code, body := do(t, srv, "POST", "/v1/clients", tok, `{"name":"焊机-1","deviceSerial":"ARM-1","factoryId":"`+fid.String()+`"}`)
 	if code != http.StatusCreated {
 		t.Fatalf("register %d %s", code, body)
 	}
 	waitMQTT(t, cmds, func(c service.Cmd) bool {
-		return c.Typ == service.CmdClientBind && c.ClientName == "焊机-1" && c.BindingRevision == 1
+		return c.Typ == service.CmdClientBind && c.ClientName == "焊机-1" && c.DeviceSerial == "ARM-1" && c.BindingRevision == 1
 	})
 }
 
@@ -316,12 +337,9 @@ func TestChannelSoftware(t *testing.T) {
 	if code != http.StatusCreated {
 		t.Fatalf("publish %d %s", code, body)
 	}
-	code, body = do(t, srv, "POST", "/v1/software/distribute", tok, `{"kind":"factory_service","version":1,"factoryId":"`+fid.String()+`"}`)
-	if code != http.StatusOK {
-		t.Fatalf("distribute %d %s", code, body)
-	}
-	deadline := time.After(5 * time.Second)
-	for {
+	deadline := time.After(2 * time.Second)
+	var saw bool
+	for !saw {
 		select {
 		case raw := <-rawCh:
 			if strings.Contains(string(raw), "svc-mqtt-body") {
@@ -329,22 +347,59 @@ func TestChannelSoftware(t *testing.T) {
 			}
 			var c service.Cmd
 			if json.Unmarshal(raw, &c) == nil && c.Typ == service.CmdSoftware && c.Kind == "factory_service" && c.Version == 1 {
-				goto pulled
+				saw = true
 			}
 		case <-deadline:
-			t.Fatal("no software cmd")
+			t.Fatal("no factory software mqtt")
 		}
 	}
-pulled:
-	res := factoryReq(t, srv, http.MethodGet, "/v1/channel/pull/software?kind=factory_service&version=1", fid, priv)
+	res := factoryReq(t, srv, http.MethodGet, "/v1/software/latest?kind=factory_service", fid, priv)
 	defer res.Body.Close()
 	got, _ := io.ReadAll(res.Body)
+	if res.StatusCode != http.StatusOK || !strings.Contains(string(got), `"kind":"factory_service"`) {
+		t.Fatalf("latest %d %s", res.StatusCode, got)
+	}
+	res = factoryReq(t, srv, http.MethodGet, "/v1/channel/pull/software?kind=factory_service&version=1", fid, priv)
+	defer res.Body.Close()
+	got, _ = io.ReadAll(res.Body)
 	if res.StatusCode != http.StatusOK || !strings.Contains(string(got), `"kind":"factory_service"`) {
 		t.Fatalf("pull software %d %s", res.StatusCode, got)
 	}
 	idx := pullIndex(t, srv, fid, priv, "")
-	if !indexHasKind(idx, service.CmdSoftware, "factory_service") {
-		t.Fatalf("index missing software: %+v", idx)
+	if indexHasKind(idx, "software", "factory_service") {
+		t.Fatalf("index still has software: %+v", idx)
+	}
+}
+
+func TestChannelClientAPKNotify(t *testing.T) {
+	svc, tok, fid, priv := enrolledFactory(t)
+	fidB, privB := enrollAnother(t, svc, tok, "厂B", "sa-b")
+	srv, mqttAddr := startChannel(t, svc)
+	cmdsA := subscribeDown(t, mqttAddr, fid, priv)
+	cmdsB := subscribeDown(t, mqttAddr, fidB, privB)
+	pkg := base64.StdEncoding.EncodeToString([]byte("apk-mqtt-body"))
+	code, body := do(t, srv, "POST", "/v1/software", tok, `{"kind":"client_apk","version":8,"versionName":"6.8.0","content":"`+pkg+`"}`)
+	if code != http.StatusCreated {
+		t.Fatalf("publish %d %s", code, body)
+	}
+	gotA := waitMQTT(t, cmdsA, func(c service.Cmd) bool {
+		return c.Typ == service.CmdSoftware && c.Kind == "client_apk" && c.Version == 8
+	})
+	gotB := waitMQTT(t, cmdsB, func(c service.Cmd) bool {
+		return c.Typ == service.CmdSoftware && c.Kind == "client_apk" && c.Version == 8
+	})
+	if gotA.VersionName != "6.8.0" || gotB.VersionName != "6.8.0" {
+		t.Fatalf("meta %+v %+v", gotA, gotB)
+	}
+	res := factoryReq(t, srv, http.MethodGet, "/v1/channel/pull/software?kind=client_apk&version=8", fid, priv)
+	defer res.Body.Close()
+	got, _ := io.ReadAll(res.Body)
+	if res.StatusCode != http.StatusOK || !strings.Contains(string(got), `"kind":"client_apk"`) {
+		t.Fatalf("pull apk %d %s", res.StatusCode, got)
+	}
+	idx := pullIndex(t, srv, fid, priv, "")
+	if indexHasKind(idx, "software", "client_apk") {
+		t.Fatalf("index has software: %+v", idx)
 	}
 }
 
@@ -354,7 +409,7 @@ func TestChannelClientRebind(t *testing.T) {
 	srv, mqttAddr := startChannel(t, svc)
 	cmdsA := subscribeDown(t, mqttAddr, fidA, privA)
 	cmdsB := subscribeDown(t, mqttAddr, fidB, privB)
-	code, body := do(t, srv, "POST", "/v1/clients", tok, `{"name":"焊机-1","factoryId":"`+fidA.String()+`"}`)
+	code, body := do(t, srv, "POST", "/v1/clients", tok, `{"name":"焊机-1","deviceSerial":"ARM-1","factoryId":"`+fidA.String()+`"}`)
 	if code != http.StatusCreated {
 		t.Fatalf("register %d %s", code, body)
 	}
@@ -434,7 +489,7 @@ func TestChannelProject(t *testing.T) {
 func TestChannelClientBindOnIndex(t *testing.T) {
 	svc, tok, fid, priv := enrolledFactory(t)
 	srv, _ := startChannel(t, svc)
-	code, body := do(t, srv, "POST", "/v1/clients", tok, `{"name":"焊机-1","factoryId":"`+fid.String()+`"}`)
+	code, body := do(t, srv, "POST", "/v1/clients", tok, `{"name":"焊机-1","deviceSerial":"ARM-1","factoryId":"`+fid.String()+`"}`)
 	if code != http.StatusCreated {
 		t.Fatalf("register %d %s", code, body)
 	}

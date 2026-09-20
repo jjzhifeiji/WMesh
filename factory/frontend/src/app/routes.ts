@@ -4,6 +4,7 @@ export const paths = {
   activate: "/activate",
   claim: "/claim",
   dashboard: "/",
+  updates: "/updates",
   orgUnits: "/org/units",
   people: "/people",
   assignments: "/assignments",

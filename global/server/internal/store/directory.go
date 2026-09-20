@@ -30,13 +30,23 @@ type Factory struct {
 	ChannelLastSeenAt     *time.Time `json:"channelLastSeenAt,omitempty"`       // 最近一次 MQTT 保活
 	ChannelDisconnectedAt *time.Time `json:"channelDisconnectedAt,omitempty"`   // 最近一次断开；在线时为空
 	ChannelOnline         bool       `gorm:"-" json:"channelOnline"`            // 当前有没有钉死的厂端通道
-	ShortCode             string     `gorm:"not null" json:"shortCode"`        // 本厂短码 F01…F99，创建后不改
+	WebVersion            int64      `json:"webVersion"`                        // 厂端前端版本号；离线时名录清成 0
+	WebVersionName        string     `json:"webVersionName"`                    // 厂端前端版本名
+	ServiceVersion        int64      `json:"serviceVersion"`                    // 厂端服务版本号；离线时名录清成 0
+	ServiceVersionName    string     `json:"serviceVersionName"`                // 厂端服务版本名
+	ShortCode             string     `gorm:"not null" json:"shortCode"`         // 本厂短码 F01…F99，创建后不改
 	CreatedAt             time.Time  `gorm:"not null" json:"createdAt"`         // 名录入库时间
 }
 
-// fillPresence 有当前连接时间才算在线，不另存列。
+// fillPresence 有当前连接时间才算在线，不另存列；离线不把上次版本当正在跑。
 func (f *Factory) fillPresence() {
 	f.ChannelOnline = f.ChannelConnectedAt != nil
+	if !f.ChannelOnline {
+		f.WebVersion = 0
+		f.WebVersionName = ""
+		f.ServiceVersion = 0
+		f.ServiceVersionName = ""
+	}
 }
 
 func (Factory) TableName() string { return "factories" }

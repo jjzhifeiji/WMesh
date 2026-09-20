@@ -85,7 +85,7 @@ export const navTree: NavEntry[] = [
       { key: paths.auditStats, label: "统计", placeholder: true, description: "按事实发生时的组织路径归集，历史不随调动改写。" },
     ],
   },
-  { key: paths.reports, label: "报表", icon: <BarChartOutlined />, placeholder: true, description: "本厂报表查询，按事实发生时的组织路径归集。" },
+  { key: paths.reports, label: "报表", icon: <BarChartOutlined />, description: "本厂焊长与时长，按工程、人、组织、日查看，可下钻每次。" },
 ];
 
 export const accountTitle = "我的账号";

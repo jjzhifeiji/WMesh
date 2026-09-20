@@ -11,7 +11,10 @@ const (
 	AssetDisabled      = store.AssetDisabled      // 停用
 	FactoryActive      = store.FactoryActive      // 有效：可认领、可登录
 	FactoryDisabled    = store.FactoryDisabled    // 停用：可再启用
-	FactoryRetired     = store.FactoryRetired     // 已注销：不能再启用
+	FactoryRetired         = store.FactoryRetired         // 已注销：不能再启用
+	SoftwareWANService     = store.SoftwareWANService     // 云端服务包
+	SoftwareFactoryService = store.SoftwareFactoryService // 厂端服务包
+	SoftwareClientAPK      = store.SoftwareClientAPK      // 客户端 APK
 )
 
 // 与 store 同源的表模型，按域给应用服务和验收当入口类型用。
@@ -36,4 +39,5 @@ type (
 	WANSigningKey        = store.WANSigningKey
 	SoftwareRelease      = store.SoftwareRelease
 	SoftwareDistribution = store.SoftwareDistribution
+	WeldSummary          = store.WeldSummary
 )

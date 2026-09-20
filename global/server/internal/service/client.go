@@ -24,8 +24,18 @@ func normalizeClientName(name string) (string, error) {
 	return name, nil
 }
 
-// RegisterClient 把自有节点写入名录；可当场分给一厂。公钥可待现场上线再登记。
-func (s *Clients) RegisterClient(ctx context.Context, token, name string, clientID, factoryID uuid.UUID, publicKey []byte) (Client, error) {
+// normalizeDeviceSerial 去掉首尾空白后须 1～128 字。
+func normalizeDeviceSerial(serial string) (string, error) {
+	serial = strings.TrimSpace(serial)
+	n := utf8.RuneCountInString(serial)
+	if n < 1 || n > 128 {
+		return "", domain.ErrDeviceSerialRequired
+	}
+	return serial, nil
+}
+
+// RegisterClient 把自有节点写入名录；识别号必填，可当场分给一厂。公钥可待现场上线再登记。
+func (s *Clients) RegisterClient(ctx context.Context, token, name string, clientID, factoryID uuid.UUID, publicKey []byte, deviceSerial string) (Client, error) {
 	// 只有 WAN 管理员能登记现场设备。失败一律记拒绝；未登录时操作者为空。
 	admin, err := s.RequireAdmin(ctx, token)
 	if err != nil {
@@ -37,12 +47,17 @@ func (s *Clients) RegisterClient(ctx context.Context, token, name string, client
 		_ = s.audit(ctx, &admin.ID, nil, nil, "register_client", name, audit.Deny)
 		return Client{}, err
 	}
+	serial, err := normalizeDeviceSerial(deviceSerial)
+	if err != nil {
+		_ = s.audit(ctx, &admin.ID, nil, nil, "register_client", name, audit.Deny)
+		return Client{}, err
+	}
 	// 未带身份则现场发号。
 	if clientID == uuid.Nil {
 		clientID = id.New()
 	}
-	// 写入名录；公钥可空。
-	c, err := s.store.CreateClient(ctx, clientID, name, publicKey)
+	// 写入名录；公钥可空，识别号已规范化。
+	c, err := s.store.CreateClient(ctx, clientID, name, publicKey, serial)
 	if err != nil {
 		_ = s.audit(ctx, &admin.ID, nil, nil, "register_client", clientID.String(), audit.Deny)
 		return Client{}, err
@@ -88,7 +103,7 @@ func (s *Clients) BindClient(ctx context.Context, token string, clientID, factor
 			return Client{}, nerr
 		}
 		// 尚无档则连同名字、公钥建档。
-		c, err = s.store.CreateClient(ctx, clientID, nm, publicKey)
+		c, err = s.store.CreateClient(ctx, clientID, nm, publicKey, "")
 		if err != nil {
 			_ = s.audit(ctx, &admin.ID, nil, &factoryID, "bind_client", clientID.String(), audit.Deny)
 			return Client{}, err

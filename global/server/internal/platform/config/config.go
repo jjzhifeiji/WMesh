@@ -19,6 +19,7 @@ type Config struct {
 	AdminPassword   string        // 配套密码；只在进程内存里，不进日志
 	AdminReset      bool          // 已有管理员时按环境变量覆盖密码；用完应关掉
 	OSS             OSS           // WAN 自己的对象存储，放平台级资产；与各厂 OSS 互不相通
+	UpdateDir       string        // 确认后落 tar；本机 updater 来换 app
 	ShutdownTimeout time.Duration // 优雅退出最长等待
 }
 
@@ -52,6 +53,7 @@ func Load() (Config, error) {
 			AccessKey: os.Getenv("WMESH_OSS_ACCESS_KEY"),
 			SecretKey: os.Getenv("WMESH_OSS_SECRET_KEY"),
 		},
+		UpdateDir:       envOr("WMESH_UPDATE_DIR", "/var/lib/wmesh/update"),
 		ShutdownTimeout: 10 * time.Second,
 	}
 	if v := os.Getenv("WMESH_SHUTDOWN_TIMEOUT"); v != "" {

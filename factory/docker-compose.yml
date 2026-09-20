@@ -16,19 +16,16 @@ services:
       WMESH_WAN_MQTT_URL: ${WMESH_WAN_MQTT_URL:-tcp://host.docker.internal:52183}
       WMESH_CLIENT_MQTT_ADDR: :1884
       WMESH_CLIENT_MQTT_URL: ${WMESH_CLIENT_MQTT_URL:-}
+      WMESH_CLIENT_MQTT_PORT: ${CLIENT_MQTT_PORT:-52184}
       WMESH_BOOTSTRAP_TOKEN: ${WMESH_BOOTSTRAP_TOKEN:-}
       WMESH_OSS_ENDPOINT: http://oss:9000
       WMESH_OSS_BUCKET: ${OSS_BUCKET:-wmesh-factory}
       WMESH_OSS_ACCESS_KEY: ${OSS_ACCESS_KEY:-wmesh}
       WMESH_OSS_SECRET_KEY: ${OSS_SECRET_KEY:?set OSS_SECRET_KEY in .env}
-      # 超管确认后 docker load 只换本容器；库和 OSS 卷不动
-      WMESH_DOCKER_UPDATE: "1"
-      WMESH_DOCKER_HOST: unix:///var/run/docker.sock
+      # 确认只落盘；本机 updater 换 app。库和 OSS 卷不动。
       WMESH_DOCKER_UPDATE_DIR: /var/lib/wmesh/update
       WMESH_LOG_LEVEL: ${WMESH_LOG_LEVEL:-info}
-    user: "0:0"
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
       - update:/var/lib/wmesh/update
     ports:
       - "${HTTP_PORT:-52081}:8080"
@@ -40,12 +37,36 @@ services:
         condition: service_healthy
       oss:
         condition: service_healthy
+      updater:
+        condition: service_started
     restart: unless-stopped
     logging: &logging
       driver: json-file
       options:
         max-size: "10m"
         max-file: "5"
+
+  # 不随业务 app 换掉；只 load 已确认的 app 镜像并 compose 重建 app。
+  updater:
+    image: docker:27-cli
+    user: "0:0"
+    environment:
+      WMESH_UPDATE_DIR: /var/lib/wmesh/update
+      COMPOSE_PROJECT_NAME: wmesh-factory
+      APP_SERVICE: app
+      APP_IMAGE: ${WMESH_REGISTRY:-}wmesh-factory-app:${WMESH_VERSION:-dev}
+      APP_KIND: factory_service
+      COMPOSE_FILE: /work/docker-compose.yml
+    working_dir: /work
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - update:/var/lib/wmesh/update
+      - ./docker-compose.yml:/work/docker-compose.yml:ro
+      - ./.env:/work/.env:ro
+      - ./updater/apply.sh:/apply.sh:ro
+    command: ["sh", "/apply.sh"]
+    restart: unless-stopped
+    logging: *logging
 
   db:
     image: postgres:18-alpine

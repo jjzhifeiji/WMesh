@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -17,6 +18,7 @@ func (h *Handler) mountNode(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/factories/{id}/clients/{clientId}/device", h.registerDevice)
 	mux.HandleFunc("POST /v1/factories/{id}/clients/{clientId}/login", h.loginOnClient)
 	mux.HandleFunc("POST /v1/factories/{id}/pad/login", h.loginPad)
+	mux.HandleFunc("POST /v1/factories/{id}/pad/login-log", h.reportPadLogin)
 	mux.HandleFunc("POST /v1/factories/{id}/clients/{clientId}/void", h.voidClient)
 	mux.HandleFunc("POST /v1/factories/{id}/clients/{clientId}/runtime", h.issueRuntime)
 	mux.HandleFunc("POST /v1/factories/{id}/clients/{clientId}/runtime/revoke", h.revokeRuntime)
@@ -45,14 +47,40 @@ type deviceSerialReq struct {
 }
 
 type clientLoginReq struct {
-	DeviceSerial string `json:"deviceSerial"` // 本次读到的机械臂识别号
-	LoginName    string `json:"loginName"`    // 本厂登录名
-	Password     string `json:"password"`     // 日常密码，不进审计
+	DeviceSerial       string `json:"deviceSerial"`       // 本次读到的机械臂识别号
+	LoginName          string `json:"loginName"`          // 本厂登录名
+	Password           string `json:"password"`           // 日常密码，不进审计
+	AppVersion         int64  `json:"appVersion"`         // 示教器 versionCode；0 表示没报
+	AppVersionName     string `json:"appVersionName"`     // 示教器 versionName
+	DeviceModel        string `json:"deviceModel"`        // 平板型号
+	DeviceManufacturer string `json:"deviceManufacturer"` // 平板厂商
+	AndroidRelease     string `json:"androidRelease"`     // 平板系统版本
+	NetworkName        string `json:"networkName"`        // 当时 WiFi 名
+	ClientID           string `json:"clientId"`           // 已匹配本机；路径优先
 }
 
 type padLoginReq struct {
-	LoginName string `json:"loginName"` // 本厂登录名
-	Password  string `json:"password"`  // 日常密码，不进审计
+	LoginName          string `json:"loginName"`          // 本厂登录名
+	Password           string `json:"password"`           // 日常密码，不进审计
+	AppVersion         int64  `json:"appVersion"`         // 示教器 versionCode；0 表示没报
+	AppVersionName     string `json:"appVersionName"`     // 示教器 versionName
+	DeviceSerial       string `json:"deviceSerial"`       // 机械臂识别号；厂网登录时常空
+	DeviceModel        string `json:"deviceModel"`        // 平板型号
+	DeviceManufacturer string `json:"deviceManufacturer"` // 平板厂商
+	AndroidRelease     string `json:"androidRelease"`     // 平板系统版本
+	NetworkName        string `json:"networkName"`        // 当时 WiFi 名
+	ClientID           string `json:"clientId"`           // 已匹配本机；未对臂为空
+}
+
+type padLoginLogReq struct {
+	AppVersion         int64  `json:"appVersion"`         // 示教器 versionCode；0 表示没报
+	AppVersionName     string `json:"appVersionName"`     // 示教器 versionName
+	DeviceSerial       string `json:"deviceSerial"`       // 机械臂识别号
+	DeviceModel        string `json:"deviceModel"`        // 平板型号
+	DeviceManufacturer string `json:"deviceManufacturer"` // 平板厂商
+	AndroidRelease     string `json:"androidRelease"`     // 平板系统版本
+	NetworkName        string `json:"networkName"`        // 当时 WiFi 名
+	ClientID           string `json:"clientId"`           // 已匹配本机
 }
 
 type signingKeyResp struct {
@@ -139,7 +167,9 @@ func (h *Handler) loginOnClient(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, err)
 			return
 		}
-		sess.MqttURL = h.ClientMQTTURL
+		cid := clientID
+		_ = svc.Node.RecordAppLogin(r.Context(), sess.Account.ID, loginSnap(service.LoginKindClient, req.AppVersion, req.AppVersionName, req.DeviceSerial, req.DeviceModel, req.DeviceManufacturer, req.AndroidRelease, req.NetworkName, req.ClientID, &cid))
+		sess.MqttURL = h.clientMQTTURL(r)
 		writeJSON(w, http.StatusOK, sess)
 	})
 }
@@ -157,8 +187,26 @@ func (h *Handler) loginPad(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, err)
 			return
 		}
-		sess.MqttURL = h.ClientMQTTURL
+		_ = svc.Node.RecordAppLogin(r.Context(), sess.Account.ID, loginSnap(service.LoginKindPad, req.AppVersion, req.AppVersionName, req.DeviceSerial, req.DeviceModel, req.DeviceManufacturer, req.AndroidRelease, req.NetworkName, req.ClientID, nil))
+		sess.MqttURL = h.clientMQTTURL(r)
 		writeJSON(w, http.StatusOK, sess)
+	})
+}
+
+// 示教器补记一次现场；匹配设备号后回厂网才可能送到。
+func (h *Handler) reportPadLogin(w http.ResponseWriter, r *http.Request) {
+	h.withFactory(w, r, func(svc *service.Service) {
+		var req padLoginLogReq
+		if err := decodeJSON(r, &req); err != nil {
+			writeBadRequest(w, err)
+			return
+		}
+		err := svc.Node.RecordOwnAppLogin(r.Context(), bearer(r), loginSnap(service.LoginKindPad, req.AppVersion, req.AppVersionName, req.DeviceSerial, req.DeviceModel, req.DeviceManufacturer, req.AndroidRelease, req.NetworkName, req.ClientID, nil))
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
 	})
 }
 
@@ -284,4 +332,36 @@ func parseWindow(notBefore, notAfter string) (time.Time, time.Time, error) {
 		return time.Time{}, time.Time{}, err
 	}
 	return nb, na, nil
+}
+
+// loginSnap 把示教器自报收成现场；非法 clientId 丢掉，不挡登录。
+func loginSnap(kind string, version int64, versionName, serial, model, mfr, android, wifi, clientRaw string, fallback *uuid.UUID) service.LoginSnap {
+	cid := fallback
+	if parsed := parseLooseUUID(clientRaw); parsed != nil {
+		cid = parsed
+	}
+	return service.LoginSnap{
+		Kind:               kind,
+		AppVersion:         version,
+		AppVersionName:     versionName,
+		DeviceSerial:       serial,
+		DeviceModel:        model,
+		DeviceManufacturer: mfr,
+		AndroidRelease:     android,
+		NetworkName:        wifi,
+		ClientID:           cid,
+	}
+}
+
+// parseLooseUUID 空或非法都当没传。
+func parseLooseUUID(raw string) *uuid.UUID {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	id, err := uuid.Parse(raw)
+	if err != nil {
+		return nil
+	}
+	return &id
 }

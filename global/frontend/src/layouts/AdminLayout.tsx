@@ -5,6 +5,8 @@ import { Outlet, useLocation, useNavigate } from "react-router";
 import { breadcrumbItems, menuItems, openGroupFor } from "@/app/navigation";
 import { paths } from "@/app/routes";
 import { useLogout, useMe } from "@/features/auth/api";
+import { ApplyOverlay } from "@/features/updates/ApplyOverlay";
+import { WANUpdatePrompt } from "@/features/updates/WANUpdatePrompt";
 
 // 后台骨架：左侧两级菜单、顶部当前位置与账号、中间页面内容。
 export function AdminLayout() {
@@ -49,6 +51,8 @@ export function AdminLayout() {
         </Layout.Header>
         <Layout.Content className="admin-content">
           <Outlet />
+          {pathname === paths.dashboard ? <WANUpdatePrompt /> : null}
+          <ApplyOverlay />
         </Layout.Content>
       </Layout>
     </Layout>

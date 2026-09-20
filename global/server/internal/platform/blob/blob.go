@@ -16,6 +16,10 @@ type Store interface {
 	Put(ctx context.Context, key string, body []byte) error
 	// Get 按键读出正文。
 	Get(ctx context.Context, key string) ([]byte, error)
+	// Delete 按键删掉；没有该键也算成功。
+	Delete(ctx context.Context, key string) error
+	// Usage 合计已存字节和对象数，不含磁盘配额。
+	Usage(ctx context.Context) (used, objects int64, err error)
 }
 
 // Memory 是测试与本阶段默认用的内存对象存根。
@@ -50,4 +54,23 @@ func (m *Memory) Get(_ context.Context, key string) ([]byte, error) {
 	cp := make([]byte, len(body))
 	copy(cp, body)
 	return cp, nil
+}
+
+// Delete 按键删掉；没有该键也算成功。
+func (m *Memory) Delete(_ context.Context, key string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.data, key)
+	return nil
+}
+
+// Usage 合计内存里的字节和份数。
+func (m *Memory) Usage(_ context.Context) (used, objects int64, err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, body := range m.data {
+		objects++
+		used += int64(len(body))
+	}
+	return used, objects, nil
 }

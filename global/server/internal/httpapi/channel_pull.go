@@ -117,7 +117,7 @@ func (h *Handler) pullTemplate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, snap)
 }
 
-// 拉已下到本厂的一份软件包。
+// 已认领厂按版本拉当前最高厂包或客户端包。
 func (h *Handler) pullSoftware(w http.ResponseWriter, r *http.Request) {
 	fid, err := h.factoryProof(r)
 	if err != nil {
@@ -130,10 +130,10 @@ func (h *Handler) pullSoftware(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, domain.ErrNotFound)
 		return
 	}
-	snap, err := h.svc.Updates.PullSoftwareForFactory(r.Context(), fid, kind, version)
+	offer, err := h.svc.Updates.PullSoftware(r.Context(), fid, kind, version)
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, snap)
+	writeJSON(w, http.StatusOK, offer)
 }

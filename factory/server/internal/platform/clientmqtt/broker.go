@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"sync"
 
 	"github.com/google/uuid"
 	mqtt "github.com/mochi-mqtt/server/v2"
@@ -14,15 +15,19 @@ import (
 
 // Hooks 把鉴权和回执交给应用服务；Broker 自己不查库。
 type Hooks struct {
-	Auth func(factoryID, clientID uuid.UUID, token string) error // CONNECT 验本机会话
-	Up   func(factoryID, clientID uuid.UUID, payload []byte)     // 本机上行回执
+	Auth    func(factoryID, clientID uuid.UUID, token string) (uuid.UUID, error) // CONNECT 验本机会话，回登录人
+	Online  func(factoryID, personID uuid.UUID)                                  // 会话已建立
+	Offline func(factoryID, personID uuid.UUID)                                  // 会话断开
+	Up      func(factoryID, clientID, personID uuid.UUID, payload []byte)        // 本机上行回执
 }
 
 // Broker 是厂进程内给本厂 Client 用的 MQTT 服务。
 type Broker struct {
-	server *mqtt.Server
-	addr   string
-	hooks  Hooks
+	server  *mqtt.Server
+	addr    string
+	hooks   Hooks
+	mu      sync.Mutex
+	persons map[string]uuid.UUID // MQTT ClientIdentifier → 登录人
 }
 
 // DownTopic 仅该 Client 可订的下行 Topic。
@@ -44,7 +49,7 @@ func Listen(addr string, hooks Hooks) (*Broker, error) {
 	if err != nil {
 		return nil, err
 	}
-	b := &Broker{addr: ln.Addr().String(), hooks: hooks}
+	b := &Broker{addr: ln.Addr().String(), hooks: hooks, persons: map[string]uuid.UUID{}}
 	server := mqtt.New(&mqtt.Options{
 		InlineClient: true,
 		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -117,10 +122,12 @@ func (h *clientHook) OnConnectAuthenticate(cl *mqtt.Client, pk packets.Packet) b
 	if err != nil {
 		return false
 	}
-	if err := h.broker.hooks.Auth(fid, cid, string(pk.Connect.Password)); err != nil {
+	personID, err := h.broker.hooks.Auth(fid, cid, string(pk.Connect.Password))
+	if err != nil {
 		slog.Warn("client mqtt auth failed", "factory", fid, "client", cid, "err", err)
 		return false
 	}
+	h.broker.rememberPerson(cl.ID, personID)
 	return true
 }
 
@@ -133,7 +140,11 @@ func (h *clientHook) OnSessionEstablished(cl *mqtt.Client, _ packets.Packet) {
 	if !ok {
 		return
 	}
-	slog.Info("client mqtt online", "factory", fid, "client", cid)
+	personID := h.broker.personOf(cl.ID)
+	if h.broker.hooks.Online != nil && personID != uuid.Nil {
+		h.broker.hooks.Online(fid, personID)
+	}
+	slog.Info("client mqtt online", "factory", fid, "client", cid, "person", personID)
 }
 
 // OnDisconnect 记下本机离线。
@@ -145,7 +156,11 @@ func (h *clientHook) OnDisconnect(cl *mqtt.Client, _ error, _ bool) {
 	if !ok {
 		return
 	}
-	slog.Info("client mqtt offline", "factory", fid, "client", cid)
+	personID := h.broker.forgetPerson(cl.ID)
+	if h.broker.hooks.Offline != nil && personID != uuid.Nil {
+		h.broker.hooks.Offline(fid, personID)
+	}
+	slog.Info("client mqtt offline", "factory", fid, "client", cid, "person", personID)
 }
 
 // OnACLCheck 只允许订自己的 down、发自己的 up。
@@ -172,7 +187,42 @@ func (h *clientHook) OnPublished(cl *mqtt.Client, pk packets.Packet) {
 	if !ok {
 		return
 	}
-	h.broker.hooks.Up(fid, cid, pk.Payload)
+	h.broker.hooks.Up(fid, cid, h.broker.personOf(cl.ID), pk.Payload)
+}
+
+// 记住这条 MQTT 会话对应的登录人。
+func (b *Broker) rememberPerson(mqttClientID string, personID uuid.UUID) {
+	if b == nil {
+		return
+	}
+	b.mu.Lock()
+	if b.persons == nil {
+		b.persons = map[string]uuid.UUID{}
+	}
+	b.persons[mqttClientID] = personID
+	b.mu.Unlock()
+}
+
+// 取出这条 MQTT 会话对应的登录人。
+func (b *Broker) personOf(mqttClientID string) uuid.UUID {
+	if b == nil {
+		return uuid.Nil
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.persons[mqttClientID]
+}
+
+// 会话结束时忘掉登录人。
+func (b *Broker) forgetPerson(mqttClientID string) uuid.UUID {
+	if b == nil {
+		return uuid.Nil
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	id := b.persons[mqttClientID]
+	delete(b.persons, mqttClientID)
+	return id
 }
 
 // 会话钉死的厂和本机身份；自报字段一律忽略。

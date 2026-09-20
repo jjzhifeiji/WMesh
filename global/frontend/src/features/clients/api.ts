@@ -3,8 +3,9 @@ import { factoryKeys } from "@/features/factories/api";
 import { http } from "@/shared/api/client";
 
 export type Client = {
-  id: string; // 固定识别号，全局唯一身份
+  id: string; // 稳定身份，全局唯一
   name: string; // 给人看的名字，可改
+  deviceSerial?: string; // 机械臂识别号
   publicKey?: string | null; // 本机公钥；未上线为空
   factoryId: string | null; // 当前所属工厂；空表示未分配
   bindingRevision: number; // 绑定修订；未分配为 0
@@ -14,6 +15,7 @@ export type Client = {
 
 export type RegisterClientInput = {
   name: string;
+  deviceSerial: string;
   factoryId?: string;
 };
 

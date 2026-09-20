@@ -141,6 +141,7 @@ func TestClientChannelHTTP(t *testing.T) {
 
 	got := make(chan []byte, 2)
 	cli := mqttConnect(t, h.ClientMQTTAddr(), fid.String(), cid, tok)
+	waitAppOnline(t, svc, saTok, true)
 	subTok := cli.Subscribe(clientmqtt.DownTopic(fid, uuid.MustParse(cid)), 1, func(_ mqtt.Client, m mqtt.Message) {
 		select {
 		case got <- append([]byte(nil), m.Payload()...):
@@ -164,6 +165,36 @@ func TestClientChannelHTTP(t *testing.T) {
 		}
 	case <-time.After(4 * time.Second):
 		t.Fatal("missed policy intent")
+	}
+
+	code, body = do(t, srv, "POST", base+"/pad/login", "", `{"loginName":"sa","password":"secret"}`)
+	if code != http.StatusOK {
+		t.Fatalf("pad login %d %s", code, body)
+	}
+	padTok := gjson(t, body, "token")
+	personID := gjson(t, body, "account.id")
+	padMQTT := mqttConnect(t, h.ClientMQTTAddr(), fid.String(), personID, padTok)
+	waitAppOnline(t, svc, saTok, true)
+	cli.Disconnect(250)
+	padMQTT.Disconnect(250)
+	waitAppOnline(t, svc, saTok, false)
+}
+
+func waitAppOnline(t *testing.T, svc *service.Service, tok string, want bool) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		cat, err := svc.Catalog(context.Background(), tok)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cat.Me.AppOnline == want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("appOnline=%v want %v", cat.Me.AppOnline, want)
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }
 

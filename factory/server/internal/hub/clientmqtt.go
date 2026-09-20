@@ -19,18 +19,37 @@ type clientBroker interface {
 // StartClientBroker 起本厂 Client MQTT；一机只能订自己的 down。
 func (h *Hub) StartClientBroker(addr string) error {
 	bus, err := clientmqtt.Listen(addr, clientmqtt.Hooks{
-		Auth: func(factoryID, clientID uuid.UUID, token string) error {
+		Auth: func(factoryID, clientID uuid.UUID, token string) (uuid.UUID, error) {
 			svc, err := h.Service(context.Background(), factoryID)
 			if err != nil {
-				return err
+				return uuid.Nil, err
 			}
-			return svc.Node.AuthClientMQTT(context.Background(), clientID, token)
+			acc, err := svc.Node.AuthClientMQTT(context.Background(), clientID, token)
+			if err != nil {
+				return uuid.Nil, err
+			}
+			return acc.ID, nil
 		},
-		Up: func(factoryID, clientID uuid.UUID, payload []byte) {
+		Online: func(factoryID, personID uuid.UUID) {
 			svc, err := h.Service(context.Background(), factoryID)
 			if err != nil {
 				return
 			}
+			svc.Node.NoteAppMQTT(context.Background(), personID, true)
+		},
+		Offline: func(factoryID, personID uuid.UUID) {
+			svc, err := h.Service(context.Background(), factoryID)
+			if err != nil {
+				return
+			}
+			svc.Node.NoteAppMQTT(context.Background(), personID, false)
+		},
+		Up: func(factoryID, clientID, personID uuid.UUID, payload []byte) {
+			svc, err := h.Service(context.Background(), factoryID)
+			if err != nil {
+				return
+			}
+			svc.Node.HandleAppUp(context.Background(), personID, payload)
 			svc.Closure.HandleClientUp(context.Background(), clientID, payload)
 		},
 	})

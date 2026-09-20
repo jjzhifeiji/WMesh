@@ -1,7 +1,7 @@
 # WAN 工程常用动作。开发机：make test；部署机只需 docker + make：make up / make upgrade。
 SHELL := /bin/bash
 COMPOSE ?= docker compose
-# 打进二进制的构建号（探活里可见）；镜像标签另由 .env 的 WMESH_VERSION 决定，默认 dev
+# 打进二进制的构建号（探活 build）；镜像标签另由 .env 的 WMESH_VERSION 决定，默认 dev
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 export WMESH_BUILD_VERSION := $(VERSION)
 
