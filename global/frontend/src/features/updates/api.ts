@@ -1,4 +1,5 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useState } from "react";
 import { http, type FormProgress } from "@/shared/api/client";
 
 export type SoftwareKind = "wan_service" | "factory_service" | "client_apk";
@@ -116,9 +117,11 @@ export function useStorageUsage() {
   });
 }
 
+export type ImagePruneRequest = { ref: string } | { all: true };
+
 export function useRequestImagePrune() {
   return useMutation({
-    mutationFn: () => http.post<void>("/v1/software/images/prune"),
+    mutationFn: (body: ImagePruneRequest) => http.post<void>("/v1/software/images/prune", body),
   });
 }
 
@@ -140,6 +143,62 @@ export function useImagePrune(enabled: boolean, nonce = 0) {
       return 2_000;
     },
   });
+}
+
+export type ImagePruneJob = { kind: "one"; ref: string } | { kind: "all" };
+
+// 单条和全部清理各自跟自己的进度，互不借用。
+export function useImagePruneJob() {
+  const request = useRequestImagePrune();
+  const [job, setJob] = useState<ImagePruneJob | null>(null);
+  const [nonce, setNonce] = useState(0);
+  const [posted, setPosted] = useState(false);
+  const [stale, setStale] = useState(false);
+  const progress = useImagePrune(job !== null && posted, nonce);
+  const waiting = job !== null && !progress.data?.ready && !stale;
+
+  useEffect(() => {
+    if (!posted || progress.data?.ready) {
+      setStale(false);
+      return;
+    }
+    const t = window.setTimeout(() => setStale(true), 30_000);
+    return () => window.clearTimeout(t);
+  }, [posted, nonce, progress.data?.ready]);
+
+  const run = async (body: ImagePruneRequest) => {
+    setJob("ref" in body ? { kind: "one", ref: body.ref } : { kind: "all" });
+    setPosted(false);
+    setNonce((n) => n + 1);
+    try {
+      await request.mutateAsync(body);
+      setPosted(true);
+    } catch (e) {
+      setJob(null);
+      throw e;
+    }
+  };
+
+  const rowBusy = (ref: string) => job?.kind === "one" && job.ref === ref && waiting;
+  const allBusy = job?.kind === "all" && waiting;
+  const rowText = (ref: string) => {
+    if (job?.kind !== "one" || job.ref !== ref) return null;
+    if (progress.data?.ready) return progress.data.ok ? "已删除" : "清理失败";
+    if (stale) return "本机还没回报";
+    return "清理中…";
+  };
+  const allText =
+    job?.kind !== "all"
+      ? null
+      : progress.data?.ready
+        ? progress.data.ok
+          ? `已释放 ${progress.data.reclaimed || "空间"}`
+          : "清理镜像失败"
+        : stale
+          ? "本机还没回报"
+          : "清理中…";
+
+  return { run, waiting, rowBusy, allBusy, rowText, allText };
 }
 
 export function useConfirmWANUpdate() {

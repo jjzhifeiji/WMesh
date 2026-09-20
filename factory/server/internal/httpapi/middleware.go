@@ -71,3 +71,13 @@ func (w *statusWriter) Write(b []byte) (int, error) {
 	w.wrote = true
 	return w.ResponseWriter.Write(b)
 }
+
+// Unwrap 让 ServeContent 的 Range/Flush 落到真实连接。
+func (w *statusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+// Flush 大包边写边推，避免缓冲到超时。
+func (w *statusWriter) Flush() {
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}

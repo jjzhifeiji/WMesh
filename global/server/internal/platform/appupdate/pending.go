@@ -151,8 +151,8 @@ type pruneMeta struct {
 	Error     string `json:"error,omitempty"`     // 失败原因
 }
 
-// RequestPrune 写下清镜像请求，updater 来做。
-func (d Dir) RequestPrune() error {
+// RequestPrune 写下清镜像请求，updater 来做；ref 空则清全部可清。
+func (d Dir) RequestPrune(ref string) error {
 	dir := string(d)
 	if dir == "" {
 		dir = "/var/lib/wmesh/update"
@@ -161,8 +161,12 @@ func (d Dir) RequestPrune() error {
 		return err
 	}
 	_ = os.Remove(filepath.Join(dir, pruneFile))
+	body := "ALL"
+	if ref != "" {
+		body = ref
+	}
 	tmp := filepath.Join(dir, pruneReq+".tmp")
-	if err := os.WriteFile(tmp, []byte("1"), 0o600); err != nil {
+	if err := os.WriteFile(tmp, []byte(body), 0o600); err != nil {
 		return err
 	}
 	return os.Rename(tmp, filepath.Join(dir, pruneReq))

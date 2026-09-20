@@ -338,6 +338,26 @@ func do(t *testing.T, srv *httptest.Server, method, path, token, body string) (i
 	return res.StatusCode, string(b)
 }
 
+func doRange(t *testing.T, srv *httptest.Server, path, token, rng string) (int, string) {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, srv.URL+path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Range", rng)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	b, err := io.ReadAll(res.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return res.StatusCode, string(b)
+}
+
 func gjson(t *testing.T, body, path string) string {
 	t.Helper()
 	var m any
@@ -497,6 +517,10 @@ func TestPadClientSoftwareHTTP(t *testing.T) {
 	code, body = do(t, srv, "GET", base+"/pad/software/client/51", padTok, "")
 	if code != http.StatusOK || body != string(apk) {
 		t.Fatalf("file %d %q", code, body)
+	}
+	code, body = doRange(t, srv, base+"/pad/software/client/51", padTok, "bytes=4-")
+	if code != http.StatusPartialContent || body != string(apk[4:]) {
+		t.Fatalf("range %d %q", code, body)
 	}
 	code, body = do(t, srv, "GET", base+"/pad/software/client/9", padTok, "")
 	if code != http.StatusNotFound {

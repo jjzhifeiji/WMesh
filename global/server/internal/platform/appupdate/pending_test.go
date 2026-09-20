@@ -49,3 +49,24 @@ func TestImagesJSON(t *testing.T) {
 		t.Fatalf("got %q %v", got, err)
 	}
 }
+
+func TestRequestPruneWritesRef(t *testing.T) {
+	dir := Dir(t.TempDir())
+	if err := dir.RequestPrune("app:old"); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(string(dir), pruneReq))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != "app:old" {
+		t.Fatalf("req %s", raw)
+	}
+	if err := dir.RequestPrune(""); err != nil {
+		t.Fatal(err)
+	}
+	raw, err = os.ReadFile(filepath.Join(string(dir), pruneReq))
+	if err != nil || string(raw) != "ALL" {
+		t.Fatalf("all %s %v", raw, err)
+	}
+}

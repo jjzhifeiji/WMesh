@@ -1,8 +1,11 @@
 package httpapi
 
 import (
+	"errors"
+	"io"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"wmesh/factory/internal/platform/domain"
 	"wmesh/factory/internal/service"
@@ -60,6 +63,11 @@ type softwareItemResp struct {
 	Digest      []byte `json:"digest"`      // SHA-256
 	ReceivedAt  string `json:"receivedAt"`  // 收到时间
 	Keep        string `json:"keep"`        // latest / installed / 空则可清
+}
+
+type pruneImagesReq struct {
+	Ref string `json:"ref"` // 只清这一条
+	All bool   `json:"all"` // 清全部可清；须显式 true
 }
 
 type pruneSoftwareReq struct {
@@ -204,15 +212,39 @@ func (h *Handler) pruneSoftware(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// 请本机 updater 清无用 app 镜像。
+// 请本机 updater 清无用 app 镜像；可点名单条。
 func (h *Handler) requestImagePrune(w http.ResponseWriter, r *http.Request) {
 	h.withFactory(w, r, func(svc *service.Service) {
-		if err := svc.Updates.RequestImagePrune(r.Context(), bearer(r)); err != nil {
+		ref, err := imagePruneRef(r)
+		if err != nil {
+			writeBadRequest(w, err)
+			return
+		}
+		if err := svc.Updates.RequestImagePrune(r.Context(), bearer(r), ref); err != nil {
 			writeErr(w, err)
 			return
 		}
 		w.WriteHeader(http.StatusAccepted)
 	})
+}
+
+// 点名须带 ref；全部须 all=true。空请求拒绝，避免误清光。
+func imagePruneRef(r *http.Request) (string, error) {
+	var req pruneImagesReq
+	if err := decodeJSON(r, &req); err != nil {
+		if errors.Is(err, io.EOF) {
+			return "", domain.ErrInvalidName
+		}
+		return "", err
+	}
+	ref := strings.TrimSpace(req.Ref)
+	if ref != "" {
+		return ref, nil
+	}
+	if req.All {
+		return "", nil
+	}
+	return "", domain.ErrInvalidName
 }
 
 // 超管看清镜像结果。
@@ -272,6 +304,6 @@ func (h *Handler) pullPadClientSoftware(w http.ResponseWriter, r *http.Request) 
 			writeErr(w, err)
 			return
 		}
-		writeBytes(w, body)
+		writeBytes(w, r, body)
 	})
 }

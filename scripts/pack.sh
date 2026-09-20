@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 按种类打软件更新包：只导出 app 镜像或 APK，不含 db / oss / alloy。
+# 按种类打软件更新包：服务镜像含 linux/amd64 与 linux/arm64，或打 APK；不含 db / oss / alloy。
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -10,6 +10,8 @@ DO_PULL=0
 DO_BUMP=1
 KINDS=()
 BACKUP_DIR=""
+# 一份服务包打这两个 Linux 架构；Windows 用 Docker Desktop 的 Linux 引擎跑。
+PACK_PLATFORMS="${PACK_PLATFORMS:-linux/amd64 linux/arm64}"
 
 usage() {
   cat <<'EOF'
@@ -29,9 +31,10 @@ usage() {
   -h, --help
 
 每次打包把该种类版本号 +1、版本名末位 +1，并写回源码（服务端与前端对齐）。
-构建失败会改回。文件名:
+构建失败会改回。服务包同一 tar 含 linux/amd64 与 linux/arm64；
+Linux 和 Windows（Docker Linux 引擎）按本机架构选用。文件名:
   dist/<kind>-v<version>-<versionName>.tar.gz|apk
-  同名 .json 记种类、版本、SHA-256，供上传。
+  同名 .json 记种类、版本、SHA-256、platforms，供上传。
 EOF
 }
 
@@ -202,10 +205,10 @@ PY
 
 # 包旁边写上传用元数据。
 write_meta() {
-  local file="$1" kind="$2" version="$3" name="$4" digest="$5"
-  python3 - "$file" "$kind" "$version" "$name" "$digest" <<'PY'
+  local file="$1" kind="$2" version="$3" name="$4" digest="$5" platforms="${6:-}"
+  python3 - "$file" "$kind" "$version" "$name" "$digest" "$platforms" <<'PY'
 import json, os, sys
-path, kind, version, name, digest = sys.argv[1:]
+path, kind, version, name, digest, platforms = sys.argv[1:]
 meta = {
     "kind": kind,
     "version": int(version),
@@ -213,6 +216,9 @@ meta = {
     "file": os.path.basename(path),
     "sha256": digest,
 }
+plats = [p for p in platforms.split(",") if p]
+if plats:
+    meta["platforms"] = plats
 out = os.path.splitext(path)[0]
 if out.endswith(".tar"):
     out = out[:-4]
@@ -249,7 +255,7 @@ pack_app_image() {
   local rel="${ROOT}/${side}/server/internal/platform/release/release.go"
   local web="${ROOT}/${side}/frontend/src/shared/version.ts"
   [[ -f "$rel" ]] || die "找不到 ${rel}"
-  local code name build_ver image alt out tmp digest meta
+  local code name build_ver out tmp digest meta plat suffix tag alt plat_csv tags plats
   if [[ "$DO_BUMP" -eq 1 ]]; then
     backup_files "$rel" "$web"
     read -r code name < <(bump_kind "$kind")
@@ -265,34 +271,37 @@ pack_app_image() {
     make -C "${ROOT}/${side}" test
   fi
   need_cmd docker
+  docker buildx version >/dev/null 2>&1 || die "需要 docker buildx 才能交叉打 amd64/arm64"
   ensure_env "${ROOT}/${side}"
   build_ver="$(git -C "$ROOT" describe --tags --always --dirty 2>/dev/null || echo dev)"
-  echo ">> 构建 ${repo}:${name}（只打 app，不含 db/oss/alloy）"
-  (
-    cd "${ROOT}/${side}"
-    export WMESH_REGISTRY=
-    export WMESH_VERSION="$name"
-    export WMESH_BUILD_VERSION="$build_ver"
-    # shellcheck disable=SC2086
-    set -- ${COMPOSE}
+  echo ">> 构建 ${repo}（linux/amd64 + linux/arm64，只打 app）"
+  export DOCKER_BUILDKIT=1
+  tags=()
+  plats=()
+  for plat in ${PACK_PLATFORMS}; do
+    suffix="${plat//\//-}"
+    tag="${repo}:${name}-${suffix}"
+    alt="${repo}:v${code}-${suffix}"
+    echo ">> docker build --platform ${plat} → ${tag}"
     if [[ "$DO_PULL" -eq 1 ]]; then
-      "$@" build --pull app
+      docker build --pull --provenance=false --platform "$plat" -t "$tag" -t "$alt" --build-arg "VERSION=${build_ver}" "${ROOT}/${side}"
     else
-      "$@" build app
+      docker build --provenance=false --platform "$plat" -t "$tag" -t "$alt" --build-arg "VERSION=${build_ver}" "${ROOT}/${side}"
     fi
-  )
-  image="${repo}:${name}"
-  alt="${repo}:v${code}"
-  docker image inspect "$image" >/dev/null 2>&1 || die "镜像不存在：${image}"
-  docker tag "$image" "$alt"
+    docker image inspect "$tag" >/dev/null 2>&1 || die "镜像不存在：${tag}"
+    tags+=("$tag" "$alt")
+    plats+=("$plat")
+  done
+  [[ ${#tags[@]} -gt 0 ]] || die "没有打出任何架构"
   mkdir -p "$OUT"
   out="${OUT}/${kind}-v${code}-${name}.tar.gz"
   tmp="${out}.tmp"
-  echo ">> docker save ${image} ${alt}"
-  docker save "$image" "$alt" | gzip -9 >"$tmp"
+  echo ">> docker save ${tags[*]}"
+  docker save "${tags[@]}" | gzip -9 >"$tmp"
   mv "$tmp" "$out"
   digest="$(sha256_file "$out")"
-  meta="$(write_meta "$out" "$kind" "$code" "$name" "$digest")"
+  plat_csv="$(IFS=,; echo "${plats[*]}")"
+  meta="$(write_meta "$out" "$kind" "$code" "$name" "$digest" "$plat_csv")"
   echo ">> $(ls -lh "$out" | awk '{print $5}')  sha256=${digest}"
   echo ">> 元数据 ${meta}"
   clear_backup

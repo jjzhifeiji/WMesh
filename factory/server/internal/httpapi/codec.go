@@ -1,12 +1,13 @@
 package httpapi
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
-	"strconv"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -32,12 +33,10 @@ func bearer(r *http.Request) string {
 	return strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 }
 
-// 写出软件包字节，不走 JSON。
-func writeBytes(w http.ResponseWriter, body []byte) {
+// 写出软件包字节，支持 Range 续传。
+func writeBytes(w http.ResponseWriter, r *http.Request, body []byte) {
 	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(body)
+	http.ServeContent(w, r, "client.apk", time.Time{}, bytes.NewReader(body))
 }
 
 // 写出 JSON 响应。

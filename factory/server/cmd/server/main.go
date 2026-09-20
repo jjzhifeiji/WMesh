@@ -90,7 +90,7 @@ func run(ctx context.Context, log *slog.Logger) error {
 		Handler:           httpapi.Wrap(log, mux),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      60 * time.Second,
+		WriteTimeout:      0, // 平板拉 APK 会超过一分钟，60 秒写超时会掐成 unexpected end of stream
 		IdleTimeout:       120 * time.Second,
 	}
 	errCh := make(chan error, 1)

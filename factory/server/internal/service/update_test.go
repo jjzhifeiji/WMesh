@@ -256,10 +256,10 @@ func TestMatrixSoftware(t *testing.T) {
 		}
 	})
 	run("U31", func(t *testing.T) {
-		if err := facA.RequestImagePrune(ctx, saA); err != nil {
+		if err := facA.RequestImagePrune(ctx, saA, ""); err != nil {
 			t.Fatal(err)
 		}
-		if err := facA.RequestImagePrune(ctx, op.tok); !errors.Is(err, domain.ErrForbidden) {
+		if err := facA.RequestImagePrune(ctx, op.tok, ""); !errors.Is(err, domain.ErrForbidden) {
 			t.Fatalf("op %v", err)
 		}
 	})
@@ -474,13 +474,19 @@ func TestStorageUsage(t *testing.T) {
 	}
 }
 
-type reportJanitor struct{ raw []byte }
+type reportJanitor struct {
+	raw []byte
+	ref string
+}
 
-func (reportJanitor) RequestPrune() error { return nil }
+func (j *reportJanitor) RequestPrune(ref string) error {
+	j.ref = ref
+	return nil
+}
 
-func (reportJanitor) PruneResult() (string, bool, bool, error) { return "0B", true, true, nil }
+func (j *reportJanitor) PruneResult() (string, bool, bool, error) { return "0B", true, true, nil }
 
-func (j reportJanitor) ImagesJSON() ([]byte, error) { return j.raw, nil }
+func (j *reportJanitor) ImagesJSON() ([]byte, error) { return j.raw, nil }
 
 func TestImageOccupancy(t *testing.T) {
 	ctx := context.Background()
@@ -493,12 +499,22 @@ func TestImageOccupancy(t *testing.T) {
 		t.Fatal(err)
 	}
 	tok := mustLogin(t, ctx, fac, "sa-img", "sa-pass")
-	fac.SetImageJanitor(reportJanitor{raw: []byte(`{"kind":"factory_service","used":8,"count":1,"items":[{"ref":"app:dev","id":"y","size":8,"keep":"current"}]}`)})
+	jan := &reportJanitor{raw: []byte(`{"kind":"factory_service","used":16,"count":2,"items":[{"ref":"app:dev","id":"y","size":8,"keep":"current"},{"ref":"app:old","id":"z","size":8,"keep":""}]}`)}
+	fac.SetImageJanitor(jan)
 	got, err := fac.StorageUsage(ctx, tok)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Images.Kind != "factory_service" || got.Images.Used != 8 || got.Images.Count != 1 || len(got.Images.Items) != 1 {
+	if got.Images.Kind != "factory_service" || got.Images.Used != 16 || got.Images.Count != 2 || len(got.Images.Items) != 2 {
 		t.Fatalf("images %+v", got.Images)
+	}
+	if err := fac.RequestImagePrune(ctx, tok, "app:dev"); !errors.Is(err, domain.ErrReferenced) {
+		t.Fatalf("current %v", err)
+	}
+	if err := fac.RequestImagePrune(ctx, tok, "app:old"); err != nil {
+		t.Fatal(err)
+	}
+	if jan.ref != "app:old" {
+		t.Fatalf("ref %q", jan.ref)
 	}
 }

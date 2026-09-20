@@ -25,7 +25,7 @@ type kernel struct {
 
 // ImageJanitor 把清镜像请求交给 updater，并读本机占用；不在业务进程里碰 docker。
 type ImageJanitor interface {
-	RequestPrune() error
+	RequestPrune(ref string) error
 	PruneResult() (reclaimed string, ok bool, present bool, err error)
 	ImagesJSON() ([]byte, error)
 }

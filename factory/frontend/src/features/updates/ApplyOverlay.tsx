@@ -40,6 +40,7 @@ export function startApply(job: ApplyJob) {
 function failText(err?: string) {
   if (err === "health check failed") return "探活失败，已切回上一版本";
   if (err === "docker load failed") return "镜像加载失败，当前版本未更换";
+  if (err?.startsWith("no image for ")) return `这个包没有本机架构（${err.slice("no image for ".length)}），未切换`;
   return err || "更换失败，当前版本未更换";
 }
 

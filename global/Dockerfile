@@ -1,21 +1,25 @@
+# syntax=docker/dockerfile:1
 # WAN 服务镜像：前端构建 → Go 静态编译 → 极简运行时。单进程同时提供 API 与管理端静态页。
 # 构建上下文是本目录（global/）：docker build -t wmesh-global-app .
+# 编译器在本机构架跑；GOOS/GOARCH 按目标出二进制，同一份包可含 amd64 与 arm64。
 
-FROM node:24-alpine AS web
+FROM --platform=$BUILDPLATFORM node:24-alpine AS web
 WORKDIR /src
 COPY frontend/package.json frontend/package-lock.json ./
 RUN --mount=type=cache,target=/root/.npm npm ci --no-audit --no-fund
 COPY frontend/ ./
 RUN npm run build
 
-FROM golang:1.27-alpine AS server
+FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS server
 WORKDIR /src
 COPY server/go.mod server/go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
 COPY server/ ./
 ARG VERSION=dev
+ARG TARGETOS
+ARG TARGETARCH
 RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /out/wmesh ./cmd/server
+    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /out/wmesh ./cmd/server
 
 FROM alpine:3.24
 RUN apk add --no-cache ca-certificates tzdata \

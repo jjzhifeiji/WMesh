@@ -116,10 +116,10 @@ func TestMatrixSoftware(t *testing.T) {
 		}
 	})
 	run("U31", func(t *testing.T) {
-		if err := h.WAN.RequestImagePrune(ctx, tok); err != nil {
+		if err := h.WAN.RequestImagePrune(ctx, tok, ""); err != nil {
 			t.Fatal(err)
 		}
-		if err := h.WAN.RequestImagePrune(ctx, ""); !errors.Is(err, domain.ErrUnauthorized) {
+		if err := h.WAN.RequestImagePrune(ctx, "", ""); !errors.Is(err, domain.ErrUnauthorized) {
 			t.Fatalf("anon %v", err)
 		}
 	})
@@ -282,13 +282,19 @@ func TestStorageUsage(t *testing.T) {
 	}
 }
 
-type reportJanitor struct{ raw []byte }
+type reportJanitor struct {
+	raw []byte
+	ref string
+}
 
-func (reportJanitor) RequestPrune() error { return nil }
+func (j *reportJanitor) RequestPrune(ref string) error {
+	j.ref = ref
+	return nil
+}
 
-func (reportJanitor) PruneResult() (string, bool, bool, error) { return "0B", true, true, nil }
+func (j *reportJanitor) PruneResult() (string, bool, bool, error) { return "0B", true, true, nil }
 
-func (j reportJanitor) ImagesJSON() ([]byte, error) { return j.raw, nil }
+func (j *reportJanitor) ImagesJSON() ([]byte, error) { return j.raw, nil }
 
 func TestImageOccupancy(t *testing.T) {
 	ctx := context.Background()
@@ -300,7 +306,7 @@ func TestImageOccupancy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h.WAN.SetImageJanitor(reportJanitor{raw: []byte(`{"kind":"wan_service","used":12,"count":1,"items":[{"ref":"app:dev","id":"x","size":12,"keep":"current"}]}`)})
+	h.WAN.SetImageJanitor(&reportJanitor{raw: []byte(`{"kind":"wan_service","used":12,"count":1,"items":[{"ref":"app:dev","id":"x","size":12,"keep":"current"}]}`)})
 	got, err := h.WAN.StorageUsage(ctx, tok)
 	if err != nil {
 		t.Fatal(err)
@@ -310,5 +316,19 @@ func TestImageOccupancy(t *testing.T) {
 	}
 	if got.Images.Items[0].Keep != "current" {
 		t.Fatalf("keep %+v", got.Images.Items[0])
+	}
+	jan := &reportJanitor{raw: []byte(`{"kind":"wan_service","used":20,"count":2,"items":[{"ref":"app:dev","id":"x","size":12,"keep":"current"},{"ref":"app:old","id":"y","size":8,"keep":""}]}`)}
+	h.WAN.SetImageJanitor(jan)
+	if err := h.WAN.RequestImagePrune(ctx, tok, "app:dev"); !errors.Is(err, domain.ErrReferenced) {
+		t.Fatalf("current %v", err)
+	}
+	if err := h.WAN.RequestImagePrune(ctx, tok, "app:missing"); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("missing %v", err)
+	}
+	if err := h.WAN.RequestImagePrune(ctx, tok, "app:old"); err != nil {
+		t.Fatal(err)
+	}
+	if jan.ref != "app:old" {
+		t.Fatalf("ref %q", jan.ref)
 	}
 }

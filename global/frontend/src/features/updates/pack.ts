@@ -1,4 +1,5 @@
 import { softwareKindLabel, type SoftwareKind, type SoftwareRelease } from "./api";
+import { Sha256 } from "./sha256";
 
 export type DistAction = "publish" | "skip" | "reject";
 
@@ -172,8 +173,33 @@ export async function planDistPublish(files: Iterable<File>, published: Software
   return rows.toSorted((a, b) => a.kind.localeCompare(b.kind) || b.version - a.version);
 }
 
-export async function sha256Hex(file: File) {
-  const buf = await file.arrayBuffer();
-  const hash = await crypto.subtle.digest("SHA-256", buf);
-  return [...new Uint8Array(hash)].map((b) => b.toString(16).padStart(2, "0")).join("");
+const hashChunk = 1024 * 1024; // 按 1MiB 读，避免整包一次进内存
+
+// HTTP 页面没有 Web Crypto 时按块算摘要。
+async function sha256HexLocal(file: File, onProgress?: (loaded: number) => void) {
+  const hasher = new Sha256();
+  let offset = 0;
+  while (offset < file.size) {
+    const end = Math.min(offset + hashChunk, file.size);
+    hasher.update(new Uint8Array(await file.slice(offset, end).arrayBuffer()));
+    offset = end;
+    onProgress?.(offset);
+    await new Promise((r) => setTimeout(r, 0));
+  }
+  return hasher.hex();
+}
+
+// 先用 Web Crypto；HTTP 页面没有则本机按块算。
+export async function sha256Hex(file: File, onProgress?: (loaded: number) => void) {
+  if (globalThis.isSecureContext && globalThis.crypto?.subtle) {
+    try {
+      const buf = await file.arrayBuffer();
+      onProgress?.(file.size);
+      const hash = await crypto.subtle.digest("SHA-256", buf);
+      return [...new Uint8Array(hash)].map((b) => b.toString(16).padStart(2, "0")).join("");
+    } catch {
+      // 安全上下文上 digest 仍可能失败，改本机算。
+    }
+  }
+  return sha256HexLocal(file, onProgress);
 }

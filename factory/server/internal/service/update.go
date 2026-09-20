@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strconv"
+	"strings"
 
 	"github.com/google/uuid"
 
@@ -639,24 +640,83 @@ func (s *Updates) PruneFactorySoftware(ctx context.Context, token, kind string) 
 	return n, nil
 }
 
-// RequestImagePrune 请本机 updater 清无用 app 镜像。
-func (s *Updates) RequestImagePrune(ctx context.Context, token string) error {
+// RequestImagePrune 请本机 updater 清无用 app 镜像；ref 空则全部可清。
+func (s *Updates) RequestImagePrune(ctx context.Context, token, ref string) error {
 	acc, err := s.RequireActive(ctx, token)
 	if err != nil {
 		return err
 	}
+	target := imagePruneAuditTarget(ref)
 	if err := s.can(ctx, acc, permManageAccount, nil); err != nil {
-		_ = s.audit(ctx, &acc.ID, nil, "prune_images", "docker", audit.Deny)
+		_ = s.audit(ctx, &acc.ID, nil, "prune_images", target, audit.Deny)
+		return err
+	}
+	if err := s.imagePruneTarget(ref); err != nil {
+		_ = s.audit(ctx, &acc.ID, nil, "prune_images", target, audit.Deny)
 		return err
 	}
 	if s.imageJanitor == nil {
-		return s.audit(ctx, &acc.ID, nil, "prune_images", "docker", audit.Allow)
+		return s.audit(ctx, &acc.ID, nil, "prune_images", target, audit.Allow)
 	}
-	if err := s.imageJanitor.RequestPrune(); err != nil {
-		_ = s.audit(ctx, &acc.ID, nil, "prune_images", "docker", audit.Deny)
+	if err := s.imageJanitor.RequestPrune(ref); err != nil {
+		_ = s.audit(ctx, &acc.ID, nil, "prune_images", target, audit.Deny)
 		return err
 	}
-	return s.audit(ctx, &acc.ID, nil, "prune_images", "docker", audit.Allow)
+	return s.audit(ctx, &acc.ID, nil, "prune_images", target, audit.Allow)
+}
+
+// 点名清某一个标签时，current / previous 拒绝。
+func (s *Updates) imagePruneTarget(ref string) error {
+	if ref == "" {
+		return nil
+	}
+	if !validImageRef(ref) {
+		return domain.ErrInvalidName
+	}
+	if s.imageJanitor == nil {
+		return nil
+	}
+	raw, err := s.imageJanitor.ImagesJSON()
+	if err != nil {
+		return err
+	}
+	if len(raw) == 0 {
+		return domain.ErrNotFound
+	}
+	var usage ImageUsage
+	if err := json.Unmarshal(raw, &usage); err != nil {
+		return err
+	}
+	for _, it := range usage.Items {
+		if it.Ref != ref {
+			continue
+		}
+		if it.Keep != "" {
+			return domain.ErrReferenced
+		}
+		return nil
+	}
+	return domain.ErrNotFound
+}
+
+// 镜像标签只允许仓库名加版本，挡住命令字符。
+func validImageRef(ref string) bool {
+	if ref == "" {
+		return true
+	}
+	if len(ref) > 256 || strings.ContainsAny(ref, " \t\n\r;|&$`'\"\\<>") {
+		return false
+	}
+	host, tag, ok := strings.Cut(ref, ":")
+	return ok && host != "" && tag != "" && !strings.Contains(tag, ":")
+}
+
+// 审计对象：点名用标签，一键清用 docker。
+func imagePruneAuditTarget(ref string) string {
+	if ref == "" {
+		return "docker"
+	}
+	return ref
 }
 
 // ImagePruneProgress 超管看 updater 清镜像结果。

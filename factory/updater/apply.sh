@@ -1,5 +1,5 @@
 #!/bin/sh
-# 等确认落下的 app tar，docker load 后只重建 app；探活失败切回 previous。
+# 等确认落下的 app tar，docker load 后按本机架构只重建 app；没有对应架构或探活失败则切回 previous。
 # 周期写本机 app 镜像占用；清镜像无论成败都写结果，不挡在已落下的 pending 上。
 set -eu
 DIR="${WMESH_UPDATE_DIR:-/var/lib/wmesh/update}"
@@ -37,13 +37,59 @@ compose_up() {
   docker compose --env-file /work/.env -f "$COMPOSE" -p "$PROJECT" up -d --no-deps --force-recreate --wait --wait-timeout 90 "$SERVICE"
 }
 
-loaded_ref() {
-  out=$1
-  img=$(printf '%s\n' "$out" | sed -n 's/^Loaded image: //p' | tail -n 1)
-  if [ -z "$img" ]; then
-    img=$(printf '%s\n' "$out" | sed -n 's/^Loaded image ID: //p' | tail -n 1)
+engine_os() {
+  docker info --format '{{.OSType}}' 2>/dev/null || printf '%s' linux
+}
+
+engine_arch() {
+  arch=$(docker info --format '{{.Architecture}}' 2>/dev/null || uname -m)
+  case "$arch" in
+    x86_64 | amd64 | x86-64) printf '%s' amd64 ;;
+    aarch64 | arm64 | arm64/v8) printf '%s' arm64 ;;
+    *) printf '%s' "$arch" ;;
+  esac
+}
+
+normalize_arch() {
+  case "$1" in
+    x86_64 | amd64 | x86-64) printf '%s' amd64 ;;
+    aarch64 | arm64 | arm64/v8) printf '%s' arm64 ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
+# 只从刚 load 出来的标签里挑本机 Docker 引擎能跑的那份。
+pick_from_load() {
+  loaded=$1
+  want_os=$(engine_os)
+  want_arch=$(engine_arch)
+  preferred=""
+  any=""
+  for ref in $(printf '%s\n' "$loaded" | sed -n 's/^Loaded image: //p'); do
+    [ -n "$ref" ] || continue
+    os=$(docker image inspect -f '{{.Os}}' "$ref" 2>/dev/null || true)
+    arch=$(normalize_arch "$(docker image inspect -f '{{.Architecture}}' "$ref" 2>/dev/null || true)")
+    [ "$os" = "$want_os" ] && [ "$arch" = "$want_arch" ] || continue
+    any=$ref
+    case "$ref" in
+      *-"$want_os"-"$want_arch") preferred=$ref ;;
+      *-"$want_arch") preferred=$ref ;;
+    esac
+  done
+  if [ -z "$any" ]; then
+    for id in $(printf '%s\n' "$loaded" | sed -n 's/^Loaded image ID: //p'); do
+      [ -n "$id" ] || continue
+      os=$(docker image inspect -f '{{.Os}}' "$id" 2>/dev/null || true)
+      arch=$(normalize_arch "$(docker image inspect -f '{{.Architecture}}' "$id" 2>/dev/null || true)")
+      [ "$os" = "$want_os" ] && [ "$arch" = "$want_arch" ] || continue
+      any=$id
+    done
   fi
-  printf '%s' "$img"
+  if [ -n "$preferred" ]; then
+    printf '%s' "$preferred"
+  else
+    printf '%s' "$any"
+  fi
 }
 
 revert() {
@@ -71,9 +117,45 @@ prune_images() {
   docker image prune -f 2>/dev/null || true
 }
 
+# 只清点名的 app 标签；current / previous 拒绝。成功无输出。
+prune_one() {
+  ref=$1
+  repo=$(printf '%s' "$APP_IMAGE" | sed 's/:.*$//')
+  keep_app=$(docker image inspect -f '{{.Id}}' "$APP_IMAGE" 2>/dev/null || true)
+  keep_prev=$(docker image inspect -f '{{.Id}}' "$PREV_IMAGE" 2>/dev/null || true)
+  case "$ref" in
+    "$APP_IMAGE"|"$PREV_IMAGE")
+      printf '%s' "keep current or previous"
+      return 1
+      ;;
+    "$repo":*)
+      id=$(docker image inspect -f '{{.Id}}' "$ref" 2>/dev/null || true)
+      if [ -z "$id" ]; then
+        printf '%s' "image not found"
+        return 1
+      fi
+      if [ "$id" = "$keep_app" ] || [ "$id" = "$keep_prev" ]; then
+        printf '%s' "keep current or previous"
+        return 1
+      fi
+      docker rmi "$ref" >/dev/null 2>&1 || true
+      return 0
+      ;;
+  esac
+  printf '%s' "not app image"
+  return 1
+}
+
+# prune.req：ALL=全部可清，否则只清这一条。读不到就停。
+prune_req_target() {
+  tr -d '\n\r' < "$DIR/prune.req" 2>/dev/null || true
+}
+
 # 给 app 看的本机 app 镜像占用；docker 失败也写空清单。
 write_images() {
   repo=$(printf '%s' "$APP_IMAGE" | sed 's/:.*$//')
+  keep_app=$(docker image inspect -f '{{.Id}}' "$APP_IMAGE" 2>/dev/null || true)
+  keep_prev=$(docker image inspect -f '{{.Id}}' "$PREV_IMAGE" 2>/dev/null || true)
   raw="$DIR/images.raw"
   lst="$DIR/images.lst"
   : > "$raw"
@@ -90,8 +172,10 @@ write_images() {
       esac
       size=$(docker image inspect -f '{{.Size}}' "$id" 2>/dev/null || echo 0)
       keep=""
-      [ "$ref" = "$APP_IMAGE" ] && keep=current
-      [ "$ref" = "$PREV_IMAGE" ] && keep=previous
+      # 同一镜像的其它标签也算当前/上一份，不能当可清。
+      full=$(docker image inspect -f '{{.Id}}' "$ref" 2>/dev/null || true)
+      [ -n "$full" ] && [ "$full" = "$keep_app" ] && keep=current
+      [ -n "$full" ] && [ "$full" = "$keep_prev" ] && keep=previous
       printf '%s\t%s\t%s\t%s\n' "$ref" "$id" "$size" "$keep"
     done < "$raw" > "$lst"
   fi
@@ -128,10 +212,27 @@ run_prune() {
     rm -f "$DIR/prune.req"
     return 0
   fi
-  out=$(prune_images 2>/dev/null || true)
-  reclaim=$(printf '%s\n' "$out" | sed -n 's/Total reclaimed space: //p' | tail -n 1)
-  [ -n "$reclaim" ] || reclaim=0B
-  write_file "$DIR/prune.json" "$(printf '{"ok":true,"reclaimed":"%s"}' "$reclaim")"
+  target=$(prune_req_target)
+  if [ "$target" = "ALL" ]; then
+    out=$(prune_images 2>/dev/null || true)
+    reclaim=$(printf '%s\n' "$out" | sed -n 's/Total reclaimed space: //p' | tail -n 1)
+    [ -n "$reclaim" ] || reclaim=0B
+    write_file "$DIR/prune.json" "$(printf '{"ok":true,"reclaimed":"%s"}' "$reclaim")"
+    rm -f "$DIR/prune.req"
+    return 0
+  fi
+  if [ -z "$target" ]; then
+    write_file "$DIR/prune.json" '{"ok":false,"reclaimed":"0B","error":"empty prune request"}'
+    rm -f "$DIR/prune.req"
+    return 0
+  fi
+  err=$(prune_one "$target") || true
+  if [ -n "$err" ]; then
+    write_file "$DIR/prune.json" "$(printf '{"ok":false,"reclaimed":"0B","error":"%s"}' "$err")"
+    rm -f "$DIR/prune.req"
+    return 0
+  fi
+  write_file "$DIR/prune.json" '{"ok":true,"reclaimed":"0B"}'
   rm -f "$DIR/prune.req"
 }
 
@@ -154,15 +255,17 @@ while true; do
       docker tag "$APP_IMAGE" "$PREV_IMAGE" || true
     fi
     if out=$(docker load -i "$DIR/pending.tar"); then
-      img=$(loaded_ref "$out")
-      if [ -n "$img" ]; then
-        docker tag "$img" "$APP_IMAGE" || true
-      fi
-      if compose_up; then
-        status '{"ok":true}'
+      img=$(pick_from_load "$out")
+      if [ -z "$img" ]; then
+        status "$(printf '{"ok":false,"error":"no image for %s/%s"}' "$(engine_os)" "$(engine_arch)")"
       else
-        revert
-        status '{"ok":false,"error":"health check failed"}'
+        docker tag "$img" "$APP_IMAGE" || true
+        if compose_up; then
+          status '{"ok":true}'
+        else
+          revert
+          status '{"ok":false,"error":"health check failed"}'
+        fi
       fi
     else
       status '{"ok":false,"error":"docker load failed"}'

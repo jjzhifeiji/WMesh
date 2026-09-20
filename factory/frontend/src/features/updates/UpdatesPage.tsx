@@ -7,9 +7,8 @@ import {
   useCurrentFactorySoftware,
   useDeleteFactorySoftware,
   useFactorySoftware,
-  useImagePrune,
+  useImagePruneJob,
   usePruneFactorySoftware,
-  useRequestImagePrune,
   useStorageUsage,
   type FactorySoftwareKind,
   type FactorySoftwareRow,
@@ -53,27 +52,15 @@ export function UpdatesPanel() {
   const list = useFactorySoftware();
   const del = useDeleteFactorySoftware();
   const prune = usePruneFactorySoftware();
-  const requestPrune = useRequestImagePrune();
+  const pruneImages = useImagePruneJob();
   const storage = useStorageUsage();
-  const [pruneNonce, setPruneNonce] = useState(0);
-  const [pruneWait, setPruneWait] = useState(false);
   const [detail, setDetail] = useState<FactorySoftwareKind | null>(null);
-  const image = useImagePrune(pruneWait, pruneNonce);
   const disk = storage.data?.disk;
   const diskPct = disk && disk.total > 0 ? Math.min(100, Math.round((disk.used / disk.total) * 100)) : 0;
   const images = storage.data?.images;
   const imageItems = images?.items ?? [];
   const imageOld = imageItems.filter((row) => !row.keep).length;
   const imageText = images?.kind ? `${images.count} 个　${formatBytes(images.used)}` : "还没有回报";
-  const pruneText = image.data?.ready
-    ? image.data.ok
-      ? `已释放 ${image.data.reclaimed || "空间"}`
-      : "清理镜像失败"
-    : pruneWait
-      ? "清理中…"
-      : pruneNonce > 0
-        ? "本机还没回报"
-        : null;
 
   const rows = list.data ?? [];
   const summaries: KindSummary[] = kinds.map((kind) => {
@@ -90,12 +77,9 @@ export function UpdatesPanel() {
   const detailOld = detailRows.filter((r) => !r.keep).length;
   const detailImages = detail === localKind;
 
-  const onPruneImages = async () => {
+  const onPruneImages = async (body: { ref: string } | { all: true }) => {
     try {
-      await requestPrune.mutateAsync();
-      setPruneWait(true);
-      setPruneNonce((n) => n + 1);
-      window.setTimeout(() => setPruneWait(false), 30_000);
+      await pruneImages.run(body);
     } catch (e) {
       message.error(errorMessage(e));
     }
@@ -186,6 +170,31 @@ export function UpdatesPanel() {
     { title: "标签", dataIndex: "ref" },
     { title: "占用", dataIndex: "size", width: 120, render: (n: number) => formatBytes(n) },
     { title: "状态", dataIndex: "keep", width: 110, render: (v: string) => imageKeepTag(v) },
+    {
+      title: "",
+      key: "act",
+      width: 90,
+      render: (_, row) =>
+        row.keep ? null : (
+          <Popconfirm
+            title="删掉这个无用镜像？"
+            okText="删除"
+            cancelText="取消"
+            disabled={pruneImages.waiting && !pruneImages.rowBusy(row.ref)}
+            onConfirm={() => void onPruneImages({ ref: row.ref })}
+          >
+            <Button
+              type="link"
+              size="small"
+              danger
+              loading={pruneImages.rowBusy(row.ref)}
+              disabled={pruneImages.waiting && !pruneImages.rowBusy(row.ref)}
+            >
+              {pruneImages.rowText(row.ref) ?? "删除"}
+            </Button>
+          </Popconfirm>
+        ),
+    },
   ];
 
   return (
@@ -261,14 +270,19 @@ export function UpdatesPanel() {
                 title="清掉不再用的 app 镜像？"
                 okText="清理"
                 cancelText="取消"
-                onConfirm={() => void onPruneImages()}
+                disabled={imageOld === 0 || (pruneImages.waiting && !pruneImages.allBusy)}
+                onConfirm={() => void onPruneImages({ all: true })}
               >
-                <Button size="small" loading={requestPrune.isPending}>
+                <Button
+                  size="small"
+                  disabled={imageOld === 0 || (pruneImages.waiting && !pruneImages.allBusy)}
+                  loading={pruneImages.allBusy}
+                >
                   清理无用镜像
                 </Button>
               </Popconfirm>
               <span>{imageOld ? `${imageOld} 个可清` : "没有可清理的镜像"}</span>
-              {pruneText ? <span>{pruneText}</span> : null}
+              {pruneImages.allText ? <span>{pruneImages.allText}</span> : null}
             </Space>
             <Table<ImageItem>
               rowKey={(r) => `${r.ref}:${r.id}`}

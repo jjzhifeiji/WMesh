@@ -183,20 +183,22 @@ export function DeployPanel({ published }: { published: SoftwareRelease[] }) {
         const row = next[i];
         if (row.action !== "publish" || !row.file) continue;
         patchJob(row.key, { phase: "hash", loaded: 0, total: row.bytes, message: "校验摘要" });
-        const sum = await sha256Hex(row.file);
-        if (ac.signal.aborted) break;
-        if (sum !== row.sha256) {
-          next[i] = { ...row, action: "reject", reason: "文件摘要与 json 对不上" };
-          patchJob(row.key, { phase: "fail", message: "文件摘要与 json 对不上" });
-          continue;
-        }
-        const form = new FormData();
-        form.append("kind", row.kind);
-        form.append("version", String(row.version));
-        form.append("versionName", row.versionName);
-        form.append("file", row.file, row.fileName);
-        patchJob(row.key, { phase: "upload", loaded: 0, total: row.bytes, message: "上传中" });
         try {
+          const sum = await sha256Hex(row.file, (loaded) => {
+            patchJob(row.key, { phase: "hash", loaded, total: row.bytes, message: "校验摘要" });
+          });
+          if (ac.signal.aborted) break;
+          if (sum !== row.sha256) {
+            next[i] = { ...row, action: "reject", reason: "文件摘要与 json 对不上" };
+            patchJob(row.key, { phase: "fail", message: "文件摘要与 json 对不上" });
+            continue;
+          }
+          const form = new FormData();
+          form.append("kind", row.kind);
+          form.append("version", String(row.version));
+          form.append("versionName", row.versionName);
+          form.append("file", row.file, row.fileName);
+          patchJob(row.key, { phase: "upload", loaded: 0, total: row.bytes, message: "上传中" });
           await publishSoftware(
             form,
             (ev) => {
@@ -264,7 +266,7 @@ export function DeployPanel({ published }: { published: SoftwareRelease[] }) {
       render: (_, r) => {
         const job = jobs[r.key];
         if (job && (job.phase === "upload" || job.phase === "hash")) {
-          const pct = job.phase === "hash" || job.total <= 0 ? 0 : Math.round((job.loaded / job.total) * 100);
+          const pct = job.total <= 0 ? 0 : Math.round((job.loaded / job.total) * 100);
           return (
             <div>
               <Progress percent={pct} status="active" size="small" />
