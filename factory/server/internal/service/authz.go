@@ -12,9 +12,9 @@ import (
 type perm int
 
 const (
-	permManageOrg     perm = iota // 组织节点：超管或子树内组织管理员
+	permManageOrg     perm = iota // 组织节点：超管或覆盖该处的组织管理员
 	permManageAccount             // 建停账号：仅工厂超管
-	permAssign                    // 人员分配：超管或子树内组织管理员
+	permAssign                    // 人员分配：超管或覆盖该处的组织管理员
 	permGrant                     // 占位，实际走 canGrant
 	permView                      // 只读查看
 	permOperate                   // 节点上的业务操作，不含超管自动经营权
@@ -98,7 +98,8 @@ func (s *kernel) can(ctx context.Context, acc Account, p perm, unit *uuid.UUID) 
 		if err != nil {
 			return err
 		}
-		if ok && unit != nil {
+		// 整厂管理员 covers(nil) 为真，可建厂直属根节点；节点管理员 covers(nil) 仍假。
+		if ok {
 			return nil
 		}
 		return domain.ErrForbidden
@@ -110,7 +111,7 @@ func (s *kernel) can(ctx context.Context, acc Account, p perm, unit *uuid.UUID) 
 		if err != nil {
 			return err
 		}
-		if ok && unit != nil {
+		if ok {
 			return nil
 		}
 		return domain.ErrForbidden
@@ -134,7 +135,7 @@ func (s *kernel) can(ctx context.Context, acc Account, p perm, unit *uuid.UUID) 
 	}
 }
 
-// canGrant：超管可授本厂全部固定角色；组织管理员只能在当前子树内授非超管角色。
+// canGrant：超管可授本厂全部固定角色；组织管理员只能在自己作用域内授非超管角色。
 func (s *kernel) canGrant(ctx context.Context, acc Account, role, scopeKind string, orgUnitID *uuid.UUID) error {
 	if !validScope(role, scopeKind, orgUnitID) {
 		return domain.ErrInvalidRoleScope
@@ -146,8 +147,8 @@ func (s *kernel) canGrant(ctx context.Context, acc Account, role, scopeKind stri
 	if isFactorySA(grants) {
 		return nil
 	}
-	// 组织管理员不能把工厂超管授出去，也不能授到自己子树之外。
-	if role == RoleFactorySuperAdmin || scopeKind != ScopeOrgUnit || orgUnitID == nil {
+	// 不能把工厂超管授出去；整厂角色须自己也是整厂管理员，节点角色不能越出当前子树。
+	if role == RoleFactorySuperAdmin {
 		return domain.ErrForbidden
 	}
 	ok, err := s.covers(ctx, withRoles(grants, RoleOrgAdmin), orgUnitID)

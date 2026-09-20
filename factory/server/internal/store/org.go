@@ -323,14 +323,14 @@ func (s *Store) EnableOrgUnit(ctx context.Context, unitID uuid.UUID) error {
 	return s.setStatus(ctx, &OrgUnit{}, unitID, StatusActive)
 }
 
-// ValidScope：工厂超管只能挂厂；组织管理员/负责人只能挂节点；其余三角色两种作用域都可以。
+// ValidScope：工厂超管只能挂厂；组织负责人只能挂节点；管理员与其余三角色两种作用域都可以。
 func ValidScope(role, scopeKind string, orgUnitID *uuid.UUID) bool {
 	switch role {
 	case RoleFactorySuperAdmin:
 		return scopeKind == ScopeFactory && orgUnitID == nil
-	case RoleOrgAdmin, RoleOrgLead:
+	case RoleOrgLead:
 		return scopeKind == ScopeOrgUnit && orgUnitID != nil
-	case RoleProcessEngineer, RoleOperator, RoleAuditor:
+	case RoleOrgAdmin, RoleProcessEngineer, RoleOperator, RoleAuditor:
 		if scopeKind == ScopeFactory {
 			return orgUnitID == nil
 		}

@@ -2,7 +2,7 @@
 // 授予页可出这四种；组织负责人、工艺工程师服务端仍认历史授予，不再新授。
 export const ROLES = [
   { value: "factory_super_admin", label: "工厂超管", scopes: ["factory"] },
-  { value: "org_admin", label: "管理员", scopes: ["org_unit"] },
+  { value: "org_admin", label: "管理员", scopes: ["factory", "org_unit"] },
   { value: "operator", label: "操作员", scopes: ["factory", "org_unit"] },
   { value: "auditor", label: "审计员", scopes: ["factory", "org_unit"] },
 ] as const;

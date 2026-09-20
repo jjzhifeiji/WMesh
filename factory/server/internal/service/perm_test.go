@@ -106,6 +106,34 @@ func TestPermCircle(t *testing.T) {
 		t.Fatalf("9.6 outside tree: %v", err)
 	}
 
+	oaFac, err := facA.CreatePerson(ctx, saA, "oafac", "整厂管理员")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := facA.GrantRole(ctx, saA, oaFac.ID, factory.RoleOrgAdmin, factory.ScopeFactory, nil); err != nil {
+		t.Fatalf("grant factory org admin: %v", err)
+	}
+	oaFacTok := mustAdoptPassword(t, ctx, facA, "oafac", "oafac-pass")
+	if _, err := facA.CreateOrgUnit(ctx, oaFacTok, "整厂根", nil); err != nil {
+		t.Fatalf("factory org admin root: %v", err)
+	}
+	if _, err := facA.CreateOrgUnit(ctx, oaFacTok, "越界也可", &shopB.ID); err != nil {
+		t.Fatalf("factory org admin sibling: %v", err)
+	}
+	q, err := facA.CreatePerson(ctx, saA, "q", "待授")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := facA.GrantRole(ctx, oaFacTok, q.ID, factory.RoleOperator, factory.ScopeFactory, nil); err != nil {
+		t.Fatalf("factory org admin grant factory op: %v", err)
+	}
+	if _, err := facA.GrantRole(ctx, oaFacTok, q.ID, factory.RoleFactorySuperAdmin, factory.ScopeFactory, nil); !errors.Is(err, domain.ErrForbidden) {
+		t.Fatalf("factory org admin grant sa: %v", err)
+	}
+	if _, err := facA.CreatePerson(ctx, oaFacTok, "nope", "nope"); !errors.Is(err, domain.ErrForbidden) {
+		t.Fatalf("factory org admin create person: %v", err)
+	}
+
 	lead, err := facA.CreatePerson(ctx, saA, "lead", "负责人")
 	if err != nil {
 		t.Fatal(err)

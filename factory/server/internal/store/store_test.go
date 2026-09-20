@@ -105,8 +105,11 @@ func TestFactoryConstraints(t *testing.T) {
 	if _, err := s.GrantRole(ctx, sa.ID, store.RoleFactorySuperAdmin, store.ScopeOrgUnit, &site.ID); err != domain.ErrInvalidRoleScope {
 		t.Fatalf("sa org scope: %v", err)
 	}
-	if _, err := s.GrantRole(ctx, p.ID, store.RoleOrgAdmin, store.ScopeFactory, nil); err != domain.ErrInvalidRoleScope {
+	if _, err := s.GrantRole(ctx, p.ID, store.RoleOrgAdmin, store.ScopeFactory, nil); err != nil {
 		t.Fatalf("org admin factory scope: %v", err)
+	}
+	if _, err := s.GrantRole(ctx, p.ID, store.RoleOrgLead, store.ScopeFactory, nil); err != domain.ErrInvalidRoleScope {
+		t.Fatalf("org lead factory scope: %v", err)
 	}
 	grant, err := s.GrantRole(ctx, p.ID, store.RoleOperator, store.ScopeOrgUnit, &shop.ID)
 	if err != nil {
