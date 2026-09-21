@@ -76,9 +76,12 @@ type (
 	LoginSnap      = store.LoginSnap
 	PersonLoginLog = store.PersonLoginLog
 
-	Asset         = store.Asset
-	AssetDep      = store.AssetDep
-	AssetSnapshot = store.AssetSnapshot
+	Asset            = store.Asset
+	AssetDep         = store.AssetDep
+	AssetSnapshot    = store.AssetSnapshot
+	FSNode           = store.FSNode
+	FSFolderHint     = store.FSFolderHint
+	PlatformFSLayout = store.PlatformFSLayout
 
 	ContentTemplate  = store.ContentTemplate
 	TemplateSnapshot = store.TemplateSnapshot

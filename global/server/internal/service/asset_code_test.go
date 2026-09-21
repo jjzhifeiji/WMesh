@@ -66,10 +66,6 @@ func TestPlatformAssetCodes(t *testing.T) {
 		t.Fatalf("rename changed code: %+v", renamed)
 	}
 
-	on, err := h.WAN.SetPlatformCopyable(ctx, tok, p1.ID, renamed.Revision, true)
-	if err != nil {
-		t.Fatal(err)
-	}
 	copied, err := h.WAN.CopyPlatformProcess(ctx, tok, p1.ID, "副本")
 	if err != nil {
 		t.Fatal(err)
@@ -81,7 +77,6 @@ func TestPlatformAssetCodes(t *testing.T) {
 	if err != nil || still.Code != p1.Code {
 		t.Fatalf("src after copy %+v %v", still, err)
 	}
-	_ = on
 
 	a, err := h.WAN.CreateFactory(ctx, tok, "厂A", "sa-a", "超管A")
 	if err != nil {

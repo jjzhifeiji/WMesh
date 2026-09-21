@@ -16,6 +16,7 @@ type CachedMember struct {
 	Level    string     // platform / factory / personal
 	Name     string     // 显示名
 	Status   string     // 送达时状态
+	WeldKind string     // 作业类型：single / multilayer / tbar
 	Revision int64      // 钉死修订
 	Digest   []byte     // 内容 SHA-256
 	Deps     []AssetDep // 工艺必须空；工程钉死工艺
@@ -294,7 +295,7 @@ func (p *Pouch) snapshotFromDisk(id uuid.UUID) (ClosureSnapshot, error) {
 			return ClosureSnapshot{}, err
 		}
 		members[i] = ClosureMember{
-			ID: m.ID, Kind: m.Kind, Level: m.Level, Name: m.Name, Status: m.Status,
+			ID: m.ID, Kind: m.Kind, Level: m.Level, Name: m.Name, Status: m.Status, WeldKind: m.WeldKind,
 			Revision: m.Revision, Content: plain, Digest: append([]byte(nil), m.Digest...),
 			Deps: copyDeps(m.Deps), CreatorID: cloneUUID(m.OwnerID),
 		}
@@ -315,7 +316,7 @@ func metaFromSnap(snap ClosureSnapshot) CachedClosure {
 			name = m.Name
 		}
 		members[i] = CachedMember{
-			ID: m.ID, Kind: m.Kind, Level: m.Level, Name: m.Name, Status: m.Status,
+			ID: m.ID, Kind: m.Kind, Level: m.Level, Name: m.Name, Status: m.Status, WeldKind: m.WeldKind,
 			Revision: m.Revision, Digest: append([]byte(nil), m.Digest...),
 			Deps: copyDeps(m.Deps), OwnerID: cloneUUID(m.CreatorID),
 		}
@@ -332,7 +333,7 @@ func cloneCached(c CachedClosure) CachedClosure {
 	members := make([]CachedMember, len(c.Members))
 	for i, m := range c.Members {
 		members[i] = CachedMember{
-			ID: m.ID, Kind: m.Kind, Level: m.Level, Name: m.Name, Status: m.Status,
+			ID: m.ID, Kind: m.Kind, Level: m.Level, Name: m.Name, Status: m.Status, WeldKind: m.WeldKind,
 			Revision: m.Revision, Digest: append([]byte(nil), m.Digest...),
 			Deps: copyDeps(m.Deps), OwnerID: cloneUUID(m.OwnerID),
 		}

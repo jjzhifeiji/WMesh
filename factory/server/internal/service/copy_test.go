@@ -115,3 +115,31 @@ func TestCopyProcess(t *testing.T) {
 		t.Fatalf("secret copy %v", err)
 	}
 }
+
+func TestCreateProcessCopyable(t *testing.T) {
+	ctx := context.Background()
+	h := New(t)
+	seed, fac, err := h.Provision(ctx, "sa-a", "超管A")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fac.Activate(ctx, "sa-a", seed.ActivationToken, "sa-pass"); err != nil {
+		t.Fatal(err)
+	}
+	sa := mustLogin(t, ctx, fac, "sa-a", "sa-pass")
+	pe := mustCreateRole(t, ctx, fac, sa, "pe-a", "pe-pass", factory.RoleProcessEngineer, factory.ScopeFactory, nil)
+	direct := factory.WorkContext{Direct: true}
+	body := []byte("create-copyable-body")
+
+	tight, err := fac.CreateProcess(ctx, pe.tok, direct, factory.AssetLevelFactory, "密焊", body, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tight.Copyable || tight.Revision != 1 || tight.Status != factory.AssetDraft {
+		t.Fatalf("%+v", tight)
+	}
+	wide, err := fac.CreateFactoryProcess(ctx, pe.tok, direct, "默认可复制", body)
+	if err != nil || !wide.Copyable || wide.Revision != 1 {
+		t.Fatalf("%+v %v", wide, err)
+	}
+}

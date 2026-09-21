@@ -78,7 +78,7 @@ func statusOf(err error) int {
 		errors.Is(err, domain.ErrClientBound), errors.Is(err, domain.ErrClientKeyTaken),
 		errors.Is(err, domain.ErrRevisionConflict), errors.Is(err, domain.ErrFactoryKeyExists),
 		errors.Is(err, domain.ErrReferenced), errors.Is(err, domain.ErrDeviceSerialTaken),
-		errors.Is(err, domain.ErrSoftwareInstallFailed):
+		errors.Is(err, domain.ErrSoftwareInstallFailed), errors.Is(err, domain.ErrDuplicateName):
 		return http.StatusConflict
 	case errors.Is(err, domain.ErrFactoryBootstrap):
 		return http.StatusBadGateway
@@ -99,6 +99,7 @@ func isDomain(err error) bool {
 		domain.ErrCycle, domain.ErrWorkContext, domain.ErrMultiParent, domain.ErrInvalidRoleScope,
 		domain.ErrDisabledOrgType, domain.ErrDisabledOrgUnit, domain.ErrHasActiveUnits, domain.ErrHasActiveChildren,
 		domain.ErrIntegrity, domain.ErrAssetNotAvailable, domain.ErrAssetNotCopyable, domain.ErrAssetDependency,
+		domain.ErrInvalidWeldKind, domain.ErrWeldKindMismatch,
 		domain.ErrTemplateInvalid, domain.ErrAssetCodeMissing, domain.ErrAssetCodeConflict, domain.ErrOriginCodeExhausted,
 		domain.ErrStaleRevision,
 	} {

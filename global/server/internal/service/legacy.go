@@ -181,7 +181,7 @@ func (s *Assets) insertImportedProject(ctx context.Context, token, name string, 
 		return Asset{}, err
 	}
 	row, err := s.store.InsertAsset(ctx, Asset{
-		Kind: KindProject, Name: name, Status: AssetDraft,
+		Kind: KindProject, Name: name, Status: AssetDraft, WeldKind: contenttpl.InferWeldKind(content),
 		Content: content, Digest: digest.Sum(content), CreatorID: admin.ID, Deps: deps,
 	})
 	if err != nil {

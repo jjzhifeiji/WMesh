@@ -1,7 +1,8 @@
-import { Button, Collapse, Input, Select, Space, Typography } from "antd";
+import { Button, Collapse, Input, Segmented, Select, Space, Typography } from "antd";
+import { useState } from "react";
 import type { ContentSchema, ProjectItemSchema, TemplateField } from "./schema";
 import { defaultField, defaultItemFromFields, defaultValue, encodeContent, enumOptions, enumValue, isProcessRef, kindOf, parseContent, parseText, textOf } from "./schema";
-import { itemExtra, itemFields, kindLabel } from "./projectKinds";
+import { itemExtra, itemFields, kindLabel, weldKindOfTemplate } from "./projectKinds";
 import type { ProjectItemTemplate } from "./projectKinds";
 
 export type ProcessOption = { value: string; label: string; disabled?: boolean }; // 焊道上选工艺
@@ -12,15 +13,16 @@ type FieldsProps = {
   onChange?: (v: unknown) => void;
   disabled?: boolean;
   processOptions?: ProcessOption[];
+  weldKind?: string;
 };
 
-export function ContentFields({ schema, value, onChange, disabled, processOptions }: FieldsProps) {
+export function ContentFields({ schema, value, onChange, disabled, processOptions, weldKind }: FieldsProps) {
   const current = value === undefined ? defaultValue(schema) : value;
   if (schema.root === "array") {
     if (schema.projectItems || schema.templates || schema.kinds?.length) {
       return (
         <div className="content-fields-scroll">
-          <ProjectArrayFields schema={schema} value={asArr(current)} onChange={(v) => onChange?.(v)} disabled={disabled} processOptions={processOptions} />
+          <ProjectArrayFields schema={schema} value={asArr(current)} onChange={(v) => onChange?.(v)} disabled={disabled} processOptions={processOptions} weldKind={weldKind} />
         </div>
       );
     }
@@ -49,20 +51,93 @@ type EditorProps = {
   onChange?: (raw: string) => void;
   disabled?: boolean;
   processOptions?: ProcessOption[];
+  weldKind?: string; // 只展示同作业类型的工程模版
 };
 
-export function ContentEditor({ schema, value, onChange, disabled, processOptions }: EditorProps) {
+function prettyJSON(raw: string | undefined): string {
+  if (!raw) return "";
+  try {
+    return JSON.stringify(JSON.parse(raw), null, 4);
+  } catch {
+    return raw;
+  }
+}
+
+export function ContentEditor({ schema, value, onChange, disabled, processOptions, weldKind }: EditorProps) {
+  const [mode, setMode] = useState<"form" | "json">("form");
+  const [jsonText, setJsonText] = useState("");
+  const [jsonErr, setJsonErr] = useState("");
+
   if (!schema) {
     return <Input.TextArea rows={8} value={value} onChange={(e) => onChange?.(e.target.value)} disabled={disabled} />;
   }
+
+  const toJSON = () => {
+    setJsonText(prettyJSON(value));
+    setJsonErr("");
+    setMode("json");
+  };
+
+  const toForm = () => {
+    try {
+      JSON.parse(jsonText || "null");
+      onChange?.(encodeContent(parseContent(jsonText, schema), schema, jsonText));
+      setJsonErr("");
+      setMode("form");
+    } catch (e) {
+      setJsonErr(e instanceof Error ? e.message : "不是合法 JSON");
+    }
+  };
+
   return (
-    <ContentFields
-      schema={schema}
-      value={parseContent(value, schema)}
-      onChange={(v) => onChange?.(encodeContent(v, schema, value ?? ""))}
-      disabled={disabled}
-      processOptions={processOptions}
-    />
+    <div>
+      <Segmented
+        size="small"
+        value={mode}
+        style={{ marginBottom: 8 }}
+        onChange={(v) => (v === "json" ? toJSON() : toForm())}
+        options={[
+          { label: "表单", value: "form" },
+          { label: "JSON", value: "json" },
+        ]}
+      />
+      {mode === "form" ? (
+        <ContentFields
+          schema={schema}
+          value={parseContent(value, schema)}
+          onChange={(v) => onChange?.(encodeContent(v, schema, value ?? ""))}
+          disabled={disabled}
+          processOptions={processOptions}
+          weldKind={weldKind}
+        />
+      ) : (
+        <>
+          {jsonErr ? (
+            <Typography.Text type="danger" style={{ display: "block", marginBottom: 8 }}>
+              {jsonErr}
+            </Typography.Text>
+          ) : null}
+          <Input.TextArea
+            className="schema-json"
+            rows={16}
+            value={jsonText}
+            disabled={disabled}
+            onChange={(e) => {
+              const text = e.target.value;
+              setJsonText(text);
+              try {
+                JSON.parse(text || "null");
+                setJsonErr("");
+                onChange?.(encodeContent(parseContent(text, schema), schema, text));
+              } catch (err) {
+                setJsonErr(err instanceof Error ? err.message : "不是合法 JSON");
+                onChange?.(text);
+              }
+            }}
+          />
+        </>
+      )}
+    </div>
   );
 }
 
@@ -72,12 +147,14 @@ function ProjectArrayFields({
   onChange,
   disabled,
   processOptions,
+  weldKind,
 }: {
   schema: ContentSchema;
   value: unknown[];
   onChange: (v: unknown[]) => void;
   disabled?: boolean;
   processOptions?: ProcessOption[];
+  weldKind?: string;
 }) {
   const items: ProjectItemSchema[] =
     schema.projectItems ??
@@ -96,6 +173,12 @@ function ProjectArrayFields({
       union.push(f);
     }
   }
+  const addable = weldKind
+    ? items.filter((t) => {
+        const k = weldKindOfTemplate(t.id);
+        return !k || k === weldKind;
+      })
+    : items;
   const add = (t: ProjectItemSchema) => onChange([...value, defaultItemFromFields(t.fields, t.id)]);
   return (
     <div>
@@ -148,7 +231,7 @@ function ProjectArrayFields({
       />
       {disabled ? null : (
         <Space size={4} wrap style={{ marginTop: 4 }}>
-          {items.map((t) => (
+          {addable.map((t) => (
             <Button key={t.id} size="small" onClick={() => add(t)}>
               添加{t.name}
             </Button>

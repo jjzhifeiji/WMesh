@@ -181,6 +181,22 @@ func (k *kernel) notifyAsset(ctx context.Context, a Asset) {
 	k.publishActive(ctx, Cmd{Typ: CmdClosure, AssetID: a.ID.String(), Revision: a.Revision, Kind: a.Kind})
 }
 
+// notifyPlatformFS 把当前平台目录推给有效厂，路径变更不必再升修订。
+func (k *kernel) notifyPlatformFS(ctx context.Context, kind string) {
+	if kind != KindProcess && kind != KindProject {
+		return
+	}
+	layout, err := k.store.PlatformFSLayout(ctx, kind)
+	if err != nil {
+		return
+	}
+	raw, err := json.Marshal(layout)
+	if err != nil {
+		return
+	}
+	k.publishActive(ctx, Cmd{Typ: CmdFSApply, Kind: kind, Snapshot: raw})
+}
+
 // 删除后通知厂端撤回展示。
 func (k *kernel) notifyRetract(ctx context.Context, assetID uuid.UUID) {
 	k.publishActive(ctx, Cmd{Typ: CmdRetract, AssetID: assetID.String()})
@@ -228,7 +244,7 @@ func (k *kernel) notifyFactoryPack(ctx context.Context, row SoftwareRelease) {
 // 治理状态变更立刻推给该厂。
 func (k *kernel) notifyLifecycle(fac Factory) {
 	k.publishFactory(fac.ID, Cmd{
-		Typ: CmdFactoryState, Status: fac.Status, Revision: fac.LifecycleRevision, ShortCode: fac.ShortCode,
+		Typ: CmdFactoryState, Status: fac.Status, Revision: fac.LifecycleRevision, ShortCode: fac.ShortCode, FactoryName: fac.Name,
 	})
 }
 

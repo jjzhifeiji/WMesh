@@ -35,6 +35,7 @@ var (
 	ErrFactoryRetired      = errors.New("factory is retired")         // 已注销，不能再启用
 	ErrFactoryOffline      = errors.New("factory channel is offline") // 厂端通道不在线，不能拉升档
 	ErrInvalidName         = errors.New("invalid name")               // 显示名空了或太长
+	ErrDuplicateName       = errors.New("name already exists in this folder") // 同一文件夹下名字不能重复
 	ErrInvalidKey          = errors.New("invalid key material")       // 公钥/私钥长度不对
 	ErrClientKeyTaken      = errors.New("client public key already registered") // 该公钥已被别的 Client 占用
 	ErrFactoryKeyExists    = errors.New("factory public key already registered") // 该厂公钥已登记，不能改绑
@@ -50,6 +51,8 @@ var (
 	ErrAssetNotAvailable   = errors.New("asset is not available")                 // 草稿或停用，不能当可用资产
 	ErrAssetNotCopyable    = errors.New("asset is not copyable")                  // 不可复制不得升档
 	ErrAssetDependency     = errors.New("asset dependency missing or mismatched") // 工程依赖缺失或错配
+	ErrInvalidWeldKind     = errors.New("invalid weld kind")                      // 作业类型只能是单层/多层/T排
+	ErrWeldKindMismatch    = errors.New("weld kind mismatch")                     // 工程与工艺作业类型必须相同
 	ErrClosureIncomplete   = errors.New("closure is incomplete")                  // 组包缺成员或读不到钉死修订
 	ErrClosureMismatch     = errors.New("closure revision mismatch")              // 组包串版：身份或修订被顶替
 	ErrClientCacheFull = errors.New("client cache is full")        // 工程份已达缓存上限

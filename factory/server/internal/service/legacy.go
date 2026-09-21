@@ -190,7 +190,7 @@ func (s *Assets) insertImportedProject(ctx context.Context, acc Account, wc Work
 		_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny, unitID, path)
 		return Asset{}, err
 	}
-	return s.insertGoverned(ctx, acc, unitID, path, KindProject, AssetLevelFactory, name, content, deps)
+	return s.insertGoverned(ctx, acc, unitID, path, KindProject, AssetLevelFactory, name, content, deps, true)
 }
 
 // overwriteImported 改正文（工程同时改依赖），身份不变；草稿顺带发布。

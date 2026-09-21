@@ -18,7 +18,7 @@ func memberFromAsset(a Asset) ClosureMember {
 	cid := a.CreatorID
 	return ClosureMember{
 		ID: a.ID, Kind: a.Kind, Level: a.Level, Name: a.Name, Code: a.Code, Status: a.Status,
-		Copyable: a.Copyable, Revision: a.Revision, Content: a.Content, Digest: a.Digest,
+		Copyable: a.Copyable, WeldKind: a.WeldKind, Revision: a.Revision, Content: a.Content, Digest: a.Digest,
 		Deps: a.Deps, CreatorID: &cid,
 	}
 }
@@ -27,7 +27,7 @@ func memberFromAsset(a Asset) ClosureMember {
 func memberFromReplica(r AssetReplica) ClosureMember {
 	return ClosureMember{
 		ID: r.ID, Kind: r.Kind, Level: r.Level, Name: r.Name, Code: r.Code, Status: r.Status,
-		Copyable: r.Copyable, Revision: r.Revision, Content: r.Content, Digest: r.Digest, Deps: r.Deps,
+		Copyable: r.Copyable, WeldKind: r.WeldKind, Revision: r.Revision, Content: r.Content, Digest: r.Digest, Deps: r.Deps,
 	}
 }
 
@@ -168,6 +168,7 @@ func (s *Closure) packForPad(ctx context.Context, assetID uuid.UUID) (ClosureSna
 		if err := validateClosure(snap); err != nil {
 			return ClosureSnapshot{}, err
 		}
+		s.attachFSPaths(ctx, &snap)
 		return snap, nil
 	}
 	if root.Kind != KindProject {
@@ -175,11 +176,25 @@ func (s *Closure) packForPad(ctx context.Context, assetID uuid.UUID) (ClosureSna
 	}
 	// 工程不把工艺正文打进包，焊道只引用工艺 Id。
 	parts := []digest.Member{{ID: root.ID, Revision: root.Revision, Digest: root.Digest, Content: root.Content}}
-	return ClosureSnapshot{
+	snap := ClosureSnapshot{
 		Kind: KindProject, AssetID: root.ID, Revision: root.Revision, Level: root.Level,
 		Copyable: root.Copyable, Status: root.Status, Members: []ClosureMember{root},
 		Digest: digest.ClosureSum(parts),
-	}, nil
+	}
+	s.attachFSPaths(ctx, &snap)
+	return snap, nil
+}
+
+// attachFSPaths 把当前目录挂点写进闭包，不进摘要。
+func (s *Closure) attachFSPaths(ctx context.Context, snap *ClosureSnapshot) {
+	for i := range snap.Members {
+		parent, folders, err := s.store.FSLineage(ctx, snap.Members[i].ID)
+		if err != nil {
+			continue
+		}
+		snap.Members[i].FSParentID = parent
+		snap.Members[i].FSPath = folders
+	}
 }
 
 // loadRootForPack 组包根：本厂原件优先，否则已收副本。
@@ -508,6 +523,9 @@ func (s *Closure) SetProjectDeps(ctx context.Context, token string, assetID uuid
 				return store.AssetWrite{}, err
 			}
 		} else if err := s.assertFactoryProcessDeps(ctx, deps); err != nil {
+			return store.AssetWrite{}, err
+		}
+		if err := s.assertDepsWeldKind(ctx, cur.WeldKind, deps); err != nil {
 			return store.AssetWrite{}, err
 		}
 		// 改依赖后，当前模版下的旧引用仍须落在新 deps 里。

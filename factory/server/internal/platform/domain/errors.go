@@ -28,6 +28,7 @@ var (
 	ErrMultiParent           = errors.New("org unit cannot have two parents")       // 树必须保持单父
 	ErrWorkContext           = errors.New("invalid work context")                   // 没选、选了未分配节点、或直属与节点同时选
 	ErrInvalidName           = errors.New("invalid name")                           // 显示名空了或太长
+	ErrDuplicateName         = errors.New("name already exists in this folder")     // 同一文件夹下名字不能重复
 	ErrInvalidKey            = errors.New("invalid key material")                   // 公钥/私钥或签名长度不对
 	ErrSigningKeyExists      = errors.New("factory signing key already set")        // 一厂一把签发钥，不能换
 	ErrClientKeyMismatch     = errors.New("client public key does not match")       // 已登记公钥与本次不一致
@@ -42,6 +43,8 @@ var (
 	ErrAssetNotAvailable     = errors.New("asset is not available")                 // 草稿或停用，不能当可用资产
 	ErrAssetNotCopyable      = errors.New("asset is not copyable")                  // 不可复制不得升档
 	ErrAssetDependency       = errors.New("asset dependency missing or mismatched") // 工程依赖缺失或错配
+	ErrInvalidWeldKind       = errors.New("invalid weld kind")                      // 作业类型只能是单层/多层/T排
+	ErrWeldKindMismatch      = errors.New("weld kind mismatch")                     // 工程与工艺作业类型必须相同
 	ErrClosureIncomplete     = errors.New("closure is incomplete")                  // 组包缺成员或读不到钉死修订
 	ErrClosureMismatch       = errors.New("closure revision mismatch")              // 组包串版：身份或修订被顶替
 	ErrClientCacheFull       = errors.New("client cache is full")                   // 工程份已达缓存上限

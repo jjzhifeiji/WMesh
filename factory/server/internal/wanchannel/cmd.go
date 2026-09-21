@@ -14,8 +14,11 @@ const (
 	CmdPresence      = "presence"
 	CmdAssetList     = "asset_list"
 	CmdAssetSnapshot = "asset_snapshot"
+	CmdFSList        = "fs_list"
+	CmdFSApply       = "fs_apply" // 对齐平台目录
 	CmdAssetListOK   = "asset_list_ok"
 	CmdAssetSnapOK   = "asset_snapshot_ok"
+	CmdFSListOK      = "fs_list_ok"
 	CmdSoftware      = "software" // 厂服务包或 APK 已发布，厂去拉正文
 )
 
@@ -35,6 +38,7 @@ type Cmd struct {
 	ServiceVersionName string          `json:"serviceVersionName,omitempty"` // 厂端服务版本名
 	Status             string          `json:"status,omitempty"`             // 工厂治理状态
 	ShortCode          string          `json:"shortCode,omitempty"`          // 本厂短码
+	FactoryName        string          `json:"factoryName,omitempty"`        // 本厂显示名
 	ClientID           string          `json:"clientId,omitempty"`           // 现场设备身份
 	ClientName         string          `json:"clientName,omitempty"`         // 设备显示名
 	ClientShortCode    string          `json:"clientShortCode,omitempty"`    // Client 短码

@@ -3,14 +3,14 @@ package service
 import "wmesh/global/internal/store"
 
 const (
-	KindProcess        = store.KindProcess        // 工艺
-	KindProject        = store.KindProject        // 工程
-	AssetLevelPlatform = store.AssetLevelPlatform // 平台级，只在 WAN
-	AssetDraft         = store.AssetDraft         // 草稿
-	AssetAvailable     = store.AssetAvailable     // 可用
-	AssetDisabled      = store.AssetDisabled      // 停用
-	FactoryActive      = store.FactoryActive      // 有效：可认领、可登录
-	FactoryDisabled    = store.FactoryDisabled    // 停用：可再启用
+	KindProcess            = store.KindProcess            // 工艺
+	KindProject            = store.KindProject            // 工程
+	AssetLevelPlatform     = store.AssetLevelPlatform     // 平台级，只在 WAN
+	AssetDraft             = store.AssetDraft             // 草稿
+	AssetAvailable         = store.AssetAvailable         // 可用
+	AssetDisabled          = store.AssetDisabled          // 停用
+	FactoryActive          = store.FactoryActive          // 有效：可认领、可登录
+	FactoryDisabled        = store.FactoryDisabled        // 停用：可再启用
 	FactoryRetired         = store.FactoryRetired         // 已注销：不能再启用
 	SoftwareWANService     = store.SoftwareWANService     // 云端服务包
 	SoftwareFactoryService = store.SoftwareFactoryService // 厂端服务包
@@ -28,6 +28,9 @@ type (
 	Asset                = store.Asset
 	AssetDep             = store.AssetDep
 	AssetSnapshot        = store.AssetSnapshot
+	FSNode               = store.FSNode
+	FSFolderHint         = store.FSFolderHint
+	PlatformFSLayout     = store.PlatformFSLayout
 	ClosureMember        = store.ClosureMember
 	ClosureSnapshot      = store.ClosureSnapshot
 	ContentTemplate      = store.ContentTemplate

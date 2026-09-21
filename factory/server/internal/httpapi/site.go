@@ -57,10 +57,10 @@ func (h *Handler) claim(w http.ResponseWriter, r *http.Request) {
 type discoverResp struct {
 	Status    string             `json:"status"`    // ok 或 degraded，与探活同口径
 	HTTPBase  string             `json:"httpBase"`  // 本机对外地址，给 Client 当厂地址
-	Factories []hub.FactoryProbe `json:"factories"` // 已认领工厂；belongs 表示该设备号属本厂
+	Factories []hub.FactoryProbe `json:"factories"` // 已认领工厂；factoryName 是厂名，belongs 表示该设备号属本厂
 }
 
-// discover 给现场 Client 探活：厂身份、地址、该机械臂号是否本厂已钉设备。
+// discover 给现场 Client 探活：厂身份、厂名、地址、该机械臂号是否本厂已钉设备。
 func (h *Handler) discover(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	resp := discoverResp{Status: "ok", HTTPBase: publicHTTPBase(r), Factories: []hub.FactoryProbe{}}

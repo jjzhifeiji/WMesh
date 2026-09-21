@@ -211,10 +211,14 @@ func TestFactoryHTTP(t *testing.T) {
 		t.Fatalf("author context %d %s", code, body)
 	}
 	code, body = do(t, srv, "POST", base+"/assets", tok, `{"kind":"process","level":"factory","name":"焊A","content":"secret-body","direct":true}`)
-	if code != http.StatusCreated {
+	if code != http.StatusCreated || !strings.Contains(body, `"copyable":true`) {
 		t.Fatalf("create process %d %s", code, body)
 	}
 	pid := gjson(t, body, "id")
+	code, body = do(t, srv, "POST", base+"/assets", tok, `{"kind":"process","level":"factory","name":"密焊","content":"secret-tight","direct":true,"copyable":false}`)
+	if code != http.StatusCreated || !strings.Contains(body, `"copyable":false`) || gjson(t, body, "revision") != "1" {
+		t.Fatalf("create tight process %d %s", code, body)
+	}
 	code, body = do(t, srv, "GET", base+"/assets?kind=process", tok, "")
 	if code != http.StatusOK || !strings.Contains(body, pid) || strings.Contains(body, "secret-body") || !strings.Contains(body, "creatorLogin") {
 		t.Fatalf("list process %d %s", code, body)

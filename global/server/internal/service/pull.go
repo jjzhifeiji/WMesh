@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 
 	"github.com/google/uuid"
 
@@ -15,7 +16,7 @@ func (s *Service) IndexForFactory(ctx context.Context, factoryID uuid.UUID, kind
 		return nil, err
 	}
 	out := []Cmd{{
-		Typ: CmdFactoryState, Status: fac.Status, Revision: fac.LifecycleRevision, ShortCode: fac.ShortCode,
+		Typ: CmdFactoryState, Status: fac.Status, Revision: fac.LifecycleRevision, ShortCode: fac.ShortCode, FactoryName: fac.Name,
 	}}
 	if fac.Status != FactoryActive {
 		return out, nil
@@ -42,6 +43,23 @@ func (s *Service) IndexForFactory(ctx context.Context, factoryID uuid.UUID, kind
 	}
 	for _, snap := range snaps {
 		out = append(out, Cmd{Typ: CmdClosure, AssetID: snap.AssetID.String(), Revision: snap.Revision, Kind: snap.Kind})
+	}
+	kinds := []string{KindProcess, KindProject}
+	if kind == KindProcess || kind == KindProject {
+		kinds = []string{kind}
+	}
+	if kind == "" || kind == KindProcess || kind == KindProject {
+		for _, knd := range kinds {
+			layout, err := s.store.PlatformFSLayout(ctx, knd)
+			if err != nil {
+				return nil, err
+			}
+			raw, err := json.Marshal(layout)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, Cmd{Typ: CmdFSApply, Kind: knd, Snapshot: raw})
+		}
 	}
 	if kind == "" || kind == KindProcess || kind == KindProject {
 		tpls, err := s.Templates.SnapshotsForFactory(ctx, factoryID)

@@ -44,6 +44,7 @@ type AssetSnapshot struct {
 	Content         []byte     `json:"content"`         // 正文
 	Digest          []byte     `json:"digest"`          // 摘要
 	Copyable        bool       `json:"copyable"`        // 源是否可复制
+	WeldKind        string     `json:"weldKind"`        // 作业类型：与源相同
 	Status          string     `json:"status"`          // 源状态
 	Deps            []AssetDep `json:"deps"`            // 源依赖（身份+修订+摘要）
 }
@@ -57,6 +58,7 @@ type Asset struct {
 	Code           string     `json:"code"`          // 只读编号，创建后不改
 	Status         string     `json:"status"`         // draft / available / disabled
 	Copyable       bool       `json:"copyable"`       // 可否升档
+	WeldKind       string     `json:"weldKind"`       // 作业类型：single / multilayer / tbar
 	Revision       int64      `json:"revision"`       // 当前修订
 	Content        []byte     `json:"-"`              // 不透明正文；不进列表/元数据
 	Digest         []byte     `json:"digest"`         // SHA-256 32 字节
@@ -91,6 +93,7 @@ type governedAssetRow struct {
 	Code           string     `gorm:"not null"`               // 只读编号
 	Status         string     `gorm:"not null"`               // draft / available / disabled
 	Copyable       bool       `gorm:"not null"`               // 可否升档
+	WeldKind       string     `gorm:"column:weld_kind;not null"` // 作业类型
 	Revision       int64      `gorm:"not null"`               // 当前修订
 	Content        []byte     `gorm:"type:bytea;not null"`    // 正文
 	Digest         []byte     `gorm:"type:bytea;not null"`    // SHA-256
@@ -128,6 +131,10 @@ func (s *Store) InsertGovernedAsset(ctx context.Context, in Asset) (Asset, error
 	if err := assertAssetDigest(in.Digest); err != nil {
 		return Asset{}, err
 	}
+	weldKind, err := NormalizeWeldKind(in.WeldKind)
+	if err != nil {
+		return Asset{}, err
+	}
 	id := valueOrNew(in.ID)
 	env, err := s.persistBody(id, 1, tableAssets, nonempty(in.Content))
 	if err != nil {
@@ -160,6 +167,7 @@ func (s *Store) InsertGovernedAsset(ctx context.Context, in Asset) (Asset, error
 			Code:           code,
 			Status:         in.Status,
 			Copyable:       in.Copyable,
+			WeldKind:       weldKind,
 			Revision:       1,
 			Content:        env,
 			Digest:         in.Digest,
@@ -176,7 +184,7 @@ func (s *Store) InsertGovernedAsset(ctx context.Context, in Asset) (Asset, error
 		if err := tx.Create(&row).Error; err != nil {
 			return mapAssetWriteErr(err)
 		}
-		return nil
+		return placeAssetFileTx(tx, row.Kind, row.Level, ownerPtr(row.Level, row.CreatorID), row.ID, row.Name, row.Code, uuid.Nil)
 	})
 	if err != nil {
 		return Asset{}, err
@@ -240,6 +248,9 @@ func (s *Store) UpdateGovernedAsset(ctx context.Context, assetID uuid.UUID, expe
 			return domain.ErrRevisionConflict
 		}
 		if err := tx.First(&row, "id = ?", assetID).Error; err != nil {
+			return err
+		}
+		if err := syncFSFileNameTx(tx, assetID, w.Name); err != nil {
 			return err
 		}
 		if w.KeepContent {
@@ -329,14 +340,19 @@ func (s *Store) AssetIsReferenced(ctx context.Context, assetID uuid.UUID) (bool,
 
 // DeleteGovernedAsset 物理删除本厂一条；调用方须先确认未被依赖。
 func (s *Store) DeleteGovernedAsset(ctx context.Context, assetID uuid.UUID) error {
-	res := s.db.WithContext(ctx).Where("id = ?", assetID).Delete(&governedAssetRow{})
-	if res.Error != nil {
-		return res.Error
-	}
-	if res.RowsAffected == 0 {
-		return domain.ErrNotFound
-	}
-	return nil
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("asset_id = ? AND node_kind = ?", assetID, FSNodeFile).Delete(&fsNodeRow{}).Error; err != nil {
+			return err
+		}
+		res := tx.Where("id = ?", assetID).Delete(&governedAssetRow{})
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			return domain.ErrNotFound
+		}
+		return nil
+	})
 }
 
 // ExportAssetSnapshot 导出升平台用快照；不改原件。
@@ -354,6 +370,7 @@ func (s *Store) ExportAssetSnapshot(ctx context.Context, assetID uuid.UUID) (Ass
 		Content:         a.Content,
 		Digest:          a.Digest,
 		Copyable:        a.Copyable,
+		WeldKind:        a.WeldKind,
 		Status:          a.Status,
 		Deps:            a.Deps,
 	}, nil
@@ -430,6 +447,7 @@ func assetFromGoverned(row governedAssetRow) Asset {
 		Code:           row.Code,
 		Status:         row.Status,
 		Copyable:       row.Copyable,
+		WeldKind:       row.WeldKind,
 		Revision:       row.Revision,
 		Content:        row.Content,
 		Digest:         row.Digest,

@@ -17,7 +17,7 @@ import (
 func memberFromAsset(a Asset) ClosureMember {
 	return ClosureMember{
 		ID: a.ID, Kind: a.Kind, Level: a.Level, Name: a.Name, Code: a.Code, Status: a.Status,
-		Copyable: a.Copyable, Revision: a.Revision, Content: a.Content, Digest: a.Digest, Deps: a.Deps,
+		Copyable: a.Copyable, WeldKind: a.WeldKind, Revision: a.Revision, Content: a.Content, Digest: a.Digest, Deps: a.Deps,
 	}
 }
 
@@ -136,7 +136,20 @@ func (s *Closure) packPlatform(ctx context.Context, root Asset) (ClosureSnapshot
 	if err := validateClosure(snap); err != nil {
 		return ClosureSnapshot{}, err
 	}
+	s.attachFSPaths(ctx, &snap)
 	return snap, nil
+}
+
+// attachFSPaths 把当前目录挂点写进闭包，不进摘要。
+func (s *Closure) attachFSPaths(ctx context.Context, snap *ClosureSnapshot) {
+	for i := range snap.Members {
+		parent, folders, err := s.store.FSLineage(ctx, snap.Members[i].ID)
+		if err != nil {
+			continue
+		}
+		snap.Members[i].FSParentID = parent
+		snap.Members[i].FSPath = folders
+	}
 }
 
 // GrantFactoryAsset 授权某厂接收一条平台级资产。
@@ -369,6 +382,9 @@ func (s *Closure) SetPlatformProjectDeps(ctx context.Context, token string, asse
 			return store.AssetWrite{}, domain.ErrAssetNotAvailable
 		}
 		if err := s.assertPlatformProcessDeps(ctx, deps); err != nil {
+			return store.AssetWrite{}, err
+		}
+		if err := s.assertDepsWeldKind(ctx, cur.WeldKind, deps); err != nil {
 			return store.AssetWrite{}, err
 		}
 		// 改依赖后，当前模版下的旧引用仍须落在新 deps 里。

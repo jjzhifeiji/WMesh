@@ -121,10 +121,14 @@ func TestWANHTTP(t *testing.T) {
 		t.Fatalf("list people %d %s", code, body)
 	}
 	code, body = do(t, srv, "POST", "/v1/assets", tok, `{"kind":"process","name":"平台焊","content":"wan-body"}`)
-	if code != http.StatusCreated {
+	if code != http.StatusCreated || !strings.Contains(body, `"copyable":false`) {
 		t.Fatalf("create platform process %d %s", code, body)
 	}
 	pid := gjson(t, body, "id")
+	code, body = do(t, srv, "POST", "/v1/assets", tok, `{"kind":"process","name":"开焊","content":"open-body","copyable":true}`)
+	if code != http.StatusCreated || !strings.Contains(body, `"copyable":true`) || gjson(t, body, "revision") != "1" {
+		t.Fatalf("create copyable platform process %d %s", code, body)
+	}
 	code, body = do(t, srv, "GET", "/v1/assets?kind=process", tok, "")
 	if code != http.StatusOK || !strings.Contains(body, pid) || strings.Contains(body, "wan-body") {
 		t.Fatalf("list platform %d %s", code, body)

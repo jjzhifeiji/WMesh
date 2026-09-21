@@ -1,6 +1,6 @@
 // Package store 只碰 WAN 库：管理员、工厂名录、初始超管对账、现场设备名录、平台级资产、内容模版、下发授权、软件发布、通道在线、内容租约、焊汇总和审计。
 // 不判定允许/拒绝，也不回调应用服务；不见厂内人员、组织。
-// 文件按域拆：account / directory / channel / client / asset / template / closure / lease / update / stats。
+// 文件按域拆：account / directory / channel / client / asset / fs / template / closure / lease / update / stats。
 package store
 
 import (

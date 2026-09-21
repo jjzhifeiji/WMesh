@@ -37,18 +37,23 @@ type createAssetReq struct {
 	Level     string             `json:"level"`     // factory / personal
 	Name      string             `json:"name"`      // 显示名
 	Content   string             `json:"content"`   // UTF-8 正文
+	WeldKind  string             `json:"weldKind"`  // 作业类型：single / multilayer / tbar
+	Copyable  *bool              `json:"copyable"`  // 空则默认可复制
 	Direct    bool               `json:"direct"`    // 兼容旧客户端；未带节点时按工厂直属
 	OrgUnitID *string            `json:"orgUnitId"` // 未传则记工厂直属
 	Deps      []service.AssetDep `json:"deps"`      // 可空；新建从参数补
+	ParentID  string             `json:"parentId"`  // 目录父文件夹；空则挂对应树的根
 }
 
 type padCreateAssetReq struct {
-	Kind    string             `json:"kind"`    // process / project
-	Name    string             `json:"name"`    // 显示名
-	Content string             `json:"content"` // UTF-8 正文
-	ID      string             `json:"id"`      // 本机已发身份；空则厂端发号
-	Code    string             `json:"code"`    // 本机只读编号；空则厂端发号
-	Deps    []service.AssetDep `json:"deps"`    // 工程可空；从正文补
+	Kind     string             `json:"kind"`     // process / project
+	Name     string             `json:"name"`     // 显示名
+	Content  string             `json:"content"`  // UTF-8 正文
+	WeldKind string             `json:"weldKind"` // 作业类型
+	ID       string             `json:"id"`       // 本机已发身份；空则厂端发号
+	Code     string             `json:"code"`     // 本机只读编号；空则厂端发号
+	Deps     []service.AssetDep `json:"deps"`     // 工程可空；从正文补
+	ParentID string             `json:"parentId"` // 目录父文件夹；空则挂个人根
 }
 
 type expectedReq struct {
@@ -143,21 +148,29 @@ func (h *Handler) createAsset(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		content := []byte(req.Content)
+		copyable := true
+		if req.Copyable != nil {
+			copyable = *req.Copyable
+		}
 		var row service.Asset
 		switch {
 		case req.Kind == service.KindProcess && req.Level == service.AssetLevelFactory:
-			row, err = svc.Assets.CreateFactoryProcess(r.Context(), bearer(r), wc, req.Name, content)
+			row, err = svc.Assets.CreateProcess(r.Context(), bearer(r), wc, service.AssetLevelFactory, req.Name, content, copyable, req.WeldKind)
 		case req.Kind == service.KindProcess && req.Level == service.AssetLevelPersonal:
-			row, err = svc.Assets.CreatePersonalProcess(r.Context(), bearer(r), wc, req.Name, content)
+			row, err = svc.Assets.CreateProcess(r.Context(), bearer(r), wc, service.AssetLevelPersonal, req.Name, content, copyable, req.WeldKind)
 		case req.Kind == service.KindProject && req.Level == service.AssetLevelFactory:
-			row, err = svc.Assets.CreateFactoryProject(r.Context(), bearer(r), wc, req.Name, content, req.Deps)
+			row, err = svc.Assets.CreateFactoryProject(r.Context(), bearer(r), wc, req.Name, content, req.Deps, req.WeldKind)
 		case req.Kind == service.KindProject && req.Level == service.AssetLevelPersonal:
-			row, err = svc.Assets.CreatePersonalProject(r.Context(), bearer(r), wc, req.Name, content, req.Deps)
+			row, err = svc.Assets.CreatePersonalProject(r.Context(), bearer(r), wc, req.Name, content, req.Deps, req.WeldKind)
 		default:
 			writeBadRequest(w, errInvalidID)
 			return
 		}
 		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		if err := placeNewAsset(r, svc, row.ID, req.ParentID); err != nil {
 			writeErr(w, err)
 			return
 		}
@@ -182,8 +195,12 @@ func (h *Handler) createPadAsset(w http.ResponseWriter, r *http.Request) {
 			}
 			id = parsed
 		}
-		row, err := svc.Assets.CreatePadPersonal(r.Context(), bearer(r), req.Kind, req.Name, []byte(req.Content), id, req.Code, req.Deps)
+		row, err := svc.Assets.CreatePadPersonal(r.Context(), bearer(r), req.Kind, req.Name, []byte(req.Content), id, req.Code, req.Deps, req.WeldKind)
 		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		if err := placeNewAsset(r, svc, row.ID, req.ParentID); err != nil {
 			writeErr(w, err)
 			return
 		}

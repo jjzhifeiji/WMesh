@@ -1,6 +1,6 @@
 // Package store 只读写本厂库：人员、组织、角色、会话、归属桩、焊事实、本厂 Client 凭证、本厂工艺/工程、已收平台级副本、内容模版副本、内容主钥包装、软件副本和上传记录。
 // 不判定允许/拒绝，也不回调应用服务。
-// 文件按域拆：account / org / attr / node / asset / template / closure / policy / sync / lifecycle / crypt / update / stats。
+// 文件按域拆：account / org / attr / node / asset / fs / template / closure / policy / sync / lifecycle / crypt / update / stats。
 package store
 
 import (

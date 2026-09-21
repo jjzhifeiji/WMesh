@@ -33,7 +33,7 @@ func stripContent(a Asset) Asset {
 func replicaAsAsset(r AssetReplica) Asset {
 	return Asset{
 		ID: r.ID, Kind: r.Kind, Level: AssetLevelPlatform, Name: r.Name, Code: r.Code,
-		Status: r.Status, Copyable: r.Copyable, Revision: r.Revision,
+		Status: r.Status, Copyable: r.Copyable, WeldKind: r.WeldKind, Revision: r.Revision,
 		Content: r.Content, Digest: r.Digest, Deps: r.Deps,
 		CreatedAt: r.ReceivedAt, UpdatedAt: r.ReceivedAt,
 	}
@@ -184,10 +184,15 @@ func (s *Assets) resolveAuthorContext(ctx context.Context, acc Account, wc WorkC
 }
 
 // insertAuthored 套模版后落草稿；工程依赖从参数补齐。
-func (s *Assets) insertAuthored(ctx context.Context, acc Account, wc WorkContext, kind, level, name string, content []byte, deps []AssetDep) (Asset, error) {
+func (s *Assets) insertAuthored(ctx context.Context, acc Account, wc WorkContext, kind, level, name string, content []byte, deps []AssetDep, copyable bool, weldKind ...string) (Asset, error) {
 	unitID, path, err := s.resolveAuthorContext(ctx, acc, wc)
 	if err != nil {
 		_ = s.auditAt(ctx, &acc.ID, "create_asset", kind, audit.Deny, unitID, path)
+		return Asset{}, err
+	}
+	weld, err := store.NormalizeWeldKind(firstWeldKind(weldKind))
+	if err != nil {
+		_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny, unitID, path)
 		return Asset{}, err
 	}
 	content, err = s.normalizeContent(ctx, kind, content)
@@ -196,6 +201,10 @@ func (s *Assets) insertAuthored(ctx context.Context, acc Account, wc WorkContext
 		return Asset{}, err
 	}
 	if kind == KindProject {
+		if err := assertProjectWeldKind(weld, content); err != nil {
+			_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny, unitID, path)
+			return Asset{}, err
+		}
 		// 参数里选过的工艺补进依赖，钉当前修订。
 		deps, err = s.fillProjectDeps(ctx, acc, level, content, deps)
 		if err != nil {
@@ -211,19 +220,28 @@ func (s *Assets) insertAuthored(ctx context.Context, acc Account, wc WorkContext
 			_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny, unitID, path)
 			return Asset{}, err
 		}
+		if err := s.assertDepsWeldKind(ctx, weld, deps); err != nil {
+			_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny, unitID, path)
+			return Asset{}, err
+		}
 		// 套完后工程引用须落在已声明依赖里。
 		if err := s.assertProjectProcessIDs(ctx, content, deps); err != nil {
 			_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny, unitID, path)
 			return Asset{}, err
 		}
 	}
-	return s.insertGoverned(ctx, acc, unitID, path, kind, level, name, content, deps)
+	return s.insertGoverned(ctx, acc, unitID, path, kind, level, name, content, deps, copyable, weld)
 }
 
 // insertGoverned 落一条草稿；调用方已决定是否套过模版。
-func (s *Assets) insertGoverned(ctx context.Context, acc Account, unitID *uuid.UUID, path []PathNode, kind, level, name string, content []byte, deps []AssetDep) (Asset, error) {
+func (s *Assets) insertGoverned(ctx context.Context, acc Account, unitID *uuid.UUID, path []PathNode, kind, level, name string, content []byte, deps []AssetDep, copyable bool, weldKind ...string) (Asset, error) {
+	weld, err := store.NormalizeWeldKind(firstWeldKind(weldKind))
+	if err != nil {
+		_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny, unitID, path)
+		return Asset{}, err
+	}
 	return s.putGoverned(ctx, acc, unitID, path, Asset{
-		Kind: kind, Level: level, Name: name, Status: AssetDraft, Copyable: true,
+		Kind: kind, Level: level, Name: name, Status: AssetDraft, Copyable: copyable, WeldKind: weld,
 		Content: content, Digest: digest.Sum(content), CreatorID: acc.ID,
 		OrgUnitID: unitID, OrgPath: path, Deps: deps,
 	})
@@ -243,7 +261,7 @@ func (s *Assets) putGoverned(ctx context.Context, acc Account, unitID *uuid.UUID
 }
 
 // CreatePadPersonal 平板保存：个人级立刻可用，不走管理后台发布。
-func (s *Assets) CreatePadPersonal(ctx context.Context, token string, kind, name string, content []byte, id uuid.UUID, code string, deps []AssetDep) (Asset, error) {
+func (s *Assets) CreatePadPersonal(ctx context.Context, token string, kind, name string, content []byte, id uuid.UUID, code string, deps []AssetDep, weldKind ...string) (Asset, error) {
 	acc, err := s.RequireActive(ctx, token)
 	if err != nil {
 		return Asset{}, err
@@ -262,10 +280,23 @@ func (s *Assets) CreatePadPersonal(ctx context.Context, token string, kind, name
 		_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny, unitID, path)
 		return Asset{}, err
 	}
+	weld := firstWeldKind(weldKind)
+	if weld == "" && kind == KindProject {
+		weld = contenttpl.InferWeldKind(content)
+	}
+	weld, err = store.NormalizeWeldKind(weld)
+	if err != nil {
+		_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny, unitID, path)
+		return Asset{}, err
+	}
 	if kind == KindProject {
 		if err := contenttpl.RejectProcessPath(content); err != nil {
 			_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny, unitID, path)
 			return Asset{}, domain.ErrForbidden
+		}
+		if err := assertProjectWeldKind(weld, content); err != nil {
+			_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny, unitID, path)
+			return Asset{}, err
 		}
 		deps, err = s.fillProjectDeps(ctx, acc, AssetLevelPersonal, content, deps)
 		if err != nil {
@@ -276,6 +307,10 @@ func (s *Assets) CreatePadPersonal(ctx context.Context, token string, kind, name
 			_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny, unitID, path)
 			return Asset{}, err
 		}
+		if err := s.assertDepsWeldKind(ctx, weld, deps); err != nil {
+			_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny, unitID, path)
+			return Asset{}, err
+		}
 		if err := s.assertProjectProcessIDs(ctx, content, deps); err != nil {
 			_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny, unitID, path)
 			return Asset{}, err
@@ -283,7 +318,7 @@ func (s *Assets) CreatePadPersonal(ctx context.Context, token string, kind, name
 	}
 	return s.putGoverned(ctx, acc, unitID, path, Asset{
 		ID: id, Kind: kind, Level: AssetLevelPersonal, Name: name, Code: strings.TrimSpace(code),
-		Status: AssetAvailable, Copyable: true, Content: content, Digest: digest.Sum(content),
+		Status: AssetAvailable, Copyable: true, WeldKind: weld, Content: content, Digest: digest.Sum(content),
 		CreatorID: acc.ID, OrgUnitID: unitID, OrgPath: path, Deps: deps,
 	})
 }
@@ -335,34 +370,43 @@ func (s *Assets) CopyProcess(ctx context.Context, token string, assetID uuid.UUI
 		_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny, unitID, path)
 		return Asset{}, err
 	}
-	return s.insertGoverned(ctx, acc, unitID, path, KindProcess, level, name, src.Content, nil)
+	row, err := s.insertGoverned(ctx, acc, unitID, path, KindProcess, level, name, src.Content, nil, true, src.WeldKind)
+	if err != nil {
+		return Asset{}, err
+	}
+	s.placeCopyBeside(ctx, src.ID, row.ID)
+	return row, nil
 }
 
 // CreateFactoryProcess 本厂有效账号创建厂级工艺，默认可复制，状态草稿。
-func (s *Assets) CreateFactoryProcess(ctx context.Context, token string, wc WorkContext, name string, content []byte) (Asset, error) {
-	acc, err := s.RequireActive(ctx, token)
-	if err != nil {
-		return Asset{}, err
-	}
-	return s.insertAuthored(ctx, acc, wc, KindProcess, AssetLevelFactory, name, content, nil)
+func (s *Assets) CreateFactoryProcess(ctx context.Context, token string, wc WorkContext, name string, content []byte, weldKind ...string) (Asset, error) {
+	return s.CreateProcess(ctx, token, wc, AssetLevelFactory, name, content, true, weldKind...)
 }
 
 // CreatePersonalProcess 本厂有效账号在工作上下文中写入个人级工艺。
-func (s *Assets) CreatePersonalProcess(ctx context.Context, token string, wc WorkContext, name string, content []byte) (Asset, error) {
+func (s *Assets) CreatePersonalProcess(ctx context.Context, token string, wc WorkContext, name string, content []byte, weldKind ...string) (Asset, error) {
+	return s.CreateProcess(ctx, token, wc, AssetLevelPersonal, name, content, true, weldKind...)
+}
+
+// CreateProcess 本厂有效账号创建工艺；可复制由调用方给定，状态草稿。
+func (s *Assets) CreateProcess(ctx context.Context, token string, wc WorkContext, level, name string, content []byte, copyable bool, weldKind ...string) (Asset, error) {
 	acc, err := s.RequireActive(ctx, token)
 	if err != nil {
 		return Asset{}, err
 	}
-	return s.insertAuthored(ctx, acc, wc, KindProcess, AssetLevelPersonal, name, content, nil)
+	if level != AssetLevelFactory && level != AssetLevelPersonal {
+		return Asset{}, domain.ErrNotFound
+	}
+	return s.insertAuthored(ctx, acc, wc, KindProcess, level, name, content, nil, copyable, weldKind...)
 }
 
 // CreatePersonalProject 创建个人级工程；参数里的工艺写入 deps，不必另填。
-func (s *Assets) CreatePersonalProject(ctx context.Context, token string, wc WorkContext, name string, content []byte, deps []AssetDep) (Asset, error) {
+func (s *Assets) CreatePersonalProject(ctx context.Context, token string, wc WorkContext, name string, content []byte, deps []AssetDep, weldKind ...string) (Asset, error) {
 	acc, err := s.RequireActive(ctx, token)
 	if err != nil {
 		return Asset{}, err
 	}
-	return s.insertAuthored(ctx, acc, wc, KindProject, AssetLevelPersonal, name, content, deps)
+	return s.insertAuthored(ctx, acc, wc, KindProject, AssetLevelPersonal, name, content, deps, true, weldKind...)
 }
 
 // assertPersonalProjectDeps 个人工程只能钉自己的个人工艺或厂级可用工艺。
@@ -392,12 +436,12 @@ func (s *kernel) assertPersonalProjectDeps(ctx context.Context, acc Account, dep
 }
 
 // CreateFactoryProject 创建厂级工程；参数里的工艺写入 deps，不必另填。
-func (s *Assets) CreateFactoryProject(ctx context.Context, token string, wc WorkContext, name string, content []byte, deps []AssetDep) (Asset, error) {
+func (s *Assets) CreateFactoryProject(ctx context.Context, token string, wc WorkContext, name string, content []byte, deps []AssetDep, weldKind ...string) (Asset, error) {
 	acc, err := s.RequireActive(ctx, token)
 	if err != nil {
 		return Asset{}, err
 	}
-	return s.insertAuthored(ctx, acc, wc, KindProject, AssetLevelFactory, name, content, deps)
+	return s.insertAuthored(ctx, acc, wc, KindProject, AssetLevelFactory, name, content, deps, true, weldKind...)
 }
 
 // assertFactoryProcessDeps 厂级工程可钉本厂可用厂级、个人级或已收平台级工艺。
@@ -602,6 +646,9 @@ func (s *Assets) UpdateAssetContent(ctx context.Context, token string, assetID u
 		// 工程焊道引用必须落在已声明依赖里。
 		if cur.Kind == KindProject {
 			if err := s.assertProjectProcessIDs(ctx, content, cur.Deps); err != nil {
+				return store.AssetWrite{}, err
+			}
+			if err := assertProjectWeldKind(cur.WeldKind, content); err != nil {
 				return store.AssetWrite{}, err
 			}
 		}
@@ -934,7 +981,7 @@ func (s *Assets) PromoteToFactory(ctx context.Context, token string, assetID uui
 	}
 	// 第一次升档复制新身份。
 	row, err := s.store.InsertGovernedAsset(ctx, Asset{
-		Kind: src.Kind, Level: AssetLevelFactory, Name: src.Name, Status: AssetAvailable, Copyable: true,
+		Kind: src.Kind, Level: AssetLevelFactory, Name: src.Name, Status: AssetAvailable, Copyable: true, WeldKind: src.WeldKind,
 		Content: src.Content, Digest: src.Digest, CreatorID: acc.ID,
 		OrgUnitID: src.OrgUnitID, OrgPath: src.OrgPath,
 		SourceID: &src.ID, SourceRevision: &rev, Deps: src.Deps,
@@ -1008,13 +1055,14 @@ type PromotableAsset struct {
 	Digest   []byte    `json:"digest"`   // 内容摘要
 	Status   string    `json:"status"`   // draft / available / disabled
 	Copyable bool      `json:"copyable"` // 原样带回，升档时仍按可复制判定
+	WeldKind string    `json:"weldKind"` // 作业类型
 }
 
 // 升档列表只带元数据，不含正文。
 func toPromotable(a Asset) PromotableAsset {
 	return PromotableAsset{
 		ID: a.ID, Kind: a.Kind, Level: a.Level, Name: a.Name, Code: a.Code, Revision: a.Revision,
-		Digest: a.Digest, Status: a.Status, Copyable: a.Copyable,
+		Digest: a.Digest, Status: a.Status, Copyable: a.Copyable, WeldKind: a.WeldKind,
 	}
 }
 

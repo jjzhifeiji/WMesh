@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
@@ -23,6 +24,7 @@ type Lifecycle struct {
 	Status    string    `gorm:"not null" json:"status"`    // active / disabled / retired
 	Revision  int64     `gorm:"not null" json:"revision"`  // 已接受的 WAN 修订，只向前
 	ShortCode string    `json:"shortCode,omitempty"`      // 本厂短码，认领后写入
+	Name      string    `json:"name,omitempty"`           // 本厂显示名，认领或握手写入
 	UpdatedAt time.Time `gorm:"not null" json:"updatedAt"` // 最近一次落地
 }
 
@@ -55,9 +57,16 @@ func (s *Store) ApplyLifecycle(ctx context.Context, status string, revision int6
 		if revision <= out.Revision {
 			return nil
 		}
-		out = Lifecycle{ID: 1, Status: status, Revision: revision, ShortCode: out.ShortCode, UpdatedAt: now}
+		out = Lifecycle{ID: 1, Status: status, Revision: revision, ShortCode: out.ShortCode, Name: out.Name, UpdatedAt: now}
+		omits := make([]string, 0, 2)
 		if out.ShortCode == "" {
-			return tx.Omit("ShortCode").Save(&out).Error
+			omits = append(omits, "ShortCode")
+		}
+		if out.Name == "" {
+			omits = append(omits, "Name")
+		}
+		if len(omits) > 0 {
+			return tx.Omit(omits...).Save(&out).Error
 		}
 		return tx.Save(&out).Error
 	})
@@ -101,4 +110,29 @@ func (s *Store) FactoryShortCode(ctx context.Context) (string, error) {
 		return "", domain.ErrAssetCodeMissing
 	}
 	return row.ShortCode, nil
+}
+
+// PutFactoryName 写入本厂显示名；空串忽略，已有则覆盖。
+func (s *Store) PutFactoryName(ctx context.Context, name string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil
+	}
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var row Lifecycle
+		if err := tx.First(&row, "id = ?", 1).Error; err != nil {
+			if !errors.Is(err, gorm.ErrRecordNotFound) {
+				return err
+			}
+			row = Lifecycle{ID: 1, Status: FactoryActive}
+		}
+		row.Name = name
+		if row.UpdatedAt.IsZero() {
+			row.UpdatedAt = time.Now().UTC()
+		}
+		if row.ShortCode == "" {
+			return tx.Omit("ShortCode").Save(&row).Error
+		}
+		return tx.Save(&row).Error
+	})
 }

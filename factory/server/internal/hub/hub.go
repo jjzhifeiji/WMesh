@@ -166,9 +166,10 @@ func (h *Hub) ensure(factoryID uuid.UUID) (*service.Service, error) {
 
 // SiteFactory 是本机已认领的一家工厂，给登录页免填 UUID。
 type SiteFactory struct {
-	ID      uuid.UUID `json:"id"`      // 工厂稳定身份
-	SALogin string    `json:"saLogin"` // 初始超管登录名，方便认领后登录
-	Status  string    `json:"status"`  // 本厂治理状态：active / disabled / retired
+	ID      uuid.UUID `json:"id"`               // 工厂稳定身份
+	Name    string    `json:"name,omitempty"`   // 本厂显示名
+	SALogin string    `json:"saLogin"`          // 初始超管登录名，方便认领后登录
+	Status  string    `json:"status"`           // 本厂治理状态：active / disabled / retired
 }
 
 // ListSite 列出本机已有厂库；没有 WAN 名录。
@@ -189,11 +190,13 @@ func (h *Hub) ListSite(ctx context.Context) ([]SiteFactory, error) {
 			login = p.LoginName
 		}
 		status := store.FactoryActive
+		name := ""
 		// 读本厂已落地的治理状态，给登录页提示停用/注销。
 		if lc, err := svc.Store().Lifecycle(ctx); err == nil {
 			status = lc.Status
+			name = lc.Name
 		}
-		out = append(out, SiteFactory{ID: id, SALogin: login, Status: status})
+		out = append(out, SiteFactory{ID: id, Name: name, SALogin: login, Status: status})
 	}
 	return out, nil
 }
@@ -220,6 +223,9 @@ func (h *Hub) Claim(ctx context.Context, wanURL, enrollmentCode, password string
 			return SiteFactory{}, err
 		}
 	}
+	if err := svc.Store().PutFactoryName(ctx, offer.Name); err != nil {
+		return SiteFactory{}, err
+	}
 	pub, _, err := h.signingMaterial(ctx, svc)
 	if err != nil {
 		return SiteFactory{}, err
@@ -228,7 +234,7 @@ func (h *Hub) Claim(ctx context.Context, wanURL, enrollmentCode, password string
 		return SiteFactory{}, err
 	}
 	h.ensureChannel(offer.FactoryID)
-	return SiteFactory{ID: offer.FactoryID, SALogin: offer.SALogin, Status: store.FactoryActive}, nil
+	return SiteFactory{ID: offer.FactoryID, Name: offer.Name, SALogin: offer.SALogin, Status: store.FactoryActive}, nil
 }
 
 // 已有签发钥就用；没有则生成并写入本厂库。

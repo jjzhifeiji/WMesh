@@ -50,6 +50,39 @@ export function kindLabel(kind: string): string {
   return ROOT_KINDS.find((k) => k.key === kind)?.label ?? CATALOG_KINDS.find((k) => k.key === kind)?.label ?? kind;
 }
 
+export const WELD_SINGLE = "single";
+export const WELD_MULTI = "multilayer";
+export const WELD_TBAR = "tbar";
+
+export const WELD_KINDS = [
+  { value: WELD_SINGLE, label: "单层焊道" },
+  { value: WELD_MULTI, label: "多层焊缝" },
+  { value: WELD_TBAR, label: "T排对接" },
+] as const;
+
+export function weldKindLabel(v: string) {
+  return WELD_KINDS.find((k) => k.value === v)?.label ?? v;
+}
+
+export function weldKindOfTemplate(id: string): string | undefined {
+  if (id === SEED_TPL_SINGLE) return WELD_SINGLE;
+  if (id === SEED_TPL_MULTI) return WELD_MULTI;
+  if (id === SEED_TPL_TBAR) return WELD_TBAR;
+  return undefined;
+}
+
+export function sameWeldKind(got: string | undefined, want: string | undefined) {
+  if (!want) return true;
+  return (got || WELD_SINGLE) === want;
+}
+
+export function projectTemplatesForWeld<T extends { id: string }>(rows: T[] | undefined, weld: string): T[] {
+  return (rows ?? []).filter((t) => {
+    const k = weldKindOfTemplate(t.id);
+    return !k || k === weld;
+  });
+}
+
 export function hasKind(kinds: string[] | undefined, kind: string): boolean {
   return (kinds ?? []).includes(kind);
 }

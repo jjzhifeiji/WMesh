@@ -15,17 +15,20 @@ import (
 
 // ClosureMember 是闭包里的一条资产快照，含正文。
 type ClosureMember struct {
-	ID       uuid.UUID  `json:"id"`       // 稳定身份
-	Kind     string     `json:"kind"`     // process / project
-	Level    string     `json:"level"`    // 固定 platform
-	Name     string     `json:"name"`     // 显示名
-	Code     string     `json:"code,omitempty"` // 只读编号，跟身份走
-	Status   string     `json:"status"`   // 组包时状态
-	Copyable bool       `json:"copyable"` // 与源相同
-	Revision int64      `json:"revision"` // 钉死修订
-	Content  []byte     `json:"content"`  // 正文
-	Digest   []byte     `json:"digest"`   // 内容 SHA-256
-	Deps     []AssetDep `json:"deps"`     // 工艺必须空
+	ID         uuid.UUID      `json:"id"`                   // 稳定身份
+	Kind       string         `json:"kind"`                 // process / project
+	Level      string         `json:"level"`                // 固定 platform
+	Name       string         `json:"name"`                 // 显示名
+	Code       string         `json:"code,omitempty"`       // 只读编号，跟身份走
+	Status     string         `json:"status"`               // 组包时状态
+	Copyable   bool           `json:"copyable"`             // 与源相同
+	WeldKind   string         `json:"weldKind"`             // 作业类型：与源相同
+	Revision   int64          `json:"revision"`             // 钉死修订
+	Content    []byte         `json:"content"`              // 正文
+	Digest     []byte         `json:"digest"`               // 内容 SHA-256
+	Deps       []AssetDep     `json:"deps"`                 // 工艺必须空
+	FSParentID *uuid.UUID     `json:"fsParentId,omitempty"` // 文件所在文件夹；空表示平台根
+	FSPath     []FSFolderHint `json:"fsPath,omitempty"`     // 从靠近根到父文件夹，不含根；不进摘要
 }
 
 // ClosureSnapshot 是一份平台级工程或工艺的完整快照，不是新身份。

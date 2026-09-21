@@ -16,11 +16,12 @@
 ## 快速开始
 
 ```bash
-# 厂内（app + PostgreSQL 18 + RustFS 对象存储）
-cd factory && make up
+# 本机按当前源码重建并拉起（默认云端+厂端；只云端加 wan，只厂端加 factory）
+./scripts/dev-up.sh
 
-# WAN（app + PostgreSQL 18 + RustFS 对象存储）
-cd global && make up
+# 或分工程：
+cd factory && make up    # 厂内 http://localhost:52081
+cd global && make up     # WAN  http://localhost:52080
 ```
 
 首次 `make up` 会把 `.env.example` 复制成 `.env`；生产环境先改掉里面的密码，并保证两侧 `WMESH_BOOTSTRAP_TOKEN` 一致。

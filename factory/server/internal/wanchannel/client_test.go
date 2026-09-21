@@ -106,7 +106,7 @@ func TestHold(t *testing.T) {
 	defer cancel()
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- Hold(ctx, "tcp://"+mqttAddr, httpSrv.URL, fid, priv, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+		errCh <- Hold(ctx, "tcp://"+mqttAddr, httpSrv.URL, fid, priv, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	}()
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
@@ -154,7 +154,7 @@ func TestHoldDropsWhenBrokerStops(t *testing.T) {
 	defer cancel()
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- Hold(ctx, "tcp://"+mqttAddr, httpSrv.URL, fid, priv, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+		errCh <- Hold(ctx, "tcp://"+mqttAddr, httpSrv.URL, fid, priv, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	}()
 	select {
 	case <-sawIndex:
@@ -218,7 +218,7 @@ func TestHoldReportsPresence(t *testing.T) {
 	defer cancel()
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- Hold(ctx, "tcp://"+mqttAddr, httpSrv.URL, fid, priv, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+		errCh <- Hold(ctx, "tcp://"+mqttAddr, httpSrv.URL, fid, priv, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	}()
 	select {
 	case cmd := <-got:
@@ -263,7 +263,7 @@ func TestHoldLeaseFailKeepsConnection(t *testing.T) {
 	defer cancel()
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- Hold(ctx, "tcp://"+mqttAddr, httpSrv.URL, fid, priv, nil, nil, nil, nil, nil, nil, nil, func(Lease) error {
+		errCh <- Hold(ctx, "tcp://"+mqttAddr, httpSrv.URL, fid, priv, nil, nil, nil, nil, nil, nil, nil, nil, func(Lease) error {
 			return domain.ErrContentLeaseExpired
 		}, nil, nil)
 	}()
@@ -314,7 +314,7 @@ func TestHoldSoftwareNotifyPassesMetaOnly(t *testing.T) {
 		errCh <- Hold(ctx, "tcp://"+mqttAddr, httpSrv.URL, fid, priv, nil, nil, nil, nil, nil, func(in json.RawMessage) error {
 			got <- in
 			return nil
-		}, nil, nil, nil, nil)
+		}, nil, nil, nil, nil, nil)
 	}()
 	select {
 	case raw := <-got:
@@ -369,7 +369,7 @@ func TestHoldPullsClientAPKFromMQTT(t *testing.T) {
 		errCh <- Hold(ctx, "tcp://"+mqttAddr, httpSrv.URL, fid, priv, nil, nil, nil, nil, nil, func(in json.RawMessage) error {
 			got <- in
 			return nil
-		}, nil, nil, nil, nil)
+		}, nil, nil, nil, nil, nil)
 	}()
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) && !sawIndex {
@@ -402,7 +402,7 @@ func TestHoldRetired(t *testing.T) {
 	defer cancel()
 	err = Hold(ctx, "tcp://"+mqttAddr, httpSrv.URL, fid, priv, func(State) error {
 		return domain.ErrFactoryRetired
-	}, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	if !errors.Is(err, domain.ErrFactoryRetired) {
 		t.Fatalf("hold: %v", err)
 	}
@@ -440,7 +440,7 @@ func TestHoldSendsSync(t *testing.T) {
 	out := make(chan SyncRequest, 1)
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- Hold(ctx, "tcp://"+mqttAddr, httpSrv.URL, fid, priv, nil, nil, nil, nil, nil, nil, nil, nil, nil, out)
+		errCh <- Hold(ctx, "tcp://"+mqttAddr, httpSrv.URL, fid, priv, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, out)
 	}()
 	time.Sleep(200 * time.Millisecond)
 	out <- SyncRequest{Typ: "sync_closures", Kind: "process"}
@@ -528,7 +528,7 @@ func TestHoldAppliesDownCmds(t *testing.T) {
 		}, func(id uuid.UUID) error {
 			got.retract <- id
 			return nil
-		}, nil, nil, nil)
+		}, nil, nil, nil, nil)
 	}()
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) && !sawIndex {
@@ -596,7 +596,7 @@ func TestHoldSyncClients(t *testing.T) {
 		errCh <- Hold(ctx, "tcp://"+mqttAddr, httpSrv.URL, fid, priv, nil, nil, func(keep []uuid.UUID) error {
 			got <- keep
 			return nil
-		}, nil, nil, nil, nil, nil, nil, nil)
+		}, nil, nil, nil, nil, nil, nil, nil, nil)
 	}()
 	select {
 	case keep := <-got:
@@ -635,7 +635,7 @@ func TestHoldSyncClientsSkipsDisabled(t *testing.T) {
 		errCh <- Hold(ctx, "tcp://"+mqttAddr, httpSrv.URL, fid, priv, nil, nil, func([]uuid.UUID) error {
 			t.Error("reconcile while disabled")
 			return nil
-		}, nil, nil, nil, nil, nil, nil, nil)
+		}, nil, nil, nil, nil, nil, nil, nil, nil)
 	}()
 	time.Sleep(400 * time.Millisecond)
 	select {

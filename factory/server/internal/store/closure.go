@@ -16,18 +16,21 @@ import (
 
 // ClosureMember 是闭包里的一条资产快照，含正文。
 type ClosureMember struct {
-	ID        uuid.UUID  `json:"id"`        // 稳定身份
-	Kind      string     `json:"kind"`      // process / project
-	Level     string     `json:"level"`     // platform / factory / personal
-	Name      string     `json:"name"`      // 显示名
-	Code      string     `json:"code,omitempty"` // 只读编号，跟身份走
-	Status    string     `json:"status"`    // 送达时状态
-	Copyable  bool       `json:"copyable"`  // 与源相同
-	Revision  int64      `json:"revision"`  // 钉死修订
-	Content   []byte     `json:"content"`   // 正文
-	Digest    []byte     `json:"digest"`    // 内容 SHA-256
-	Deps      []AssetDep `json:"deps"`      // 工艺必须空
-	CreatorID *uuid.UUID `json:"creatorId"` // 个人级创建人；其余可空
+	ID         uuid.UUID      `json:"id"`                   // 稳定身份
+	Kind       string         `json:"kind"`                 // process / project
+	Level      string         `json:"level"`                // platform / factory / personal
+	Name       string         `json:"name"`                 // 显示名
+	Code       string         `json:"code,omitempty"`       // 只读编号，跟身份走
+	Status     string         `json:"status"`               // 送达时状态
+	Copyable   bool           `json:"copyable"`             // 与源相同
+	WeldKind   string         `json:"weldKind"`             // 作业类型：与源相同
+	Revision   int64          `json:"revision"`             // 钉死修订
+	Content    []byte         `json:"content"`              // 正文
+	Digest     []byte         `json:"digest"`               // 内容 SHA-256
+	Deps       []AssetDep     `json:"deps"`                 // 工艺必须空
+	CreatorID  *uuid.UUID     `json:"creatorId"`            // 个人级创建人；其余可空
+	FSParentID *uuid.UUID     `json:"fsParentId,omitempty"` // 文件所在文件夹；空表示平台根
+	FSPath     []FSFolderHint `json:"fsPath,omitempty"`     // 从靠近根到父文件夹，不含根；不进摘要
 }
 
 // ClosureSnapshot 是一份工程或单条工艺的完整快照，不是新身份。
@@ -51,9 +54,10 @@ type AssetReplica struct {
 	Kind       string     `json:"kind"`       // process / project
 	Level      string     `json:"level"`      // 固定 platform
 	Name       string     `json:"name"`       // 显示名
-	Code       string     `json:"code"`      // 只读编号，跟身份走
+	Code       string     `json:"code"`       // 只读编号，跟身份走
 	Status     string     `json:"status"`     // 送达时状态
 	Copyable   bool       `json:"copyable"`   // 与源相同
+	WeldKind   string     `json:"weldKind"`   // 作业类型：与源相同
 	Content    []byte     `json:"content"`    // 正文
 	Digest     []byte     `json:"digest"`     // SHA-256
 	Deps       []AssetDep `json:"deps"`       // 工艺必须空
@@ -84,19 +88,20 @@ type ClientDistributionRecord struct {
 }
 
 type replicaRow struct {
-	ID         uuid.UUID `gorm:"type:uuid;primaryKey"` // 平台级身份
-	Revision   int64     `gorm:"primaryKey"`           // 送达修订
-	Kind       string    `gorm:"not null"`             // process / project
-	Level      string    `gorm:"not null"`             // platform
-	Name       string    `gorm:"not null"`             // 显示名
-	Code       *string   `gorm:"column:code"`          // 与云端原件相同；旧副本可空
-	Status     string    `gorm:"not null"`             // 送达时状态
-	Copyable   bool      `gorm:"not null"`             // 与源相同
-	Content    []byte    `gorm:"type:bytea;not null"`  // 正文
-	Digest     []byte    `gorm:"type:bytea;not null"`  // SHA-256
-	Deps       []byte    `gorm:"type:jsonb;not null"`  // 依赖 JSON
-	ReceivedAt time.Time `gorm:"not null"`             // 收到时间
-	Retracted  bool      `gorm:"not null"`             // 云端已删；列表不再展示
+	ID         uuid.UUID `gorm:"type:uuid;primaryKey"`      // 平台级身份
+	Revision   int64     `gorm:"primaryKey"`                // 送达修订
+	Kind       string    `gorm:"not null"`                  // process / project
+	Level      string    `gorm:"not null"`                  // platform
+	Name       string    `gorm:"not null"`                  // 显示名
+	Code       *string   `gorm:"column:code"`               // 与云端原件相同；旧副本可空
+	Status     string    `gorm:"not null"`                  // 送达时状态
+	Copyable   bool      `gorm:"not null"`                  // 与源相同
+	WeldKind   string    `gorm:"column:weld_kind;not null"` // 作业类型
+	Content    []byte    `gorm:"type:bytea;not null"`       // 正文
+	Digest     []byte    `gorm:"type:bytea;not null"`       // SHA-256
+	Deps       []byte    `gorm:"type:jsonb;not null"`       // 依赖 JSON
+	ReceivedAt time.Time `gorm:"not null"`                  // 收到时间
+	Retracted  bool      `gorm:"not null"`                  // 云端已删；列表不再展示
 }
 
 func (replicaRow) TableName() string { return "asset_replicas" }
@@ -134,10 +139,17 @@ func (s *Store) InsertReplica(ctx context.Context, in AssetReplica) (AssetReplic
 	if err != nil {
 		return AssetReplica{}, err
 	}
+	weldKind, err := NormalizeWeldKind(in.WeldKind)
+	if err != nil {
+		return AssetReplica{}, err
+	}
 	got, err := s.ReplicaMetaByIDRev(ctx, in.ID, in.Revision)
 	if err == nil {
 		if !bytes.Equal(got.Digest, in.Digest) {
 			return AssetReplica{}, domain.ErrIntegrity
+		}
+		if err := s.ensureReplicaFS(ctx, got); err != nil {
+			return AssetReplica{}, err
 		}
 		return got, nil
 	}
@@ -151,7 +163,7 @@ func (s *Store) InsertReplica(ctx context.Context, in AssetReplica) (AssetReplic
 	}
 	row := replicaRow{
 		ID: in.ID, Revision: in.Revision, Kind: in.Kind, Level: AssetLevelPlatform,
-		Name: in.Name, Status: in.Status, Copyable: in.Copyable, Content: env,
+		Name: in.Name, Status: in.Status, Copyable: in.Copyable, WeldKind: weldKind, Content: env,
 		Digest: in.Digest, Deps: deps, ReceivedAt: time.Now().UTC(),
 	}
 	if in.Code != "" {
@@ -163,7 +175,10 @@ func (s *Store) InsertReplica(ctx context.Context, in AssetReplica) (AssetReplic
 				return err
 			}
 		}
-		return tx.Create(&row).Error
+		if err := tx.Create(&row).Error; err != nil {
+			return err
+		}
+		return placeAssetFileTx(tx, row.Kind, FSTreePlatform, nil, row.ID, row.Name, in.Code, uuid.Nil)
 	})
 	if err != nil {
 		if domain.IsUniqueViolation(err) {
@@ -174,11 +189,21 @@ func (s *Store) InsertReplica(ctx context.Context, in AssetReplica) (AssetReplic
 			if !bytes.Equal(got.Digest, in.Digest) {
 				return AssetReplica{}, domain.ErrIntegrity
 			}
+			if err := s.ensureReplicaFS(ctx, got); err != nil {
+				return AssetReplica{}, err
+			}
 			return got, nil
 		}
 		return AssetReplica{}, mapAssetWriteErr(err)
 	}
 	return s.decodeReplica(row)
+}
+
+// ensureReplicaFS 副本已在库则补文件节点，避免列表里有资产没有目录项。
+func (s *Store) ensureReplicaFS(ctx context.Context, r AssetReplica) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		return placeAssetFileTx(tx, r.Kind, FSTreePlatform, nil, r.ID, r.Name, r.Code, uuid.Nil)
+	})
 }
 
 // ReplicaByIDRev 按身份和修订读平台级副本，含正文。
@@ -244,7 +269,12 @@ func (s *Store) ListReplicas(ctx context.Context) ([]AssetReplica, error) {
 
 // RetractReplicas 把该身份全部副本标成撤回；没有副本也算成功。
 func (s *Store) RetractReplicas(ctx context.Context, assetID uuid.UUID) error {
-	return s.db.WithContext(ctx).Model(&replicaRow{}).Where("id = ?", assetID).Update("retracted", true).Error
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&replicaRow{}).Where("id = ?", assetID).Update("retracted", true).Error; err != nil {
+			return err
+		}
+		return tx.Where("asset_id = ? AND node_kind = ?", assetID, FSNodeFile).Delete(&fsNodeRow{}).Error
+	})
 }
 
 // TamperReplicaContent 只改正文不改摘要，供完整性夹具使用。
@@ -379,7 +409,7 @@ func (s *Store) LatestClientRecord(ctx context.Context, projectID, clientID uuid
 func replicaFromRow(row replicaRow) AssetReplica {
 	out := AssetReplica{
 		ID: row.ID, Revision: row.Revision, Kind: row.Kind, Level: row.Level, Name: row.Name,
-		Status: row.Status, Copyable: row.Copyable, Content: row.Content, Digest: row.Digest,
+		Status: row.Status, Copyable: row.Copyable, WeldKind: row.WeldKind, Content: row.Content, Digest: row.Digest,
 		Deps: unmarshalAssetDeps(row.Deps), ReceivedAt: row.ReceivedAt, Retracted: row.Retracted,
 	}
 	if row.Code != nil {

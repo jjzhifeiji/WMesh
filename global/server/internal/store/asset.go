@@ -42,6 +42,7 @@ type AssetSnapshot struct {
 	Content         []byte     `json:"content"`         // 正文
 	Digest          []byte     `json:"digest"`          // 摘要
 	Copyable        bool       `json:"copyable"`        // 源是否可复制
+	WeldKind        string     `json:"weldKind"`        // 作业类型：与源相同
 	Status          string     `json:"status"`          // 源状态
 	Deps            []AssetDep `json:"deps"`            // 源依赖
 }
@@ -55,6 +56,7 @@ type Asset struct {
 	Code              string     `json:"code"`          // 只读编号，创建后不改
 	Status            string     `json:"status"`         // draft / available / disabled
 	Copyable          bool       `json:"copyable"`       // 可否被上一级复制；新建默认为否
+	WeldKind          string     `json:"weldKind"`       // 作业类型：single / multilayer / tbar
 	Revision          int64      `json:"revision"`       // 当前修订
 	Content           []byte     `json:"-"`              // 正文；不进列表/元数据
 	Digest            []byte     `json:"digest"`         // SHA-256 32 字节
@@ -87,6 +89,7 @@ type assetRow struct {
 	Code            string     `gorm:"not null"`               // 只读编号
 	Status          string     `gorm:"not null"`               // draft / available / disabled
 	Copyable        bool       `gorm:"not null"`               // 可复制
+	WeldKind        string     `gorm:"column:weld_kind;not null"` // 作业类型
 	Revision        int64      `gorm:"not null"`               // 当前修订
 	Content         []byte     `gorm:"type:bytea;not null"`    // 正文
 	Digest          []byte     `gorm:"type:bytea;not null"`    // SHA-256
@@ -110,6 +113,10 @@ func (s *Store) InsertAsset(ctx context.Context, in Asset) (Asset, error) {
 	if err := assertAssetDigest(in.Digest); err != nil {
 		return Asset{}, err
 	}
+	weldKind, err := NormalizeWeldKind(in.WeldKind)
+	if err != nil {
+		return Asset{}, err
+	}
 	now := time.Now().UTC()
 	var row assetRow
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -125,6 +132,7 @@ func (s *Store) InsertAsset(ctx context.Context, in Asset) (Asset, error) {
 			Code:            code,
 			Status:          in.Status,
 			Copyable:        in.Copyable,
+			WeldKind:        weldKind,
 			Revision:        1,
 			Content:         nonempty(in.Content),
 			Digest:          in.Digest,
@@ -139,7 +147,11 @@ func (s *Store) InsertAsset(ctx context.Context, in Asset) (Asset, error) {
 		if err := tx.Create(&row).Error; err != nil {
 			return mapAssetWriteErr(err)
 		}
-		return nil
+		root, err := ensureFSRootTx(tx, row.Kind, FSTreePlatform, nil)
+		if err != nil {
+			return err
+		}
+		return placeAssetFileTx(tx, row.Kind, row.ID, row.Name, row.Code, root.ID)
 	})
 	if err != nil {
 		return Asset{}, err
@@ -188,6 +200,9 @@ func (s *Store) UpdateAsset(ctx context.Context, assetID uuid.UUID, expected int
 			return domain.ErrRevisionConflict
 		}
 		if err := tx.First(&row, "id = ?", assetID).Error; err != nil {
+			return err
+		}
+		if err := syncFSFileNameTx(tx, assetID, w.Name); err != nil {
 			return err
 		}
 		out = assetFromRow(row)
@@ -376,6 +391,7 @@ func assetFromRow(row assetRow) Asset {
 		Code:            row.Code,
 		Status:          row.Status,
 		Copyable:        row.Copyable,
+		WeldKind:        row.WeldKind,
 		Revision:        row.Revision,
 		Content:         row.Content,
 		Digest:          row.Digest,

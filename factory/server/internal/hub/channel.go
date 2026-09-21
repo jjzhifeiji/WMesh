@@ -219,6 +219,9 @@ func (h *Hub) dialHold(ctx context.Context, factoryID uuid.UUID) error {
 				return err
 			}
 		}
+		if err := svc.Store().PutFactoryName(ctx, st.Name); err != nil {
+			return err
+		}
 		// 把 WAN 推来的停用/启用/注销落到本厂库。
 		out, err := svc.Auth.ApplyLifecycle(ctx, st.Status, st.Revision)
 		if err != nil {
@@ -302,6 +305,17 @@ func (h *Hub) dialHold(ctx context.Context, factoryID uuid.UUID) error {
 			slog.Warn("retract platform replica", "factory", factoryID, "err", err)
 		}
 		return nil
+	}, func(raw json.RawMessage) error {
+		// 云端目录搬家：按 WAN 文件夹身份对齐本厂已到达的副本。
+		var layout service.PlatformFSLayout
+		if err := json.Unmarshal(raw, &layout); err != nil {
+			slog.Warn("platform fs json", "factory", factoryID, "err", err)
+			return nil
+		}
+		if err := svc.Assets.ApplyPlatformFSLayout(ctx, layout); err != nil {
+			slog.Warn("apply platform fs", "factory", factoryID, "err", err)
+		}
+		return nil
 	}, func(lease wanchannel.Lease) error {
 		// 把 WAN 发来的解包钥放进内存，解开本厂 MK。
 		return svc.ApplyContentLease(ctx, lease.Key, lease.NotAfter)
@@ -322,6 +336,13 @@ func (h *Hub) answerAsset(ctx context.Context, svc *service.Service, typ, kind, 
 	switch typ {
 	case "asset_list":
 		rows, err := svc.Assets.ListPromotable(ctx, kind)
+		if err != nil {
+			return nil, nil, err
+		}
+		b, err := json.Marshal(rows)
+		return b, nil, err
+	case "fs_list":
+		rows, err := svc.Assets.ListFSForChannel(ctx, kind)
 		if err != nil {
 			return nil, nil, err
 		}

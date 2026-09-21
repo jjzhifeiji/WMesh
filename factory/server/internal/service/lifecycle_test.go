@@ -24,9 +24,12 @@ func TestFactoryLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := fac.Store().PutFactoryName(ctx, "一号厂"); err != nil {
+		t.Fatal(err)
+	}
 
 	out, err := fac.ApplyLifecycle(ctx, service.FactoryDisabled, 1)
-	if err != nil || out.Status != service.FactoryDisabled {
+	if err != nil || out.Status != service.FactoryDisabled || out.Name != "一号厂" {
 		t.Fatalf("disable %+v %v", out, err)
 	}
 	if _, err := fac.Login(ctx, "sa-a", "sa-pass"); !errors.Is(err, domain.ErrFactoryDisabled) {

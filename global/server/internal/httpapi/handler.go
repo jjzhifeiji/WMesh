@@ -1,5 +1,5 @@
 // Package httpapi 把 WAN 应用服务适配成 JSON HTTP。不绕过 Service，不把 SQL 原文抛给前端。
-// 文件按域拆：auth / directory / channel / client / asset / template / update / stats / legacy；本文件只装配路由和探活。
+// 文件按域拆：auth / directory / channel / client / asset / fs / template / update / stats / legacy；本文件只装配路由和探活。
 package httpapi
 
 import (
@@ -37,6 +37,7 @@ func (h *Handler) Router() http.Handler {
 	h.mountChannel(mux)
 	h.mountClient(mux)
 	h.mountAsset(mux)
+	h.mountFS(mux)
 	h.mountTemplate(mux)
 	h.mountUpdate(mux)
 	h.mountStats(mux)

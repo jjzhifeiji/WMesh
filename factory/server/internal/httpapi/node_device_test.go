@@ -43,6 +43,9 @@ func TestClientDeviceLoginHTTP(t *testing.T) {
 	if err := svc.Store().GrantLocalLease(context.Background()); err != nil {
 		t.Fatalf("lease: %v", err)
 	}
+	if err := svc.Store().PutFactoryName(context.Background(), "一号厂"); err != nil {
+		t.Fatalf("factory name: %v", err)
+	}
 	act := gjson(t, body, "activationToken")
 	code, body = do(t, srv, "POST", base+"/activate", "", `{"loginName":"sa","activationToken":"`+act+`","password":"secret"}`)
 	if code != http.StatusNoContent {
@@ -120,7 +123,7 @@ func TestClientDeviceLoginHTTP(t *testing.T) {
 	}
 
 	code, body = do(t, srv, "GET", "/v1/discover?deviceSerial=ARM-1", "", "")
-	if code != http.StatusOK || !strings.Contains(body, `"belongs":true`) || !strings.Contains(body, cid) || !strings.Contains(body, fid.String()) {
+	if code != http.StatusOK || !strings.Contains(body, `"belongs":true`) || !strings.Contains(body, cid) || !strings.Contains(body, fid.String()) || !strings.Contains(body, `"factoryName":"一号厂"`) {
 		t.Fatalf("discover mine %d %s", code, body)
 	}
 	if strings.Contains(body, "unwrapKey") || strings.Contains(body, "password") {

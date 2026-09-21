@@ -33,7 +33,7 @@ var softwareEvery = 15 * time.Minute // 通道一直连着也要问有没有新�
 type ClientSyncHandler func(keep []uuid.UUID) error
 
 // Hold 用厂钥连 WAN MQTT，订下行、拉索引和正文，并回答升档问询。
-func Hold(ctx context.Context, mqttURL, wanHTTP string, factoryID uuid.UUID, privateKey []byte, apply func(State) error, applyClient func(ClientIntent) error, syncClients ClientSyncHandler, applyClosure ClosureHandler, applyTemplate ClosureHandler, applySoftware ClosureHandler, applyRetract RetractHandler, applyLease LeaseHandler, onRequest RequestHandler, outbound <-chan SyncRequest) error {
+func Hold(ctx context.Context, mqttURL, wanHTTP string, factoryID uuid.UUID, privateKey []byte, apply func(State) error, applyClient func(ClientIntent) error, syncClients ClientSyncHandler, applyClosure ClosureHandler, applyTemplate ClosureHandler, applySoftware ClosureHandler, applyRetract RetractHandler, applyFS ClosureHandler, applyLease LeaseHandler, onRequest RequestHandler, outbound <-chan SyncRequest) error {
 	if len(privateKey) == 0 {
 		return domain.ErrNotFound
 	}
@@ -92,7 +92,7 @@ func Hold(ctx context.Context, mqttURL, wanHTTP string, factoryID uuid.UUID, pri
 	handle := func(cmd Cmd) error {
 		mu.Lock()
 		defer mu.Unlock()
-		return applyCmd(ctx, cli, up, pull, cmd, apply, applyClient, applyClosure, applyTemplate, applySoftware, applyRetract, applyLease, onRequest)
+		return applyCmd(ctx, cli, up, pull, cmd, apply, applyClient, applyClosure, applyTemplate, applySoftware, applyRetract, applyFS, applyLease, onRequest)
 	}
 
 	if err := pullAndApply(ctx, pull, "", handle, syncClients, applySoftware); err != nil {
@@ -229,7 +229,7 @@ func acceptSoftware(applySoftware ClosureHandler, kind string, version int64, ve
 }
 
 // 按指令类型拉正文或回答升档问询。
-func applyCmd(ctx context.Context, cli mqtt.Client, up string, pull *puller, cmd Cmd, apply func(State) error, applyClient func(ClientIntent) error, applyClosure ClosureHandler, applyTemplate ClosureHandler, applySoftware ClosureHandler, applyRetract RetractHandler, applyLease LeaseHandler, onRequest RequestHandler) error {
+func applyCmd(ctx context.Context, cli mqtt.Client, up string, pull *puller, cmd Cmd, apply func(State) error, applyClient func(ClientIntent) error, applyClosure ClosureHandler, applyTemplate ClosureHandler, applySoftware ClosureHandler, applyRetract RetractHandler, applyFS ClosureHandler, applyLease LeaseHandler, onRequest RequestHandler) error {
 	switch cmd.Typ {
 	case CmdLease:
 		if applyLease == nil || len(cmd.Lease) == 0 {
@@ -243,7 +243,7 @@ func applyCmd(ctx context.Context, cli mqtt.Client, up string, pull *puller, cmd
 		if apply == nil {
 			return nil
 		}
-		return apply(State{Status: cmd.Status, Revision: cmd.Revision, ShortCode: cmd.ShortCode})
+		return apply(State{Status: cmd.Status, Revision: cmd.Revision, ShortCode: cmd.ShortCode, Name: cmd.FactoryName})
 	case CmdClientBind, CmdClientVoid:
 		if applyClient == nil {
 			return nil
@@ -283,13 +283,21 @@ func applyCmd(ctx context.Context, cli mqtt.Client, up string, pull *puller, cmd
 			return nil
 		}
 		return applyRetract(id)
+	case CmdFSApply:
+		if applyFS == nil || len(cmd.Snapshot) == 0 {
+			return nil
+		}
+		if err := applyFS(cmd.Snapshot); err != nil {
+			slog.Warn("apply platform fs", "err", err)
+		}
+		return nil
 	case CmdSoftware:
 		if cmd.Kind != "client_apk" && cmd.Kind != "factory_service" {
 			return nil
 		}
 		acceptSoftware(applySoftware, cmd.Kind, cmd.Version, cmd.VersionName)
 		return nil
-	case CmdAssetList, CmdAssetSnapshot:
+	case CmdAssetList, CmdAssetSnapshot, CmdFSList:
 		return replyRequest(cli, up, cmd, onRequest)
 	default:
 		return nil
@@ -337,6 +345,9 @@ func replyRequest(cli mqtt.Client, up string, cmd Cmd, onRequest RequestHandler)
 	if cmd.Typ == CmdAssetSnapshot {
 		reply.Typ = CmdAssetSnapOK
 		reply.Snapshot = snap
+	} else if cmd.Typ == CmdFSList {
+		reply.Typ = CmdFSListOK
+		reply.Assets = assets
 	} else {
 		reply.Typ = CmdAssetListOK
 		reply.Assets = assets

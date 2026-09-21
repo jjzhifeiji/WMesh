@@ -20,6 +20,7 @@ export type Asset = {
   code: string; // 只读编号，创建后不改
   status: AssetStatus; // draft / available / disabled
   copyable: boolean; // 可否升档
+  weldKind: string; // 作业类型：single / multilayer / tbar
   revision: number; // 当前修订
   digest: string; // SHA-256
   creatorId: string; // 创建人
@@ -40,8 +41,71 @@ export type CreateAssetInput = {
   level: AssetLevel;
   name: string;
   content: string;
+  weldKind: string; // 作业类型
+  copyable?: boolean; // 工艺可复制；空则默认可复制
   deps?: AssetDep[];
+  parentId?: string; // 目录父文件夹；空则挂对应树的根
 };
+
+export type FSNode = {
+  id: string;
+  name: string;
+  parentId: string | null;
+  nodeKind: "folder" | "file";
+  assetKind: AssetKind;
+  treeLevel: "platform" | "factory" | "personal";
+  ownerId?: string | null;
+  ownerName?: string;
+  assetId?: string | null;
+  asset?: Asset | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export const fsKeys = {
+  all: ["fs"] as const,
+  kind: (kind: AssetKind) => ["fs", kind] as const,
+};
+
+export function useFS(kind: AssetKind) {
+  return useQuery({
+    queryKey: fsKeys.kind(kind),
+    queryFn: ({ signal }) => http.get<FSNode[]>(fpath(`/fs?kind=${kind}`), signal),
+    refetchInterval: 8000,
+  });
+}
+
+function useFSMutation<TData, TVars>(mutationFn: (vars: TVars) => Promise<TData>) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn,
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: fsKeys.all });
+      await qc.invalidateQueries({ queryKey: assetKeys.all });
+      await qc.invalidateQueries({ queryKey: ["asset-content"] });
+    },
+  });
+}
+
+export function useCreateFSFolder() {
+  return useFSMutation((input: { parentId: string; name: string }) => http.post<FSNode>(fpath("/fs/folders"), input));
+}
+
+export function useRenameFSNode() {
+  return useFSMutation((input: { id: string; name: string }) => http.post<FSNode>(fpath(`/fs/${input.id}/rename`), { name: input.name }));
+}
+
+export function useMoveFSNode() {
+  return useFSMutation((input: { id: string; parentId: string }) => http.post<FSNode>(fpath(`/fs/${input.id}/move`), { parentId: input.parentId }));
+}
+
+export function useCopyFSNode() {
+  return useFSMutation((input: { id: string; parentId: string }) => http.post<FSNode>(fpath(`/fs/${input.id}/copy`), { parentId: input.parentId }));
+}
+
+export function useDeleteFSNode() {
+  return useFSMutation((id: string) => http.post(fpath(`/fs/${id}/delete`)));
+}
 
 export const assetKeys = {
   all: ["assets"] as const,
@@ -66,6 +130,7 @@ function useAssetMutation<TData, TVars>(mutationFn: (vars: TVars) => Promise<TDa
     mutationFn,
     onSuccess: async () => {
       await qc.invalidateQueries({ queryKey: assetKeys.all });
+      await qc.invalidateQueries({ queryKey: fsKeys.all });
       await qc.invalidateQueries({ queryKey: ["asset-content"] });
     },
   });

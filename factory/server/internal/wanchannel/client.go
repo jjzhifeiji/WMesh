@@ -74,6 +74,7 @@ type State struct {
 	Status    string // 工厂治理状态：active / disabled / retired
 	Revision  int64  // 治理修订，厂端只向前
 	ShortCode string // 本厂短码
+	Name      string // 本厂显示名
 }
 
 // ClientIntent 是 WAN 推来的设备分配或作废。

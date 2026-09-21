@@ -38,8 +38,12 @@ func (s *Closure) AcceptPlatformDelivery(ctx context.Context, snap ClosureSnapsh
 		}
 		if _, err := s.store.InsertReplica(ctx, AssetReplica{
 			ID: m.ID, Revision: m.Revision, Kind: m.Kind, Level: AssetLevelPlatform,
-			Name: m.Name, Code: m.Code, Status: m.Status, Copyable: m.Copyable, Content: m.Content, Digest: m.Digest, Deps: m.Deps,
+			Name: m.Name, Code: m.Code, Status: m.Status, Copyable: m.Copyable, WeldKind: m.WeldKind, Content: m.Content, Digest: m.Digest, Deps: m.Deps,
 		}); err != nil {
+			_ = s.audit(ctx, nil, nil, "accept_closure", closureTarget(snap), audit.Deny)
+			return err
+		}
+		if err := s.store.ApplyPlatformFS(ctx, m.Kind, m.ID, m.FSParentID, m.FSPath); err != nil {
 			_ = s.audit(ctx, nil, nil, "accept_closure", closureTarget(snap), audit.Deny)
 			return err
 		}

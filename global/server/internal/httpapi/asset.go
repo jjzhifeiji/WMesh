@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -37,10 +38,13 @@ func (h *Handler) mountAsset(mux *http.ServeMux) {
 }
 
 type createAssetReq struct {
-	Kind    string             `json:"kind"`    // process / project
-	Name    string             `json:"name"`    // 显示名
-	Content string             `json:"content"` // UTF-8 正文
-	Deps    []service.AssetDep `json:"deps"`    // 可空；新建从参数补
+	Kind     string             `json:"kind"`     // process / project
+	Name     string             `json:"name"`     // 显示名
+	Content  string             `json:"content"`  // UTF-8 正文
+	WeldKind string             `json:"weldKind"` // 作业类型：single / multilayer / tbar
+	Copyable *bool              `json:"copyable"` // 空则默认不可复制
+	Deps     []service.AssetDep `json:"deps"`     // 可空；新建从参数补
+	ParentID string             `json:"parentId"` // 目录父文件夹；空则挂根
 }
 
 type expectedReq struct {
@@ -53,7 +57,7 @@ type copyableReq struct {
 }
 
 type copyAssetReq struct {
-	Name string `json:"name"` // 新工艺显示名
+	Name string `json:"name"` // 新显示名
 }
 
 type setDepsReq struct {
@@ -105,13 +109,17 @@ func (h *Handler) createAsset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	content := []byte(req.Content)
+	copyable := false
+	if req.Copyable != nil {
+		copyable = *req.Copyable
+	}
 	var row service.Asset
 	var err error
 	switch req.Kind {
 	case service.KindProcess:
-		row, err = h.svc.Assets.CreatePlatformProcess(r.Context(), bearer(r), req.Name, content)
+		row, err = h.svc.Assets.CreatePlatformProcessWith(r.Context(), bearer(r), req.Name, content, copyable, req.WeldKind)
 	case service.KindProject:
-		row, err = h.svc.Assets.CreatePlatformProject(r.Context(), bearer(r), req.Name, content, req.Deps)
+		row, err = h.svc.Assets.CreatePlatformProject(r.Context(), bearer(r), req.Name, content, req.Deps, req.WeldKind)
 	default:
 		writeBadRequest(w, errInvalidID)
 		return
@@ -120,7 +128,24 @@ func (h *Handler) createAsset(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
+	if err := h.placeNewAsset(r, row.ID, req.ParentID); err != nil {
+		writeErr(w, err)
+		return
+	}
 	writeJSON(w, http.StatusCreated, row)
+}
+
+// placeNewAsset 新建后挂到指定文件夹；空父节点则留在根。
+func (h *Handler) placeNewAsset(r *http.Request, assetID uuid.UUID, parent string) error {
+	if strings.TrimSpace(parent) == "" {
+		return nil
+	}
+	parentID, err := uuid.Parse(parent)
+	if err != nil {
+		return errInvalidID
+	}
+	_, err = h.svc.Assets.MoveAssetInto(r.Context(), bearer(r), assetID, parentID)
+	return err
 }
 
 // 读平台级元数据。
@@ -213,7 +238,7 @@ func (h *Handler) setAssetCopyable(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, row)
 }
 
-// 可复制工艺另存为新草稿。
+// 平台级工艺或工程另存为新草稿，不看可复制。
 func (h *Handler) copyAsset(w http.ResponseWriter, r *http.Request) {
 	assetID, err := parseAssetID(r)
 	if err != nil {
@@ -353,6 +378,7 @@ type promotableAsset struct {
 	Digest   []byte `json:"digest"`   // 内容摘要
 	Status   string `json:"status"`   // draft / available / disabled
 	Copyable bool   `json:"copyable"` // 原样带回
+	WeldKind string `json:"weldKind"` // 作业类型
 }
 
 // 经 MQTT 向该厂要升档列表，不含正文。

@@ -1,5 +1,11 @@
+import { HolderOutlined } from "@ant-design/icons";
 import { Button, Checkbox, Input, Select, Typography } from "antd";
+import { useId, useState, type DragEvent } from "react";
 import { enumDefault, enumOptions, kindOf, parseText, textOf, type ContentSchema, type Kind, type TemplateField } from "./schema";
+
+type DragRef = { listId: string; index: number };
+
+let dragging: DragRef | null = null;
 
 const typeOptionsBase = [
   { value: "string", label: "文本" },
@@ -18,19 +24,24 @@ const typeOptionsWithProcess = [
 
 export function SchemaEditor({ value, onChange, allowProcess }: { value: ContentSchema; onChange: (s: ContentSchema) => void; allowProcess?: boolean }) {
   const typeOptions = allowProcess ? typeOptionsWithProcess : typeOptionsBase;
-  if (value.root === "array") {
-    return (
-      <div className="schema-editor">
-        <Typography.Text type="secondary" style={{ fontSize: 12, display: "block", marginBottom: 6 }}>
-          根是数组，下面是每个元素。
-        </Typography.Text>
-        {value.item ? <FieldEditor field={value.item} allowKey={false} typeOptions={typeOptions} onChange={(item) => onChange({ ...value, item })} /> : null}
-      </div>
-    );
-  }
+  const isArray = value.root === "array";
   return (
     <div className="schema-editor">
-      <FieldList fields={value.fields ?? []} typeOptions={typeOptions} onChange={(fields) => onChange({ ...value, fields })} headed />
+      <div className="schema-root-bar">
+        <code>root</code>
+        <Typography.Text type="secondary">{isArray ? "数组" : "对象"}</Typography.Text>
+      </div>
+      <div className="schema-node">
+        <div className="schema-node-slot">{isArray ? "item" : "fields"}</div>
+        {isArray ? (
+          <div className="schema-list">
+            <ColHead />
+            {value.item ? <FieldEditor field={value.item} allowKey={false} typeOptions={typeOptions} onChange={(item) => onChange({ ...value, item })} /> : null}
+          </div>
+        ) : (
+          <FieldList fields={value.fields ?? []} typeOptions={typeOptions} onChange={(fields) => onChange({ ...value, fields })} />
+        )}
+      </div>
     </div>
   );
 }
@@ -40,62 +51,128 @@ type TypeOption = { value: string; label: string };
 function FieldList({
   fields,
   onChange,
-  headed,
   typeOptions,
 }: {
   fields: TemplateField[];
   onChange: (f: TemplateField[]) => void;
-  headed?: boolean;
   typeOptions: TypeOption[];
 }) {
-  const compact: { f: TemplateField; i: number }[] = [];
-  const wide: { f: TemplateField; i: number }[] = [];
-  fields.forEach((f, i) => {
-    const k = kindOf(f);
-    if (k === "object" || k === "array") wide.push({ f, i });
-    else compact.push({ f, i });
-  });
-  const mid = Math.ceil(compact.length / 2);
-  const cols = [compact.slice(0, mid), compact.slice(mid)];
+  const listId = useId();
+  const [over, setOver] = useState<{ at: number; edge: "before" | "after" } | null>(null);
+  const [from, setFrom] = useState<number | null>(null);
   const patch = (i: number, n: TemplateField) => {
     const next = fields.slice();
     next[i] = n;
     onChange(next);
   };
   const remove = (i: number) => onChange(fields.filter((_, j) => j !== i));
+  const sameList = () => dragging?.listId === listId;
+  const clearDrag = () => {
+    dragging = null;
+    setFrom(null);
+    setOver(null);
+  };
+  const moveTo = (src: number, at: number, edge: "before" | "after") => {
+    let dst = edge === "before" ? at : at + 1;
+    if (src < dst) dst -= 1;
+    if (src === dst) return;
+    const next = fields.slice();
+    const [item] = next.splice(src, 1);
+    next.splice(dst, 0, item);
+    onChange(next);
+  };
+  const markOver = (e: DragEvent<HTMLElement>, i: number, force?: "before" | "after") => {
+    if (!sameList()) return;
+    e.preventDefault();
+    e.stopPropagation();
+    e.dataTransfer.dropEffect = "move";
+    const edge = force ?? dropEdge(e, e.currentTarget);
+    if (over?.at !== i || over.edge !== edge) setOver({ at: i, edge });
+  };
+  const dropOn = (e: DragEvent<HTMLElement>, i: number, force?: "before" | "after") => {
+    e.preventDefault();
+    e.stopPropagation();
+    const src = sameList() ? dragging?.index : undefined;
+    const edge = force ?? over?.edge ?? dropEdge(e, e.currentTarget);
+    clearDrag();
+    if (src == null) return;
+    moveTo(src, i, edge);
+  };
+  const last = fields.length - 1;
   return (
-    <>
-      <div className="schema-list">
-        {cols.map((col, ci) =>
-          col.length === 0 ? null : (
-            <div className="schema-col" key={ci}>
-              {headed ? <ColHead /> : null}
-              {col.map(({ f, i }) => (
-                <FieldEditor key={`${f.key}-${i}`} field={f} typeOptions={typeOptions} onChange={(n) => patch(i, n)} onRemove={() => remove(i)} />
-              ))}
-            </div>
-          ),
-        )}
+    <div className={from != null ? "schema-list is-sorting" : "schema-list"}>
+      <ColHead />
+      {fields.map((f, i) => {
+        const line =
+          over && from != null && over.at === i && dropDest(from, over.at, over.edge) !== from ? over.edge : null;
+        return (
+          <div
+            key={`${f.key}-${i}`}
+            className={["schema-row-wrap", from === i ? "is-dragging" : "", line ? `is-over-${line}` : ""]
+              .filter(Boolean)
+              .join(" ")}
+            onDragOver={(e) => markOver(e, i)}
+            onDrop={(e) => dropOn(e, i)}
+          >
+            {line ? <div className={`schema-drop-line is-${line}`} aria-hidden /> : null}
+            <FieldEditor
+              field={f}
+              typeOptions={typeOptions}
+              onChange={(n) => patch(i, n)}
+              onRemove={() => remove(i)}
+              sortable
+              onDragStart={(e) => {
+                e.stopPropagation();
+                dragging = { listId, index: i };
+                e.dataTransfer.effectAllowed = "move";
+                e.dataTransfer.setData("text/plain", `${listId}:${i}`);
+                setFrom(i);
+              }}
+              onDragEnd={clearDrag}
+            />
+          </div>
+        );
+      })}
+      <div
+        className="schema-add"
+        onDragOver={(e) => {
+          if (last < 0) return;
+          markOver(e, last, "after");
+        }}
+        onDrop={(e) => {
+          if (last < 0) return;
+          dropOn(e, last, "after");
+        }}
+      >
+        <Button size="small" onClick={() => onChange([...fields, { key: nextKey(fields), label: "新字段", type: "string", default: "" }])}>
+          添加字段
+        </Button>
       </div>
-      {wide.map(({ f, i }) => (
-        <FieldEditor key={`${f.key}-${i}`} field={f} typeOptions={typeOptions} onChange={(n) => patch(i, n)} onRemove={() => remove(i)} />
-      ))}
-      <Button size="small" style={{ marginTop: 8 }} onClick={() => onChange([...fields, { key: nextKey(fields), label: "新字段", type: "string", default: "" }])}>
-        添加字段
-      </Button>
-    </>
+    </div>
   );
+}
+
+function dropEdge(e: DragEvent<HTMLElement>, wrap: HTMLElement): "before" | "after" {
+  const rect = wrap.getBoundingClientRect();
+  return e.clientY < rect.top + rect.height / 2 ? "before" : "after";
+}
+
+function dropDest(src: number, at: number, edge: "before" | "after"): number {
+  let dst = edge === "before" ? at : at + 1;
+  if (src < dst) dst -= 1;
+  return dst;
 }
 
 function ColHead() {
   return (
     <div className="schema-col-head">
-      <span className="sc-key">键</span>
-      <span className="sc-name">名称</span>
-      <span className="sc-type">类型</span>
-      <span className="sc-unit">单位</span>
-      <span className="sc-def">默认</span>
-      <span className="sc-req">必</span>
+      <span className="sc-drag" />
+      <span className="sc-key">JSON 键</span>
+      <span className="sc-name">显示名称</span>
+      <span className="sc-type">字段类型</span>
+      <span className="sc-unit">计量单位</span>
+      <span className="sc-def">默认值</span>
+      <span className="sc-req">是否必填</span>
       <span className="sc-del" />
     </div>
   );
@@ -105,23 +182,39 @@ function FieldEditor({
   field,
   onChange,
   onRemove,
+  sortable,
+  onDragStart,
+  onDragEnd,
   allowKey = true,
   typeOptions,
 }: {
   field: TemplateField;
   onChange: (f: TemplateField) => void;
   onRemove?: () => void;
+  sortable?: boolean;
+  onDragStart?: (e: DragEvent<HTMLSpanElement>) => void;
+  onDragEnd?: () => void;
   allowKey?: boolean;
   typeOptions: TypeOption[];
 }) {
   const kind = kindOf(field);
   const opts = enumOptions(field);
+  const branch = kind === "object" || kind === "array";
   const row = (
-    <div className="schema-item">
+    <div className={branch ? "schema-item is-branch" : "schema-item"}>
+      <div className="sc-drag">
+        {sortable ? (
+          <span className="sc-drag-handle" role="button" aria-label="拖动排序" title="拖动排序" draggable onDragStart={onDragStart} onDragEnd={onDragEnd}>
+            <HolderOutlined />
+          </span>
+        ) : null}
+      </div>
       <div className="sc-key">
         {allowKey ? (
           <Input size="small" title={field.key} value={field.key} onChange={(e) => onChange({ ...field, key: e.target.value })} />
-        ) : null}
+        ) : (
+          <span className="sc-key-placeholder">—</span>
+        )}
       </div>
       <div className="sc-name">
         <Input size="small" value={field.label} onChange={(e) => onChange({ ...field, label: e.target.value })} />
@@ -160,21 +253,33 @@ function FieldEditor({
       ) : null}
     </div>
   );
-  if (kind !== "object" && kind !== "array") return row;
+  if (!branch) return row;
   return (
-    <div className="schema-item-wide">
+    <>
       {row}
-      {kind === "object" ? (
-        <div className="schema-item-nested">
-          <FieldList fields={field.fields ?? []} typeOptions={typeOptions} onChange={(fields) => onChange({ ...field, fields })} headed />
-        </div>
-      ) : null}
-      {kind === "array" && field.items ? (
-        <div className="schema-item-nested">
-          <FieldEditor field={field.items} allowKey={false} typeOptions={typeOptions} onChange={(items) => onChange({ ...field, items })} />
-        </div>
-      ) : null}
-    </div>
+      <div className="schema-node">
+        {kind === "object" ? (
+          <>
+            <div className="schema-node-slot">fields</div>
+            <FieldList fields={field.fields ?? []} typeOptions={typeOptions} onChange={(fields) => onChange({ ...field, fields })} />
+          </>
+        ) : null}
+        {kind === "array" ? (
+          <>
+            <div className="schema-node-slot">items</div>
+            <div className="schema-list">
+              <ColHead />
+              <FieldEditor
+                field={field.items ?? { key: "item", label: "项", type: "string" }}
+                allowKey={false}
+                typeOptions={typeOptions}
+                onChange={(items) => onChange({ ...field, items })}
+              />
+            </div>
+          </>
+        ) : null}
+      </div>
+    </>
   );
 }
 

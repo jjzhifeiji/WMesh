@@ -41,7 +41,12 @@ func (s *kernel) loadChecked(ctx context.Context, id uuid.UUID) (Asset, error) {
 }
 
 // CreatePlatformProcess 由 WAN 管理员制作平台级工艺，默认可复制为否，状态草稿。
-func (s *Assets) CreatePlatformProcess(ctx context.Context, token, name string, content []byte) (Asset, error) {
+func (s *Assets) CreatePlatformProcess(ctx context.Context, token, name string, content []byte, weldKind ...string) (Asset, error) {
+	return s.CreatePlatformProcessWith(ctx, token, name, content, false, weldKind...)
+}
+
+// CreatePlatformProcessWith 创建平台级工艺并记下可复制，状态草稿。
+func (s *Assets) CreatePlatformProcessWith(ctx context.Context, token, name string, content []byte, copyable bool, weldKind ...string) (Asset, error) {
 	// 只有 WAN 管理员能做平台级工艺。失败一律记拒绝。
 	admin, err := s.RequireAdmin(ctx, token)
 	if err != nil {
@@ -53,9 +58,13 @@ func (s *Assets) CreatePlatformProcess(ctx context.Context, token, name string, 
 		_ = s.audit(ctx, &admin.ID, nil, nil, "create_asset", name, audit.Deny)
 		return Asset{}, err
 	}
-	// 落草稿并记下正文摘要；默认可复制为否。
+	kind, err := store.NormalizeWeldKind(firstWeldKind(weldKind))
+	if err != nil {
+		_ = s.audit(ctx, &admin.ID, nil, nil, "create_asset", name, audit.Deny)
+		return Asset{}, err
+	}
 	row, err := s.store.InsertAsset(ctx, Asset{
-		Kind: KindProcess, Name: name, Status: AssetDraft,
+		Kind: KindProcess, Name: name, Status: AssetDraft, Copyable: copyable, WeldKind: kind,
 		Content: content, Digest: digest.Sum(content), CreatorID: admin.ID,
 	})
 	if err != nil {
@@ -69,9 +78,9 @@ func (s *Assets) CreatePlatformProcess(ctx context.Context, token, name string, 
 	return stripContent(row), nil
 }
 
-// CopyPlatformProcess 可复制平台级工艺另存为新草稿，原件正文原样拷贝，不套模版。
+// CopyPlatformProcess 平台级工艺或工程另存为新草稿；不看可复制，原件正文原样拷贝，不套模版。
 func (s *Assets) CopyPlatformProcess(ctx context.Context, token string, assetID uuid.UUID, name string) (Asset, error) {
-	// 只有 WAN 管理员能另存；停用或不可复制都拒绝。
+	// 只有 WAN 管理员能另存；停用拒绝。可复制只拦厂端升档，不拦云端另存。
 	admin, err := s.RequireAdmin(ctx, token)
 	if err != nil {
 		_ = s.audit(ctx, nil, nil, nil, "create_asset", assetID.String(), audit.Deny)
@@ -87,7 +96,7 @@ func (s *Assets) CopyPlatformProcess(ctx context.Context, token string, assetID 
 		_ = s.audit(ctx, &admin.ID, nil, nil, "create_asset", assetID.String(), audit.Deny)
 		return Asset{}, err
 	}
-	if src.Kind != KindProcess {
+	if src.Kind != KindProcess && src.Kind != KindProject {
 		_ = s.audit(ctx, &admin.ID, nil, nil, "create_asset", assetTarget(src.ID, src.Revision), audit.Deny)
 		return Asset{}, domain.ErrForbidden
 	}
@@ -96,15 +105,10 @@ func (s *Assets) CopyPlatformProcess(ctx context.Context, token string, assetID 
 		_ = s.audit(ctx, &admin.ID, nil, nil, "create_asset", assetTarget(src.ID, src.Revision), audit.Deny)
 		return Asset{}, domain.ErrAssetNotAvailable
 	}
-	// 不可复制的平台级不得拷正文。
-	if !src.Copyable {
-		_ = s.audit(ctx, &admin.ID, nil, nil, "create_asset", assetTarget(src.ID, src.Revision), audit.Deny)
-		return Asset{}, domain.ErrAssetNotCopyable
-	}
-	// 原件正文原样落新草稿，不套模版。
+	// 原件正文与依赖原样落新草稿，不套模版、不写升档来源。
 	row, err := s.store.InsertAsset(ctx, Asset{
-		Kind: KindProcess, Name: name, Status: AssetDraft,
-		Content: src.Content, Digest: src.Digest, CreatorID: admin.ID,
+		Kind: src.Kind, Name: name, Status: AssetDraft, WeldKind: src.WeldKind,
+		Content: src.Content, Digest: src.Digest, CreatorID: admin.ID, Deps: src.Deps,
 	})
 	if err != nil {
 		_ = s.audit(ctx, &admin.ID, nil, nil, "create_asset", name, audit.Deny)
@@ -114,6 +118,7 @@ func (s *Assets) CopyPlatformProcess(ctx context.Context, token string, assetID 
 	if err := s.audit(ctx, &admin.ID, nil, nil, "create_asset", assetTarget(row.ID, row.Revision), audit.Allow); err != nil {
 		return Asset{}, err
 	}
+	s.placeCopyBeside(ctx, src.ID, row.ID)
 	return stripContent(row), nil
 }
 
@@ -146,9 +151,12 @@ func (s *Assets) UpdatePlatformAssetContent(ctx context.Context, token string, a
 		if cur.Status == AssetDisabled {
 			return store.AssetWrite{}, domain.ErrAssetNotAvailable
 		}
-		// 工程焊道引用必须落在已声明依赖里。
+		// 工程焊道引用必须落在已声明依赖里，且作业类型一致。
 		if cur.Kind == KindProject {
 			if err := s.assertProjectProcessIDs(ctx, content, cur.Deps); err != nil {
+				return store.AssetWrite{}, err
+			}
+			if err := assertProjectWeldKind(cur.WeldKind, content); err != nil {
 				return store.AssetWrite{}, err
 			}
 		}
@@ -210,6 +218,7 @@ func (s *Assets) DeletePlatformAsset(ctx context.Context, token string, assetID 
 		return err
 	}
 	s.notifyRetract(ctx, assetID)
+	s.notifyPlatformFS(ctx, cur.Kind)
 	return nil
 }
 
@@ -305,6 +314,22 @@ func (s *Assets) PromoteFromSnapshot(ctx context.Context, token string, snap Ass
 			return Asset{}, domain.ErrAssetDependency
 		}
 	}
+	// 作业类型跟源走；工程正文和依赖工艺必须同类型。
+	weld, err := store.NormalizeWeldKind(snap.WeldKind)
+	if err != nil {
+		_ = s.audit(ctx, &admin.ID, nil, &fid, "promote_asset", snap.SourceID.String(), audit.Deny)
+		return Asset{}, err
+	}
+	if snap.Kind == KindProject {
+		if err := assertProjectWeldKind(weld, body); err != nil {
+			_ = s.audit(ctx, &admin.ID, nil, &fid, "promote_asset", snap.SourceID.String(), audit.Deny)
+			return Asset{}, err
+		}
+		if err := s.assertDepsWeldKind(ctx, weld, deps); err != nil {
+			_ = s.audit(ctx, &admin.ID, nil, &fid, "promote_asset", snap.SourceID.String(), audit.Deny)
+			return Asset{}, err
+		}
+	}
 	sum := digest.Sum(body)
 	rev := snap.SourceRevision
 	// 按源厂身份找已升过的平台级。
@@ -337,7 +362,7 @@ func (s *Assets) PromoteFromSnapshot(ctx context.Context, token string, snap Ass
 	}
 	// 第一次升档则新身份落草稿。
 	row, err := s.store.InsertAsset(ctx, Asset{
-		Kind: snap.Kind, Name: snap.Name, Status: AssetDraft,
+		Kind: snap.Kind, Name: snap.Name, Status: AssetDraft, WeldKind: weld,
 		Content: body, Digest: sum, CreatorID: admin.ID,
 		SourceID: &snap.SourceID, SourceRevision: &rev, SourceFactoryID: &snap.SourceFactoryID,
 		Deps: deps,
@@ -383,15 +408,24 @@ func (s *Assets) rewritePromoteDeps(ctx context.Context, kind string, deps []Ass
 }
 
 // CreatePlatformProject 创建平台级工程；参数里的工艺写入 deps，不必另填。
-func (s *Assets) CreatePlatformProject(ctx context.Context, token, name string, content []byte, deps []AssetDep) (Asset, error) {
+func (s *Assets) CreatePlatformProject(ctx context.Context, token, name string, content []byte, deps []AssetDep, weldKind ...string) (Asset, error) {
 	// 只有 WAN 管理员能做平台级工程。失败一律记拒绝。
 	admin, err := s.RequireAdmin(ctx, token)
 	if err != nil {
 		_ = s.audit(ctx, nil, nil, nil, "create_asset", name, audit.Deny)
 		return Asset{}, err
 	}
+	kind, err := store.NormalizeWeldKind(firstWeldKind(weldKind))
+	if err != nil {
+		_ = s.audit(ctx, &admin.ID, nil, nil, "create_asset", name, audit.Deny)
+		return Asset{}, err
+	}
 	content, err = s.normalizeContent(ctx, KindProject, content)
 	if err != nil {
+		_ = s.audit(ctx, &admin.ID, nil, nil, "create_asset", name, audit.Deny)
+		return Asset{}, err
+	}
+	if err := assertProjectWeldKind(kind, content); err != nil {
 		_ = s.audit(ctx, &admin.ID, nil, nil, "create_asset", name, audit.Deny)
 		return Asset{}, err
 	}
@@ -405,6 +439,10 @@ func (s *Assets) CreatePlatformProject(ctx context.Context, token, name string, 
 		_ = s.audit(ctx, &admin.ID, nil, nil, "create_asset", name, audit.Deny)
 		return Asset{}, err
 	}
+	if err := s.assertDepsWeldKind(ctx, kind, deps); err != nil {
+		_ = s.audit(ctx, &admin.ID, nil, nil, "create_asset", name, audit.Deny)
+		return Asset{}, err
+	}
 	// 套完后焊道引用仍须落在已声明依赖里。
 	if err := s.assertProjectProcessIDs(ctx, content, deps); err != nil {
 		_ = s.audit(ctx, &admin.ID, nil, nil, "create_asset", name, audit.Deny)
@@ -412,7 +450,7 @@ func (s *Assets) CreatePlatformProject(ctx context.Context, token, name string, 
 	}
 	// 落草稿，带上已核过的工艺依赖。
 	row, err := s.store.InsertAsset(ctx, Asset{
-		Kind: KindProject, Name: name, Status: AssetDraft,
+		Kind: KindProject, Name: name, Status: AssetDraft, WeldKind: kind,
 		Content: content, Digest: digest.Sum(content), CreatorID: admin.ID, Deps: deps,
 	})
 	if err != nil {
