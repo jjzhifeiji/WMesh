@@ -103,7 +103,7 @@ func TestMatrixSoftware(t *testing.T) {
 		t.Fatal(err)
 	}
 	op := mustCreateRole(t, ctx, facA, saA, "op-a", "op-pass", factory.RoleOperator, factory.ScopeFactory, nil)
-	pe := mustCreateRole(t, ctx, facA, saA, "pe-a", "pe-pass", factory.RoleProcessEngineer, factory.ScopeFactory, nil)
+	pe := mustCreateRole(t, ctx, facA, saA, "pe-a", "pe-pass", factory.RoleOperator, factory.ScopeFactory, nil)
 	now := time.Now().UTC()
 	clocks := factory.Clocks{Server: now, Local: now}
 	nb, na := now.Add(-time.Hour), now.Add(24*time.Hour)

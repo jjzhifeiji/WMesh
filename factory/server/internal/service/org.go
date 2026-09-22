@@ -10,6 +10,36 @@ import (
 	"wmesh/factory/internal/platform/secret"
 )
 
+// SetKeepPouch 工厂超管按人设置退出后是否保留示教器库文件；没设过的人默认留。
+func (s *Org) SetKeepPouch(ctx context.Context, token string, personID uuid.UUID, keep bool) (Account, error) {
+	acc, err := s.RequireActive(ctx, token)
+	if err != nil {
+		return Account{}, err
+	}
+	// 只有工厂超管能改这项。失败一律记拒绝。
+	if err := s.can(ctx, acc, permManageAccount, nil); err != nil {
+		_ = s.audit(ctx, &acc.ID, nil, "set_keep_pouch", personID.String(), audit.Deny)
+		return Account{}, err
+	}
+	if _, err := s.store.PersonByID(ctx, personID); err != nil {
+		_ = s.audit(ctx, &acc.ID, nil, "set_keep_pouch", personID.String(), audit.Deny)
+		return Account{}, err
+	}
+	// 只改留库标记，不碰密码和会话。
+	if err := s.store.SetKeepPouch(ctx, personID, keep); err != nil {
+		_ = s.audit(ctx, &acc.ID, nil, "set_keep_pouch", personID.String(), audit.Deny)
+		return Account{}, err
+	}
+	p, err := s.store.PersonByID(ctx, personID)
+	if err != nil {
+		return Account{}, err
+	}
+	if err := s.audit(ctx, &acc.ID, &p.LoginName, "set_keep_pouch", p.ID.String(), audit.Allow); err != nil {
+		return Account{}, err
+	}
+	return accountOf(p), nil
+}
+
 // CreatePerson 由工厂超管创建本厂账号，默认日常密码为登录名+123456，直接有效；不发激活码。
 func (s *Org) CreatePerson(ctx context.Context, token, loginName, displayName string) (Account, error) {
 	acc, err := s.RequireActive(ctx, token)

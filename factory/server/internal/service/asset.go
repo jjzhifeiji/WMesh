@@ -29,6 +29,14 @@ func stripContent(a Asset) Asset {
 	return a
 }
 
+// assetCopyable 工艺按调用方；工程没有可复制，恒为是。
+func assetCopyable(kind string, copyable bool) bool {
+	if kind == KindProject {
+		return true
+	}
+	return copyable
+}
+
 // replicaAsAsset 把已收副本当成平台级资产视图。
 func replicaAsAsset(r AssetReplica) Asset {
 	return Asset{
@@ -121,22 +129,22 @@ func (s *kernel) canTouchPersonal(ctx context.Context, acc Account, a Asset) err
 	return s.can(ctx, acc, permManageOrg, a.OrgUnitID)
 }
 
-// peCovers 下发仍按工艺工程师作用域；制作不再走这里。
-func (s *kernel) peCovers(ctx context.Context, acc Account, unit *uuid.UUID) error {
+// opCovers 下发按操作员作用域；制作不走这里。
+func (s *kernel) opCovers(ctx context.Context, acc Account, unit *uuid.UUID) error {
 	grants, err := s.grantsOf(ctx, acc.ID)
 	if err != nil {
 		return err
 	}
-	pe := withRoles(grants, RoleProcessEngineer)
+	op := withRoles(grants, RoleOperator)
 	if unit == nil {
-		for _, g := range pe {
+		for _, g := range op {
 			if g.ScopeKind == ScopeFactory {
 				return nil
 			}
 		}
 		return domain.ErrForbidden
 	}
-	ok, err := s.covers(ctx, pe, unit)
+	ok, err := s.covers(ctx, op, unit)
 	if err != nil {
 		return err
 	}
@@ -241,7 +249,7 @@ func (s *Assets) insertGoverned(ctx context.Context, acc Account, unitID *uuid.U
 		return Asset{}, err
 	}
 	return s.putGoverned(ctx, acc, unitID, path, Asset{
-		Kind: kind, Level: level, Name: name, Status: AssetDraft, Copyable: copyable, WeldKind: weld,
+		Kind: kind, Level: level, Name: name, Status: AssetDraft, Copyable: assetCopyable(kind, copyable), WeldKind: weld,
 		Content: content, Digest: digest.Sum(content), CreatorID: acc.ID,
 		OrgUnitID: unitID, OrgPath: path, Deps: deps,
 	})
@@ -260,8 +268,13 @@ func (s *Assets) putGoverned(ctx context.Context, acc Account, unitID *uuid.UUID
 	return stripContent(row), nil
 }
 
-// CreatePadPersonal 平板保存：个人级立刻可用，不走管理后台发布。
+// CreatePadPersonal 平板保存个人级：立刻可用，不走管理后台发布。
 func (s *Assets) CreatePadPersonal(ctx context.Context, token string, kind, name string, content []byte, id uuid.UUID, code string, deps []AssetDep, weldKind ...string) (Asset, error) {
+	return s.CreatePad(ctx, token, AssetLevelPersonal, kind, name, content, id, code, deps, weldKind...)
+}
+
+// CreatePad 示教器新建：个人级谁都可以；厂级只给管理员；身份沿用调用方的 UUIDv7。
+func (s *Assets) CreatePad(ctx context.Context, token, level, kind, name string, content []byte, id uuid.UUID, code string, deps []AssetDep, weldKind ...string) (Asset, error) {
 	acc, err := s.RequireActive(ctx, token)
 	if err != nil {
 		return Asset{}, err
@@ -274,6 +287,20 @@ func (s *Assets) CreatePadPersonal(ctx context.Context, token string, kind, name
 	if kind != KindProcess && kind != KindProject {
 		_ = s.audit(ctx, &acc.ID, nil, "create_asset", kind, audit.Deny)
 		return Asset{}, domain.ErrNotFound
+	}
+	if level == "" {
+		level = AssetLevelPersonal
+	}
+	if level == AssetLevelPlatform || (level != AssetLevelPersonal && level != AssetLevelFactory) {
+		_ = s.audit(ctx, &acc.ID, nil, "create_asset", kind, audit.Deny)
+		return Asset{}, domain.ErrForbidden
+	}
+	// 厂级新建不看组织路径，管理员即可。
+	if level == AssetLevelFactory {
+		if err := s.canPadAdmin(ctx, acc); err != nil {
+			_ = s.audit(ctx, &acc.ID, nil, "create_asset", name, audit.Deny)
+			return Asset{}, err
+		}
 	}
 	unitID, path, err := s.resolveAuthorContext(ctx, acc, WorkContext{Direct: true})
 	if err != nil {
@@ -298,7 +325,7 @@ func (s *Assets) CreatePadPersonal(ctx context.Context, token string, kind, name
 			_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny, unitID, path)
 			return Asset{}, err
 		}
-		deps, err = s.fillProjectDeps(ctx, acc, AssetLevelPersonal, content, deps)
+		deps, err = s.fillProjectDeps(ctx, acc, level, content, deps)
 		if err != nil {
 			_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny, unitID, path)
 			return Asset{}, err
@@ -317,7 +344,7 @@ func (s *Assets) CreatePadPersonal(ctx context.Context, token string, kind, name
 		}
 	}
 	return s.putGoverned(ctx, acc, unitID, path, Asset{
-		ID: id, Kind: kind, Level: AssetLevelPersonal, Name: name, Code: strings.TrimSpace(code),
+		ID: id, Kind: kind, Level: level, Name: name, Code: strings.TrimSpace(code),
 		Status: AssetAvailable, Copyable: true, WeldKind: weld, Content: content, Digest: digest.Sum(content),
 		CreatorID: acc.ID, OrgUnitID: unitID, OrgPath: path, Deps: deps,
 	})
@@ -558,6 +585,31 @@ func (s *kernel) pinPersonalProcess(ctx context.Context, acc Account, id uuid.UU
 	return AssetDep{ID: p.ID, Revision: p.Revision, Digest: p.Digest}, nil
 }
 
+// resolveProjectDeps 改依赖时按身份重钉当前可用修订，跟上工艺升版。
+func (s *kernel) resolveProjectDeps(ctx context.Context, acc Account, level string, deps []AssetDep) ([]AssetDep, error) {
+	out := make([]AssetDep, 0, len(deps))
+	seen := map[string]struct{}{}
+	for _, d := range deps {
+		key := d.ID.String()
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		var pin AssetDep
+		var err error
+		if level == AssetLevelPersonal {
+			pin, err = s.pinPersonalProcess(ctx, acc, d.ID)
+		} else {
+			pin, err = s.pinFactoryProcess(ctx, d.ID)
+		}
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, pin)
+	}
+	return out, nil
+}
+
 // mergeProjectDeps 保留已声明依赖，再按参数引用补缺。
 func mergeProjectDeps(existing []AssetDep, ids []string, lookup func(uuid.UUID) (AssetDep, error)) ([]AssetDep, error) {
 	have := make(map[string]struct{}, len(existing)+len(ids))
@@ -656,17 +708,177 @@ func (s *Assets) UpdateAssetContent(ctx context.Context, token string, assetID u
 	})
 }
 
-// SetAssetCopyable 未停用即可改可复制，发布后也能改回是或否。
+// ApplyAppContent 示教器连上后用本机正文盖当前行，不跟网页对版本号。
+func (s *Assets) ApplyAppContent(ctx context.Context, token string, assetID uuid.UUID, content []byte) (Asset, error) {
+	acc, err := s.RequireActive(ctx, token)
+	if err != nil {
+		return Asset{}, err
+	}
+	var rev int64
+	var last error
+	for range 3 {
+		row, seen, err := s.applyAppOnce(ctx, acc, assetID, content)
+		rev = seen
+		if err == nil {
+			return row, nil
+		}
+		// 并发顶掉当前修订就再读一次；仍不对才把冲突交给调用方。
+		if !errors.Is(err, domain.ErrRevisionConflict) {
+			return Asset{}, err
+		}
+		last = err
+	}
+	_ = s.audit(ctx, &acc.ID, nil, "apply_app", assetTarget(assetID, rev), audit.Deny)
+	if last == nil {
+		last = domain.ErrRevisionConflict
+	}
+	return Asset{}, last
+}
+
+// applyAppOnce 按当前修订盖一次；撞上并发不记审计，交给外层重试。
+func (s *Assets) applyAppOnce(ctx context.Context, acc Account, assetID uuid.UUID, content []byte) (Asset, int64, error) {
+	cur, err := s.loadAnyMeta(ctx, assetID)
+	if err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			_ = s.audit(ctx, &acc.ID, nil, "apply_app", assetID.String(), audit.Deny)
+		}
+		return Asset{}, 0, err
+	}
+	// 平台级副本不许回写；厂级只给管理员；个人级只给创建人。
+	if err := s.canApplyApp(ctx, acc, cur); err != nil {
+		_ = s.audit(ctx, &acc.ID, nil, "apply_app", assetTarget(cur.ID, cur.Revision), audit.Deny)
+		return Asset{}, cur.Revision, err
+	}
+	// 停用仍盖正文，状态保持停用。
+	deps := cur.Deps
+	if cur.Kind == KindProject {
+		if err := contenttpl.RejectProcessPath(content); err != nil {
+			_ = s.audit(ctx, &acc.ID, nil, "apply_app", assetTarget(cur.ID, cur.Revision), audit.Deny)
+			return Asset{}, cur.Revision, domain.ErrForbidden
+		}
+		if err := assertProjectWeldKind(cur.WeldKind, content); err != nil {
+			_ = s.audit(ctx, &acc.ID, nil, "apply_app", assetTarget(cur.ID, cur.Revision), audit.Deny)
+			return Asset{}, cur.Revision, err
+		}
+		// 先有工艺再盖工程：正文里新引用钉到当前可用修订。
+		deps, err = s.fillProjectDeps(ctx, acc, cur.Level, content, cur.Deps)
+		if err != nil {
+			_ = s.audit(ctx, &acc.ID, nil, "apply_app", assetTarget(cur.ID, cur.Revision), audit.Deny)
+			return Asset{}, cur.Revision, err
+		}
+		if err := s.assertProjectProcessIDs(ctx, content, deps); err != nil {
+			_ = s.audit(ctx, &acc.ID, nil, "apply_app", assetTarget(cur.ID, cur.Revision), audit.Deny)
+			return Asset{}, cur.Revision, err
+		}
+	}
+	row, err := s.store.UpdateGovernedAsset(ctx, assetID, cur.Revision, store.AssetWrite{
+		Name: cur.Name, Content: content, Digest: digest.Sum(content),
+		Copyable: cur.Copyable, Status: cur.Status, Deps: deps,
+	})
+	if err != nil {
+		if !errors.Is(err, domain.ErrRevisionConflict) {
+			_ = s.audit(ctx, &acc.ID, nil, "apply_app", assetTarget(assetID, cur.Revision), audit.Deny)
+		}
+		return Asset{}, cur.Revision, err
+	}
+	if err := s.audit(ctx, &acc.ID, nil, "apply_app", assetTarget(row.ID, row.Revision), audit.Allow); err != nil {
+		return Asset{}, row.Revision, err
+	}
+	return stripContent(row), row.Revision, nil
+}
+
+// canApplyApp 平台级拒绝；厂级只给管理员；个人级只给创建人。
+func (s *kernel) canApplyApp(ctx context.Context, acc Account, a Asset) error {
+	switch a.Level {
+	case AssetLevelPlatform:
+		return domain.ErrForbidden
+	case AssetLevelPersonal:
+		if acc.ID != a.CreatorID {
+			return domain.ErrForbidden
+		}
+		return nil
+	case AssetLevelFactory:
+		return s.canPadAdmin(ctx, acc)
+	default:
+		return domain.ErrForbidden
+	}
+}
+
+// canPadAdmin 超管或任一组织管理员即可改、建厂级，不看组织路径。
+func (s *kernel) canPadAdmin(ctx context.Context, acc Account) error {
+	grants, err := s.grantsOf(ctx, acc.ID)
+	if err != nil {
+		return err
+	}
+	if isFactorySA(grants) {
+		return nil
+	}
+	for _, g := range grants {
+		if g.Role == RoleOrgAdmin {
+			return nil
+		}
+	}
+	return domain.ErrForbidden
+}
+
+// SetAssetCopyable 未停用工艺可改可复制；工程没有这项。
 func (s *Assets) SetAssetCopyable(ctx context.Context, token string, assetID uuid.UUID, expected int64, copyable bool) (Asset, error) {
 	acc, err := s.RequireActive(ctx, token)
 	if err != nil {
 		return Asset{}, err
 	}
 	return s.mutateAsset(ctx, acc, assetID, expected, "update_asset", func(cur Asset) (store.AssetWrite, error) {
+		if cur.Kind != KindProcess {
+			return store.AssetWrite{}, domain.ErrForbidden
+		}
 		if cur.Status == AssetDisabled {
 			return store.AssetWrite{}, domain.ErrAssetNotAvailable
 		}
 		return store.AssetWrite{Name: cur.Name, Digest: cur.Digest, Copyable: copyable, Status: cur.Status, Deps: cur.Deps, KeepContent: true}, nil
+	})
+}
+
+// SetAssetWeldKind 未停用的本厂工艺或工程可改作业类型；工程正文对不上时换成空焊道。
+func (s *Assets) SetAssetWeldKind(ctx context.Context, token string, assetID uuid.UUID, expected int64, weldKind string) (Asset, error) {
+	acc, err := s.RequireActive(ctx, token)
+	if err != nil {
+		return Asset{}, err
+	}
+	return s.mutateAsset(ctx, acc, assetID, expected, "update_asset", func(cur Asset) (store.AssetWrite, error) {
+		if cur.Kind != KindProcess && cur.Kind != KindProject {
+			return store.AssetWrite{}, domain.ErrForbidden
+		}
+		if cur.Status == AssetDisabled {
+			return store.AssetWrite{}, domain.ErrAssetNotAvailable
+		}
+		kind, err := store.NormalizeWeldKind(weldKind)
+		if err != nil {
+			return store.AssetWrite{}, err
+		}
+		write := store.AssetWrite{Name: cur.Name, Digest: cur.Digest, Copyable: cur.Copyable, Status: cur.Status, Deps: cur.Deps, WeldKind: kind, KeepContent: true}
+		if cur.Kind != KindProject {
+			return write, nil
+		}
+		kept, err := s.depsMatchingWeldKind(ctx, kind, cur.Deps)
+		if err != nil {
+			return store.AssetWrite{}, err
+		}
+		write.Deps = kept
+		body := cur.Content
+		if len(body) == 0 {
+			full, err := s.loadChecked(ctx, cur.ID)
+			if err != nil {
+				return store.AssetWrite{}, err
+			}
+			body = full.Content
+		}
+		if err := assertProjectWeldKind(kind, body); err != nil {
+			empty := []byte("[]")
+			write.KeepContent = false
+			write.Content = empty
+			write.Digest = digest.Sum(empty)
+		}
+		return write, nil
 	})
 }
 
@@ -885,20 +1097,20 @@ func (s *Assets) GetAsset(ctx context.Context, token string, assetID uuid.UUID) 
 	return stripContent(a), nil
 }
 
-// ReadAssetContent 读正文并核对摘要；个人级创建人或管理员；不可复制的平台级不给人看。
+// ReadAssetContent 读正文并核对摘要；个人级创建人或管理员；不可复制的平台级工艺不给人看。
 func (s *Assets) ReadAssetContent(ctx context.Context, token string, assetID uuid.UUID) ([]byte, error) {
 	acc, err := s.RequireActive(ctx, token)
 	if err != nil {
 		return nil, err
 	}
-	// 个人级创建人或覆盖该处的管理员；不可复制平台级不给人看。失败一律记拒绝。
+	// 个人级创建人或覆盖该处的管理员；不可复制平台级工艺不给人看。失败一律记拒绝。
 	meta, err := s.loadAnyMeta(ctx, assetID)
 	if err != nil {
 		_ = s.audit(ctx, &acc.ID, nil, "read_asset_content", assetID.String(), audit.Deny)
 		return nil, err
 	}
-	// 不可复制的平台级是严格保密件，厂端人员不得看参数，连解包都不做。
-	if meta.Level == AssetLevelPlatform && !meta.Copyable {
+	// 不可复制的平台级工艺是严格保密件，厂端人员不得看参数；工程不保密。
+	if meta.Kind == KindProcess && meta.Level == AssetLevelPlatform && !meta.Copyable {
 		_ = s.audit(ctx, &acc.ID, nil, "read_asset_content", assetTarget(meta.ID, meta.Revision), audit.Deny)
 		return nil, domain.ErrForbidden
 	}
@@ -921,7 +1133,7 @@ func (s *Assets) ReadAssetContent(ctx context.Context, token string, assetID uui
 	return a.Content, nil
 }
 
-// PromoteToFactory 把可复制且可用的个人级升为厂级：第一次复制新身份；再升按正文摘要跳过或覆盖。
+// PromoteToFactory 把可复制的未停用个人级升为厂级：草稿也可升；第一次复制新身份；再升按正文摘要跳过或覆盖。
 func (s *Assets) PromoteToFactory(ctx context.Context, token string, assetID uuid.UUID) (Asset, error) {
 	acc, err := s.RequireActive(ctx, token)
 	if err != nil {
@@ -940,11 +1152,12 @@ func (s *Assets) PromoteToFactory(ctx context.Context, token string, assetID uui
 		_ = s.audit(ctx, &acc.ID, nil, "promote_asset", assetTarget(src.ID, src.Revision), audit.Deny)
 		return Asset{}, domain.ErrForbidden
 	}
-	if src.Status != AssetAvailable {
+	// 停用不能升；草稿可以，厂级新条目仍记可用。
+	if src.Status == AssetDisabled {
 		_ = s.audit(ctx, &acc.ID, nil, "promote_asset", assetTarget(src.ID, src.Revision), audit.Deny)
 		return Asset{}, domain.ErrAssetNotAvailable
 	}
-	if !src.Copyable {
+	if src.Kind == KindProcess && !src.Copyable {
 		_ = s.audit(ctx, &acc.ID, nil, "promote_asset", assetTarget(src.ID, src.Revision), audit.Deny)
 		return Asset{}, domain.ErrAssetNotCopyable
 	}
@@ -1054,7 +1267,7 @@ type PromotableAsset struct {
 	Revision int64     `json:"revision"` // 当前修订
 	Digest   []byte    `json:"digest"`   // 内容摘要
 	Status   string    `json:"status"`   // draft / available / disabled
-	Copyable bool      `json:"copyable"` // 原样带回，升档时仍按可复制判定
+	Copyable bool      `json:"copyable"` // 工艺才有；工程恒为是
 	WeldKind string    `json:"weldKind"` // 作业类型
 }
 
@@ -1111,7 +1324,7 @@ func (s *Assets) ListPromotable(ctx context.Context, kind string) ([]PromotableA
 	return out, nil
 }
 
-// SnapshotForChannel 通道升档用：本厂厂级和个人级可复制即可出快照，不分状态；平台级副本已在云端，不再从厂升。
+// SnapshotForChannel 通道升档用：本厂厂级和个人级可出快照；工艺须可复制，工程不看可复制。
 func (s *Assets) SnapshotForChannel(ctx context.Context, assetID uuid.UUID) (AssetSnapshot, error) {
 	src, err := s.loadChecked(ctx, assetID)
 	if err != nil {
@@ -1124,7 +1337,7 @@ func (s *Assets) SnapshotForChannel(ctx context.Context, assetID uuid.UUID) (Ass
 		_ = s.audit(ctx, nil, nil, "export_asset", assetID.String(), audit.Deny)
 		return AssetSnapshot{}, err
 	}
-	if !src.Copyable {
+	if src.Kind == KindProcess && !src.Copyable {
 		_ = s.audit(ctx, nil, nil, "export_asset", assetTarget(src.ID, src.Revision), audit.Deny)
 		return AssetSnapshot{}, domain.ErrAssetNotCopyable
 	}

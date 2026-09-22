@@ -381,7 +381,8 @@ func (s *Closure) SetPlatformProjectDeps(ctx context.Context, token string, asse
 		if cur.Status == AssetDisabled {
 			return store.AssetWrite{}, domain.ErrAssetNotAvailable
 		}
-		if err := s.assertPlatformProcessDeps(ctx, deps); err != nil {
+		deps, err := s.resolvePlatformProjectDeps(ctx, deps)
+		if err != nil {
 			return store.AssetWrite{}, err
 		}
 		if err := s.assertDepsWeldKind(ctx, cur.WeldKind, deps); err != nil {

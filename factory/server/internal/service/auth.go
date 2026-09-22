@@ -13,7 +13,15 @@ import (
 	"wmesh/factory/internal/platform/secret"
 )
 
-const sessionTTL = 12 * time.Hour // 厂内在线会话有效期
+const sessionTTL = 12 * time.Hour // 网页会话有效期；示教器另按登录时效
+
+// appTokenExpiry 示教器令牌跟登录时效走；0 表示直到退出，不按时钟作废。
+func appTokenExpiry(pol ClientPolicy, now time.Time) time.Time {
+	if pol.KeyTTLSeconds > 0 {
+		return now.Add(time.Duration(pol.KeyTTLSeconds) * time.Second)
+	}
+	return time.Date(9999, 1, 1, 0, 0, 0, 0, time.UTC)
+}
 
 // BootstrapInitial 在本厂写入待启用初始超管和预置厂级超管角色，激活码只返回给交付方。
 func (s *Auth) BootstrapInitial(ctx context.Context, saLogin, saDisplay string) (Account, string, error) {

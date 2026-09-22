@@ -202,9 +202,9 @@ func TestFactoryHTTP(t *testing.T) {
 		t.Fatalf("signing key %d %s", code, body)
 	}
 
-	code, body = do(t, srv, "POST", base+"/grants", tok, `{"personId":"`+saID+`","role":"process_engineer","scopeKind":"factory"}`)
+	code, body = do(t, srv, "POST", base+"/grants", tok, `{"personId":"`+saID+`","role":"operator","scopeKind":"factory"}`)
 	if code != http.StatusCreated {
-		t.Fatalf("grant pe %d %s", code, body)
+		t.Fatalf("grant op %d %s", code, body)
 	}
 	code, body = do(t, srv, "GET", base+"/asset-author-context", tok, "")
 	if code != http.StatusOK || !strings.Contains(body, `"allowDirect":true`) {

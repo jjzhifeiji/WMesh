@@ -141,14 +141,14 @@ func (s *Closure) assertGrantableProject(ctx context.Context, projectID uuid.UUI
 	return nil
 }
 
-// DistributeToClient 由有权工艺工程师把工程闭包写入已授权本机袋。
+// DistributeToClient 由作用域覆盖的操作员把工程闭包写入已授权本机袋。
 func (s *Closure) DistributeToClient(ctx context.Context, token string, projectID, clientID uuid.UUID, bag *Bag, clocks Clocks) error {
 	acc, err := s.RequireActive(ctx, token)
 	if err != nil {
 		return err
 	}
 	target := projectID.String() + " client=" + clientID.String()
-	// 有权工艺工程师且 Client 已授权、绑定有效。失败一律记拒绝。
+	// 操作员作用域覆盖且 Client 已授权、绑定有效。失败一律记拒绝。
 	root, err := s.loadRootForPack(ctx, projectID)
 	if err != nil {
 		_ = s.audit(ctx, &acc.ID, nil, "distribute_closure", target, audit.Deny)

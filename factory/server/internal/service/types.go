@@ -16,8 +16,7 @@ const (
 	RoleFactorySuperAdmin = store.RoleFactorySuperAdmin // 工厂超管，只能挂本厂作用域
 	RoleOrgAdmin          = store.RoleOrgAdmin          // 组织管理员，可挂整厂或某个节点及当前子树
 	RoleOrgLead           = store.RoleOrgLead           // 组织负责人，子树只读
-	RoleProcessEngineer   = store.RoleProcessEngineer   // 工艺工程师，下发仍按作用域
-	RoleOperator          = store.RoleOperator          // 操作员，可产生运行事实
+	RoleOperator          = store.RoleOperator          // 操作员，可产生运行事实、作用域内下发
 	RoleAuditor           = store.RoleAuditor           // 审计员，只读，不能改业务
 
 	ScopeFactory = store.ScopeFactory // 覆盖本厂当时全部组织节点

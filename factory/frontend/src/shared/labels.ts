@@ -1,5 +1,5 @@
 // 固定枚举的中文展示名与颜色；枚举值以服务端为准。
-// 授予页可出这四种；组织负责人、工艺工程师服务端仍认历史授予，不再新授。
+// 授予页可出这四种；组织负责人服务端仍认历史授予，不再新授。
 export const ROLES = [
   { value: "factory_super_admin", label: "工厂超管", scopes: ["factory"] },
   { value: "org_admin", label: "管理员", scopes: ["factory", "org_unit"] },
@@ -11,7 +11,6 @@ const ROLE_LABELS: Record<string, string> = {
   factory_super_admin: "工厂超管",
   org_admin: "管理员",
   org_lead: "组织负责人",
-  process_engineer: "工艺工程师",
   operator: "操作员",
   auditor: "审计员",
 };

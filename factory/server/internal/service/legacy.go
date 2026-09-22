@@ -57,7 +57,7 @@ func (s *Assets) ImportLegacy(ctx context.Context, token string, in LegacyImport
 	if err != nil {
 		return LegacyImportResult{}, err
 	}
-	// 管理员以上：工厂超管或整厂管理员。操作员和已删的工艺工程师不行。
+	// 管理员以上：工厂超管或整厂管理员。操作员不行。
 	if err := s.can(ctx, acc, permManageOrg, nil); err != nil {
 		_ = s.audit(ctx, &acc.ID, nil, "import_legacy", "factory", audit.Deny)
 		return LegacyImportResult{}, err

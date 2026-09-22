@@ -90,11 +90,17 @@ func (s *Node) LoginOnClient(ctx context.Context, clientID uuid.UUID, serial, lo
 		}
 		return ClientSession{}, domain.ErrForbidden
 	}
+	pol, err := s.store.ClientPolicy(ctx)
+	if err != nil {
+		_ = s.audit(ctx, &p.ID, &loginName, "client_login", clientID.String(), audit.Deny)
+		return ClientSession{}, err
+	}
 	token, err := secret.RandomToken()
 	if err != nil {
 		return ClientSession{}, err
 	}
-	if _, err := s.store.CreateAppSession(ctx, p.ID, secret.TokenHash(token), time.Now().UTC().Add(sessionTTL)); err != nil {
+	// 令牌时长跟当时的登录时效，不跟网页那条 12 小时。
+	if _, err := s.store.CreateAppSession(ctx, p.ID, secret.TokenHash(token), appTokenExpiry(pol, time.Now().UTC())); err != nil {
 		return ClientSession{}, err
 	}
 	// 示教器登录立刻记最近见到，版本由 HTTP 层补。
@@ -104,11 +110,6 @@ func (s *Node) LoginOnClient(ctx context.Context, clientID uuid.UUID, serial, lo
 		return ClientSession{}, err
 	}
 	if err := s.store.SetClientOperator(ctx, clientID, p.ID); err != nil {
-		_ = s.store.DeleteSessionByTokenHash(ctx, secret.TokenHash(token))
-		return ClientSession{}, err
-	}
-	pol, err := s.store.ClientPolicy(ctx)
-	if err != nil {
 		_ = s.store.DeleteSessionByTokenHash(ctx, secret.TokenHash(token))
 		return ClientSession{}, err
 	}
@@ -197,21 +198,22 @@ func (s *Node) LoginPad(ctx context.Context, loginName, password string) (PadSes
 		}
 		return PadSession{}, domain.ErrForbidden
 	}
+	pol, err := s.store.ClientPolicy(ctx)
+	if err != nil {
+		_ = s.audit(ctx, &p.ID, &loginName, "pad_login", s.store.FactoryID().String(), audit.Deny)
+		return PadSession{}, err
+	}
 	token, err := secret.RandomToken()
 	if err != nil {
 		return PadSession{}, err
 	}
-	if _, err := s.store.CreateAppSession(ctx, p.ID, secret.TokenHash(token), time.Now().UTC().Add(sessionTTL)); err != nil {
+	// 令牌时长跟当时的登录时效，不跟网页那条 12 小时。
+	if _, err := s.store.CreateAppSession(ctx, p.ID, secret.TokenHash(token), appTokenExpiry(pol, time.Now().UTC())); err != nil {
 		return PadSession{}, err
 	}
 	// 示教器登录立刻记最近见到，版本由 HTTP 层补。
 	_ = s.store.NotePersonApp(ctx, p.ID, 0, "")
 	rows, err := s.store.ListClients(ctx)
-	if err != nil {
-		_ = s.store.DeleteSessionByTokenHash(ctx, secret.TokenHash(token))
-		return PadSession{}, err
-	}
-	pol, err := s.store.ClientPolicy(ctx)
 	if err != nil {
 		_ = s.store.DeleteSessionByTokenHash(ctx, secret.TokenHash(token))
 		return PadSession{}, err

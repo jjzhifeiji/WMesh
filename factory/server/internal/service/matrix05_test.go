@@ -32,10 +32,10 @@ func testAssetAuthorship(t *testing.T, run func(string, func(*testing.T))) {
 		t.Fatal(err)
 	}
 	saB := mustLogin(t, ctx, facB, "sa-b", "sa-b-pass")
-	pe := mustCreateRole(t, ctx, facA, saA, "pe-a", "pe-pass", factory.RoleProcessEngineer, factory.ScopeFactory, nil)
-	pe2 := mustCreateRole(t, ctx, facA, saA, "pe-a2", "pe2-pass", factory.RoleProcessEngineer, factory.ScopeFactory, nil)
+	pe := mustCreateRole(t, ctx, facA, saA, "pe-a", "pe-pass", factory.RoleOperator, factory.ScopeFactory, nil)
+	pe2 := mustCreateRole(t, ctx, facA, saA, "pe-a2", "pe2-pass", factory.RoleOperator, factory.ScopeFactory, nil)
 	op := mustCreateRole(t, ctx, facA, saA, "op-a", "op-pass", factory.RoleOperator, factory.ScopeFactory, nil)
-	peB := mustCreateRole(t, ctx, facB, saB, "pe-b", "pe-b-pass", factory.RoleProcessEngineer, factory.ScopeFactory, nil)
+	peB := mustCreateRole(t, ctx, facB, saB, "pe-b", "pe-b-pass", factory.RoleOperator, factory.ScopeFactory, nil)
 	direct := factory.WorkContext{Direct: true}
 	body := []byte("personal-secret-body")
 	site, err := facA.CreateOrgUnit(ctx, saA, "场地", nil)
@@ -50,7 +50,7 @@ func testAssetAuthorship(t *testing.T, run func(string, func(*testing.T))) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	peShop := mustCreateRole(t, ctx, facA, saA, "pe-shop", "shop-pass", factory.RoleProcessEngineer, factory.ScopeOrgUnit, &shop.ID)
+	peShop := mustCreateRole(t, ctx, facA, saA, "pe-shop", "shop-pass", factory.RoleOperator, factory.ScopeOrgUnit, &shop.ID)
 	if err := facA.Assign(ctx, saA, peShop.acc.ID, shop.ID); err != nil {
 		t.Fatal(err)
 	}

@@ -22,9 +22,11 @@ export function pickFactoryId(listed: SiteFactory[], sessionId: string) {
 }
 
 export function factoryOptionLabel(f: SiteFactory) {
-  const name = f.saLogin ? `${f.saLogin} · ${f.id.slice(0, 8)}` : f.id;
-  if (f.status === "disabled") return `${name}（已停用）`;
-  return name;
+  const name = f.name?.trim();
+  const code = f.shortCode?.trim();
+  const title = name && code ? `${name}（${code}）` : name || (code ? `工厂 ${code}` : "未命名工厂");
+  if (f.status === "disabled") return `${title}（已停用）`;
+  return title;
 }
 
 function closedMessage(status: string | undefined, action: string) {

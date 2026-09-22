@@ -155,6 +155,7 @@ type Account struct {
 	AppVersionName  string     `json:"appVersionName"`          // 示教器自报 versionName
 	AppClientName   string     `json:"appClientName"`           // 最近一次登录用过的设备名；没有则为空
 	AppDeviceSerial string     `json:"appDeviceSerial"`         // 最近一次登录用过的识别号；没有则为空
+	KeepPouch       bool       `json:"keepPouch"`               // 退出后是否保留示教器库文件；默认留
 }
 
 // 对外账号视图，不含密码；在线标记由名册另填。
@@ -162,6 +163,7 @@ func accountOf(p Person) Account {
 	return Account{
 		ID: p.ID, LoginName: p.LoginName, DisplayName: p.DisplayName, Status: p.Status,
 		AppLastSeenAt: p.AppLastSeenAt, AppVersion: p.AppVersion, AppVersionName: p.AppVersionName,
+		KeepPouch: p.KeepPouch,
 	}
 }
 

@@ -7,7 +7,7 @@ import { fpath, session } from "@/shared/auth/session";
 
 export type LoginInput = { factoryId: string; loginName: string; password: string };
 export type ActivateInput = { factoryId: string; loginName: string; activationToken: string; password: string };
-export type SiteFactory = { id: string; saLogin: string; status?: string };
+export type SiteFactory = { id: string; name?: string; shortCode?: string; saLogin: string; status?: string };
 export type Site = { wanConfigured: boolean; factories: SiteFactory[] };
 export type ClaimInput = { enrollmentCode: string; password: string };
 export type Claimed = { factoryId: string; saLogin: string };

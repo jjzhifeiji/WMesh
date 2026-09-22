@@ -19,6 +19,7 @@ export type Account = {
   appVersionName: string; // 示教器自报 versionName
   appClientName: string; // 最近一次登录用过的设备名
   appDeviceSerial: string; // 最近一次登录用过的识别号
+  keepPouch: boolean; // 退出后是否保留示教器库文件；默认留
 };
 
 export type OrgUnit = {
@@ -41,7 +42,7 @@ export type Assignment = {
 export type RoleGrant = {
   id: string; // 授予记录稳定身份
   personId: string; // 被授予的本厂人员
-  role: string; // 固定角色；历史授予可能仍是工艺工程师
+  role: string; // 固定角色
   scopeKind: ScopeKind; // factory 或 org_unit
   orgUnitId: string | null; // Factory 作用域必须为空
   status: "active" | "revoked"; // active 或 revoked

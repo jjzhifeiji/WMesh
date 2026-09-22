@@ -71,7 +71,7 @@ func TestAttrCircle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := fac.GrantRole(ctx, saTok, eng.ID, factory.RoleProcessEngineer, factory.ScopeOrgUnit, &shopA.ID); err != nil {
+	if _, err := fac.GrantRole(ctx, saTok, eng.ID, factory.RoleOperator, factory.ScopeOrgUnit, &shopA.ID); err != nil {
 		t.Fatal(err)
 	}
 	engTok := mustAdoptPassword(t, ctx, fac, "eng", "eng-pass")

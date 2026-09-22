@@ -24,8 +24,7 @@ const (
 	RoleFactorySuperAdmin = "factory_super_admin" // 工厂超级管理员，只能挂 Factory 作用域
 	RoleOrgAdmin          = "org_admin"           // 组织管理员，可挂整厂或某个节点及当前子树
 	RoleOrgLead           = "org_lead"            // 组织负责人，子树只读
-	RoleProcessEngineer   = "process_engineer"    // 历史角色，新授予不再提供；制作不依赖它
-	RoleOperator          = "operator"            // 操作员，可产生运行事实
+	RoleOperator          = "operator"            // 操作员，可产生运行事实、作用域内下发
 	RoleAuditor           = "auditor"             // 审计员，只读，不能改业务
 
 	ScopeFactory = "factory"  // 覆盖本厂及当时全部组织节点
@@ -37,18 +36,19 @@ const (
 
 // Person 是本厂一个自然人账号，固定只属于本厂库，不属于任何组织节点。
 type Person struct {
-	ID                  uuid.UUID `gorm:"type:uuid;primaryKey" json:"id"`      // 稳定身份，改名也不变
-	LoginName           string    `gorm:"not null" json:"loginName"`           // 本厂内唯一登录名，不是身份
-	DisplayName         string    `gorm:"not null" json:"displayName"`         // 显示名，可改
-	Status              string    `gorm:"not null" json:"status"`              // pending / active / disabled
-	PasswordHash        *string   `json:"-"`                                   // 日常密码哈希，只存在本厂；激活前为空
-	ActivationTokenHash *string   `json:"-"`                                   // 一次性 8 位激活码哈希，激活后清空
-	IsInitialSuperAdmin bool       `gorm:"not null" json:"isInitialSuperAdmin"` // 本厂唯一的 WAN 下发初始超管
-	CreatedAt           time.Time  `gorm:"not null" json:"createdAt"`           // 账号创建时间
-	UnwrapKey           []byte     `json:"-"`                                  // 登录人解封钥；焊机不持钥
-	AppLastSeenAt       *time.Time `json:"appLastSeenAt,omitempty"`            // 最近一次示教器登录或 MQTT 见到
-	AppVersion          int64      `json:"appVersion"`                         // 示教器自报 versionCode；0 表示还没报到
-	AppVersionName      string     `json:"appVersionName"`                     // 示教器自报 versionName
+	ID                  uuid.UUID  `gorm:"type:uuid;primaryKey" json:"id"`         // 稳定身份，改名也不变
+	LoginName           string     `gorm:"not null" json:"loginName"`              // 本厂内唯一登录名，不是身份
+	DisplayName         string     `gorm:"not null" json:"displayName"`            // 显示名，可改
+	Status              string     `gorm:"not null" json:"status"`                 // pending / active / disabled
+	PasswordHash        *string    `json:"-"`                                      // 日常密码哈希，只存在本厂；激活前为空
+	ActivationTokenHash *string    `json:"-"`                                      // 一次性 8 位激活码哈希，激活后清空
+	IsInitialSuperAdmin bool       `gorm:"not null" json:"isInitialSuperAdmin"`    // 本厂唯一的 WAN 下发初始超管
+	CreatedAt           time.Time  `gorm:"not null" json:"createdAt"`              // 账号创建时间
+	UnwrapKey           []byte     `json:"-"`                                      // 登录人解封钥；焊机不持钥
+	AppLastSeenAt       *time.Time `json:"appLastSeenAt,omitempty"`                // 最近一次示教器登录或 MQTT 见到
+	AppVersion          int64      `json:"appVersion"`                             // 示教器自报 versionCode；0 表示还没报到
+	AppVersionName      string     `json:"appVersionName"`                         // 示教器自报 versionName
+	KeepPouch           bool       `gorm:"not null;default:true" json:"keepPouch"` // 退出后是否保留示教器库文件；默认留
 }
 
 func (Person) TableName() string { return "people" }
@@ -74,6 +74,7 @@ func (s *Store) CreatePerson(ctx context.Context, loginName, displayName string,
 		Status:              StatusPending,
 		IsInitialSuperAdmin: initial,
 		CreatedAt:           time.Now().UTC(),
+		KeepPouch:           true,
 	}
 	if err := s.db.WithContext(ctx).Create(&row).Error; err != nil {
 		if domain.IsUniqueViolation(err) {
@@ -96,6 +97,7 @@ func (s *Store) CreatePersonAt(ctx context.Context, personID uuid.UUID, loginNam
 		Status:              StatusPending,
 		IsInitialSuperAdmin: initial,
 		CreatedAt:           time.Now().UTC(),
+		KeepPouch:           true,
 	}
 	if err := s.db.WithContext(ctx).Create(&row).Error; err != nil {
 		if domain.IsUniqueViolation(err) {
@@ -111,6 +113,18 @@ func (s *Store) CreatePersonAt(ctx context.Context, personID uuid.UUID, loginNam
 		return Person{}, err
 	}
 	return row, nil
+}
+
+// SetKeepPouch 记下这个人退出后是否保留示教器库文件。
+func (s *Store) SetKeepPouch(ctx context.Context, personID uuid.UUID, keep bool) error {
+	res := s.db.WithContext(ctx).Model(&Person{}).Where("id = ?", personID).Update("keep_pouch", keep)
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
 }
 
 // RenamePerson 改显示名和登录名；登录名本厂唯一。

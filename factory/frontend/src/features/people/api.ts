@@ -32,6 +32,13 @@ export function useEnablePerson() {
   return useCatalogMutation((personId: string) => http.post<void>(fpath(`/people/${personId}/enable`)));
 }
 
+// 超管按人设置退出后是否留下示教器库文件。
+export function useSetKeepPouch() {
+  return useCatalogMutation((input: { personId: string; keepPouch: boolean }) =>
+    http.post<CreatedPerson>(fpath(`/people/${input.personId}/keep-pouch`), { keepPouch: input.keepPouch }),
+  );
+}
+
 // 超管重置他人密码：旧密码立刻失效，改回登录名+123456。
 export function useResetPersonPassword() {
   return useCatalogMutation((personId: string) => http.post<CreatedPerson>(fpath(`/people/${personId}/reset-password`)));

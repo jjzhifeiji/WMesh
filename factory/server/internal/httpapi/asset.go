@@ -21,6 +21,7 @@ func (h *Handler) mountAsset(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/factories/{id}/assets/{assetId}/rename", h.renameAsset)
 	mux.HandleFunc("POST /v1/factories/{id}/assets/{assetId}/content", h.updateAssetContent)
 	mux.HandleFunc("POST /v1/factories/{id}/assets/{assetId}/copyable", h.setAssetCopyable)
+	mux.HandleFunc("POST /v1/factories/{id}/assets/{assetId}/weld-kind", h.setAssetWeldKind)
 	mux.HandleFunc("POST /v1/factories/{id}/assets/{assetId}/publish", h.publishAsset)
 	mux.HandleFunc("POST /v1/factories/{id}/assets/{assetId}/disable", h.disableAsset)
 	mux.HandleFunc("POST /v1/factories/{id}/assets/{assetId}/enable", h.enableAsset)
@@ -30,6 +31,7 @@ func (h *Handler) mountAsset(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/factories/{id}/assets/{assetId}/deps", h.setAssetDeps)
 	mux.HandleFunc("POST /v1/factories/{id}/assets/sync", h.syncAssets)
 	mux.HandleFunc("POST /v1/factories/{id}/pad/assets", h.createPadAsset)
+	mux.HandleFunc("POST /v1/factories/{id}/pad/assets/{assetId}/content", h.applyPadAsset)
 }
 
 type createAssetReq struct {
@@ -38,11 +40,15 @@ type createAssetReq struct {
 	Name      string             `json:"name"`      // 显示名
 	Content   string             `json:"content"`   // UTF-8 正文
 	WeldKind  string             `json:"weldKind"`  // 作业类型：single / multilayer / tbar
-	Copyable  *bool              `json:"copyable"`  // 空则默认可复制
+	Copyable  *bool              `json:"copyable"`  // 仅工艺；空则默认可复制
 	Direct    bool               `json:"direct"`    // 兼容旧客户端；未带节点时按工厂直属
 	OrgUnitID *string            `json:"orgUnitId"` // 未传则记工厂直属
 	Deps      []service.AssetDep `json:"deps"`      // 可空；新建从参数补
 	ParentID  string             `json:"parentId"`  // 目录父文件夹；空则挂对应树的根
+}
+
+type padContentReq struct {
+	Content string `json:"content"` // UTF-8 正文；不带期望修订
 }
 
 type padCreateAssetReq struct {
@@ -54,6 +60,7 @@ type padCreateAssetReq struct {
 	Code     string             `json:"code"`     // 本机只读编号；空则厂端发号
 	Deps     []service.AssetDep `json:"deps"`     // 工程可空；从正文补
 	ParentID string             `json:"parentId"` // 目录父文件夹；空则挂个人根
+	Level    string             `json:"level"`    // factory / personal；空按个人级
 }
 
 type expectedReq struct {
@@ -73,6 +80,11 @@ type contentReq struct {
 type copyableReq struct {
 	Expected int64 `json:"expected"` // 期望修订
 	Copyable bool  `json:"copyable"` // 可否升档
+}
+
+type weldKindReq struct {
+	Expected int64  `json:"expected"` // 期望修订
+	WeldKind string `json:"weldKind"` // 作业类型：single / multilayer / tbar
 }
 
 type copyAssetReq struct {
@@ -178,7 +190,7 @@ func (h *Handler) createAsset(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// 平板新建个人级：保存即为可用，不走发布。
+// 平板新建：个人级或管理员的厂级，保存即为可用。
 func (h *Handler) createPadAsset(w http.ResponseWriter, r *http.Request) {
 	h.withFactory(w, r, func(svc *service.Service) {
 		var req padCreateAssetReq
@@ -195,7 +207,7 @@ func (h *Handler) createPadAsset(w http.ResponseWriter, r *http.Request) {
 			}
 			id = parsed
 		}
-		row, err := svc.Assets.CreatePadPersonal(r.Context(), bearer(r), req.Kind, req.Name, []byte(req.Content), id, req.Code, req.Deps, req.WeldKind)
+		row, err := svc.Assets.CreatePad(r.Context(), bearer(r), req.Level, req.Kind, req.Name, []byte(req.Content), id, req.Code, req.Deps, req.WeldKind)
 		if err != nil {
 			writeErr(w, err)
 			return
@@ -205,6 +217,23 @@ func (h *Handler) createPadAsset(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusCreated, row)
+	})
+}
+
+// 示教器盖当前行，不比对期望修订。
+func (h *Handler) applyPadAsset(w http.ResponseWriter, r *http.Request) {
+	h.withAsset(w, r, func(svc *service.Service, assetID uuid.UUID) {
+		var req padContentReq
+		if err := decodeJSON(r, &req); err != nil {
+			writeBadRequest(w, err)
+			return
+		}
+		row, err := svc.Assets.ApplyAppContent(r.Context(), bearer(r), assetID, []byte(req.Content))
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, row)
 	})
 }
 
@@ -220,7 +249,7 @@ func (h *Handler) getAsset(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// 读正文并核对摘要；不可复制的平台级不给人看。
+// 读正文并核对摘要；不可复制的平台级工艺不给人看。
 func (h *Handler) readAssetContent(w http.ResponseWriter, r *http.Request) {
 	h.withAsset(w, r, func(svc *service.Service, assetID uuid.UUID) {
 		body, err := svc.Assets.ReadAssetContent(r.Context(), bearer(r), assetID)
@@ -295,6 +324,23 @@ func (h *Handler) setAssetCopyable(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// 未停用的本厂工艺或工程可改作业类型。
+func (h *Handler) setAssetWeldKind(w http.ResponseWriter, r *http.Request) {
+	h.withAsset(w, r, func(svc *service.Service, assetID uuid.UUID) {
+		var req weldKindReq
+		if err := decodeJSON(r, &req); err != nil {
+			writeBadRequest(w, err)
+			return
+		}
+		row, err := svc.Assets.SetAssetWeldKind(r.Context(), bearer(r), assetID, req.Expected, req.WeldKind)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, row)
+	})
+}
+
 // 草稿改为可用。
 func (h *Handler) publishAsset(w http.ResponseWriter, r *http.Request) {
 	h.withExpected(w, r, func(svc *service.Service, assetID uuid.UUID, expected int64) {
@@ -359,7 +405,7 @@ func (h *Handler) copyAsset(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// 把可复制且可用的个人级升为厂级。
+// 把可复制的未停用个人级升为厂级；草稿也可升。
 func (h *Handler) promoteAsset(w http.ResponseWriter, r *http.Request) {
 	h.withAsset(w, r, func(svc *service.Service, assetID uuid.UUID) {
 		row, err := svc.Assets.PromoteToFactory(r.Context(), bearer(r), assetID)

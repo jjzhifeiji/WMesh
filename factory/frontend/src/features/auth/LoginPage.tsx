@@ -55,7 +55,7 @@ export function LoginPage() {
           )
         }
       >
-        {listed.length <= 1 ? (
+        {listed.length === 0 ? (
           <Form.Item name="factoryId" hidden={hideFactoryId} rules={hideFactoryId ? [] : [{ required: true, message: "请输入工厂 ID" }, uuidRule]}>
             <Input prefix={<ShopOutlined />} placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" autoComplete="off" />
           </Form.Item>

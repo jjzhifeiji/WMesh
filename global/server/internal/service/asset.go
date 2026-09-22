@@ -27,6 +27,14 @@ func stripContent(a Asset) Asset {
 	return a
 }
 
+// assetCopyable 工艺按调用方；工程没有可复制，恒为是。
+func assetCopyable(kind string, copyable bool) bool {
+	if kind == KindProject {
+		return true
+	}
+	return copyable
+}
+
 // loadChecked 按身份取正文并核对摘要，不符则拒绝。
 func (s *kernel) loadChecked(ctx context.Context, id uuid.UUID) (Asset, error) {
 	a, err := s.store.AssetByID(ctx, id)
@@ -107,7 +115,7 @@ func (s *Assets) CopyPlatformProcess(ctx context.Context, token string, assetID 
 	}
 	// 原件正文与依赖原样落新草稿，不套模版、不写升档来源。
 	row, err := s.store.InsertAsset(ctx, Asset{
-		Kind: src.Kind, Name: name, Status: AssetDraft, WeldKind: src.WeldKind,
+		Kind: src.Kind, Name: name, Status: AssetDraft, Copyable: assetCopyable(src.Kind, false), WeldKind: src.WeldKind,
 		Content: src.Content, Digest: src.Digest, CreatorID: admin.ID, Deps: src.Deps,
 	})
 	if err != nil {
@@ -222,14 +230,48 @@ func (s *Assets) DeletePlatformAsset(ctx context.Context, token string, assetID 
 	return nil
 }
 
-// SetPlatformCopyable 未停用即可改可复制，发布后也能改回是或否。新建默认否。
+// SetPlatformCopyable 未停用工艺可改可复制；工程没有这项。
 func (s *Assets) SetPlatformCopyable(ctx context.Context, token string, assetID uuid.UUID, expected int64, copyable bool) (Asset, error) {
 	return s.mutatePlatform(ctx, token, assetID, expected, "update_asset", func(cur Asset) (store.AssetWrite, error) {
+		if cur.Kind != KindProcess {
+			return store.AssetWrite{}, domain.ErrForbidden
+		}
 		// 停用后不得改可复制。
 		if cur.Status == AssetDisabled {
 			return store.AssetWrite{}, domain.ErrAssetNotAvailable
 		}
 		return store.AssetWrite{Name: cur.Name, Content: cur.Content, Digest: cur.Digest, Copyable: copyable, Status: cur.Status, Deps: cur.Deps}, nil
+	})
+}
+
+// SetPlatformWeldKind 未停用的工艺或工程可改作业类型；工程正文对不上时换成空焊道。
+func (s *Assets) SetPlatformWeldKind(ctx context.Context, token string, assetID uuid.UUID, expected int64, weldKind string) (Asset, error) {
+	return s.mutatePlatform(ctx, token, assetID, expected, "update_asset", func(cur Asset) (store.AssetWrite, error) {
+		if cur.Kind != KindProcess && cur.Kind != KindProject {
+			return store.AssetWrite{}, domain.ErrForbidden
+		}
+		if cur.Status == AssetDisabled {
+			return store.AssetWrite{}, domain.ErrAssetNotAvailable
+		}
+		kind, err := store.NormalizeWeldKind(weldKind)
+		if err != nil {
+			return store.AssetWrite{}, err
+		}
+		write := store.AssetWrite{Name: cur.Name, Content: cur.Content, Digest: cur.Digest, Copyable: cur.Copyable, Status: cur.Status, Deps: cur.Deps, WeldKind: kind}
+		if cur.Kind != KindProject {
+			return write, nil
+		}
+		kept, err := s.depsMatchingWeldKind(ctx, kind, cur.Deps)
+		if err != nil {
+			return store.AssetWrite{}, err
+		}
+		write.Deps = kept
+		if err := assertProjectWeldKind(kind, cur.Content); err != nil {
+			empty := []byte("[]")
+			write.Content = empty
+			write.Digest = digest.Sum(empty)
+		}
+		return write, nil
 	})
 }
 
@@ -281,8 +323,8 @@ func (s *Assets) PromoteFromSnapshot(ctx context.Context, token string, snap Ass
 		return Asset{}, err
 	}
 	fid := snap.SourceFactoryID
-	// 厂级不分草稿/停用都可升平台；不可复制仍拒绝。
-	if !snap.Copyable {
+	// 厂级不分草稿/停用都可升平台；不可复制工艺仍拒绝，工程不看可复制。
+	if snap.Kind == KindProcess && !snap.Copyable {
 		_ = s.audit(ctx, &admin.ID, nil, &fid, "promote_asset", snap.SourceID.String(), audit.Deny)
 		return Asset{}, domain.ErrAssetNotCopyable
 	}
@@ -362,7 +404,7 @@ func (s *Assets) PromoteFromSnapshot(ctx context.Context, token string, snap Ass
 	}
 	// 第一次升档则新身份落草稿。
 	row, err := s.store.InsertAsset(ctx, Asset{
-		Kind: snap.Kind, Name: snap.Name, Status: AssetDraft, WeldKind: weld,
+		Kind: snap.Kind, Name: snap.Name, Status: AssetDraft, Copyable: assetCopyable(snap.Kind, false), WeldKind: weld,
 		Content: body, Digest: sum, CreatorID: admin.ID,
 		SourceID: &snap.SourceID, SourceRevision: &rev, SourceFactoryID: &snap.SourceFactoryID,
 		Deps: deps,
@@ -407,7 +449,7 @@ func (s *Assets) rewritePromoteDeps(ctx context.Context, kind string, deps []Ass
 	return out, idMap, nil
 }
 
-// CreatePlatformProject 创建平台级工程；参数里的工艺写入 deps，不必另填。
+// CreatePlatformProject 创建平台级工程；不设可复制，参数里的工艺写入 deps。
 func (s *Assets) CreatePlatformProject(ctx context.Context, token, name string, content []byte, deps []AssetDep, weldKind ...string) (Asset, error) {
 	// 只有 WAN 管理员能做平台级工程。失败一律记拒绝。
 	admin, err := s.RequireAdmin(ctx, token)
@@ -450,7 +492,7 @@ func (s *Assets) CreatePlatformProject(ctx context.Context, token, name string, 
 	}
 	// 落草稿，带上已核过的工艺依赖。
 	row, err := s.store.InsertAsset(ctx, Asset{
-		Kind: KindProject, Name: name, Status: AssetDraft, WeldKind: kind,
+		Kind: KindProject, Name: name, Status: AssetDraft, Copyable: true, WeldKind: kind,
 		Content: content, Digest: digest.Sum(content), CreatorID: admin.ID, Deps: deps,
 	})
 	if err != nil {
@@ -479,21 +521,45 @@ func (s *kernel) fillPlatformProjectDeps(ctx context.Context, content []byte, de
 		return nil, domain.ErrAssetDependency
 	}
 	return mergeProjectDeps(deps, ids, func(id uuid.UUID) (AssetDep, error) {
-		p, err := s.loadChecked(ctx, id)
-		if err != nil {
-			if errors.Is(err, domain.ErrNotFound) {
-				return AssetDep{}, domain.ErrAssetDependency
-			}
-			return AssetDep{}, err
-		}
-		if p.Kind != KindProcess || p.Level != AssetLevelPlatform {
+		return s.pinPlatformProcess(ctx, id)
+	})
+}
+
+// pinPlatformProcess 平台级工程钉当前可用平台级工艺。
+func (s *kernel) pinPlatformProcess(ctx context.Context, id uuid.UUID) (AssetDep, error) {
+	p, err := s.loadChecked(ctx, id)
+	if err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
 			return AssetDep{}, domain.ErrAssetDependency
 		}
-		if p.Status != AssetAvailable {
-			return AssetDep{}, domain.ErrAssetNotAvailable
+		return AssetDep{}, err
+	}
+	if p.Kind != KindProcess || p.Level != AssetLevelPlatform {
+		return AssetDep{}, domain.ErrAssetDependency
+	}
+	if p.Status != AssetAvailable {
+		return AssetDep{}, domain.ErrAssetNotAvailable
+	}
+	return AssetDep{ID: p.ID, Revision: p.Revision, Digest: p.Digest}, nil
+}
+
+// resolvePlatformProjectDeps 改依赖时按身份重钉当前可用修订。
+func (s *kernel) resolvePlatformProjectDeps(ctx context.Context, deps []AssetDep) ([]AssetDep, error) {
+	out := make([]AssetDep, 0, len(deps))
+	seen := map[string]struct{}{}
+	for _, d := range deps {
+		key := d.ID.String()
+		if _, ok := seen[key]; ok {
+			continue
 		}
-		return AssetDep{ID: p.ID, Revision: p.Revision, Digest: p.Digest}, nil
-	})
+		seen[key] = struct{}{}
+		pin, err := s.pinPlatformProcess(ctx, d.ID)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, pin)
+	}
+	return out, nil
 }
 
 // mergeProjectDeps 保留已声明依赖，再按参数引用补缺。

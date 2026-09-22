@@ -39,7 +39,7 @@ func (Assignment) TableName() string { return "assignments" }
 type RoleGrant struct {
 	ID        uuid.UUID  `gorm:"type:uuid;primaryKey" json:"id"`     // 授予记录稳定身份
 	PersonID  uuid.UUID  `gorm:"type:uuid;not null" json:"personId"` // 被授予的本厂人员
-	Role      string     `gorm:"not null" json:"role"`               // 六种固定角色之一
+	Role      string     `gorm:"not null" json:"role"`               // 固定角色：超管/管理员/负责人/操作员/审计员
 	ScopeKind string     `gorm:"not null" json:"scopeKind"`          // factory 或 org_unit
 	OrgUnitID *uuid.UUID `gorm:"type:uuid" json:"orgUnitId"`         // Factory 作用域必须为空
 	Status    string     `gorm:"not null" json:"status"`             // active 或 revoked
@@ -330,7 +330,7 @@ func ValidScope(role, scopeKind string, orgUnitID *uuid.UUID) bool {
 		return scopeKind == ScopeFactory && orgUnitID == nil
 	case RoleOrgLead:
 		return scopeKind == ScopeOrgUnit && orgUnitID != nil
-	case RoleOrgAdmin, RoleProcessEngineer, RoleOperator, RoleAuditor:
+	case RoleOrgAdmin, RoleOperator, RoleAuditor:
 		if scopeKind == ScopeFactory {
 			return orgUnitID == nil
 		}

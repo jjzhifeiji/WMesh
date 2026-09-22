@@ -65,4 +65,20 @@ func TestPlatformWeldKind(t *testing.T) {
 	if ok.WeldKind != store.WeldKindMultilayer {
 		t.Fatalf("project %s", ok.WeldKind)
 	}
+
+	changed, err := h.WAN.SetPlatformWeldKind(ctx, tok, def.ID, def.Revision, store.WeldKindTBar)
+	if err != nil || changed.WeldKind != store.WeldKindTBar {
+		t.Fatalf("set kind %+v %v", changed, err)
+	}
+	switched, err := h.WAN.SetPlatformWeldKind(ctx, tok, ok.ID, ok.Revision, store.WeldKindSingle)
+	if err != nil || switched.WeldKind != store.WeldKindSingle {
+		t.Fatalf("project kind %+v %v", switched, err)
+	}
+	cleared, err := h.WAN.ReadPlatformAssetContent(ctx, tok, switched.ID)
+	if err != nil || string(cleared) != "[]" {
+		t.Fatalf("project body %s %v", cleared, err)
+	}
+	if _, err := h.WAN.SetPlatformWeldKind(ctx, tok, changed.ID, changed.Revision, "nope"); !errors.Is(err, domain.ErrInvalidWeldKind) {
+		t.Fatalf("bad kind: %v", err)
+	}
 }

@@ -19,7 +19,7 @@ export type Asset = {
   name: string; // 显示名，不当身份
   code: string; // 只读编号，创建后不改
   status: AssetStatus; // draft / available / disabled
-  copyable: boolean; // 可否升档
+  copyable: boolean; // 工艺可否升档；工程恒为是
   weldKind: string; // 作业类型：single / multilayer / tbar
   revision: number; // 当前修订
   digest: string; // SHA-256
@@ -167,6 +167,12 @@ export function useUpdateAssetContent() {
 export function useSetAssetCopyable() {
   return useAssetMutation((input: { id: string; expected: number; copyable: boolean }) =>
     http.post<Asset>(fpath(`/assets/${input.id}/copyable`), { expected: input.expected, copyable: input.copyable }),
+  );
+}
+
+export function useSetAssetWeldKind() {
+  return useAssetMutation((input: { id: string; expected: number; weldKind: string }) =>
+    http.post<Asset>(fpath(`/assets/${input.id}/weld-kind`), { expected: input.expected, weldKind: input.weldKind }),
   );
 }
 

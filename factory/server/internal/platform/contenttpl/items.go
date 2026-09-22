@@ -350,6 +350,7 @@ func itemSingle(extra bool) []Field {
 	fields := []Field{
 		str("id", "身份", ""),
 		str("name", "名称", ""),
+		str("kind", "种类", ItemSingle),
 		{Key: "points", Label: "点", Type: TypeArray, Items: ptr(pointField())},
 		procRef("processId", "工艺"),
 		num("selectedPointIndex", "选中点", "", 0),
@@ -367,27 +368,26 @@ func itemMulti() []Field {
 		str("id", "焊道身份", ""),
 		str("name", "焊道名", ""),
 		num("valX", "X", "mm", 0),
-		num("valYLeft", "左 Y", "mm", 0),
-		num("valYRight", "右 Y", "mm", 0),
+		num("valYLeft", "Y左", "mm", 0),
+		num("valYRight", "Y右", "mm", 0),
 		num("valZ", "Z", "mm", 0),
 		num("valR", "R", "mm", 0),
 		procRef("processId", "工艺"),
 		flag("isCompleted", "已完成", false),
 		flag("isEnabled", "启用", true),
 	}}
-	ref := Field{Type: TypeObject, Label: "参考点", Fields: []Field{
-		{Key: "pose", Label: "位姿", Type: TypeObject, Fields: poseFields()},
-		{Key: "jointAngles", Label: "关节角", Type: TypeArray, Items: &Field{Key: "a", Label: "角", Type: TypeString, Default: 0.0}},
-	}}
 	return []Field{
 		str("id", "身份", ""),
 		str("name", "名称", ""),
-		{Key: "basePath", Label: "基准路径", Type: TypeObject, Fields: pathFields()},
-		{Key: "passes", Label: "多层焊道", Type: TypeArray, Items: &pass},
-		{Key: "refPointX1", Label: "起点 X", Type: TypeObject, Fields: ref.Fields},
-		{Key: "refPointZ1", Label: "起点 Z", Type: TypeObject, Fields: ref.Fields},
-		{Key: "refPointXEnd", Label: "终点 X", Type: TypeObject, Fields: ref.Fields},
-		{Key: "refPointZEnd", Label: "终点 Z", Type: TypeObject, Fields: ref.Fields},
+		str("kind", "种类", ItemMulti),
+		{Key: "basePath", Label: "基准层", Type: TypeObject, Fields: pathFields()},
+		{Key: "passes", Label: "填充层", Type: TypeArray, Items: &pass},
+		{Key: "refPointX1", Label: "X1", Type: TypeObject, Fields: refFields()},
+		{Key: "refPointZ1", Label: "Z1", Type: TypeObject, Fields: refFields()},
+		{Key: "refPointXMiddle", Label: "X中", Type: TypeObject, Fields: refFields()},
+		{Key: "refPointZMiddle", Label: "Z中", Type: TypeObject, Fields: refFields()},
+		{Key: "refPointXEnd", Label: "X2", Type: TypeObject, Fields: refFields()},
+		{Key: "refPointZEnd", Label: "Z2", Type: TypeObject, Fields: refFields()},
 		flag("isBaseCompleted", "基准完成", false),
 		flag("isEnabled", "启用", true),
 	}
@@ -405,6 +405,7 @@ func itemTBar() []Field {
 	return []Field{
 		str("id", "身份", ""),
 		str("name", "名称", ""),
+		str("kind", "种类", ItemTBar),
 		{Key: "points", Label: "点", Type: TypeArray, Items: ptr(pointField())},
 		num("selectedPointIndex", "选中点", "", 0),
 		flag("isEnabled", "启用", true),
@@ -415,7 +416,7 @@ func itemTBar() []Field {
 // extraProcessesField 挂在焊道上的额外工艺槽。
 func extraProcessesField() Field {
 	return Field{Key: "extraProcesses", Label: "附加工艺", Type: TypeArray, Items: &Field{Type: TypeObject, Label: "附加", Fields: []Field{
-		str("id", "身份", ""), procRef("processId", "工艺"),
+		str("id", "身份", ""), procRef("processId", "工艺"), flag("isEnabled", "启用", true),
 	}}}
 }
 

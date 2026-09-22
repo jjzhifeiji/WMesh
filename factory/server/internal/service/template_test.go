@@ -26,7 +26,7 @@ func TestAcceptTemplateDelivery(t *testing.T) {
 		t.Fatal(err)
 	}
 	sa := mustLogin(t, ctx, fac, "sa-a", "sa-pass")
-	pe := mustCreateRole(t, ctx, fac, sa, "pe-a", "pe-pass", factory.RoleProcessEngineer, factory.ScopeFactory, nil)
+	pe := mustCreateRole(t, ctx, fac, sa, "pe-a", "pe-pass", factory.RoleOperator, factory.ScopeFactory, nil)
 	direct := factory.WorkContext{Direct: true}
 	body := []byte(`{"name":"厂内","current":190,"legacy":true}`)
 	proc, err := fac.CreateFactoryProcess(ctx, pe.tok, direct, "厂内工艺", body)
@@ -143,5 +143,15 @@ func TestListProjectTemplates(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("name not filled %+v", rows)
+	}
+	stale := []byte(`{"root":"array","templates":[{"id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","kind":"corner","name":"包角","extra":true}]}`)
+	if _, err := fac.Store().InsertTemplateReplica(ctx, factory.ContentTemplate{
+		ID: id.New(), Kind: factory.KindProject, Revision: 9, Schema: stale, Digest: digest.Sum(stale),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rows, err = fac.ListProjectTemplates(ctx, sa)
+	if err != nil || len(rows) != 2 {
+		t.Fatalf("stale catalog %+v %v", rows, err)
 	}
 }

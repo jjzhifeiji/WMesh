@@ -24,8 +24,8 @@ func testAssetIdentity(t *testing.T, run func(string, func(*testing.T))) {
 		t.Fatal(err)
 	}
 	saA := mustLogin(t, ctx, facA, "sa-a", "sa-pass")
-	pe := mustCreateRole(t, ctx, facA, saA, "pe-a", "pe-pass", factory.RoleProcessEngineer, factory.ScopeFactory, nil)
-	pe2 := mustCreateRole(t, ctx, facA, saA, "pe-a2", "pe2-pass", factory.RoleProcessEngineer, factory.ScopeFactory, nil)
+	pe := mustCreateRole(t, ctx, facA, saA, "pe-a", "pe-pass", factory.RoleOperator, factory.ScopeFactory, nil)
+	pe2 := mustCreateRole(t, ctx, facA, saA, "pe-a2", "pe2-pass", factory.RoleOperator, factory.ScopeFactory, nil)
 	direct := factory.WorkContext{Direct: true}
 	body := []byte("weld-body-v1")
 	next := []byte("weld-body-v2")
@@ -112,11 +112,12 @@ func testAssetIdentity(t *testing.T, run func(string, func(*testing.T))) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := facA.PromoteToFactory(ctx, pe.tok, draft.ID); !errors.Is(err, domain.ErrAssetNotAvailable) {
-			t.Fatalf("got %v", err)
+		got, err := facA.PromoteToFactory(ctx, pe.tok, draft.ID)
+		if err != nil || got.ID == draft.ID || got.Level != factory.AssetLevelFactory || got.Status != factory.AssetAvailable || got.Content != nil {
+			t.Fatalf("%+v %v", got, err)
 		}
 		still, err := facA.GetAsset(ctx, pe.tok, draft.ID)
-		if err != nil || still.Level != factory.AssetLevelPersonal || still.Revision != 1 {
+		if err != nil || still.Level != factory.AssetLevelPersonal || still.Status != factory.AssetDraft || still.Revision != 1 {
 			t.Fatalf("%+v %v", still, err)
 		}
 	})

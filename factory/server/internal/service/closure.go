@@ -269,7 +269,7 @@ func (s *Closure) AssembleProject(ctx context.Context, token string, assetID uui
 	return snap, nil
 }
 
-// canPack 个人级仅创建人；平台级须厂级工艺工程师；厂级看作用域。
+// canPack 个人级仅创建人；平台级须整厂作用域操作员；厂级看操作员作用域。
 func (s *Closure) canPack(ctx context.Context, acc Account, root ClosureMember) error {
 	if root.Level == AssetLevelPersonal {
 		if root.CreatorID == nil || *root.CreatorID != acc.ID {
@@ -278,27 +278,27 @@ func (s *Closure) canPack(ctx context.Context, acc Account, root ClosureMember) 
 		return nil
 	}
 	if root.Level == AssetLevelPlatform {
-		if !s.isFactoryScopePE(ctx, acc) {
+		if !s.isFactoryScopeOperator(ctx, acc) {
 			return domain.ErrForbidden
 		}
 		return nil
 	}
 	var unit *uuid.UUID
-	// 厂级按创建时节点看工艺工程师作用域。
+	// 厂级按创建时节点看操作员作用域。
 	a, err := s.store.GovernedAssetMetaByID(ctx, root.ID)
 	if err == nil {
 		unit = a.OrgUnitID
 	}
-	return s.peCovers(ctx, acc, unit)
+	return s.opCovers(ctx, acc, unit)
 }
 
-// isFactoryScopePE 是否持有本厂作用域的工艺工程师角色。
-func (s *Closure) isFactoryScopePE(ctx context.Context, acc Account) bool {
+// isFactoryScopeOperator 是否持有本厂作用域的操作员角色。
+func (s *Closure) isFactoryScopeOperator(ctx context.Context, acc Account) bool {
 	grants, err := s.grantsOf(ctx, acc.ID)
 	if err != nil {
 		return false
 	}
-	for _, g := range withRoles(grants, RoleProcessEngineer) {
+	for _, g := range withRoles(grants, RoleOperator) {
 		if g.ScopeKind == ScopeFactory {
 			return true
 		}
@@ -518,11 +518,8 @@ func (s *Closure) SetProjectDeps(ctx context.Context, token string, assetID uuid
 		if cur.Status == AssetDisabled {
 			return store.AssetWrite{}, domain.ErrAssetNotAvailable
 		}
-		if cur.Level == AssetLevelPersonal {
-			if err := s.assertPersonalProjectDeps(ctx, acc, deps); err != nil {
-				return store.AssetWrite{}, err
-			}
-		} else if err := s.assertFactoryProcessDeps(ctx, deps); err != nil {
+		deps, err := s.resolveProjectDeps(ctx, acc, cur.Level, deps)
+		if err != nil {
 			return store.AssetWrite{}, err
 		}
 		if err := s.assertDepsWeldKind(ctx, cur.WeldKind, deps); err != nil {

@@ -78,6 +78,7 @@ type AssetWrite struct {
 	Copyable       bool       // 可复制
 	Status         string     // 状态
 	Deps           []AssetDep // 工程依赖；工艺必须空
+	WeldKind       string     // 作业类型；空则不改
 	SourceRevision *int64     // 升档覆盖时更新源修订；空则不改
 }
 
@@ -187,6 +188,13 @@ func (s *Store) UpdateAsset(ctx context.Context, assetID uuid.UUID, expected int
 			"deps":       depsJSON,
 			"revision":   expected + 1,
 			"updated_at": now,
+		}
+		if w.WeldKind != "" {
+			kind, err := NormalizeWeldKind(w.WeldKind)
+			if err != nil {
+				return err
+			}
+			updates["weld_kind"] = kind
 		}
 		if w.SourceRevision != nil {
 			updates["source_revision"] = *w.SourceRevision

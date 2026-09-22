@@ -46,7 +46,6 @@ func TestMatrix05(t *testing.T) {
 func testSyncMatrix(t *testing.T, run func(string, func(*testing.T))) {
 	t.Helper()
 	e := newEnv04(t)
-	aud := mustCreateRole(t, e.ctx, e.fac, e.sa, "aud-a", "aud-pass", factory.RoleAuditor, factory.ScopeFactory, nil)
 	cloud := []byte("cloud-body-secret")
 
 	cid, bag := e.bound(t, e.op.acc.ID)
@@ -70,7 +69,7 @@ func testSyncMatrix(t *testing.T, run func(string, func(*testing.T))) {
 	})
 
 	run("1.2", func(t *testing.T) {
-		_, audBag := e.bound(t, aud.acc.ID)
+		_, audBag := e.bound(t, e.aud.acc.ID)
 		audBag.AssetAllowed = true
 		audBag.Connected = false
 		if _, err := e.fac.EnqueueFact(e.ctx, &audBag, e.clocks, "aud-a", "aud-pass", direct); !errors.Is(err, domain.ErrForbidden) {
@@ -327,7 +326,7 @@ func testSyncMatrix(t *testing.T, run func(string, func(*testing.T))) {
 		if _, err := e.fac.EnqueueUpload(e.ctx, &saBag, e.clocks, "sa-a", "sa-pass", factory.UploadImage, []byte("img")); !errors.Is(err, domain.ErrForbidden) {
 			t.Fatalf("sa: %v", err)
 		}
-		_, audBag := e.bound(t, aud.acc.ID)
+		_, audBag := e.bound(t, e.aud.acc.ID)
 		audBag.AssetAllowed = true
 		if _, err := e.fac.EnqueueUpload(e.ctx, &audBag, e.clocks, "aud-a", "aud-pass", factory.UploadImage, []byte("img")); !errors.Is(err, domain.ErrForbidden) {
 			t.Fatalf("aud: %v", err)

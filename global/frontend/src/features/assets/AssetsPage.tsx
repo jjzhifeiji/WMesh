@@ -1,5 +1,5 @@
 import { FolderOutlined, PlusOutlined } from "@ant-design/icons";
-import { App, Button, Card, Descriptions, Empty, Form, Input, Modal, Radio, Select, Space, Switch, Table, Tag, Typography, type TableColumnsType } from "antd";
+import { App, Button, Card, Descriptions, Empty, Form, Input, Modal, Select, Space, Switch, Table, Tag, Tooltip, Typography } from "antd";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { errorMessage } from "@/shared/api/client";
 import { formatTime } from "@/shared/format";
@@ -26,6 +26,7 @@ import {
   useCreateFSFolder,
   useFS,
   useSetAssetCopyable,
+  useSetAssetWeldKind,
   useSetAssetDeps,
   useUpdateAssetContent,
   type Asset,
@@ -36,6 +37,7 @@ import {
   type PromotableAsset,
 } from "./api";
 import { fsFolderOptions, ProcessExplorer } from "./ProcessExplorer";
+import { emptyWeld, ProjectWeldEditor } from "./ProjectWeldEditor";
 
 type CreateForm = { name: string; content: string; weldKind: string; copyable: boolean; parentId?: string };
 type MkdirForm = { parentId: string; name: string };
@@ -76,6 +78,10 @@ function levelLabel(level: string) {
   return level;
 }
 
+function canCopy(row: Asset) {
+  return row.status !== "disabled";
+}
+
 function CopyableSwitch({
   checked,
   disabled,
@@ -101,6 +107,10 @@ function CopyableSwitch({
 
 // 平台级工艺或工程：只在 WAN 维护；不能改厂库原件，升档从在线工厂自动拉。
 export function AssetsPage({ kind }: { kind: AssetKind }) {
+  return <AssetsBody key={kind} kind={kind} />;
+}
+
+function AssetsBody({ kind }: { kind: AssetKind }) {
   const isProcess = kind === "process";
   const title = isProcess ? "平台工艺" : "平台工程";
   const assets = useAssets(kind);
@@ -110,7 +120,7 @@ export function AssetsPage({ kind }: { kind: AssetKind }) {
   const schema = isProcess ? (processTpl.data?.schema ?? null) : projectTpls.data?.length ? projectContentSchema(projectTpls.data) : null;
   const create = useCreateAsset();
   const mkdir = useCreateFSFolder();
-  const fs = useFS("process");
+  const fs = useFS(kind);
   const copy = useCopyAsset();
   const rename = useRenameAsset();
   const updateContent = useUpdateAssetContent();
@@ -119,6 +129,7 @@ export function AssetsPage({ kind }: { kind: AssetKind }) {
   const enable = useEnableAsset();
   const remove = useDeleteAsset();
   const setCopyable = useSetAssetCopyable();
+  const setWeldKind = useSetAssetWeldKind();
   const setAssetDeps = useSetAssetDeps();
   const promote = usePromoteFromFactory();
   const directory = useDirectory();
@@ -134,14 +145,8 @@ export function AssetsPage({ kind }: { kind: AssetKind }) {
   const [promoteQuery, setPromoteQuery] = useState("");
   const [promotePage, setPromotePage] = useState(1);
   const [promotePageSize, setPromotePageSize] = useState(10);
-  const [query, setQuery] = useState("");
   const [fsQuery, setFsQuery] = useState("");
-  const [statusFilter, setStatusFilter] = useState("all");
-  const [sourceFilter, setSourceFilter] = useState("all");
-  const [weldFilter, setWeldFilter] = useState("all");
   const [fsWeld, setFsWeld] = useState("all");
-  const [sortKey, setSortKey] = useState<"name" | "code" | "createdAt">("createdAt");
-  const [sortAsc, setSortAsc] = useState(false);
   const [form] = Form.useForm<CreateForm>();
   const [mkdirForm] = Form.useForm<MkdirForm>();
   const [copyForm] = Form.useForm<{ name: string }>();
@@ -157,7 +162,6 @@ export function AssetsPage({ kind }: { kind: AssetKind }) {
   const folderOpts = useMemo(() => fsFolderOptions(fs.data ?? [], (n) => n.treeLevel === "platform"), [fs.data]);
   const availableProcesses = useMemo(() => (processes.data ?? []).filter((p) => p.status === "available"), [processes.data]);
   const onErr = (e: unknown) => message.error(errorMessage(e));
-  const canCopy = (row: Asset) => row.status !== "disabled";
   useEffect(() => {
     if (copyFor) copyForm.setFieldsValue({ name: `${copyFor.name}-副本` });
   }, [copyFor, copyForm]);
@@ -168,37 +172,6 @@ export function AssetsPage({ kind }: { kind: AssetKind }) {
       { onSuccess: () => message.success(copyable ? "已设为可复制" : "已设为不可复制"), onError: onErr },
     );
   };
-  const rows = useMemo(() => {
-    const needle = query.trim().toLowerCase();
-    const filtered = (assets.data ?? []).filter((a) => {
-      if (statusFilter !== "all" && a.status !== statusFilter) return false;
-      if (weldFilter !== "all" && (a.weldKind || WELD_SINGLE) !== weldFilter) return false;
-      if (sourceFilter !== "all" && (a.sourceFactory || "本端新建") !== sourceFilter) return false;
-      if (!needle) return true;
-      if (a.code === query.trim() || a.code === query.trim().toUpperCase()) return true;
-      const source = (a.sourceFactory || "本端新建").toLowerCase();
-      return a.name.toLowerCase().includes(needle) || source.includes(needle);
-    });
-    const collator = new Intl.Collator("zh");
-    return [...filtered].sort((a, b) => {
-      let cmp = 0;
-      if (sortKey === "name") cmp = collator.compare(a.name || "", b.name || "");
-      else if (sortKey === "code") cmp = (a.code || "").localeCompare(b.code || "", "zh", { numeric: true });
-      else cmp = Date.parse(a.createdAt || "") - Date.parse(b.createdAt || "");
-      return sortAsc ? cmp : -cmp;
-    });
-  }, [assets.data, query, statusFilter, sourceFilter, weldFilter, sortKey, sortAsc]);
-  const sourceOptions = useMemo(() => {
-    const opts = [{ value: "all", label: "全部来源" }];
-    const seen = new Set<string>();
-    for (const a of assets.data ?? []) {
-      const name = a.sourceFactory || "本端新建";
-      if (seen.has(name)) continue;
-      seen.add(name);
-      opts.push({ value: name, label: name });
-    }
-    return opts;
-  }, [assets.data]);
 
   const detailing = detailFor ? (assets.data?.find((a) => a.id === detailFor.id) ?? detailFor) : null;
   const editing = editFor ? (assets.data?.find((a) => a.id === editFor.id) ?? editFor) : null;
@@ -212,13 +185,10 @@ export function AssetsPage({ kind }: { kind: AssetKind }) {
     const rows = projectTemplatesForWeld(projectTpls.data, detailing.weldKind || WELD_SINGLE);
     return rows.length ? projectContentSchema(rows) : schema;
   }, [detailing, isProcess, schema, projectTpls.data]);
-  const sortOrder = (key: "name" | "code" | "createdAt") => (sortKey === key ? (sortAsc ? "ascend" : "descend") : undefined);
 
   const openCreate = (parentId?: string) => {
-    const tplRows = projectTemplatesForWeld(projectTpls.data, WELD_SINGLE);
-    const next = isProcess ? schema : tplRows.length ? projectContentSchema(tplRows) : schema;
     form.setFieldsValue({
-      content: next ? JSON.stringify(defaultValue(next)) : "",
+      content: isProcess && schema ? JSON.stringify(defaultValue(schema)) : "[]",
       weldKind: WELD_SINGLE,
       copyable: false,
       parentId: parentId ?? folderOpts[0]?.value,
@@ -256,131 +226,11 @@ export function AssetsPage({ kind }: { kind: AssetKind }) {
     });
   }, [promotable.data, promoteQuery]);
 
-  const columns: TableColumnsType<Asset> = [
-    {
-      title: isProcess ? "工艺名称" : "工程名称",
-      dataIndex: "name",
-      width: 180,
-      ellipsis: true,
-      sorter: true,
-      sortOrder: sortOrder("name"),
-      render: (name: string) => <Typography.Text strong>{name}</Typography.Text>,
-    },
-    { title: "编号", dataIndex: "code", width: 150, sorter: true, sortOrder: sortOrder("code"), render: (code: string) => <Typography.Text copyable={{ text: code }}>{code}</Typography.Text> },
-    { title: "状态", dataIndex: "status", width: 90, render: (s: string) => <Tag color={statusColor(s)}>{statusLabel(s)}</Tag> },
-    { title: "类型", dataIndex: "weldKind", width: 100, render: (v: string) => weldKindLabel(v || WELD_SINGLE) },
-    { title: "可复制", dataIndex: "copyable", width: 80, render: (ok: boolean) => (ok ? "是" : "否") },
-    { title: "修订", dataIndex: "revision", width: 70 },
-    { title: "来源厂", dataIndex: "sourceFactory", width: 180, ellipsis: true, render: (name: string) => name || "本端新建" },
-    ...(!isProcess
-      ? [
-          {
-            title: "依赖工艺",
-            key: "deps",
-            width: 220,
-            ellipsis: true,
-            render: (_: unknown, row: Asset) => {
-              if (!row.deps?.length) return "—";
-              const all = processes.data ?? [];
-              return row.deps.map((d) => all.find((p) => p.id === d.id)?.name || d.id).join("、");
-            },
-          } satisfies TableColumnsType<Asset>[number],
-        ]
-      : []),
-    { title: "创建时间", dataIndex: "createdAt", width: 160, sorter: true, sortOrder: sortOrder("createdAt"), render: (v: string) => formatTime(v) },
-    {
-      title: "操作",
-      key: "actions",
-      width: 340,
-      fixed: "right",
-      render: (_, row) => (
-        <Space size={4} wrap>
-          <Button size="small" onClick={() => setDetailFor(row)}>
-            详情
-          </Button>
-          {canCopy(row) ? (
-            <Button size="small" onClick={() => setCopyFor(row)}>
-              复制
-            </Button>
-          ) : null}
-          <Button size="small" type="primary" onClick={() => setEditFor(row)}>
-            编辑
-          </Button>
-          {row.status === "draft" ? (
-            <Button
-              size="small"
-              onClick={() =>
-                modal.confirm({
-                  title: `发布「${row.name}」？`,
-                  content: "发布后可被平台级工程依赖，并下到在线工厂。可复制仍可改。",
-                  onOk: () =>
-                    publish.mutate(
-                      { id: row.id, expected: row.revision },
-                      { onSuccess: () => message.success("已发布"), onError: onErr },
-                    ),
-                })
-              }
-            >
-              发布
-            </Button>
-          ) : null}
-          {row.status === "available" ? (
-            <Button
-              size="small"
-              danger
-              onClick={() =>
-                modal.confirm({
-                  title: `停用「${row.name}」？`,
-                  content: "停用后不能改、不能升档、不能被新工程依赖；可以再启用。",
-                  okButtonProps: { danger: true },
-                  onOk: () =>
-                    disable.mutate(
-                      { id: row.id, expected: row.revision },
-                      { onSuccess: () => message.success("已停用"), onError: onErr },
-                    ),
-                })
-              }
-            >
-              停用
-            </Button>
-          ) : null}
-          {row.status === "disabled" ? (
-            <Button
-              size="small"
-              onClick={() =>
-                enable.mutate(
-                  { id: row.id, expected: row.revision },
-                  { onSuccess: () => message.success("已启用"), onError: onErr },
-                )
-              }
-            >
-              启用
-            </Button>
-          ) : null}
-          <Button
-            size="small"
-            danger
-            onClick={() =>
-              modal.confirm({
-                title: `删除「${row.name}」？`,
-                content: "删除后不能恢复。若已被工程依赖会拒绝。",
-                okButtonProps: { danger: true },
-                onOk: () => remove.mutate(row.id, { onSuccess: () => message.success("已删除"), onError: onErr }),
-              })
-            }
-          >
-            删除
-          </Button>
-        </Space>
-      ),
-    },
-  ];
-
   return (
     <>
       <PageHeader
         title={title}
-        description={isProcess ? "只做平台级。厂级原件仍在各厂；正文没变则跳过升档，有变更则覆盖。" : "只能依赖已发布的平台级工艺；升档工程不会另生成工艺。"}
+        description={isProcess ? "只做平台级。厂级原件仍在各厂；正文没变则跳过升档，有变更则覆盖。" : "新建只填名称和类型，再按 App 那样加焊道、绑工艺；点列到平板上采集。"}
         extra={
           <Space wrap>
             {isProcess ? (
@@ -399,8 +249,24 @@ export function AssetsPage({ kind }: { kind: AssetKind }) {
                   options={[{ value: "all", label: "全部类型" }, ...WELD_KINDS.map((k) => ({ value: k.value, label: k.label }))]}
                 />
               </>
-            ) : null}
-            {isProcess && !browseFactory ? (
+            ) : (
+              <>
+                <Input.Search
+                  allowClear
+                  placeholder="搜索工程名称、编号"
+                  value={fsQuery}
+                  onChange={(e) => setFsQuery(e.target.value)}
+                  style={{ width: 240 }}
+                />
+                <Select
+                  value={fsWeld}
+                  onChange={setFsWeld}
+                  style={{ width: 128 }}
+                  options={[{ value: "all", label: "全部类型" }, ...WELD_KINDS.map((k) => ({ value: k.value, label: k.label }))]}
+                />
+              </>
+            )}
+            {!browseFactory ? (
               <Button icon={<FolderOutlined />} onClick={() => openMkdir()}>
                 新建文件夹
               </Button>
@@ -438,7 +304,7 @@ export function AssetsPage({ kind }: { kind: AssetKind }) {
             weldFilter={fsWeld}
             onNewProcess={(folder) => openCreate(folder.id)}
             onSelectFile={(n) => {
-              if (!browseFactory && n.asset) setDetailFor(n.asset);
+              if (!browseFactory) setDetailFor(n?.asset ?? null);
             }}
             listRow={processListRow}
             detail={
@@ -536,88 +402,156 @@ export function AssetsPage({ kind }: { kind: AssetKind }) {
           />
         </Card>
       ) : (
-      <Card>
-        <Space wrap style={{ marginBottom: 12 }}>
-          <Input.Search allowClear placeholder={`搜索${isProcess ? "工艺" : "工程"}名称、编号或来源厂`} value={query} onChange={(e) => setQuery(e.target.value)} style={{ width: 280 }} />
-          <Select
-            value={statusFilter}
-            onChange={setStatusFilter}
-            style={{ width: 132 }}
-            options={[
-              { value: "all", label: "全部状态" },
-              { value: "draft", label: "未发布" },
-              { value: "available", label: "可用" },
-              { value: "disabled", label: "已停用" },
-            ]}
-          />
-          <Select
-            value={weldFilter}
-            onChange={setWeldFilter}
-            style={{ width: 140 }}
-            options={[{ value: "all", label: "全部类型" }, ...WELD_KINDS.map((k) => ({ value: k.value, label: k.label }))]}
-          />
-          <Select value={sourceFilter} onChange={setSourceFilter} style={{ width: 200 }} options={sourceOptions} />
-          <Radio.Group value={sortKey} onChange={(e) => setSortKey(e.target.value)}>
-            <Radio.Button value="name">按名称</Radio.Button>
-            <Radio.Button value="code">按编号</Radio.Button>
-            <Radio.Button value="createdAt">按时间</Radio.Button>
-          </Radio.Group>
-          <Button onClick={() => setSortAsc((v) => !v)}>{sortAsc ? "升序 ↑" : "降序 ↓"}</Button>
-        </Space>
-        <Table<Asset>
-          rowKey="id"
-          columns={columns}
-          dataSource={rows}
-          loading={assets.isLoading}
-          scroll={{ x: 1200 }}
-          pagination={{ pageSize: 20, hideOnSinglePage: true }}
-          onChange={(_p, _f, sorter) => {
-            const s = Array.isArray(sorter) ? sorter[0] : sorter;
-            const field = s?.field;
-            if (field !== "name" && field !== "code" && field !== "createdAt") return;
-            if (!s.order) {
-              setSortKey("createdAt");
-              setSortAsc(false);
-              return;
+        <Card styles={{ body: { padding: 0 } }}>
+          <div style={{ padding: 12, borderBottom: "1px solid #f0f0f0" }}>
+            <Select
+              value={browseFactory ?? ""}
+              onChange={(v) => {
+                setBrowseFactory(v || null);
+                setDetailFor(null);
+              }}
+              style={{ width: 280 }}
+              options={[
+                { value: "", label: "本平台目录" },
+                ...factories.map((f) => ({ value: f.id, label: `看厂目录：${f.name}` })),
+              ]}
+            />
+          </div>
+          <ProcessExplorer
+            key={browseFactory ?? "platform"}
+            kind="project"
+            noun="工程"
+            factoryId={browseFactory}
+            readOnly={Boolean(browseFactory)}
+            writable={() => !browseFactory}
+            selectedAssetId={detailFor?.id ?? editFor?.id ?? null}
+            query={fsQuery}
+            weldFilter={fsWeld}
+            onNewProcess={(folder) => openCreate(folder.id)}
+            onSelectFile={(n) => {
+              if (!browseFactory) setDetailFor(n?.asset ?? null);
+            }}
+            listRow={processListRow}
+            detail={
+              browseFactory ? (
+                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="云端只看各厂目录结构，不打开厂级/个人正文。" />
+              ) : detailing ? (
+                <FileDetail row={detailing} schema={detailSchema} processes={processes.data ?? []} templates={projectTpls.data ?? []}>
+                  <Space wrap>
+                    <Button size="small" type="primary" onClick={() => setEditFor(detailing)}>
+                      编辑
+                    </Button>
+                    {canCopy(detailing) ? (
+                      <Button size="small" onClick={() => setCopyFor(detailing)}>
+                        复制
+                      </Button>
+                    ) : null}
+                    {detailing.status === "draft" ? (
+                      <Button
+                        size="small"
+                        onClick={() =>
+                          modal.confirm({
+                            title: `发布「${detailing.name}」？`,
+                            content: "发布后可被平台级工程依赖，并下到在线工厂。可复制仍可改。",
+                            onOk: () =>
+                              publish.mutate(
+                                { id: detailing.id, expected: detailing.revision },
+                                { onSuccess: () => message.success("已发布"), onError: onErr },
+                              ),
+                          })
+                        }
+                      >
+                        发布
+                      </Button>
+                    ) : null}
+                    {detailing.status === "available" ? (
+                      <Button
+                        size="small"
+                        danger
+                        onClick={() =>
+                          modal.confirm({
+                            title: `停用「${detailing.name}」？`,
+                            content: "停用后不能改、不能升档、不能被新工程依赖；可以再启用。",
+                            okButtonProps: { danger: true },
+                            onOk: () =>
+                              disable.mutate(
+                                { id: detailing.id, expected: detailing.revision },
+                                { onSuccess: () => message.success("已停用"), onError: onErr },
+                              ),
+                          })
+                        }
+                      >
+                        停用
+                      </Button>
+                    ) : null}
+                    {detailing.status === "disabled" ? (
+                      <Button
+                        size="small"
+                        onClick={() =>
+                          enable.mutate(
+                            { id: detailing.id, expected: detailing.revision },
+                            { onSuccess: () => message.success("已启用"), onError: onErr },
+                          )
+                        }
+                      >
+                        启用
+                      </Button>
+                    ) : null}
+                    <Button
+                      size="small"
+                      danger
+                      onClick={() =>
+                        modal.confirm({
+                          title: `删除「${detailing.name}」？`,
+                          content: "删除后不能恢复。",
+                          okButtonProps: { danger: true },
+                          onOk: () =>
+                            remove.mutate(detailing.id, {
+                              onSuccess: () => {
+                                message.success("已删除");
+                                setDetailFor(null);
+                              },
+                              onError: onErr,
+                            }),
+                        })
+                      }
+                    >
+                      删除
+                    </Button>
+                  </Space>
+                </FileDetail>
+              ) : (
+                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="点一份工程看详情" />
+              )
             }
-            setSortKey(field);
-            setSortAsc(s.order === "ascend");
-          }}
-          locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={`还没有${title}。可在本页新建，或从在线工厂升档。`} /> }}
-        />
-      </Card>
+          />
+        </Card>
       )}
-      <Modal title={`新建${isProcess ? "工艺" : "工程"}`} open={open} onCancel={() => setOpen(false)} okText="创建" confirmLoading={create.isPending} destroyOnHidden width={720} styles={{ body: { maxHeight: "50vh", overflow: "auto" } }} onOk={() => form.submit()}>
+      <Modal title={`新建${isProcess ? "工艺" : "工程"}`} open={open} onCancel={() => setOpen(false)} okText="创建" confirmLoading={create.isPending} destroyOnHidden width={isProcess ? 1100 : 560} styles={{ body: { maxHeight: isProcess ? "82vh" : "50vh", overflow: "auto" } }} onOk={() => form.submit()}>
         <Form<CreateForm>
+          className={isProcess ? "project-edit-form" : undefined}
           form={form}
           layout="vertical"
           size="small"
           requiredMark={false}
           initialValues={{ content: "", weldKind: WELD_SINGLE, copyable: false }}
-          onValuesChange={(changed) => {
-            if (!isProcess && "weldKind" in changed) {
-              const weld = changed.weldKind || WELD_SINGLE;
-              const rows = projectTemplatesForWeld(projectTpls.data, weld);
-              const next = rows.length ? projectContentSchema(rows) : schema;
-              form.setFieldValue("content", next ? JSON.stringify(defaultValue(next)) : "");
-            }
-          }}
           onFinish={(values) => {
-            const deps = isProcess ? undefined : depsFromSelection(undefined, values.content, processes.data ?? [], createSchema);
+            const weld = values.weldKind || WELD_SINGLE;
+            const content = isProcess ? values.content : JSON.stringify([emptyWeld(weld, projectTpls.data ?? [], 0)]);
             const input: CreateAssetInput = {
               kind,
               name: values.name,
-              content: values.content,
-              weldKind: values.weldKind,
+              content,
+              weldKind: weld,
               copyable: isProcess ? values.copyable : undefined,
-              deps,
-              parentId: isProcess ? values.parentId : undefined,
+              parentId: values.parentId,
             };
             create.mutate(input, {
-              onSuccess: () => {
+              onSuccess: (row) => {
                 message.success("已创建草稿");
                 form.resetFields();
                 setOpen(false);
+                if (!isProcess) setEditFor(row);
               },
               onError: onErr,
             });
@@ -627,21 +561,35 @@ export function AssetsPage({ kind }: { kind: AssetKind }) {
             <Form.Item name="parentId" label="文件夹" extra="工艺会放到这个目录下。" rules={[{ required: true, message: "请选择文件夹" }]}>
               <Select showSearch optionFilterProp="label" options={folderOpts} placeholder="选择文件夹" />
             </Form.Item>
-          ) : null}
-          <Form.Item name="name" label="显示名" extra="显示名不是身份。" rules={[{ required: true, message: "请输入显示名" }]}>
-            <Input autoComplete="off" autoFocus />
-          </Form.Item>
-          {isProcess ? (
-            <Form.Item name="copyable" label="可复制" extra="否则厂端看不到正文。默认否。" valuePropName="checked">
-              <Switch size="default" checkedChildren="可复制" unCheckedChildren="不可复制" />
+          ) : (
+            <Form.Item name="parentId" label="文件夹" extra="工程会放到这个目录下。" rules={[{ required: true, message: "请选择文件夹" }]}>
+              <Select showSearch optionFilterProp="label" options={folderOpts} placeholder="选择文件夹" />
             </Form.Item>
-          ) : null}
-          <Form.Item name="weldKind" label="类型" extra="创建后不能改。App 同类型工作流才能打开。" rules={[{ required: true, message: "请选择类型" }]}>
-            <Select options={WELD_KINDS.map((k) => ({ value: k.value, label: k.label }))} />
-          </Form.Item>
-          <Form.Item name="content" label="参数">
-            <ContentEditor schema={createSchema} weldKind={createWeld} processOptions={isProcess ? undefined : processPickerOptions(processes.data ?? [], (p) => p.status === "available" && sameWeldKind(p.weldKind, createWeld))} />
-          </Form.Item>
+          )}
+          <div className="project-edit-meta">
+            <Form.Item
+              name="name"
+              label={<Tooltip title="显示名不是身份。">{isProcess ? "显示名" : "工程名称"}</Tooltip>}
+              rules={[{ required: true, message: isProcess ? "请输入显示名" : "请输入工程名称" }]}
+            >
+              <Input autoComplete="off" autoFocus />
+            </Form.Item>
+            <Form.Item name="weldKind" label={<Tooltip title="App 同类型工作流才能打开。">类型</Tooltip>} rules={[{ required: true, message: "请选择类型" }]}>
+              <Select options={WELD_KINDS.map((k) => ({ value: k.value, label: k.label }))} />
+            </Form.Item>
+            {isProcess ? (
+              <Form.Item name="copyable" label="可复制" extra="否则厂端看不到正文。默认否。" valuePropName="checked">
+                <Switch size="default" checkedChildren="可复制" unCheckedChildren="不可复制" />
+              </Form.Item>
+            ) : null}
+          </div>
+          {isProcess ? (
+            <Form.Item name="content" label="参数">
+              <ContentEditor schema={createSchema} weldKind={createWeld} />
+            </Form.Item>
+          ) : (
+            <Typography.Text type="secondary">创建后按 App 那样加焊道、选工艺。点列到平板上采集。</Typography.Text>
+          )}
         </Form>
       </Modal>
       <Modal
@@ -833,48 +781,24 @@ export function AssetsPage({ kind }: { kind: AssetKind }) {
           ]}
         />
       </Modal>
-      <DetailModal row={isProcess ? null : detailing} processes={processes.data ?? []} schema={isProcess ? schema : detailSchema} onClose={() => setDetailFor(null)} />
       <EditModal
-        row={editing}
-        schema={editSchema}
-        processes={processes.data ?? []}
-        saving={rename.isPending || updateContent.isPending || setAssetDeps.isPending}
+        row={editing?.kind === "process" ? editing : null}
+        schema={schema}
+        saving={rename.isPending || updateContent.isPending || setWeldKind.isPending}
         onClose={() => setEditFor(null)}
-        onSave={async (name, content, originalContent) => {
-          if (!editing) return;
+        onSave={async (name, content, originalContent, weldKind) => {
+          if (!editing || editing.kind !== "process") return;
           try {
             let expected = editing.revision;
             if (name !== editing.name) {
               const next = await rename.mutateAsync({ id: editing.id, expected, name });
               expected = next.revision;
             }
-            if (editing.kind === "project") {
-              const oldIds = (editing.deps ?? []).map((d) => d.id);
-              const nextIds = uniqueIds(processIdsFromContent(content, schema));
-              const added = nextIds.filter((id) => !oldIds.includes(id));
-              const toDep = (id: string): AssetDep => {
-                const pinned = (editing.deps ?? []).find((d) => d.id === id);
-                if (pinned) return pinned;
-                const p = availableProcesses.find((x) => x.id === id);
-                if (!p) return { id, revision: 0, digest: "" };
-                return { id: p.id, revision: p.revision, digest: p.digest };
-              };
-              if (added.length) {
-                const next = await setAssetDeps.mutateAsync({
-                  id: editing.id,
-                  expected,
-                  deps: [...oldIds, ...added].map(toDep),
-                });
-                expected = next.revision;
-              }
-              if (content !== originalContent) {
-                const next = await updateContent.mutateAsync({ id: editing.id, expected, content });
-                expected = next.revision;
-              }
-              if (nextIds.join("\0") !== oldIds.join("\0") || added.length) {
-                await setAssetDeps.mutateAsync({ id: editing.id, expected, deps: nextIds.map(toDep) });
-              }
-            } else if (content !== originalContent) {
+            if (weldKind && weldKind !== (editing.weldKind || WELD_SINGLE)) {
+              const next = await setWeldKind.mutateAsync({ id: editing.id, expected, weldKind });
+              expected = next.revision;
+            }
+            if (content !== originalContent) {
               await updateContent.mutateAsync({ id: editing.id, expected, content });
             }
             message.success("已保存");
@@ -884,7 +808,7 @@ export function AssetsPage({ kind }: { kind: AssetKind }) {
           }
         }}
         extra={
-          editing ? (
+          editing?.kind === "process" ? (
             <Space wrap>
               <CopyableSwitch
                 checked={editing.copyable}
@@ -895,6 +819,63 @@ export function AssetsPage({ kind }: { kind: AssetKind }) {
             </Space>
           ) : null
         }
+      />
+      <ProjectEditModal
+        row={editing?.kind === "project" ? editing : null}
+        templates={projectTpls.data ?? []}
+        processes={availableProcesses}
+        saving={rename.isPending || updateContent.isPending || setAssetDeps.isPending || setWeldKind.isPending}
+        onClose={() => setEditFor(null)}
+        onSave={async (name, content, originalContent, weldKind) => {
+          if (!editing || editing.kind !== "project") return;
+          try {
+            let expected = editing.revision;
+            if (name !== editing.name) {
+              const next = await rename.mutateAsync({ id: editing.id, expected, name });
+              expected = next.revision;
+            }
+            const nextKind = weldKind || editing.weldKind || WELD_SINGLE;
+            let depIds = (editing.deps ?? []).map((d) => d.id);
+            if (nextKind !== (editing.weldKind || WELD_SINGLE)) {
+              const next = await setWeldKind.mutateAsync({ id: editing.id, expected, weldKind: nextKind });
+              expected = next.revision;
+              depIds = (next.deps ?? []).map((d) => d.id);
+            }
+            const nextIds = uniqueIds(
+              processIdsFromContent(content, (() => {
+                const rows = projectTemplatesForWeld(projectTpls.data, nextKind);
+                return rows.length ? projectContentSchema(rows) : editSchema;
+              })()),
+            );
+            const added = nextIds.filter((id) => !depIds.includes(id));
+            const toDep = (id: string): AssetDep => {
+              const p = availableProcesses.find((x) => x.id === id && x.status === "available");
+              if (p) return { id: p.id, revision: p.revision, digest: p.digest };
+              const pinned = (editing.deps ?? []).find((d) => d.id === id);
+              if (pinned) return pinned;
+              return { id, revision: 0, digest: "" };
+            };
+            if (added.length) {
+              const next = await setAssetDeps.mutateAsync({
+                id: editing.id,
+                expected,
+                deps: [...depIds, ...added].map(toDep),
+              });
+              expected = next.revision;
+            }
+            if (content !== originalContent) {
+              const next = await updateContent.mutateAsync({ id: editing.id, expected, content });
+              expected = next.revision;
+            }
+            if (nextIds.join("\0") !== depIds.join("\0") || added.length) {
+              await setAssetDeps.mutateAsync({ id: editing.id, expected, deps: nextIds.map(toDep) });
+            }
+            message.success("已保存");
+            setEditFor(null);
+          } catch (e) {
+            onErr(e);
+          }
+        }}
       />
     </>
   );
@@ -909,14 +890,29 @@ function ParamsView({
   row,
   schema,
   processOptions,
+  processes = [],
+  templates = [],
 }: {
   row: Asset;
   schema: ContentSchema | null;
   processOptions?: { value: string; label: string; disabled?: boolean }[];
+  processes?: Asset[];
+  templates?: { id: string; name?: string; schema?: ContentSchema }[];
 }) {
   const q = useAssetContent(row.id);
   if (q.isError) return <Typography.Text type="danger">{errorMessage(q.error)}</Typography.Text>;
   if (q.isLoading) return <Typography.Text type="secondary">读取中…</Typography.Text>;
+  if (row.kind === "project") {
+    return (
+      <ProjectWeldEditor
+        value={q.data?.content ?? ""}
+        disabled
+        weldKind={row.weldKind || WELD_SINGLE}
+        templates={templates}
+        processOptions={processOptions ?? processPickerOptions(processes, (p) => p.status === "available" && sameWeldKind(p.weldKind, row.weldKind), (row.deps ?? []).map((d) => d.id))}
+      />
+    );
+  }
   return (
     <ContentEditor
       schema={schema}
@@ -928,73 +924,61 @@ function ParamsView({
   );
 }
 
-function FileDetail({ row, schema, children }: { row: Asset; schema: ContentSchema | null; children?: ReactNode }) {
+function FileDetail({
+  row,
+  schema,
+  processes = [],
+  templates = [],
+  children,
+}: {
+  row: Asset;
+  schema: ContentSchema | null;
+  processes?: Asset[];
+  templates?: { id: string; name?: string; schema?: ContentSchema }[];
+  children?: ReactNode;
+}) {
   return (
-    <Space direction="vertical" size={12} style={{ width: "100%" }}>
-      <Typography.Title level={5} style={{ margin: 0 }}>
-        {row.name}
-      </Typography.Title>
-      <Descriptions size="small" column={1}>
-        <Descriptions.Item label="编号">
+    <div className="fs-detail-card">
+      <div className="fs-detail-top">
+        <Typography.Title level={5} style={{ margin: 0 }} ellipsis>
+          {row.name}
+        </Typography.Title>
+        {children ? <div className="fs-detail-actions">{children}</div> : null}
+      </div>
+      <Descriptions size="small" column={2} bordered className="fs-detail-meta">
+        <Descriptions.Item label="编号" span={2}>
           <Typography.Text copyable={{ text: row.code }}>{row.code}</Typography.Text>
         </Descriptions.Item>
-        <Descriptions.Item label="工艺ID">
-          <IdText id={row.id} />
-        </Descriptions.Item>
+        {row.kind === "process" ? (
+          <Descriptions.Item label="工艺ID" span={2}>
+            <IdText id={row.id} />
+          </Descriptions.Item>
+        ) : (
+          <Descriptions.Item label="依赖工艺" span={2}>
+            {depText(row, processes)}
+          </Descriptions.Item>
+        )}
         <Descriptions.Item label="状态">
           <Tag color={statusColor(row.status)}>{statusLabel(row.status)}</Tag>
         </Descriptions.Item>
         <Descriptions.Item label="类型">{weldKindLabel(row.weldKind || WELD_SINGLE)}</Descriptions.Item>
-        <Descriptions.Item label="可复制">{row.copyable ? "是" : "否"}</Descriptions.Item>
+        {row.kind === "process" ? <Descriptions.Item label="可复制">{row.copyable ? "是" : "否"}</Descriptions.Item> : null}
         <Descriptions.Item label="修订">{row.revision}</Descriptions.Item>
-        <Descriptions.Item label="来源厂">{row.sourceFactory || "本端新建"}</Descriptions.Item>
+        <Descriptions.Item label="来源厂" span={2}>
+          {row.sourceFactory || "本端新建"}
+        </Descriptions.Item>
         <Descriptions.Item label="创建时间">{formatTime(row.createdAt)}</Descriptions.Item>
         <Descriptions.Item label="更新">{formatTime(row.updatedAt)}</Descriptions.Item>
       </Descriptions>
-      {children}
-      <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
-        参数
-      </Typography.Paragraph>
-      <div className="fs-detail-params">
-        <ParamsView row={row} schema={schema} />
+      <div>
+        <Typography.Text type="secondary" className="fs-detail-section-title">
+          {row.kind === "process" ? "参数" : "焊道"}
+        </Typography.Text>
+        <div className="fs-detail-params">
+          <ParamsView row={row} schema={schema} processes={processes} templates={templates} />
+        </div>
       </div>
-    </Space>
-  );
-}
-
-function DetailModal({ row, processes, schema, onClose }: { row: Asset | null; processes: Asset[]; schema: ContentSchema | null; onClose: () => void }) {
-  return (
-    <Modal title="详情" open={row !== null} onCancel={onClose} footer={null} width={720} styles={{ body: { maxHeight: "50vh", overflow: "auto" } }}>
-      {row ? (
-        <>
-          <Descriptions
-            column={1}
-            size="small"
-            items={[
-              { key: "name", label: row.kind === "process" ? "工艺名称" : "工程名称", children: row.name },
-              { key: "code", label: "编号", children: <Typography.Text copyable={{ text: row.code }}>{row.code}</Typography.Text> },
-              ...(row.kind === "process" ? [{ key: "id", label: "工艺ID", children: <IdText id={row.id} /> }] : []),
-              { key: "status", label: "状态", children: <Tag color={statusColor(row.status)}>{statusLabel(row.status)}</Tag> },
-              { key: "weldKind", label: "类型", children: weldKindLabel(row.weldKind || WELD_SINGLE) },
-              { key: "copyable", label: "可复制", children: row.copyable ? "是" : "否" },
-              { key: "revision", label: "修订", children: row.revision },
-              { key: "source", label: "来源厂", children: row.sourceFactory || "本端新建" },
-              ...(row.kind === "project" ? [{ key: "deps", label: "依赖工艺", children: depText(row, processes) }] : []),
-              { key: "created", label: "创建时间", children: formatTime(row.createdAt) },
-              { key: "updated", label: "更新", children: formatTime(row.updatedAt) },
-            ]}
-          />
-          <Typography.Paragraph type="secondary" style={{ marginTop: 16, marginBottom: 8 }}>
-            参数
-          </Typography.Paragraph>
-          <ParamsView
-            row={row}
-            schema={schema}
-            processOptions={row.kind === "project" ? processSelectOptions((row.deps ?? []).map((d) => d.id), processes) : undefined}
-          />
-        </>
-      ) : null}
-    </Modal>
+    </div>
   );
 }
 
@@ -1017,15 +1001,6 @@ function processIdsFromContent(content: string | undefined, schema: ContentSchem
   }
 }
 
-function depsFromSelection(selected: string[] | undefined, content: string | undefined, available: Asset[], schema: ContentSchema | null): AssetDep[] {
-  const ids = uniqueIds([...(selected ?? []), ...processIdsFromContent(content, schema)]);
-  return ids.map((id) => {
-    const p = available.find((x) => x.id === id);
-    if (!p) return { id, revision: 0, digest: "" };
-    return { id: p.id, revision: p.revision, digest: p.digest };
-  });
-}
-
 function processPickerOptions(all: Asset[], pin: (p: Asset) => boolean, selected?: string[]) {
   const seen = new Set<string>();
   const selectedSet = new Set(selected ?? []);
@@ -1044,23 +1019,9 @@ function processPickerOptions(all: Asset[], pin: (p: Asset) => boolean, selected
   return opts;
 }
 
-function processSelectOptions(selected: string[] | undefined, pickable: Asset[], catalog: Asset[] = pickable) {
-  const byId = new Map(catalog.map((p) => [p.id, p]));
-  const opts = pickable.map((p) => ({ value: p.id, label: `${p.name} · r${p.revision}` }));
-  const seen = new Set(pickable.map((p) => p.id));
-  for (const id of selected ?? []) {
-    if (seen.has(id)) continue;
-    const p = byId.get(id);
-    opts.push({ value: id, label: p ? `${p.name} · r${p.revision}` : id });
-    seen.add(id);
-  }
-  return opts;
-}
-
 function EditModal({
   row,
   schema,
-  processes,
   saving,
   extra,
   onClose,
@@ -1068,18 +1029,18 @@ function EditModal({
 }: {
   row: Asset | null;
   schema: ContentSchema | null;
-  processes: Asset[];
   saving: boolean;
   extra: ReactNode;
   onClose: () => void;
-  onSave: (name: string, content: string, originalContent: string) => Promise<void>;
+  onSave: (name: string, content: string, originalContent: string, weldKind: string) => Promise<void>;
 }) {
   const q = useAssetContent(row?.id ?? null);
-  const [form] = Form.useForm<{ name: string; content: string }>();
+  const [form] = Form.useForm<{ name: string; content: string; weldKind: string }>();
   const locked = row?.status === "disabled";
+  const editWeld = Form.useWatch("weldKind", form) ?? row?.weldKind ?? WELD_SINGLE;
   useEffect(() => {
     if (!row) return;
-    form.setFieldsValue({ name: row.name });
+    form.setFieldsValue({ name: row.name, weldKind: row.weldKind || WELD_SINGLE });
     if (!q.isFetching) form.setFieldsValue({ content: q.data?.content ?? "" });
   }, [row, q.data, q.isFetching, form]);
   return (
@@ -1090,36 +1051,129 @@ function EditModal({
       okText="保存"
       okButtonProps={{ disabled: locked }}
       confirmLoading={saving || q.isLoading}
-      width={720}
-      styles={{ body: { maxHeight: "50vh", overflow: "auto" } }}
+      width={1100}
+      styles={{ body: { maxHeight: "82vh", overflow: "auto" } }}
       onOk={() => form.submit()}
     >
       {q.isError ? <Typography.Text type="danger">{errorMessage(q.error)}</Typography.Text> : null}
-      {extra ? <div style={{ marginBottom: 8 }}>{extra}</div> : null}
-      <Form<{ name: string; content: string }>
+      <Form<{ name: string; content: string; weldKind: string }>
+        className="project-edit-form"
         form={form}
         layout="vertical"
         size="small"
         requiredMark={false}
         onFinish={(values) =>
-          onSave(values.name, values.content, q.data?.content ?? "").catch(() => undefined)
+          onSave(values.name, values.content, q.data?.content ?? "", values.weldKind || row?.weldKind || WELD_SINGLE).catch(() => undefined)
         }
       >
-        {row?.kind === "process" ? (
-          <Form.Item label="工艺ID">
-            <IdText id={row.id} />
+        <div className="project-edit-meta">
+          <Form.Item
+            name="name"
+            label={<Tooltip title="显示名不是身份。">显示名</Tooltip>}
+            rules={[{ required: true, message: "请输入显示名" }]}
+          >
+            <Input autoComplete="off" disabled={locked} />
           </Form.Item>
+          {row?.kind === "process" ? (
+            <Form.Item name="weldKind" label="类型" rules={[{ required: true, message: "请选择类型" }]}>
+              <Select disabled={locked} options={WELD_KINDS.map((k) => ({ value: k.value, label: k.label }))} />
+            </Form.Item>
+          ) : (
+            <Form.Item label="类型">{weldKindLabel(row?.weldKind || WELD_SINGLE)}</Form.Item>
+          )}
+        </div>
+        {row?.kind === "process" ? (
+          <div className="process-edit-id">
+            <Typography.Text type="secondary">工艺ID</Typography.Text>
+            <IdText id={row.id} />
+          </div>
         ) : null}
-        <Form.Item name="name" label="显示名" extra="显示名不是身份。" rules={[{ required: true, message: "请输入显示名" }]}>
-          <Input autoComplete="off" disabled={locked} />
-        </Form.Item>
-        <Form.Item label="类型">{weldKindLabel(row?.weldKind || WELD_SINGLE)}</Form.Item>
+        {extra ? <div className="process-edit-extra">{extra}</div> : null}
         <Form.Item name="content" label="参数">
           <ContentEditor
             schema={schema}
             disabled={locked}
-            weldKind={row?.weldKind || WELD_SINGLE}
-            processOptions={row?.kind === "project" ? processPickerOptions(processes, (p) => p.status === "available" && sameWeldKind(p.weldKind, row.weldKind), (row.deps ?? []).map((d) => d.id)) : undefined}
+            weldKind={editWeld}
+          />
+        </Form.Item>
+      </Form>
+    </Modal>
+  );
+}
+
+function ProjectEditModal({
+  row,
+  templates,
+  processes,
+  saving,
+  onClose,
+  onSave,
+}: {
+  row: Asset | null;
+  templates: { id: string; name?: string; schema?: ContentSchema }[];
+  processes: Asset[];
+  saving: boolean;
+  onClose: () => void;
+  onSave: (name: string, content: string, originalContent: string, weldKind: string) => Promise<void>;
+}) {
+  const q = useAssetContent(row?.id ?? null);
+  const [form] = Form.useForm<{ name: string; content: string; weldKind: string }>();
+  const locked = row?.status === "disabled";
+  const editWeld = Form.useWatch("weldKind", form) ?? row?.weldKind ?? WELD_SINGLE;
+  useEffect(() => {
+    if (!row) return;
+    form.setFieldsValue({ name: row.name, weldKind: row.weldKind || WELD_SINGLE });
+    if (!q.isFetching) form.setFieldsValue({ content: q.data?.content ?? "[]" });
+  }, [row, q.data, q.isFetching, form]);
+  return (
+    <Modal
+      title="编辑工程"
+      open={row !== null}
+      onCancel={onClose}
+      okText="保存"
+      okButtonProps={{ disabled: locked }}
+      confirmLoading={saving || q.isLoading}
+      width={1100}
+      styles={{ body: { maxHeight: "82vh", overflow: "auto" } }}
+      onOk={() => form.submit()}
+    >
+      {q.isError ? <Typography.Text type="danger">{errorMessage(q.error)}</Typography.Text> : null}
+      <Form<{ name: string; content: string; weldKind: string }>
+        className="project-edit-form"
+        form={form}
+        layout="vertical"
+        size="small"
+        requiredMark={false}
+        onValuesChange={(changed) => {
+          if (changed.weldKind) form.setFieldValue("content", JSON.stringify([emptyWeld(changed.weldKind, templates, 0)]));
+        }}
+        onFinish={(values) => {
+          const weld = values.weldKind || row?.weldKind || WELD_SINGLE;
+          onSave(values.name, values.content ?? "", q.data?.content ?? "", weld).catch(() => undefined);
+        }}
+      >
+        <div className="project-edit-meta">
+          <Form.Item
+            name="name"
+            label={<Tooltip title="显示名不是身份。">工程名称</Tooltip>}
+            rules={[{ required: true, message: "请输入工程名称" }]}
+          >
+            <Input autoComplete="off" disabled={locked} />
+          </Form.Item>
+          <Form.Item
+            name="weldKind"
+            label={<Tooltip title="焊道换成该类型空焊道。">类型</Tooltip>}
+            rules={[{ required: true, message: "请选择类型" }]}
+          >
+            <Select disabled={locked} options={WELD_KINDS.map((k) => ({ value: k.value, label: k.label }))} />
+          </Form.Item>
+        </div>
+        <Form.Item name="content" label="焊道">
+          <ProjectWeldEditor
+            disabled={locked}
+            weldKind={editWeld}
+            templates={templates}
+            processOptions={row ? processPickerOptions(processes, (p) => p.status === "available" && sameWeldKind(p.weldKind, editWeld), (row.deps ?? []).map((d) => d.id)) : undefined}
           />
         </Form.Item>
       </Form>

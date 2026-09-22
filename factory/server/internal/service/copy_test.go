@@ -24,8 +24,8 @@ func TestCopyProcess(t *testing.T) {
 		t.Fatal(err)
 	}
 	sa := mustLogin(t, ctx, fac, "sa-a", "sa-pass")
-	pe := mustCreateRole(t, ctx, fac, sa, "pe-a", "pe-pass", factory.RoleProcessEngineer, factory.ScopeFactory, nil)
-	other := mustCreateRole(t, ctx, fac, sa, "pe-b", "pe-b-pass", factory.RoleProcessEngineer, factory.ScopeFactory, nil)
+	pe := mustCreateRole(t, ctx, fac, sa, "pe-a", "pe-pass", factory.RoleOperator, factory.ScopeFactory, nil)
+	other := mustCreateRole(t, ctx, fac, sa, "pe-b", "pe-b-pass", factory.RoleOperator, factory.ScopeFactory, nil)
 	direct := factory.WorkContext{Direct: true}
 	body := []byte("copy-src-body")
 
@@ -127,7 +127,7 @@ func TestCreateProcessCopyable(t *testing.T) {
 		t.Fatal(err)
 	}
 	sa := mustLogin(t, ctx, fac, "sa-a", "sa-pass")
-	pe := mustCreateRole(t, ctx, fac, sa, "pe-a", "pe-pass", factory.RoleProcessEngineer, factory.ScopeFactory, nil)
+	pe := mustCreateRole(t, ctx, fac, sa, "pe-a", "pe-pass", factory.RoleOperator, factory.ScopeFactory, nil)
 	direct := factory.WorkContext{Direct: true}
 	body := []byte("create-copyable-body")
 

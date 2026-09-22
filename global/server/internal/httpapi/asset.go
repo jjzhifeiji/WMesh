@@ -24,6 +24,7 @@ func (h *Handler) mountAsset(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/assets/{assetId}/rename", h.renameAsset)
 	mux.HandleFunc("POST /v1/assets/{assetId}/content", h.updateAssetContent)
 	mux.HandleFunc("POST /v1/assets/{assetId}/copyable", h.setAssetCopyable)
+	mux.HandleFunc("POST /v1/assets/{assetId}/weld-kind", h.setAssetWeldKind)
 	mux.HandleFunc("POST /v1/assets/{assetId}/copy", h.copyAsset)
 	mux.HandleFunc("POST /v1/assets/{assetId}/publish", h.publishAsset)
 	mux.HandleFunc("POST /v1/assets/{assetId}/disable", h.disableAsset)
@@ -42,7 +43,7 @@ type createAssetReq struct {
 	Name     string             `json:"name"`     // 显示名
 	Content  string             `json:"content"`  // UTF-8 正文
 	WeldKind string             `json:"weldKind"` // 作业类型：single / multilayer / tbar
-	Copyable *bool              `json:"copyable"` // 空则默认不可复制
+	Copyable *bool              `json:"copyable"` // 仅工艺；空则默认不可复制
 	Deps     []service.AssetDep `json:"deps"`     // 可空；新建从参数补
 	ParentID string             `json:"parentId"` // 目录父文件夹；空则挂根
 }
@@ -54,6 +55,11 @@ type expectedReq struct {
 type copyableReq struct {
 	Expected int64 `json:"expected"` // 期望修订
 	Copyable bool  `json:"copyable"` // 可否升档
+}
+
+type weldKindReq struct {
+	Expected int64  `json:"expected"` // 期望修订
+	WeldKind string `json:"weldKind"` // 作业类型：single / multilayer / tbar
 }
 
 type copyAssetReq struct {
@@ -231,6 +237,26 @@ func (h *Handler) setAssetCopyable(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	row, err := h.svc.Assets.SetPlatformCopyable(r.Context(), bearer(r), assetID, req.Expected, req.Copyable)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, row)
+}
+
+// 未停用的工艺或工程可改作业类型。
+func (h *Handler) setAssetWeldKind(w http.ResponseWriter, r *http.Request) {
+	assetID, err := parseAssetID(r)
+	if err != nil {
+		writeBadRequest(w, err)
+		return
+	}
+	var req weldKindReq
+	if err := decodeJSON(r, &req); err != nil {
+		writeBadRequest(w, err)
+		return
+	}
+	row, err := h.svc.Assets.SetPlatformWeldKind(r.Context(), bearer(r), assetID, req.Expected, req.WeldKind)
 	if err != nil {
 		writeErr(w, err)
 		return

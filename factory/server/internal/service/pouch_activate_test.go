@@ -139,7 +139,7 @@ func TestPouchActivatePersonalFollowsOwner(t *testing.T) {
 		t.Fatal(err)
 	}
 	p.BindClient(client)
-	if err := p.Activate(snap.AssetID); !errors.Is(err, domain.ErrForbidden) {
+	if err := p.Activate(snap.AssetID); !errors.Is(err, domain.ErrNotFound) {
 		t.Fatalf("personal: %v", err)
 	}
 }

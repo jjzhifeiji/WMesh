@@ -198,7 +198,7 @@ function procRef(key: string, label: string): TemplateField {
 }
 
 function flag(key: string, label: string, on: boolean): TemplateField {
-  return { key, label, type: "string", options: ["否", "是"], default: on ? "是" : "否" };
+  return { key, label, type: "bool", default: on };
 }
 
 function poseFields(): TemplateField[] {
@@ -213,6 +213,17 @@ function poseFields(): TemplateField[] {
   ];
 }
 
+function anglesField(): TemplateField {
+  return { key: "jointAngles", label: "关节角", type: "array", items: { key: "a", label: "角", type: "string", default: 0 } };
+}
+
+function refFields(): TemplateField[] {
+  return [
+    { key: "pose", label: "位姿", type: "object", fields: poseFields() },
+    anglesField(),
+  ];
+}
+
 function pointField(): TemplateField {
   return {
     type: "object",
@@ -222,7 +233,9 @@ function pointField(): TemplateField {
       str("id", "点身份", ""),
       str("type", "点类型", "START"),
       { key: "pose", label: "位姿", type: "object", fields: poseFields() },
-      { key: "jointAngles", label: "关节角", type: "array", items: { key: "a", label: "角", type: "string", default: 0 } },
+      anglesField(),
+      { key: "executionOffsets", label: "执行偏移", type: "array", items: { key: "a", label: "偏移", type: "string", default: 0 } },
+      { key: "refPointX", label: "X 向参考", type: "object", fields: refFields() },
     ],
   };
 }
@@ -234,6 +247,7 @@ function pathFields(): TemplateField[] {
     { key: "points", label: "点", type: "array", items: pointField() },
     procRef("processId", "工艺"),
     num("selectedPointIndex", "选中点", "", 0),
+    flag("isEnabled", "启用", true),
   ];
 }
 
@@ -246,7 +260,7 @@ function extraProcessesField(): TemplateField {
       type: "object",
       key: "extra",
       label: "附加",
-      fields: [str("id", "身份", ""), procRef("processId", "工艺")],
+      fields: [str("id", "身份", ""), procRef("processId", "工艺"), flag("isEnabled", "启用", true)],
     },
   };
 }
@@ -255,6 +269,7 @@ function itemSingle(extra: boolean): TemplateField[] {
   const fields: TemplateField[] = [
     str("id", "身份", ""),
     str("name", "名称", ""),
+    str("kind", "种类", ITEM_SINGLE),
     { key: "points", label: "点", type: "array", items: pointField() },
     procRef("processId", "工艺"),
     num("selectedPointIndex", "选中点", "", 0),
@@ -273,8 +288,8 @@ function itemMulti(): TemplateField[] {
       str("id", "焊道身份", ""),
       str("name", "焊道名", ""),
       num("valX", "X", "mm", 0),
-      num("valYLeft", "左 Y", "mm", 0),
-      num("valYRight", "右 Y", "mm", 0),
+      num("valYLeft", "Y左", "mm", 0),
+      num("valYRight", "Y右", "mm", 0),
       num("valZ", "Z", "mm", 0),
       num("valR", "R", "mm", 0),
       procRef("processId", "工艺"),
@@ -282,19 +297,19 @@ function itemMulti(): TemplateField[] {
       flag("isEnabled", "启用", true),
     ],
   };
-  const ref: TemplateField[] = [
-    { key: "pose", label: "位姿", type: "object", fields: poseFields() },
-    { key: "jointAngles", label: "关节角", type: "array", items: { key: "a", label: "角", type: "string", default: 0 } },
-  ];
+  const ref = refFields();
   return [
     str("id", "身份", ""),
     str("name", "名称", ""),
-    { key: "basePath", label: "基准路径", type: "object", fields: pathFields() },
-    { key: "passes", label: "多层焊道", type: "array", items: pass },
-    { key: "refPointX1", label: "起点 X", type: "object", fields: ref },
-    { key: "refPointZ1", label: "起点 Z", type: "object", fields: ref },
-    { key: "refPointXEnd", label: "终点 X", type: "object", fields: ref },
-    { key: "refPointZEnd", label: "终点 Z", type: "object", fields: ref },
+    str("kind", "种类", ITEM_MULTI),
+    { key: "basePath", label: "基准层", type: "object", fields: pathFields() },
+    { key: "passes", label: "填充层", type: "array", items: pass },
+    { key: "refPointX1", label: "X1", type: "object", fields: ref },
+    { key: "refPointZ1", label: "Z1", type: "object", fields: ref },
+    { key: "refPointXMiddle", label: "X中", type: "object", fields: ref },
+    { key: "refPointZMiddle", label: "Z中", type: "object", fields: ref },
+    { key: "refPointXEnd", label: "X2", type: "object", fields: ref },
+    { key: "refPointZEnd", label: "Z2", type: "object", fields: ref },
     flag("isBaseCompleted", "基准完成", false),
     flag("isEnabled", "启用", true),
   ];
@@ -316,6 +331,7 @@ function itemTBar(): TemplateField[] {
   return [
     str("id", "身份", ""),
     str("name", "名称", ""),
+    str("kind", "种类", ITEM_TBAR),
     { key: "points", label: "点", type: "array", items: pointField() },
     num("selectedPointIndex", "选中点", "", 0),
     flag("isEnabled", "启用", true),

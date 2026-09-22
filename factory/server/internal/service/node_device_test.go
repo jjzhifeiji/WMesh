@@ -6,11 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 
 	"wmesh/factory/internal/platform/audit"
 	"wmesh/factory/internal/platform/domain"
 	"wmesh/factory/internal/platform/id"
 	"wmesh/factory/internal/platform/nodekey"
+	"wmesh/factory/internal/platform/secret"
 	factory "wmesh/factory/internal/service"
 )
 
@@ -466,5 +468,50 @@ func TestLoginOnClientClearsOtherDevice(t *testing.T) {
 	}
 	if aOp || !bOp {
 		t.Fatalf("operator still on old client: a=%v b=%v", aOp, bOp)
+	}
+}
+
+func TestAppTokenUsesKeyTTL(t *testing.T) {
+	ctx := context.Background()
+	h := New(t)
+	seed, fac, err := h.Provision(ctx, "sa", "超管")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fac.Activate(ctx, "sa", seed.ActivationToken, "sa-pass"); err != nil {
+		t.Fatal(err)
+	}
+	saTok := mustLogin(t, ctx, fac, "sa", "sa-pass")
+	mustCreateRole(t, ctx, fac, saTok, "op", "op-pass", factory.RoleOperator, factory.ScopeFactory, nil)
+	open, err := fac.LoginPad(ctx, "op", "op-pass")
+	if err != nil {
+		t.Fatal(err)
+	}
+	row, err := fac.Store().SessionByTokenHash(ctx, secret.TokenHash(open.Token))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.ExpiresAt.Year() < 9999 {
+		t.Fatalf("ttl 0 should last until logout, expires %s", row.ExpiresAt)
+	}
+	cur, err := fac.GetClientPolicy(ctx, saTok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cur.KeyTTLSeconds = 90
+	if _, err := fac.SetClientPolicy(ctx, saTok, cur); err != nil {
+		t.Fatal(err)
+	}
+	limited, err := fac.LoginPad(ctx, "op", "op-pass")
+	if err != nil {
+		t.Fatal(err)
+	}
+	row, err = fac.Store().SessionByTokenHash(ctx, secret.TokenHash(limited.Token))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if row.ExpiresAt.Before(now.Add(60*time.Second)) || row.ExpiresAt.After(now.Add(2*time.Minute)) {
+		t.Fatalf("ttl 90s expires %s", row.ExpiresAt)
 	}
 }

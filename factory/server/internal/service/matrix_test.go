@@ -263,7 +263,7 @@ func TestMatrix(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
-	eng := mustCreateRole(t, ctx, facA, saA, "eng", "eng-pass", factory.RoleProcessEngineer, factory.ScopeOrgUnit, &shop.ID)
+	eng := mustCreateRole(t, ctx, facA, saA, "eng", "eng-pass", factory.RoleOperator, factory.ScopeOrgUnit, &shop.ID)
 	run("8.4", func(t *testing.T) {
 		if _, err := facA.CreateFact(ctx, eng.tok, factory.WorkContext{OrgUnitID: &shop.ID}); !errors.Is(err, domain.ErrWorkContext) {
 			t.Fatalf("got %v", err)

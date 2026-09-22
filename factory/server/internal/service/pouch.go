@@ -68,7 +68,7 @@ func (p *Pouch) Login(unwrap []byte, person uuid.UUID, persist bool) error {
 	return nil
 }
 
-// Logout 立刻清内存钥、激活和焊接标记；信封与闭包元数据仍留在袋里。
+// Logout 立刻清内存钥、激活、焊接标记和本机袋；换人等于清库。
 func (p *Pouch) Logout() {
 	contentcrypt.Zero(p.unwrap)
 	p.unwrap = nil
@@ -76,6 +76,8 @@ func (p *Pouch) Logout() {
 	p.welding = false
 	p.activeID = nil
 	p.activeRev = 0
+	p.items = map[uuid.UUID]CachedEnvelope{}
+	p.closures = map[uuid.UUID]CachedClosure{}
 	if !p.persist {
 		contentcrypt.Zero(p.material)
 		p.material = nil

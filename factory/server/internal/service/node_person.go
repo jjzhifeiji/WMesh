@@ -31,14 +31,14 @@ func (s *kernel) loginPerson(ctx context.Context, bag Bag, clocks Clocks, loginN
 	return p, ev
 }
 
-// canOperateAs 须有操作员或工程师角色，分配不够。
+// canOperateAs 须有操作员角色，分配不够。
 func (s *kernel) canOperateAs(ctx context.Context, personID uuid.UUID) (bool, error) {
 	grants, err := s.store.ActiveGrants(ctx, personID)
 	if err != nil {
 		return false, err
 	}
 	for _, g := range grants {
-		if g.Role == RoleOperator || g.Role == RoleProcessEngineer {
+		if g.Role == RoleOperator {
 			return true, nil
 		}
 	}

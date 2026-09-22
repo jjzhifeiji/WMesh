@@ -28,6 +28,19 @@ func openTemplate(t ContentTemplate) (ContentTemplate, error) {
 	return t, nil
 }
 
+// openedProjectItem 只收对象根且摘要对得上的份；旧登记簿丢掉，不挡当前各份。
+func openedProjectItem(t ContentTemplate) (ContentTemplate, bool) {
+	row, err := openTemplate(t)
+	if err != nil {
+		return ContentTemplate{}, false
+	}
+	sch, err := contenttpl.Parse(row.Schema)
+	if err != nil || sch.Root != contenttpl.RootObject {
+		return ContentTemplate{}, false
+	}
+	return row, true
+}
+
 // projectItems 已收的对象根工程模版；没有则空。
 func (s *kernel) projectItems(ctx context.Context) ([]contenttpl.ProjectItemSchema, error) {
 	rows, err := s.store.LatestProjectTemplates(ctx)
@@ -36,14 +49,11 @@ func (s *kernel) projectItems(ctx context.Context) ([]contenttpl.ProjectItemSche
 	}
 	out := make([]contenttpl.ProjectItemSchema, 0, len(rows))
 	for _, row := range rows {
-		row, err = openTemplate(row)
-		if err != nil {
-			return nil, err
-		}
-		sch, err := contenttpl.Parse(row.Schema)
-		if err != nil || sch.Root != contenttpl.RootObject {
+		row, ok := openedProjectItem(row)
+		if !ok {
 			continue
 		}
+		sch, _ := contenttpl.Parse(row.Schema)
 		out = append(out, contenttpl.ProjectItemSchema{ID: row.ID.String(), Name: row.Name, Fields: sch.Fields})
 	}
 	return out, nil
@@ -151,13 +161,8 @@ func (s *Templates) ListProjectTemplates(ctx context.Context, token string) ([]C
 	}
 	out := make([]ContentTemplate, 0, len(rows))
 	for _, row := range rows {
-		row, err = openTemplate(row)
-		if err != nil {
-			_ = s.audit(ctx, &acc.ID, nil, "get_template", KindProject, audit.Deny)
-			return nil, err
-		}
-		sch, err := contenttpl.Parse(row.Schema)
-		if err != nil || sch.Root != contenttpl.RootObject {
+		row, ok := openedProjectItem(row)
+		if !ok {
 			continue
 		}
 		out = append(out, row)

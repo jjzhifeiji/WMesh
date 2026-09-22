@@ -1,4 +1,4 @@
-// C1：本机袋未登录解不开；默认钥不落盘；换人后前人个人级拒绝。
+// C1：本机袋未登录解不开；默认钥不落盘；退出换人清库。
 package service_test
 
 import (
@@ -76,12 +76,11 @@ func TestPouchPersonalFollowsOwner(t *testing.T) {
 	if err := p.Login(key, b, false); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := p.Open(pid); err != domain.ErrForbidden {
+	if _, err := p.Open(pid); err != domain.ErrNotFound {
 		t.Fatalf("personal: %v", err)
 	}
-	got, err := p.Open(fid)
-	if err != nil || !bytes.Equal(got, []byte(`{"f":1}`)) {
-		t.Fatalf("factory %s %v", got, err)
+	if _, err := p.Open(fid); err != domain.ErrNotFound {
+		t.Fatalf("factory after wipe: %v", err)
 	}
 }
 

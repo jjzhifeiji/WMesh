@@ -24,8 +24,8 @@ func TestFactoryFS(t *testing.T) {
 		t.Fatal(err)
 	}
 	sa := mustLogin(t, ctx, fac, "sa", "sa-pass")
-	pe := mustCreateRole(t, ctx, fac, sa, "pe", "pe-pass", factory.RoleProcessEngineer, factory.ScopeFactory, nil)
-	other := mustCreateRole(t, ctx, fac, sa, "ot", "ot-pass", factory.RoleProcessEngineer, factory.ScopeFactory, nil)
+	pe := mustCreateRole(t, ctx, fac, sa, "pe", "pe-pass", factory.RoleOperator, factory.ScopeFactory, nil)
+	other := mustCreateRole(t, ctx, fac, sa, "ot", "ot-pass", factory.RoleOperator, factory.ScopeFactory, nil)
 	direct := factory.WorkContext{Direct: true}
 
 	mine, err := fac.CreatePersonalProcess(ctx, pe.tok, direct, "我的工艺", []byte("p"))
@@ -234,7 +234,7 @@ func TestCopyFS(t *testing.T) {
 		t.Fatal(err)
 	}
 	sa := mustLogin(t, ctx, fac, "sa", "sa-pass")
-	pe := mustCreateRole(t, ctx, fac, sa, "pe", "pe-pass", factory.RoleProcessEngineer, factory.ScopeFactory, nil)
+	pe := mustCreateRole(t, ctx, fac, sa, "pe", "pe-pass", factory.RoleOperator, factory.ScopeFactory, nil)
 	direct := factory.WorkContext{Direct: true}
 	src, err := fac.CreateFactoryProcess(ctx, pe.tok, direct, "厂级源", []byte("copy-fs"))
 	if err != nil {

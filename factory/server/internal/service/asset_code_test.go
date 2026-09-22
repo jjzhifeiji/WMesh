@@ -27,7 +27,7 @@ func TestFactoryAssetCodes(t *testing.T) {
 		t.Fatal(err)
 	}
 	saA := mustLogin(t, ctx, facA, "sa-a", "sa-pass")
-	peA := mustCreateRole(t, ctx, facA, saA, "pe-a", "pe-pass", factory.RoleProcessEngineer, factory.ScopeFactory, nil)
+	peA := mustCreateRole(t, ctx, facA, saA, "pe-a", "pe-pass", factory.RoleOperator, factory.ScopeFactory, nil)
 	direct := factory.WorkContext{Direct: true}
 
 	p1, err := facA.CreateFactoryProcess(ctx, peA.tok, direct, "焊1", []byte(`{"name":"p","current":180}`))

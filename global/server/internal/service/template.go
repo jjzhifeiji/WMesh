@@ -62,7 +62,7 @@ func (s *kernel) ensureTemplate(ctx context.Context, kind string) (ContentTempla
 	return openTemplate(row)
 }
 
-// ensureProjectItems 工程模版多份独立行；旧登记簿拆开，空库落下三份明细。
+// ensureProjectItems 工程模版多份独立行；旧登记簿拆开，空库落下三份明细，三份字段随代码补齐。
 func (s *kernel) ensureProjectItems(ctx context.Context) ([]ContentTemplate, error) {
 	rows, err := s.store.TemplatesByKind(ctx, KindProject)
 	if err != nil {
@@ -118,7 +118,7 @@ func (s *kernel) ensureProjectItems(ctx context.Context) ([]ContentTemplate, err
 		}
 	}
 	if len(current) > 0 {
-		return current, nil
+		return s.refreshSeedProjectItems(ctx, current)
 	}
 	out := make([]ContentTemplate, 0, len(contenttpl.SeedProjectItems()))
 	for _, it := range contenttpl.SeedProjectItems() {
@@ -147,6 +147,36 @@ func (s *kernel) ensureProjectItems(ctx context.Context) ([]ContentTemplate, err
 		out = append(out, opened)
 	}
 	return uniqueTemplates(out), nil
+}
+
+// refreshSeedProjectItems 空库三份字段表随代码补齐；自定义份不动。
+func (s *kernel) refreshSeedProjectItems(ctx context.Context, current []ContentTemplate) ([]ContentTemplate, error) {
+	out := make([]ContentTemplate, len(current))
+	copy(out, current)
+	for i, row := range out {
+		seed, ok := contenttpl.SeedProjectItem(row.ID.String())
+		if !ok {
+			continue
+		}
+		canon, err := contenttpl.Marshal(contenttpl.ObjectSchema(seed.Fields))
+		if err != nil {
+			return nil, domain.ErrTemplateInvalid
+		}
+		if digest.Match(canon, row.Digest) {
+			continue
+		}
+		updated, err := s.store.UpdateTemplateByID(ctx, row.ID, row.Revision, row.Name, canon, digest.Sum(canon))
+		if err != nil {
+			return nil, err
+		}
+		opened, err := openTemplate(updated)
+		if err != nil {
+			return nil, err
+		}
+		out[i] = opened
+		s.notifyTemplate(ctx, opened.ID, opened.Kind, opened.Revision)
+	}
+	return out, nil
 }
 
 // uniqueTemplates 同一身份只留一份。

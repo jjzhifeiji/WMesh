@@ -45,6 +45,24 @@ func (s *kernel) assertDepsWeldKind(ctx context.Context, weldKind string, deps [
 	return nil
 }
 
+// depsMatchingWeldKind 只留下与作业类型相同的工艺依赖。
+func (s *kernel) depsMatchingWeldKind(ctx context.Context, weldKind string, deps []AssetDep) ([]AssetDep, error) {
+	if len(deps) == 0 {
+		return deps, nil
+	}
+	kept := make([]AssetDep, 0, len(deps))
+	for _, d := range deps {
+		if err := s.assertDepsWeldKind(ctx, weldKind, []AssetDep{d}); err != nil {
+			if errors.Is(err, domain.ErrWeldKindMismatch) {
+				continue
+			}
+			return nil, err
+		}
+		kept = append(kept, d)
+	}
+	return kept, nil
+}
+
 // assertProjectWeldKind 工程正文里能认的焊缝必须和作业类型相同。
 func assertProjectWeldKind(weldKind string, content []byte) error {
 	want, err := store.NormalizeWeldKind(weldKind)

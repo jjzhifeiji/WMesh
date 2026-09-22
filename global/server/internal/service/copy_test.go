@@ -84,14 +84,14 @@ func TestCopyPlatformProject(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if src.Copyable || src.Kind != global.KindProject || len(src.Deps) != 1 {
+	if !src.Copyable || src.Kind != global.KindProject || len(src.Deps) != 1 {
 		t.Fatalf("%+v", src)
 	}
 	got, err := h.WAN.CopyPlatformProcess(ctx, tok, src.ID, "新工程")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.ID == src.ID || got.Kind != global.KindProject || got.Status != global.AssetDraft || got.Copyable || got.Name != "新工程" {
+	if got.ID == src.ID || got.Kind != global.KindProject || got.Status != global.AssetDraft || !got.Copyable || got.Name != "新工程" {
 		t.Fatalf("%+v", got)
 	}
 	if len(got.Deps) != 1 || got.Deps[0].ID != pub.ID || got.Deps[0].Revision != pub.Revision {

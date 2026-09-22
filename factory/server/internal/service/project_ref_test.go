@@ -28,7 +28,7 @@ func TestProjectProcessRefs(t *testing.T) {
 		t.Fatal(err)
 	}
 	sa := mustLogin(t, ctx, fac, "sa", "sa-pass")
-	pe := mustCreateRole(t, ctx, fac, sa, "pe", "pe-pass", factory.RoleProcessEngineer, factory.ScopeFactory, nil)
+	pe := mustCreateRole(t, ctx, fac, sa, "pe", "pe-pass", factory.RoleOperator, factory.ScopeFactory, nil)
 	direct := factory.WorkContext{Direct: true}
 
 	proc, err := fac.CreateFactoryProcess(ctx, pe.tok, direct, "工艺", []byte(`{"name":"p","current":180}`))
@@ -37,6 +37,12 @@ func TestProjectProcessRefs(t *testing.T) {
 	}
 	proc, err = fac.PublishAsset(ctx, pe.tok, proc.ID, proc.Revision)
 	if err != nil {
+		t.Fatal(err)
+	}
+	stale := []byte(`{"root":"array","templates":[{"id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","kind":"corner","name":"包角","extra":true}]}`)
+	if _, err := fac.Store().InsertTemplateReplica(ctx, factory.ContentTemplate{
+		ID: id.New(), Kind: factory.KindProject, Revision: 1, Schema: stale, Digest: digest.Sum(stale),
+	}); err != nil {
 		t.Fatal(err)
 	}
 	dep := factory.AssetDep{ID: proc.ID, Revision: proc.Revision, Digest: proc.Digest}
@@ -84,6 +90,21 @@ func TestProjectProcessRefs(t *testing.T) {
 	}
 	if _, err := fac.SetProjectDeps(ctx, pe.tok, proj.ID, proj.Revision, nil); !errors.Is(err, domain.ErrAssetDependency) {
 		t.Fatalf("drop dep %v", err)
+	}
+	oldDep := factory.AssetDep{ID: proc.ID, Revision: proc.Revision, Digest: proc.Digest}
+	bumped, err := fac.UpdateAssetContent(ctx, pe.tok, proc.ID, proc.Revision, []byte(`{"name":"p2","current":190}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bumped.Revision == oldDep.Revision {
+		t.Fatal("process revision")
+	}
+	followed, err := fac.SetProjectDeps(ctx, pe.tok, proj.ID, proj.Revision, []factory.AssetDep{oldDep})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(followed.Deps) != 1 || followed.Deps[0].Revision != bumped.Revision {
+		t.Fatalf("follow %+v want r%d", followed.Deps, bumped.Revision)
 	}
 
 	var single contenttpl.ProjectItemSchema

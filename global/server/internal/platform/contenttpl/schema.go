@@ -20,7 +20,7 @@ const (
 
 	TypeString  = "string"  // 文本；有 options 当枚举
 	TypeNumber  = "number"  // 旧数字；套用时仍收
-	TypeBool    = "bool"    // 旧布尔；套用时仍收
+	TypeBool    = "bool"    // 启用/完成；套用时收布尔，兼容是/否
 	TypeObject  = "object"  // 对象
 	TypeArray   = "array"   // 数组
 	TypeProcess = "process" // 工艺引用，值为身份字符串
@@ -35,7 +35,7 @@ var keyRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`) // 字段键只许字
 type Field struct {
 	Key      string   `json:"key"`                // JSON 键
 	Label    string   `json:"label"`              // 给人看的名字
-	Type     string   `json:"type"`               // string 文本；process 工艺引用；有 options 为枚举；number、bool 为旧值
+	Type     string   `json:"type"`               // string 文本；process 工艺引用；有 options 为枚举；bool 启用类；number 为旧数字
 	Unit     string   `json:"unit,omitempty"`     // 单位，如 A、V、mm
 	Required bool     `json:"required,omitempty"` // 表单是否必填；套用仍补默认
 	Default  any      `json:"default,omitempty"`  // 缺省时写入
@@ -217,7 +217,7 @@ func ApplyProjectItems(items []ProjectItemSchema, content []byte) ([]byte, error
 	return json.Marshal(out)
 }
 
-// applyObject 只保留模版里的键，缺的补默认。
+// applyObject 只保留模版里的键，缺的补默认；正文里的空对象/数组原样留下。
 func applyObject(fields []Field, v any) map[string]any {
 	src, _ := v.(map[string]any)
 	if src == nil {
@@ -225,7 +225,12 @@ func applyObject(fields []Field, v any) map[string]any {
 	}
 	out := make(map[string]any, len(fields))
 	for _, f := range fields {
-		out[f.Key] = applyField(f, src[f.Key])
+		val, exists := src[f.Key]
+		if exists && val == nil && (f.Type == TypeObject || f.Type == TypeArray) {
+			out[f.Key] = nil
+			continue
+		}
+		out[f.Key] = applyField(f, val)
 	}
 	return out
 }
@@ -437,12 +442,18 @@ func asFloatDef(v any) float64 {
 	return 0
 }
 
-// asBool 能当布尔就收下。
+// asBool 能当布尔就收下；是/否按设备旧写法兼容。
 func asBool(v any) (bool, bool) {
 	switch x := v.(type) {
 	case bool:
 		return x, true
 	case string:
+		switch strings.TrimSpace(x) {
+		case "是":
+			return true, true
+		case "否":
+			return false, true
+		}
 		b, err := strconv.ParseBool(x)
 		return b, err == nil
 	default:
@@ -481,13 +492,9 @@ func procRef(key, label string) Field {
 	return Field{Key: key, Label: label, Type: TypeProcess, Default: ""}
 }
 
-// flag 已完成/启用这类是/否，落成可改选项的枚举。
+// flag 启用/完成按 App 布尔落地。
 func flag(key, label string, on bool) Field {
-	def := "否"
-	if on {
-		def = "是"
-	}
-	return Field{Key: key, Label: label, Type: TypeString, Options: []string{"否", "是"}, Default: def}
+	return Field{Key: key, Label: label, Type: TypeBool, Default: on}
 }
 
 // poseFields 位姿六个轴加外部轴。
@@ -499,18 +506,32 @@ func poseFields() []Field {
 	}
 }
 
-// pointField 一个焊点：身份、类型、位姿、关节角。
+// anglesField 点或参考点上的关节角。
+func anglesField() Field {
+	return Field{Key: "jointAngles", Label: "关节角", Type: TypeArray, Items: &Field{Key: "a", Label: "角", Type: TypeString, Default: 0.0}}
+}
+
+// refFields 参考点：位姿加关节角。
+func refFields() []Field {
+	return []Field{
+		{Key: "pose", Label: "位姿", Type: TypeObject, Fields: poseFields()},
+		anglesField(),
+	}
+}
+
+// pointField 一个焊点：身份、类型、位姿、关节角、执行偏移、X 向参考。
 func pointField() Field {
-	ja := Field{Key: "jointAngles", Label: "关节角", Type: TypeArray, Items: &Field{Key: "a", Label: "角", Type: TypeString, Default: 0.0}}
 	return Field{Type: TypeObject, Label: "点", Fields: []Field{
 		str("id", "点身份", ""),
 		str("type", "点类型", "START"),
 		{Key: "pose", Label: "位姿", Type: TypeObject, Fields: poseFields()},
-		ja,
+		anglesField(),
+		{Key: "executionOffsets", Label: "执行偏移", Type: TypeArray, Items: &Field{Key: "a", Label: "偏移", Type: TypeString, Default: 0.0}},
+		{Key: "refPointX", Label: "X 向参考", Type: TypeObject, Fields: refFields()},
 	}}
 }
 
-// pathFields 一条路径：身份、点列、工艺引用。
+// pathFields 一条路径：身份、点列、工艺引用、启用。
 func pathFields() []Field {
 	el := pointField()
 	return []Field{
@@ -519,6 +540,7 @@ func pathFields() []Field {
 		{Key: "points", Label: "点", Type: TypeArray, Items: &el},
 		procRef("processId", "工艺"),
 		num("selectedPointIndex", "选中点", "", 0),
+		flag("isEnabled", "启用", true),
 	}
 }
 

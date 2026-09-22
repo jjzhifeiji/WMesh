@@ -101,6 +101,9 @@ export function asProjectSchema(schema: ContentSchema | null): ContentSchema | n
 }
 
 export function defaultField(field: TemplateField): unknown {
+  if (field.type === "bool") {
+    return field.default === true || field.default === "是" || field.default === "true";
+  }
   switch (kindOf(field)) {
     case "enum":
       return enumDefault(field);
@@ -399,7 +402,7 @@ function inferField(key: string, label: string, value: unknown, depth: number): 
     return { key, label: "工艺", type: "process", default: typeof value === "string" ? value : "" };
   }
   if (typeof value === "boolean") {
-    return { key, label, type: "string", options: ["否", "是"], default: value ? "是" : "否" };
+    return { key, label, type: "bool", default: value };
   }
   if (typeof value === "number") return { key, label, type: "string", default: value };
   return { key, label, type: "string", default: typeof value === "string" ? value : "" };

@@ -92,7 +92,7 @@ func TestMatrix04(t *testing.T) {
 			t.Fatal(err)
 		}
 		snap, err := h.WAN.DistributeToFactory(ctx, tok, proj.ID, facA.Factory.ID)
-		if err != nil || snap.Kind != global.KindProject || snap.AssetID != proj.ID || len(snap.Members) != 2 || snap.Copyable {
+		if err != nil || snap.Kind != global.KindProject || snap.AssetID != proj.ID || len(snap.Members) != 2 || !snap.Copyable {
 			t.Fatalf("%+v %v", snap, err)
 		}
 		if snap.TargetFactoryID == nil || *snap.TargetFactoryID != facA.Factory.ID {

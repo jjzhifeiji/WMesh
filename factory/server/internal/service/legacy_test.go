@@ -25,7 +25,7 @@ func TestImportLegacy(t *testing.T) {
 		t.Fatal(err)
 	}
 	saTok := mustLogin(t, ctx, fac, "sa", "sa-pass")
-	pe := mustCreateRole(t, ctx, fac, saTok, "pe", "pe-pass", factory.RoleProcessEngineer, factory.ScopeFactory, nil)
+	pe := mustCreateRole(t, ctx, fac, saTok, "pe", "pe-pass", factory.RoleOperator, factory.ScopeFactory, nil)
 	op := mustCreateRole(t, ctx, fac, saTok, "op", "op-pass", factory.RoleOperator, factory.ScopeFactory, nil)
 	oa := mustCreateRole(t, ctx, fac, saTok, "oa", "oa-pass", factory.RoleOrgAdmin, factory.ScopeFactory, nil)
 

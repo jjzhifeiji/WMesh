@@ -179,13 +179,13 @@ func (s *kernel) resolveWorkContext(ctx context.Context, acc Account, wc WorkCon
 	return &unit.ID, path, nil
 }
 
-// canOperateFactory 只有带 Factory 作用域的操作员或工程师才能选直属。
+// canOperateFactory 只有带 Factory 作用域的操作员才能选直属。
 func (s *kernel) canOperateFactory(ctx context.Context, acc Account) error {
 	grants, err := s.grantsOf(ctx, acc.ID)
 	if err != nil {
 		return err
 	}
-	for _, g := range withRoles(grants, RoleOperator, RoleProcessEngineer) {
+	for _, g := range withRoles(grants, RoleOperator) {
 		if g.ScopeKind == ScopeFactory {
 			return nil
 		}

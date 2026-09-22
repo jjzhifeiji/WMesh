@@ -196,6 +196,56 @@ func TestApplyEnumAndText(t *testing.T) {
 	}
 }
 
+func TestApplyBoolFlag(t *testing.T) {
+	sch := Schema{Root: RootObject, Fields: []Field{flag("on", "启用", false)}}
+	raw, err := Marshal(sch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := Apply(raw, []byte(`{"on":"是"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(out, &m); err != nil {
+		t.Fatal(err)
+	}
+	if m["on"] != true {
+		t.Fatalf("on %v", m["on"])
+	}
+}
+
+func TestApplyKeepsNullObject(t *testing.T) {
+	sch := Schema{Root: RootObject, Fields: []Field{
+		{Key: "ref", Label: "参考", Type: TypeObject, Fields: poseFields()},
+	}}
+	raw, err := Marshal(sch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := Apply(raw, []byte(`{"ref":null}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(out, &m); err != nil {
+		t.Fatal(err)
+	}
+	if m["ref"] != nil {
+		t.Fatalf("ref %v", m["ref"])
+	}
+	out, err = Apply(raw, []byte(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(out, &m); err != nil {
+		t.Fatal(err)
+	}
+	if m["ref"] == nil {
+		t.Fatal("missing ref should default")
+	}
+}
+
 func TestValidateRejectsBadKey(t *testing.T) {
 	s := Schema{Root: RootObject, Fields: []Field{{Key: "a-b", Label: "坏", Type: TypeNumber}}}
 	if err := Validate(s); err == nil {
@@ -308,6 +358,32 @@ func TestSeedProjectItemsThree(t *testing.T) {
 	}
 	if has["processPath"] != 0 {
 		t.Fatalf("processPath in tbar: %v", keys)
+	}
+	var multi *ProjectItemSchema
+	for i := range seed {
+		if seed[i].ID == SeedTplMulti {
+			multi = &seed[i]
+		}
+	}
+	if multi == nil {
+		t.Fatal("missing multi seed")
+	}
+	mkeys := fieldKeys(&Field{Type: TypeObject, Fields: multi.Fields})
+	mhas := map[string]int{}
+	for _, k := range mkeys {
+		mhas[k]++
+	}
+	if mhas["refPointXMiddle"] == 0 || mhas["refPointZMiddle"] == 0 || mhas["kind"] == 0 {
+		t.Fatalf("multi missing app fields %v", mkeys)
+	}
+	on := false
+	for _, f := range itemSingle(true) {
+		if f.Key == "isEnabled" {
+			on = f.Type == TypeBool
+		}
+	}
+	if !on {
+		t.Fatal("isEnabled not bool")
 	}
 	got := ExpandLegacyProject(Default(KindProject))
 	if len(got) != 2 {

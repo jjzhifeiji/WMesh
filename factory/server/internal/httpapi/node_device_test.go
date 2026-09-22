@@ -104,6 +104,18 @@ func TestClientDeviceLoginHTTP(t *testing.T) {
 	if code != http.StatusCreated || gjson(t, body, "status") != "available" || gjson(t, body, "level") != "personal" || gjson(t, body, "id") != "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" {
 		t.Fatalf("pad create %d %s", code, body)
 	}
+	code, body = do(t, srv, "POST", base+"/pad/assets/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/content", padTok, `{"content":"{\"current\":180}"}`)
+	if code != http.StatusOK || gjson(t, body, "revision") != "2" {
+		t.Fatalf("pad apply %d %s", code, body)
+	}
+	code, body = do(t, srv, "GET", base+"/assets/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/content", padTok, "")
+	if code != http.StatusOK || !strings.Contains(body, "180") {
+		t.Fatalf("pad read %d %s", code, body)
+	}
+	code, body = do(t, srv, "POST", base+"/assets/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/content", padTok, `{"expected":1,"content":"stale"}`)
+	if code != http.StatusConflict {
+		t.Fatalf("web stale %d %s", code, body)
+	}
 	code, body = do(t, srv, "GET", base+"/pad/inbox", padTok, "")
 	if code != http.StatusOK || !strings.Contains(body, `"closures"`) {
 		t.Fatalf("pad inbox %d %s", code, body)

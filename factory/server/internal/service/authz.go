@@ -119,7 +119,7 @@ func (s *kernel) can(ctx context.Context, acc Account, p perm, unit *uuid.UUID) 
 		if unit == nil {
 			return domain.ErrForbidden
 		}
-		ok, err := s.covers(ctx, withRoles(grants, RoleOperator, RoleProcessEngineer), unit)
+		ok, err := s.covers(ctx, withRoles(grants, RoleOperator), unit)
 		if err != nil {
 			return err
 		}

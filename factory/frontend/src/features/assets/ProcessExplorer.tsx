@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState, type DragEvent, type KeyboardEven
 import { flushSync } from "react-dom";
 import { errorMessage } from "@/shared/api/client";
 import { weldKindLabel, WELD_SINGLE } from "@/features/templates/projectKinds";
-import { useCopyFSNode, useCreateFSFolder, useDeleteFSNode, useFS, useMoveFSNode, useRenameFSNode, type FSNode } from "./api";
+import { useCopyFSNode, useCreateFSFolder, useDeleteFSNode, useFS, useMoveFSNode, useRenameFSNode, type AssetKind, type FSNode } from "./api";
 
 const none: FSNode[] = [];
 
@@ -70,7 +70,7 @@ function canMoveInto(src: FSNode, dest: FSNode, byId: Map<string, FSNode>, canWr
 
 function canCopyNode(n: FSNode) {
   if (!n.parentId) return false;
-  if (n.nodeKind === "file" && n.asset && !n.asset.copyable) return false;
+  if (n.nodeKind === "file" && n.asset && n.asset.kind === "process" && !n.asset.copyable) return false;
   return true;
 }
 
@@ -113,6 +113,8 @@ function TreeTitle({
 }
 
 export function ProcessExplorer({
+  kind = "process",
+  noun = "工艺",
   writable,
   canCreateFile,
   onNewProcess,
@@ -123,10 +125,12 @@ export function ProcessExplorer({
   query = "",
   weldFilter = "all",
 }: {
+  kind?: AssetKind;
+  noun?: string;
   writable: (n: FSNode) => boolean;
   canCreateFile?: (n: FSNode) => boolean;
   onNewProcess: (parent: FSNode) => void;
-  onSelectFile: (n: FSNode) => void;
+  onSelectFile: (n: FSNode | null) => void;
   selectedAssetId: string | null;
   listRow: (n: FSNode) => ReactNode;
   detail: ReactNode;
@@ -134,7 +138,7 @@ export function ProcessExplorer({
   weldFilter?: string;
 }) {
   const { message, modal } = App.useApp();
-  const q = useFS("process");
+  const q = useFS(kind);
   const nodes = q.data ?? none;
   const mkdir = useCreateFSFolder();
   const rename = useRenameFSNode();
@@ -169,9 +173,14 @@ export function ProcessExplorer({
     setExpandedKeys((keys) => [...new Set([...keys, ...ids])]);
   };
 
+  const clearFile = () => {
+    setListFocusId(null);
+    onSelectFile(null);
+  };
+
   const pickFolder = (id: string) => {
     setPickedId(id);
-    setListFocusId(null);
+    clearFile();
     expandPath(id);
   };
 
@@ -253,6 +262,12 @@ export function ProcessExplorer({
     el?.scrollIntoView({ block: "nearest" });
   }, [listFocusId, current, searching]);
 
+  useEffect(() => {
+    if (!listFocusId) return;
+    if (shown.some((n) => n.id === listFocusId)) return;
+    clearFile();
+  }, [shown, listFocusId]);
+
   const onErr = (err: unknown) => message.error(errorMessage(err));
   const allowFile = (n: FSNode) => Boolean((canCreateFile ?? writable)(n));
 
@@ -287,7 +302,7 @@ export function ProcessExplorer({
   const deleteNode = (n: FSNode) => {
     modal.confirm({
       title: `删除「${fsNodeTitle(n)}」？`,
-      content: n.nodeKind === "folder" ? "文件夹里的工艺也会删掉。" : "删除后不能恢复。若已被工程依赖会拒绝。",
+      content: n.nodeKind === "folder" ? `文件夹里的${noun}也会删掉。` : noun === "工艺" ? "删除后不能恢复。若已被工程依赖会拒绝。" : "删除后不能恢复。",
       okButtonProps: { danger: true },
       onOk: () =>
         remove.mutate(n.id, {
@@ -295,7 +310,7 @@ export function ProcessExplorer({
           onSuccess: () => {
             message.success("已删除");
             if (n.id === pickedId && n.parentId) setPickedId(n.parentId);
-            if (n.id === listFocusId) setListFocusId(null);
+            if (n.id === listFocusId || n.nodeKind === "file") clearFile();
           },
         }),
     });
@@ -401,7 +416,7 @@ export function ProcessExplorer({
         onSuccess: () => {
           message.success("已移动");
           expandPath(dest.id);
-          if (src.id === listFocusId) setListFocusId(null);
+          if (src.id === listFocusId) clearFile();
         },
       },
     );
@@ -412,7 +427,7 @@ export function ProcessExplorer({
     const makeFile = allowFile(n);
     return [
       write ? { key: "new-folder", label: "新建文件夹", onClick: () => newFolder(n) } : null,
-      makeFile ? { key: "new-file", label: "新建工艺", onClick: () => onNewProcess(n) } : null,
+      makeFile ? { key: "new-file", label: `新建${noun}`, onClick: () => onNewProcess(n) } : null,
       { type: "divider" },
       n.parentId ? { key: "copy", label: "复制", disabled: !canCopyNode(n), onClick: () => copyNode(n) } : null,
       pasteItem(n),
@@ -549,6 +564,7 @@ export function ProcessExplorer({
                   const n = byId.get(id);
                   if (n?.nodeKind !== "folder") return;
                   setPickedId(id);
+                  clearFile();
                   setExpandedKeys((keys) => (keys.includes(id) ? keys.filter((k) => k !== id) : [...keys, id]));
                 }}
               />
@@ -586,6 +602,10 @@ export function ProcessExplorer({
           <div
             className={`fs-list-body${searching ? "" : listDropClass}`}
             onContextMenu={openListMenu}
+            onClick={(e) => {
+              if ((e.target as HTMLElement).closest(".fs-row")) return;
+              clearFile();
+            }}
             onDragOver={(e) => {
               if (!searching && current) hoverDest(current, e);
             }}
@@ -594,7 +614,7 @@ export function ProcessExplorer({
             }}
           >
             {shown.length === 0 ? (
-              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={searching ? "没有符合的工艺" : "这个文件夹是空的"} />
+              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={searching ? `没有符合的${noun}` : "这个文件夹是空的"} />
             ) : (
               shown.map((n) => (
                 <button
@@ -617,8 +637,10 @@ export function ProcessExplorer({
                       return;
                     }
                     setListFocusId(n.id);
-                    if (n.nodeKind === "folder") expandPath(n.id);
-                    else pickFile(n);
+                    if (n.nodeKind === "folder") {
+                      expandPath(n.id);
+                      onSelectFile(null);
+                    } else pickFile(n);
                   }}
                   onDoubleClick={() => {
                     if (didDrag.current) return;

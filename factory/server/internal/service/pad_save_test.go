@@ -26,7 +26,7 @@ func TestPadSaveLandsAvailable(t *testing.T) {
 		t.Fatal(err)
 	}
 	sa := mustLogin(t, ctx, fac, "sa-a", "sa-pass")
-	pe := mustCreateRole(t, ctx, fac, sa, "pe-a", "pe-pass", factory.RoleProcessEngineer, factory.ScopeFactory, nil)
+	pe := mustCreateRole(t, ctx, fac, sa, "pe-a", "pe-pass", factory.RoleOperator, factory.ScopeFactory, nil)
 	op := mustCreateRole(t, ctx, fac, sa, "op-a", "op-pass", factory.RoleOperator, factory.ScopeFactory, nil)
 	direct := factory.WorkContext{Direct: true}
 	body := []byte(`{"name":"mine","current":170}`)

@@ -23,7 +23,7 @@ func TestFactoryWeldKind(t *testing.T) {
 		t.Fatal(err)
 	}
 	sa := mustLogin(t, ctx, fac, "sa-a", "sa-pass")
-	pe := mustCreateRole(t, ctx, fac, sa, "pe-a", "pe-pass", factory.RoleProcessEngineer, factory.ScopeFactory, nil)
+	pe := mustCreateRole(t, ctx, fac, sa, "pe-a", "pe-pass", factory.RoleOperator, factory.ScopeFactory, nil)
 	direct := factory.WorkContext{Direct: true}
 
 	def, err := fac.CreateFactoryProcess(ctx, pe.tok, direct, "默认工艺", []byte(`{"name":"p"}`))
@@ -66,5 +66,21 @@ func TestFactoryWeldKind(t *testing.T) {
 	}
 	if ok.WeldKind != store.WeldKindMultilayer {
 		t.Fatalf("project %s", ok.WeldKind)
+	}
+
+	changed, err := fac.SetAssetWeldKind(ctx, pe.tok, def.ID, def.Revision, store.WeldKindTBar)
+	if err != nil || changed.WeldKind != store.WeldKindTBar {
+		t.Fatalf("set kind %+v %v", changed, err)
+	}
+	switched, err := fac.SetAssetWeldKind(ctx, pe.tok, ok.ID, ok.Revision, store.WeldKindSingle)
+	if err != nil || switched.WeldKind != store.WeldKindSingle {
+		t.Fatalf("project kind %+v %v", switched, err)
+	}
+	cleared, err := fac.ReadAssetContent(ctx, pe.tok, switched.ID)
+	if err != nil || string(cleared) != "[]" {
+		t.Fatalf("project body %s %v", cleared, err)
+	}
+	if _, err := fac.SetAssetWeldKind(ctx, pe.tok, changed.ID, changed.Revision, "nope"); !errors.Is(err, domain.ErrInvalidWeldKind) {
+		t.Fatalf("bad kind: %v", err)
 	}
 }

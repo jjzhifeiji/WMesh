@@ -20,6 +20,7 @@ func (h *Handler) mountOrg(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/factories/{id}/people/{personId}/disable", h.disablePerson)
 	mux.HandleFunc("POST /v1/factories/{id}/people/{personId}/enable", h.enablePerson)
 	mux.HandleFunc("POST /v1/factories/{id}/people/{personId}/reset-password", h.resetPersonPassword)
+	mux.HandleFunc("POST /v1/factories/{id}/people/{personId}/keep-pouch", h.setKeepPouch)
 	mux.HandleFunc("POST /v1/factories/{id}/grants", h.grantRole)
 	mux.HandleFunc("POST /v1/factories/{id}/grants/{grantId}/revoke", h.revokeRole)
 	mux.HandleFunc("POST /v1/factories/{id}/assignments", h.assign)
@@ -34,6 +35,10 @@ type createUnitReq struct {
 type createPersonReq struct {
 	LoginName   string `json:"loginName"`   // 本厂登录名
 	DisplayName string `json:"displayName"` // 显示名
+}
+
+type keepPouchReq struct {
+	KeepPouch bool `json:"keepPouch"` // 退出后是否留下这个人的库文件
 }
 
 type createdPersonResp struct {
@@ -197,6 +202,28 @@ func (h *Handler) enablePerson(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
+	})
+}
+
+// 超管按人设置退出后是否保留示教器库文件。
+func (h *Handler) setKeepPouch(w http.ResponseWriter, r *http.Request) {
+	h.withFactory(w, r, func(svc *service.Service) {
+		personID, err := uuid.Parse(r.PathValue("personId"))
+		if err != nil {
+			writeBadRequest(w, errInvalidID)
+			return
+		}
+		var req keepPouchReq
+		if err := decodeJSON(r, &req); err != nil {
+			writeBadRequest(w, err)
+			return
+		}
+		acc, err := svc.Org.SetKeepPouch(r.Context(), bearer(r), personID, req.KeepPouch)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, createdPersonResp{Account: acc})
 	})
 }
 

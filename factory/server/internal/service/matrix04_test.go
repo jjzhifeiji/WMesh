@@ -69,6 +69,7 @@ type env04 struct {
 	pe     namedAcc
 	pe2    namedAcc
 	op     namedAcc
+	aud    namedAcc
 	peB    namedAcc
 	peShop namedAcc
 	shop   factory.OrgUnit
@@ -101,10 +102,11 @@ func newEnv04(t *testing.T) *env04 {
 	saB := mustLogin(t, ctx, facB, "sa-b", "sa-b-pass")
 	e := &env04{
 		ctx: ctx, seed: seed, fac: facA, seedB: seedB, facB: facB, sa: saA, saB: saB,
-		pe:     mustCreateRole(t, ctx, facA, saA, "pe-a", "pe-pass", factory.RoleProcessEngineer, factory.ScopeFactory, nil),
-		pe2:    mustCreateRole(t, ctx, facA, saA, "pe-a2", "pe2-pass", factory.RoleProcessEngineer, factory.ScopeFactory, nil),
+		pe:     mustCreateRole(t, ctx, facA, saA, "pe-a", "pe-pass", factory.RoleOperator, factory.ScopeFactory, nil),
+		pe2:    mustCreateRole(t, ctx, facA, saA, "pe-a2", "pe2-pass", factory.RoleOperator, factory.ScopeFactory, nil),
 		op:     mustCreateRole(t, ctx, facA, saA, "op-a", "op-pass", factory.RoleOperator, factory.ScopeFactory, nil),
-		peB:    mustCreateRole(t, ctx, facB, saB, "pe-b", "pe-b-pass", factory.RoleProcessEngineer, factory.ScopeFactory, nil),
+		aud:    mustCreateRole(t, ctx, facA, saA, "aud-a", "aud-pass", factory.RoleAuditor, factory.ScopeFactory, nil),
+		peB:    mustCreateRole(t, ctx, facB, saB, "pe-b", "pe-b-pass", factory.RoleOperator, factory.ScopeFactory, nil),
 		direct: factory.WorkContext{Direct: true},
 		secret: []byte("closure-body-secret"),
 	}
@@ -117,7 +119,7 @@ func newEnv04(t *testing.T) *env04 {
 		t.Fatal(err)
 	}
 	e.shop = shop
-	e.peShop = mustCreateRole(t, ctx, facA, saA, "pe-shop", "shop-pass", factory.RoleProcessEngineer, factory.ScopeOrgUnit, &shop.ID)
+	e.peShop = mustCreateRole(t, ctx, facA, saA, "pe-shop", "shop-pass", factory.RoleOperator, factory.ScopeOrgUnit, &shop.ID)
 	if err := facA.Assign(ctx, saA, e.peShop.acc.ID, shop.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -427,6 +429,10 @@ func testClosureDistribute(t *testing.T, run func(string, func(*testing.T))) {
 		if err != nil || got.Copyable || got.ID != platProj.ID {
 			t.Fatalf("%+v %v", got, err)
 		}
+		body, err := e.fac.ReadAssetContent(e.ctx, e.pe.tok, platProj.ID)
+		if err != nil || string(body) != "plat-proj" {
+			t.Fatalf("project content %q %v", body, err)
+		}
 	})
 
 	run("6.1", func(t *testing.T) {
@@ -507,8 +513,8 @@ func testClosureDistribute(t *testing.T, run func(string, func(*testing.T))) {
 		}
 	})
 	run("7.3", func(t *testing.T) {
-		if err := e.fac.DistributeToClient(e.ctx, e.op.tok, proj.ID, cid, &bag, e.clocks); !errors.Is(err, domain.ErrForbidden) {
-			t.Fatalf("op: %v", err)
+		if err := e.fac.DistributeToClient(e.ctx, e.aud.tok, proj.ID, cid, &bag, e.clocks); !errors.Is(err, domain.ErrForbidden) {
+			t.Fatalf("aud: %v", err)
 		}
 		if err := e.fac.DistributeToClient(e.ctx, e.sa, proj.ID, cid, &bag, e.clocks); !errors.Is(err, domain.ErrForbidden) {
 			t.Fatalf("sa: %v", err)

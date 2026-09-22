@@ -1,5 +1,5 @@
 import { PlusOutlined } from "@ant-design/icons";
-import { App, Button, Card, Form, Input, Modal, Popconfirm, Radio, Select, Space, Table, Tag, TreeSelect, type TableColumnsType } from "antd";
+import { App, Button, Card, Form, Input, Modal, Popconfirm, Radio, Select, Space, Switch, Table, Tag, TreeSelect, type TableColumnsType } from "antd";
 import { useMemo, useState } from "react";
 import { unitName, useCatalog, type Account } from "@/features/catalog/api";
 import { buildUnitTree, type UnitTreeNode } from "@/features/org/api";
@@ -17,6 +17,7 @@ import {
   usePersonLogins,
   useResetPersonPassword,
   useRevokeRole,
+  useSetKeepPouch,
   type CreatePersonInput,
   type GrantRoleInput,
   type PersonLoginLog,
@@ -61,6 +62,7 @@ export function PeoplePage() {
   const disable = useDisablePerson();
   const enable = useEnablePerson();
   const reset = useResetPersonPassword();
+  const setKeep = useSetKeepPouch();
   const grant = useGrantRole();
   const revoke = useRevokeRole();
   const { message } = App.useApp();
@@ -138,6 +140,27 @@ export function PeoplePage() {
         </Space>
       ),
     },
+    {
+      title: "退出留库",
+      dataIndex: "keepPouch",
+      width: 100,
+      render: (keep: boolean, p) => (
+        <Switch
+          checked={keep}
+          checkedChildren="留"
+          unCheckedChildren="删"
+          onChange={(checked) =>
+            setKeep.mutate(
+              { personId: p.id, keepPouch: checked },
+              {
+                onSuccess: () => message.success(checked ? "退出后留下库文件" : "退出后删除库文件"),
+                onError: (e) => message.error(errorMessage(e)),
+              },
+            )
+          }
+        />
+      ),
+    },
     { title: "稳定身份", dataIndex: "id", width: 280, render: (id: string) => <IdText id={id} /> },
     {
       title: "操作",
@@ -211,7 +234,7 @@ export function PeoplePage() {
     <>
       <PageHeader
         title="人员"
-        description="停用不删账号。点角色标签可收回；操作列「授角色」。"
+        description="停用不删账号。退出留库默认留着这个人在示教器上的库文件。点角色标签可收回。"
         extra={
           <Space>
             <Button type="primary" icon={<PlusOutlined />} onClick={() => setOpen(true)}>
