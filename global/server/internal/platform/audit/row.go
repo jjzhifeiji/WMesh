@@ -21,14 +21,19 @@ type Row struct {
 	OccurredAt   time.Time  `gorm:"not null"`   // 服务端记录时间
 }
 
+// 表名跟审计事件表对齐。
 func (Row) TableName() string { return "audit_events" }
 
 // RowFrom 把审计事件收成落库行，缺省时间来源和服务端时间。
 func RowFrom(e Event) Row {
+	// 没标时间来源就按已连网记。
 	if e.TimeSource == "" {
+		// 缺省就跟服务器的钟。
 		e.TimeSource = Server
 	}
+	// 没带发生时间就用现在。
 	if e.OccurredAt.IsZero() {
+		// 统一记成协调世界时，避免各机时区混。
 		e.OccurredAt = time.Now().UTC()
 	}
 	return Row{

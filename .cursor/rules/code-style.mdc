@@ -14,35 +14,32 @@ alwaysApply: true
 
 文风：**5～60 字**（鼓励约 10～40），精简白话，写「做什么 / 为什么」，不复述标识符名。各阶段落地要写清「谁允许/拒绝、归属怎么记」，不拿规格编号当主语。
 
-**必须**
+**必须**（`python3 scripts/style_guard.py` 会卡住，两侧 `server/` 的全部 Go，含测试）
 
-- **包**：管什么、明确不管什么。
-- **导出类型**：一行 godoc，说清职责。
-- **导出函数 / 方法 / 错误**：签名正上方一行 godoc。
-- **HTTP 处理函数（含未导出）**：同样正上方一行，不得省略。
-- **模型 / 请求 / 响应 / DTO 字段**：每业务字段一行 `//`；落库实体每个列（含 id、时间戳、哈希）都要有；状态注明枚举出处。
-- **业务常量 / 包级业务 var**：须有注释。
-- **方法内关键逻辑**：默认拒绝、最后管理员、工作上下文、分库边界、停用保护、路径快照、无环、幂等——inline `//` 写约束与原因，不复述代码。
-- **跨包 / 跨层调用**（service、store、audit、secret）：调用前一行 `//` 说明做什么。同函数内连续同类写错误可共用一句。
+- **包**：每个包至少一处说明，写管什么、不管什么。
+- **类型**：每个 `type`，含分组里的每一行别名。上一行 godoc。
+- **字段**：结构体每个字段（含嵌入、含依赖、含 id / 时间戳 / 哈希）同行或紧上方 `//`；状态注明枚举。接口里每个方法同样要有作用说明。
+- **函数 / 方法**：每个具名函数（含未导出、含 `TableName`）签名正上方一行，写作用。函数字面量（回调、`go`/`defer func`）同样要有。
+- **常量 / 变量**：包级每个 `const` / `var` 都要有说明。
+- **方法内每一条语句**：调用、判断、分支、循环、赋值，紧上方或同行一行，写做什么、为什么。
 - **迁移 SQL**：文件头写本版改了什么；独有约束在旁边注明。**每张表、每个列必须 `COMMENT ON`（库内注释），与实体注释同义。**
-- **测试**：文件头写对应阶段或矩阵范围；`TestMatrix` 子测试名保持编号即可。
-
-**应当**
-
-- 领域包内未导出函数 / 方法：同样一行 godoc。
+- **测试**：与正式代码同一标准。文件头仍写对应阶段或矩阵范围；`TestMatrix` 子测试名保持编号即可。
 
 **可省略**
 
-- `TableName()`、一行 getter、循环下标、机械 `return err`、一眼即懂的局部赋值。
-- 无业务语义的依赖字段（如 `store *Store`）。
+- 纯 `return`（不含调用）、`break`、`continue`。
+- 复合字面量里的键（整句已经说明）。
+- 只负责收口的 `}`、`},`、`})`、`}()`。
+- import、续行。
 
-改注释或分层前跑 `python3 scripts/style_guard.py`（对齐 HTGlobal 门禁：拦住缺注释和分层回退）。
+改注释或分层前跑 `python3 scripts/style_guard.py`。
 
 ```go
 // 停用后新操作立刻按新状态判定，会话不当权限缓存。
 func (s *Service) DisablePerson(ctx context.Context, actorID, personID uuid.UUID) error
 
 type Person struct {
+    store     *Store // 本厂库；不在这里拼 SQL
     LoginName string // 厂内登录名，一厂唯一
     Status    string // 人员状态：pending / active / disabled
 }
@@ -51,9 +48,12 @@ type Person struct {
 if last && target.Status == StatusActive {
     return domain.ErrLastAdmin
 }
-
-// 按当前分配解析工作上下文，写入事实路径快照
+// 按当前分配解析工作上下文，准备写入事实路径快照。
 snap, err := s.resolveWorkContext(ctx, actorID, orgID)
+// 路径解析失败则拒绝本次停用，避免写下残缺快照。
+if err != nil {
+    return err
+}
 ```
 
 ## 2. 分层禁令

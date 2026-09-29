@@ -43,6 +43,7 @@ const devDSN = "postgres://wmesh:wmesh@127.0.0.1:55433/postgres?sslmode=disable"
 
 // Load 从 WMESH_* 环境变量装配配置；缺必填项直接报错，不带隐含默认密码上线。
 func Load() (Config, error) {
+	// 先按环境把配置装进来，缺的稍后补。
 	c := Config{
 		HTTPAddr:       envOr("WMESH_HTTP_ADDR", ":8081"),
 		DSN:            envOr("WMESH_DSN", devDSN),
@@ -64,36 +65,51 @@ func Load() (Config, error) {
 		DockerHost:      envOr("WMESH_DOCKER_HOST", "unix:///var/run/docker.sock"),
 		DockerUpdateDir: envOr("WMESH_DOCKER_UPDATE_DIR", "/var/lib/wmesh/update"),
 	}
+	// 环境指定了退出等待就解析成一段时间。
 	if v := os.Getenv("WMESH_SHUTDOWN_TIMEOUT"); v != "" {
+		// 把退出等待解析成一段时间。
 		d, err := time.ParseDuration(v)
+		// 没能把退出等待解析成一段时间就停，避免带着残缺继续。
 		if err != nil {
+			// 退出等待时间不合法，不能启动。
 			return Config{}, fmt.Errorf("WMESH_SHUTDOWN_TIMEOUT: %w", err)
 		}
+		// 环境里的退出等待合法就改用它。
 		c.ShutdownTimeout = d
 	}
+	// 交回半套配置直接拒绝，避免带着空秘文启动的结果。
 	return c, c.validate()
 }
 
 // validate 半配置直接拒绝，避免带空密码上线。
 func (c Config) validate() error {
+	// 先记下失败，重试完再决定交不交出去。
 	var errs []error
+	// 配了页面目录才检查它是不是文件夹。
 	if c.WebDir != "" {
+		// 出错或条件不够就停下，避免半对的结果往下用。
 		if st, err := os.Stat(c.WebDir); err != nil || !st.IsDir() {
+			// 把这一段接进结果，顺序要保持住。
 			errs = append(errs, fmt.Errorf("WMESH_WEB_DIR %q is not a directory", c.WebDir))
 		}
 	}
 	// 接了 OSS 就必须给全桶和密钥，半配置比不配更难排查。
 	if c.OSS.Enabled() && (c.OSS.Bucket == "" || c.OSS.AccessKey == "" || c.OSS.SecretKey == "") {
+		// 把这一段接进结果，顺序要保持住。
 		errs = append(errs, errors.New("WMESH_OSS_BUCKET, WMESH_OSS_ACCESS_KEY and WMESH_OSS_SECRET_KEY are required with WMESH_OSS_ENDPOINT"))
 	}
+	// 交回把多条错误并成一条再交回去的结果。
 	return errors.Join(errs...)
 }
 
 // envTruthy 1/true/yes/on 视为打开。
 func envTruthy(key string) bool {
+	// 按环境里的写法决定开关，认不出就当关掉。
 	switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
+	// 这些写法都当成开关打开。
 	case "1", "true", "yes", "on":
 		return true
+	// 其余写法都当成开关关掉。
 	default:
 		return false
 	}
@@ -101,6 +117,7 @@ func envTruthy(key string) bool {
 
 // envOr 空则用开发默认。
 func envOr(key, def string) string {
+	// 环境里写了才覆盖，空的保持默认。
 	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
 		return v
 	}

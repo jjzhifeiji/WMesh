@@ -29,6 +29,7 @@ type WeldSummary struct {
 	DurationSec int64     // 该粒时长秒
 }
 
+// 一家厂按日和工程名上送的焊汇总库行。
 type weldSummaryRow struct {
 	ID          uuid.UUID `gorm:"type:uuid;primaryKey"`         // 汇总行稳定身份
 	FactoryID   uuid.UUID `gorm:"type:uuid;not null"`           // 上送工厂
@@ -41,8 +42,10 @@ type weldSummaryRow struct {
 	UpdatedAt   time.Time `gorm:"column:updated_at;not null"`   // 最近替换时间
 }
 
+// 焊汇总落这张表，不含人员组织。
 func (weldSummaryRow) TableName() string { return "weld_summaries" }
 
+// 查询焊汇总时带上工厂显示名的扫描行。
 type weldSummaryScan struct {
 	FactoryID   uuid.UUID `gorm:"column:factory_id"`   // 上送工厂
 	FactoryName string    `gorm:"column:factory_name"` // 名录显示名
@@ -56,9 +59,12 @@ type weldSummaryScan struct {
 
 // ValidWeldKind 是否允许的焊接模式。
 func ValidWeldKind(kind string) bool {
+	// 只认空、单层、多层和 T 排这几种。
 	switch kind {
+	// 空、单层、多层和 T 排都可以。
 	case "", WeldKindSingle, WeldKindMultilayer, WeldKindTBar:
 		return true
+	// 别的写法直接判不合法。
 	default:
 		return false
 	}
@@ -66,17 +72,23 @@ func ValidWeldKind(kind string) bool {
 
 // ReplaceWeldSummaries 用该厂当前全量汇总覆盖旧行，避免删掉的日子留在云端。
 func (s *Store) ReplaceWeldSummaries(ctx context.Context, factoryID uuid.UUID, rows []WeldSummary) error {
+	// 记下当前时刻，这一笔里的时间都用它。
 	now := time.Now().UTC()
+	// 先删这家厂的旧汇总再写入全量，失败则旧数据还在。
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// 删除失败就停，不能当成已经清掉。
 		if err := tx.Where("factory_id = ?", factoryID).Delete(&weldSummaryRow{}).Error; err != nil {
 			return err
 		}
+		// 旧汇总已删，按这次上送逐条写回。
 		for _, in := range rows {
+			// 组一条汇总，身份现发，时间用这一次的。
 			row := weldSummaryRow{
 				ID: id.New(), FactoryID: factoryID, Day: in.Day, ProjectName: in.ProjectName,
 				WeldKind: in.WeldKind, RunCount: in.RunCount, LengthMM: in.LengthMM,
 				DurationSec: in.DurationSec, UpdatedAt: now,
 			}
+			// 这一行没写进去就停，不能当成已经落库。
 			if err := tx.Create(&row).Error; err != nil {
 				return err
 			}
@@ -87,25 +99,37 @@ func (s *Store) ReplaceWeldSummaries(ctx context.Context, factoryID uuid.UUID, r
 
 // ListWeldSummaries 列出各厂上送汇总；窗按 UTC 日与查询区间是否相交裁。
 func (s *Store) ListWeldSummaries(ctx context.Context, factoryID *uuid.UUID, from, to *time.Time) ([]WeldSummary, error) {
+	// 先接上厂名，日期窗口在后面再收窄。
 	q := s.db.WithContext(ctx).Table("weld_summaries AS w").
 		Select("w.factory_id, f.name AS factory_name, to_char(w.day, 'YYYY-MM-DD') AS day, w.project_name, w.weld_kind, w.run_count, w.length_mm, w.duration_sec").
 		Joins("JOIN factories f ON f.id = w.factory_id").
 		Order("f.name, w.day DESC, w.project_name, w.weld_kind")
+	// 指定了工厂就只留这一家的汇总。
 	if factoryID != nil {
+		// 指定了工厂就只留这一家的汇总。
 		q = q.Where("w.factory_id = ?", *factoryID)
 	}
+	// 只保留日历日还盖得到起点的记录。
 	if from != nil {
+		// 只留日历日还盖到起点之后的那些。
 		q = q.Where("((w.day + 1)::timestamp AT TIME ZONE 'UTC') > ?", from.UTC())
 	}
+	// 只保留日历日还早于终点的记录。
 	if to != nil {
+		// 只留日历日还早于终点的那些。
 		q = q.Where("(w.day::timestamp AT TIME ZONE 'UTC') < ?", to.UTC())
 	}
+	// 准备接住查出来的列表，空的也要能交回。
 	var rows []weldSummaryScan
+	// 结果没扫出来就停，不能当成查询成功。
 	if err := q.Scan(&rows).Error; err != nil {
 		return nil, err
 	}
+	// 按行数预留结果，查空也是空表不是空指针。
 	out := make([]WeldSummary, 0, len(rows))
+	// 逐行收成对外结果，顺序保持查询原来的样子。
 	for _, r := range rows {
+		// 带上厂名收成一条汇总，顺序跟查询一致。
 		out = append(out, WeldSummary{
 			FactoryID: r.FactoryID, FactoryName: r.FactoryName, Day: r.Day,
 			ProjectName: r.ProjectName, WeldKind: r.WeldKind, RunCount: r.RunCount,

@@ -3,23 +3,23 @@ package wanchannel
 import "encoding/json"
 
 const (
-	CmdClosure       = "closure"
-	CmdTemplate      = "template"
-	CmdRetract       = "retract"
-	CmdClientBind    = "client_bind"
-	CmdClientVoid    = "client_void"
-	CmdFactoryState  = "factory_state"
-	CmdLease         = "lease"
-	CmdLeaseRenew    = "lease_renew"
-	CmdPresence      = "presence"
-	CmdAssetList     = "asset_list"
-	CmdAssetSnapshot = "asset_snapshot"
-	CmdFSList        = "fs_list"
-	CmdFSApply       = "fs_apply" // 对齐平台目录
-	CmdAssetListOK   = "asset_list_ok"
-	CmdAssetSnapOK   = "asset_snapshot_ok"
-	CmdFSListOK      = "fs_list_ok"
-	CmdSoftware      = "software" // 厂服务包或 APK 已发布，厂去拉正文
+	CmdClosure       = "closure"           // 组包下发，正文另走拉取
+	CmdTemplate      = "template"          // 内容模版下发，正文另走拉取
+	CmdRetract       = "retract"           // 平台删除撤回，只带资产身份
+	CmdClientBind    = "client_bind"       // 把设备分配或改分到本厂
+	CmdClientVoid    = "client_void"       // 作废已经分配到本厂的设备
+	CmdFactoryState  = "factory_state"     // 工厂启用、停用或注销
+	CmdLease         = "lease"             // 下发内容解包钥，只进内存
+	CmdLeaseRenew    = "lease_renew"       // 到期前续上内容解包钥
+	CmdPresence      = "presence"          // 上报本进程在线时的版本
+	CmdAssetList     = "asset_list"        // 询问本厂可升档的清单
+	CmdAssetSnapshot = "asset_snapshot"    // 询问一笔升档快照正文
+	CmdFSList        = "fs_list"           // 询问本厂当前平台目录
+	CmdFSApply       = "fs_apply"          // 对齐平台目录
+	CmdAssetListOK   = "asset_list_ok"     // 升档清单已经答回
+	CmdAssetSnapOK   = "asset_snapshot_ok" // 升档快照已经答回
+	CmdFSListOK      = "fs_list_ok"        // 平台目录已经答回
+	CmdSoftware      = "software"          // 厂服务包或 APK 已发布，厂去拉正文
 )
 
 // Cmd 与 WAN 控制面指令对齐，不含闭包或软件包正文。

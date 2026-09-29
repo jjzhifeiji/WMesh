@@ -13,20 +13,27 @@ import (
 )
 
 // Channel 管厂出站认领、MQTT 在线和 HTTPS 拉正文。不判厂内业务对错。
-type Channel struct{ *kernel }
+type Channel struct {
+	*kernel // 认领和在线共用的库与审计。
+}
 
 // OfferEnroll 用建厂码换出待认领身份；码不对或已用完则拒绝。
 func (s *Channel) OfferEnroll(ctx context.Context, enrollmentCode string) (EnrollmentOffer, error) {
 	// 用建厂码哈希换待认领身份。码不对、已用完或工厂不可认领都记拒绝。
 	offer, err := s.store.LookupEnrollment(ctx, secret.TokenHash(enrollmentCode))
+	// 没有或已经用完就拒绝。
 	if err != nil {
+		// 认领被拒就留审计。
 		_ = s.audit(ctx, nil, nil, nil, "enroll_factory", "channel", audit.Deny)
+		// 建厂码不对或已用完，按这个原因拒绝。
 		if errors.Is(err, domain.ErrInvalidEnrollment) {
 			return EnrollmentOffer{}, domain.ErrInvalidEnrollment
 		}
 		return EnrollmentOffer{}, err
 	}
+	// 不能继续认领或新开操作。
 	if err := s.guardEnrollable(ctx, offer.FactoryID); err != nil {
+		// 认领被拒就留审计。
 		_ = s.audit(ctx, nil, nil, &offer.FactoryID, "enroll_factory", offer.FactoryID.String(), audit.Deny)
 		return EnrollmentOffer{}, err
 	}
@@ -41,11 +48,13 @@ func (s *Channel) OfferEnroll(ctx context.Context, enrollmentCode string) (Enrol
 func (s *Channel) ConfirmEnroll(ctx context.Context, factoryID uuid.UUID, publicKey []byte) error {
 	// 停用、注销或落库失败都记拒绝。
 	if err := s.guardEnrollable(ctx, factoryID); err != nil {
+		// 确认认领被拒就留审计。
 		_ = s.audit(ctx, nil, nil, &factoryID, "confirm_enroll", factoryID.String(), audit.Deny)
 		return err
 	}
 	// 登记签发公钥并作废建厂码。
 	if err := s.store.ConfirmEnrollment(ctx, factoryID, publicKey); err != nil {
+		// 确认认领被拒就留审计。
 		_ = s.audit(ctx, nil, nil, &factoryID, "confirm_enroll", factoryID.String(), audit.Deny)
 		return err
 	}
@@ -57,24 +66,31 @@ func (s *Channel) ConfirmEnroll(ctx context.Context, factoryID uuid.UUID, public
 func (s *Channel) RequireFactoryKey(ctx context.Context, factoryID uuid.UUID) error {
 	// 已认领工厂才算有效；名录没了或已注销都拒绝。
 	fac, err := s.store.FactoryByID(ctx, factoryID)
+	// 没有这条就按不存在处理，不当成别的故障。
 	if errors.Is(err, domain.ErrNotFound) {
+		// 进门被拒就留审计。
 		_ = s.audit(ctx, nil, nil, &factoryID, "hello_factory", factoryID.String(), audit.Deny)
 		return domain.ErrFactoryRetired
 	}
+	// 这一步失败就停，避免留下半截。
 	if err != nil {
 		return err
 	}
 	// 停用仍算已认领，才能再推启用；注销则拒绝。
 	if fac.Status == FactoryRetired {
+		// 进门被拒就留审计。
 		_ = s.audit(ctx, nil, nil, &factoryID, "hello_factory", factoryID.String(), audit.Deny)
 		return domain.ErrFactoryRetired
 	}
 	// 必须已有签发公钥。
 	_, err = s.store.FactoryPublicKey(ctx, factoryID)
+	// 没有这条就按不存在处理，不当成别的故障。
 	if errors.Is(err, domain.ErrNotFound) {
+		// 进门被拒就留审计。
 		_ = s.audit(ctx, nil, nil, &factoryID, "hello_factory", factoryID.String(), audit.Deny)
 		return domain.ErrUnauthorized
 	}
+	// 这一步失败就停，避免留下半截。
 	if err != nil {
 		return err
 	}
@@ -83,15 +99,21 @@ func (s *Channel) RequireFactoryKey(ctx context.Context, factoryID uuid.UUID) er
 
 // guardEnrollable 停用或注销的工厂不能再认领。
 func (s *Channel) guardEnrollable(ctx context.Context, factoryID uuid.UUID) error {
+	// 按工厂名录处理。
 	fac, err := s.store.FactoryByID(ctx, factoryID)
+	// 没有这家厂或状态不对就拒绝。
 	if err != nil {
 		return err
 	}
+	// 按工厂治理状态决定能否认领或下发。
 	switch fac.Status {
+	// 停用的厂不能认领，也不能新开操作。
 	case FactoryDisabled:
 		return domain.ErrFactoryDisabled
+	// 已注销的厂不能再启用或认领。
 	case FactoryRetired:
 		return domain.ErrFactoryRetired
+	// 其余情况走这里，避免漏掉一种状态。
 	default:
 		return nil
 	}
@@ -101,6 +123,7 @@ func (s *Channel) guardEnrollable(ctx context.Context, factoryID uuid.UUID) erro
 func (s *Channel) MarkChannelOnline(ctx context.Context, factoryID uuid.UUID) error {
 	// 名录标在线。
 	if err := s.store.MarkChannelOnline(ctx, factoryID); err != nil {
+		// 标在线失败就留审计。
 		_ = s.audit(ctx, nil, nil, &factoryID, "channel_up", factoryID.String(), audit.Deny)
 		return err
 	}
@@ -110,6 +133,7 @@ func (s *Channel) MarkChannelOnline(ctx context.Context, factoryID uuid.UUID) er
 
 // TouchChannel 刷新最近心跳；已离线则忽略。
 func (s *Channel) TouchChannel(ctx context.Context, factoryID uuid.UUID) error {
+	// 刷新最近一次心跳。
 	return s.store.TouchChannel(ctx, factoryID)
 }
 
@@ -125,11 +149,13 @@ func (s *Channel) MarkChannelOffline(ctx context.Context, factoryID uuid.UUID) e
 
 // ResetChannelPresence WAN 进程起来时清掉上一轮残留的在线标记。
 func (s *Channel) ResetChannelPresence(ctx context.Context) error {
+	// 清掉残留状态，失败就不能继续。
 	return s.store.ResetChannelPresence(ctx)
 }
 
 // ReportFactoryRelease 记下该厂自报的前端和服务版本；心跳不上审计。
 func (s *Channel) ReportFactoryRelease(ctx context.Context, factoryID uuid.UUID, webCode int64, webName string, svcCode int64, svcName string) error {
+	// 版本号或版本名不齐则拒绝，避免名录写空。
 	if webCode < 1 || svcCode < 1 || strings.TrimSpace(webName) == "" || strings.TrimSpace(svcName) == "" {
 		return domain.ErrInvalidName
 	}
@@ -141,7 +167,9 @@ func (s *Channel) ReportFactoryRelease(ctx context.Context, factoryID uuid.UUID,
 func (s *Channel) IssueContentLease(ctx context.Context, factoryID uuid.UUID) (ContentLease, error) {
 	// 同一把 L 续期，窗口重新算 24 小时。
 	lease, err := s.store.IssueContentLease(ctx, factoryID)
+	// 失败则对方解不开或用不了。
 	if err != nil {
+		// 租约被拒就留审计。
 		_ = s.audit(ctx, nil, nil, &factoryID, "content_lease", factoryID.String(), audit.Deny)
 		return ContentLease{}, err
 	}

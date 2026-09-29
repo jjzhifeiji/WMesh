@@ -3,6 +3,7 @@ package service_test
 
 import "testing"
 
+// 阶段三应跑完的矩阵编号，漏跑要报出来。
 var matrix03IDs = []string{
 	"1.1", "1.2", "1.3",
 	"2.1", "2.2", "2.3",
@@ -23,23 +24,37 @@ var matrix03IDs = []string{
 	"18.1", "18.2",
 }
 
+// 把阶段三各条矩阵都跑一遍，漏编号要在收尾报出。
 func TestMatrix03(t *testing.T) {
+	// 记下已经跑过的矩阵编号，结束时用来查漏。
 	ran := map[string]bool{}
+	// 包起一条矩阵用例，结束时靠它核对有没有漏跑。
 	run := func(id string, fn func(*testing.T)) {
+		// 标成辅助步骤，失败时行号指向真正的用例。
 		t.Helper()
+		// 进入该编号的子测试，失败只算在这一条上。
 		t.Run(id, func(t *testing.T) {
+			// 把这个编号记成已跑，漏记会在收尾被报出来。
 			ran[id] = true
+			// 执行该编号的用例，断言失败表示这一条没过。
 			fn(t)
 		})
 	}
+	// 收尾检查每个编号都跑过，漏跑就在这里报出。
 	t.Cleanup(func() {
+		// 逐个编号检查是否跑过，漏跑要在收尾报出来。
 		for _, id := range matrix03IDs {
+			// 这个编号没有跑过就报出，说明矩阵有遗漏。
 			if !ran[id] {
+				// 报出没跑的矩阵编号，出现说明这条被漏掉了。
 				t.Errorf("矩阵编号未跑：%s", id)
 			}
 		}
 	})
+	// 跑身份矩阵，断言失败表示台账或修订没过。
 	testAssetIdentity(t, run)
+	// 跑作者矩阵，断言失败表示越权没被拦住。
 	testAssetAuthorship(t, run)
+	// 跑升档矩阵，断言失败表示级别没有按预期变。
 	testAssetPromote(t, run)
 }

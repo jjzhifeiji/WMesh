@@ -13,16 +13,24 @@ type Space struct {
 
 // Of 读 path 所在文件系统的容量；path 空则看根盘。
 func Of(path string) (Space, error) {
+	// 路径空则改看根盘。
 	if path == "" {
+		// 根路径才能问到整块盘。
 		path = "/"
 	}
+	// 准备接文件系统统计。
 	var st unix.Statfs_t
+	// 读不到容量就停，免得报出假数字。
 	if err := unix.Statfs(path, &st); err != nil {
 		return Space{Path: path}, err
 	}
+	// 块大小换成字节，后面按块折算。
 	bsize := int64(st.Bsize)
+	// 总块数乘块大小，得到总容量。
 	total := int64(st.Blocks) * bsize
+	// 普通用户可用块折成字节。
 	avail := int64(st.Bavail) * bsize
+	// 空闲块折成字节，用来扣已用。
 	free := int64(st.Bfree) * bsize
 	return Space{Path: path, Total: total, Used: total - free, Avail: avail}, nil
 }

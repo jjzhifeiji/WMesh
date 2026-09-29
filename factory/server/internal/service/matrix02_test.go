@@ -3,6 +3,7 @@ package service_test
 
 import "testing"
 
+// 阶段二应跑完的矩阵编号，漏跑要报出来。
 var matrix02IDs = []string{
 	"1.1", "1.2",
 	"2.1", "2.2", "2.3",
@@ -21,23 +22,37 @@ var matrix02IDs = []string{
 	"16.1", "16.2", "16.3",
 }
 
+// 把阶段二各条矩阵都跑一遍，漏编号要在收尾报出。
 func TestMatrix02(t *testing.T) {
+	// 记下已经跑过的矩阵编号，结束时用来查漏。
 	ran := map[string]bool{}
+	// 包起一条矩阵用例，结束时靠它核对有没有漏跑。
 	run := func(id string, fn func(*testing.T)) {
+		// 标成辅助步骤，失败时行号指向真正的用例。
 		t.Helper()
+		// 进入该编号的子测试，失败只算在这一条上。
 		t.Run(id, func(t *testing.T) {
+			// 把这个编号记成已跑，漏记会在收尾被报出来。
 			ran[id] = true
+			// 执行该编号的用例，断言失败表示这一条没过。
 			fn(t)
 		})
 	}
+	// 收尾检查每个编号都跑过，漏跑就在这里报出。
 	t.Cleanup(func() {
+		// 逐个编号检查是否跑过，漏跑要在收尾报出来。
 		for _, id := range matrix02IDs {
+			// 这个编号没有跑过就报出，说明矩阵有遗漏。
 			if !ran[id] {
+				// 报出没跑的矩阵编号，出现说明这条被漏掉了。
 				t.Errorf("矩阵编号未跑：%s", id)
 			}
 		}
 	})
+	// 跑节点矩阵，断言失败表示设备或登录没过。
 	testNodeMatrix(t, run)
+	// 跑人员矩阵，断言失败表示分配或离线没过。
 	testPersonMatrix(t, run)
+	// 跑汇聚矩阵，断言失败表示快照或作业没过。
 	testConvergeMatrix(t, run)
 }

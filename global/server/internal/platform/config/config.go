@@ -39,6 +39,7 @@ const devDSN = "postgres://wmesh:wmesh@127.0.0.1:55432/wmesh?sslmode=disable"
 
 // Load 从 WMESH_* 环境变量装配配置；缺必填项直接报错，不带隐含默认密码上线。
 func Load() (Config, error) {
+	// 先按环境拼出一份，缺项用开发默认。
 	c := Config{
 		HTTPAddr:      envOr("WMESH_HTTP_ADDR", ":8080"),
 		MQTTAddr:      envOr("WMESH_MQTT_ADDR", ":1883"),
@@ -56,39 +57,56 @@ func Load() (Config, error) {
 		UpdateDir:       envOr("WMESH_UPDATE_DIR", "/var/lib/wmesh/update"),
 		ShutdownTimeout: 10 * time.Second,
 	}
+	// 设了退出等待才覆盖默认时长。
 	if v := os.Getenv("WMESH_SHUTDOWN_TIMEOUT"); v != "" {
+		// 时长必须是合法的时间文本。
 		d, err := time.ParseDuration(v)
+		// 解析失败则整份配置作废。
 		if err != nil {
+			// 带上原值交回，方便改环境变量。
 			return Config{}, fmt.Errorf("WMESH_SHUTDOWN_TIMEOUT: %w", err)
 		}
+		// 用解析出的时长替换默认等待。
 		c.ShutdownTimeout = d
 	}
+	// 拼完再做半配置检查。
 	return c, c.validate()
 }
 
 // validate 半配置直接拒绝，避免带空密码上线。
 func (c Config) validate() error {
+	// 先攒下所有半配置，一次交回。
 	var errs []error
+	// 写了登录名就必须配密码。
 	if c.AdminLogin != "" && c.AdminPassword == "" {
+		// 记下缺密码，避免空密码上线。
 		errs = append(errs, errors.New("WMESH_ADMIN_PASSWORD is required with WMESH_ADMIN_LOGIN"))
 	}
+	// 要求覆盖密码时，登录名和密码都得有。
 	if c.AdminReset && (c.AdminLogin == "" || c.AdminPassword == "") {
+		// 记下缺项，避免覆盖成空。
 		errs = append(errs, errors.New("WMESH_ADMIN_LOGIN and WMESH_ADMIN_PASSWORD are required with WMESH_ADMIN_RESET"))
 	}
+	// 给了页面目录就要确认它是目录。
 	if c.WebDir != "" {
+		// 不存在或不是目录都不能当页面根。
 		if st, err := os.Stat(c.WebDir); err != nil || !st.IsDir() {
+			// 记下路径，方便改环境变量。
 			errs = append(errs, fmt.Errorf("WMESH_WEB_DIR %q is not a directory", c.WebDir))
 		}
 	}
 	// 接了 OSS 就必须给全桶和密钥，半配置比不配更难排查。
 	if c.OSS.Enabled() && (c.OSS.Bucket == "" || c.OSS.AccessKey == "" || c.OSS.SecretKey == "") {
+		// 记下缺的桶或密钥。
 		errs = append(errs, errors.New("WMESH_OSS_BUCKET, WMESH_OSS_ACCESS_KEY and WMESH_OSS_SECRET_KEY are required with WMESH_OSS_ENDPOINT"))
 	}
+	// 没有半配置就交回空错误。
 	return errors.Join(errs...)
 }
 
 // envOr 空则用开发默认。
 func envOr(key, def string) string {
+	// 去空白后还有字才算设过。
 	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
 		return v
 	}
@@ -97,9 +115,12 @@ func envOr(key, def string) string {
 
 // envBool 把常见真值收成布尔。
 func envBool(key string) bool {
+	// 去掉空白再比，认不出就当否。
 	switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
+	// 这三种写法都当是。
 	case "1", "true", "yes":
 		return true
+	// 其余含没设都当否。
 	default:
 		return false
 	}

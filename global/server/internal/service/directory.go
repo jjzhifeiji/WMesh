@@ -29,21 +29,27 @@ type Directory struct {
 func (s *Factories) CreateFactory(ctx context.Context, token, name, saLogin, saDisplay string) (CreatedFactory, error) {
 	// 只有 WAN 管理员能建厂。失败一律记拒绝。
 	admin, err := s.RequireAdmin(ctx, token)
+	// 无效就不能继续，不当已经登录。
 	if err != nil {
+		// 建厂被拒就留审计，不写建厂码。
 		_ = s.audit(ctx, nil, nil, nil, "create_factory", name, audit.Deny)
 		return CreatedFactory{}, err
 	}
 	// 发一次性建厂码，只回给持有者。
 	code, err := secret.RandomToken()
+	// 只把哈希留下，原文交还持有者。
 	if err != nil {
 		return CreatedFactory{}, err
 	}
 	// 工厂与初始超管身份当场发号。
 	fid := id.New()
+	// 做一个新的实例。
 	personID := id.New()
 	// 名录与初始超管对账同一事务写入；厂端稍后用建厂码认领。
 	fac, err := s.store.RegisterFactory(ctx, fid, name, personID, saLogin, saDisplay, secret.TokenHash(code))
+	// 缺了必填项就拒绝。
 	if err != nil {
+		// 建厂被拒就留审计，不写建厂码。
 		_ = s.audit(ctx, &admin.ID, nil, &fid, "create_factory", name, audit.Deny)
 		return CreatedFactory{}, err
 	}
@@ -58,10 +64,13 @@ func (s *Factories) CreateFactory(ctx context.Context, token, name, saLogin, saD
 func (s *Factories) IssueInitialSuperAdmin(ctx context.Context, token string, factoryID uuid.UUID) error {
 	// 已有工厂一律拒绝第二名初始超管。
 	admin, err := s.RequireAdmin(ctx, token)
+	// 无效就不能继续，不当已经登录。
 	if err != nil {
+		// 下发初始超管被拒就留审计。
 		_ = s.audit(ctx, nil, nil, &factoryID, "issue_initial_sa", factoryID.String(), audit.Deny)
 		return err
 	}
+	// 下发初始超管被拒就留审计。
 	_ = s.audit(ctx, &admin.ID, nil, &factoryID, "issue_initial_sa", factoryID.String(), audit.Deny)
 	return domain.ErrInitialSAExists
 }
@@ -70,34 +79,44 @@ func (s *Factories) IssueInitialSuperAdmin(ctx context.Context, token string, fa
 func (s *Factories) InviteWANAdmin(ctx context.Context, token, targetLogin string) error {
 	// 任何第二 WAN 用户都拒绝；能认出操作者则记上。
 	var actor *uuid.UUID
+	// 会话有效才做这一步，无效就当没登录。
 	if admin, err := s.RequireAdmin(ctx, token); err == nil {
+		// 会话有效才记下操作者，拒绝时可以是空。
 		actor = &admin.ID
 	}
+	// 不能再邀请第二个管理员。
 	_ = s.audit(ctx, actor, &targetLogin, nil, "invite_wan_admin", targetLogin, audit.Deny)
 	return domain.ErrForbidden
 }
 
 // CreateFactoryPerson 拒绝 WAN 代建厂内人员。
 func (s *Factories) CreateFactoryPerson(ctx context.Context, token string, factoryID uuid.UUID, loginName string) error {
+	// 拒绝代管厂内人员、组织和角色。
 	return s.denyFactoryManage(ctx, token, factoryID, "create_factory_person", loginName)
 }
 
 // CreateFactoryOrg 拒绝 WAN 代建厂内组织。
 func (s *Factories) CreateFactoryOrg(ctx context.Context, token string, factoryID uuid.UUID, name string) error {
+	// 拒绝代管厂内人员、组织和角色。
 	return s.denyFactoryManage(ctx, token, factoryID, "create_factory_org", name)
 }
 
 // GrantFactoryRole 拒绝 WAN 代授厂内角色。
 func (s *Factories) GrantFactoryRole(ctx context.Context, token string, factoryID uuid.UUID, target string) error {
+	// 拒绝代管厂内人员、组织和角色。
 	return s.denyFactoryManage(ctx, token, factoryID, "grant_factory_role", target)
 }
 
 // denyFactoryManage 厂内人员、组织、角色 WAN 一律拒绝，并记审计。
 func (s *kernel) denyFactoryManage(ctx context.Context, token string, factoryID uuid.UUID, action, target string) error {
+	// 先没有操作者，管理员核对通过再填。
 	var actor *uuid.UUID
+	// 会话有效才做这一步，无效就当没登录。
 	if admin, err := s.RequireAdmin(ctx, token); err == nil {
+		// 会话有效才记下操作者，拒绝时可以是空。
 		actor = &admin.ID
 	}
+	// 被拒绝时留审计，不写口令或正文。
 	_ = s.audit(ctx, actor, nil, &factoryID, action, target, audit.Deny)
 	return domain.ErrForbidden
 }
@@ -106,16 +125,21 @@ func (s *kernel) denyFactoryManage(ctx context.Context, token string, factoryID 
 func (s *Factories) Directory(ctx context.Context, token string) (Directory, error) {
 	// 只有 WAN 管理员能读名录。
 	admin, err := s.RequireAdmin(ctx, token)
+	// 无效就不能继续，不当已经登录。
 	if err != nil {
+		// 读名录被拒就留审计。
 		_ = s.audit(ctx, nil, nil, nil, "read_directory", "wan", audit.Deny)
 		return Directory{}, err
 	}
 	// 只取工厂名录和初始超管身份，不含密码。
 	facs, err := s.store.ListFactories(ctx)
+	// 列出失败就拒绝，避免交出不完整结果。
 	if err != nil {
 		return Directory{}, err
 	}
+	// 列出这一批供后面筛选。
 	initials, err := s.store.ListInitialSuperAdmins(ctx)
+	// 列出失败就拒绝，避免交出不完整结果。
 	if err != nil {
 		return Directory{}, err
 	}
@@ -128,11 +152,13 @@ func (s *Factories) Directory(ctx context.Context, token string) (Directory, err
 
 // DisableFactory 停用工厂；厂端在线则立刻拒绝新登录，离线则回连后收敛。
 func (s *Factories) DisableFactory(ctx context.Context, token string, factoryID uuid.UUID) (Factory, error) {
+	// 改成新的状态或值。
 	return s.setStatus(ctx, token, factoryID, FactoryDisabled, "disable_factory")
 }
 
 // EnableFactory 重新启用已停用的工厂；已注销的不能启用。
 func (s *Factories) EnableFactory(ctx context.Context, token string, factoryID uuid.UUID) (Factory, error) {
+	// 改成新的状态或值。
 	return s.setStatus(ctx, token, factoryID, FactoryActive, "enable_factory")
 }
 
@@ -140,19 +166,27 @@ func (s *Factories) EnableFactory(ctx context.Context, token string, factoryID u
 func (s *Factories) DeleteFactory(ctx context.Context, token string, factoryID uuid.UUID) (*Factory, error) {
 	// 只有 WAN 管理员能拿掉或注销工厂。失败一律记拒绝。
 	admin, err := s.RequireAdmin(ctx, token)
+	// 无效就不能继续，不当已经登录。
 	if err != nil {
+		// 删厂被拒就留审计。
 		_ = s.audit(ctx, nil, nil, &factoryID, "delete_factory", factoryID.String(), audit.Deny)
 		return nil, err
 	}
+	// 按工厂名录处理。
 	fac, err := s.store.FactoryByID(ctx, factoryID)
+	// 没有这家厂或状态不对就拒绝。
 	if err != nil {
+		// 删厂被拒就留审计。
 		_ = s.audit(ctx, &admin.ID, nil, &factoryID, "delete_factory", factoryID.String(), audit.Deny)
 		return nil, err
 	}
 	// 已认领或已注销只改注销，历史与绑定保留。
 	if fac.EnrolledAt != nil || fac.Status == FactoryRetired {
+		// 改成新值，失败就不能继续。
 		out, err := s.store.SetFactoryStatus(ctx, factoryID, FactoryRetired)
+		// 不合法或写失败就拒绝。
 		if err != nil {
+			// 注销被拒就留审计。
 			_ = s.audit(ctx, &admin.ID, nil, &factoryID, "retire_factory", factoryID.String(), audit.Deny)
 			return nil, err
 		}
@@ -160,16 +194,21 @@ func (s *Factories) DeleteFactory(ctx context.Context, token string, factoryID u
 		if err := s.audit(ctx, &admin.ID, nil, &factoryID, "retire_factory", factoryID.String(), audit.Allow); err != nil {
 			return nil, err
 		}
+		// 通知厂端治理状态变了。
 		s.notifyLifecycle(out)
+		// 这家厂断开时清掉未完成问询。
 		s.dropFactory(factoryID)
 		return &out, nil
 	}
 	// 未认领且无引用则从名录删除。
 	if err := s.store.DeleteUnclaimedFactory(ctx, factoryID); err != nil {
+		// 仍被引用则拒绝删除，避免拆掉还在用的。
 		if errors.Is(err, domain.ErrReferenced) {
 			// 已有绑定则改为注销，不硬删。
 			out, err := s.store.SetFactoryStatus(ctx, factoryID, FactoryRetired)
+			// 不合法或写失败就拒绝。
 			if err != nil {
+				// 注销被拒就留审计。
 				_ = s.audit(ctx, &admin.ID, nil, &factoryID, "retire_factory", factoryID.String(), audit.Deny)
 				return nil, err
 			}
@@ -177,10 +216,13 @@ func (s *Factories) DeleteFactory(ctx context.Context, token string, factoryID u
 			if err := s.audit(ctx, &admin.ID, nil, &factoryID, "retire_factory", factoryID.String(), audit.Allow); err != nil {
 				return nil, err
 			}
+			// 通知厂端治理状态变了。
 			s.notifyLifecycle(out)
+			// 这家厂断开时清掉未完成问询。
 			s.dropFactory(factoryID)
 			return &out, nil
 		}
+		// 删厂被拒就留审计。
 		_ = s.audit(ctx, &admin.ID, nil, &factoryID, "delete_factory", factoryID.String(), audit.Deny)
 		return nil, err
 	}
@@ -188,6 +230,7 @@ func (s *Factories) DeleteFactory(ctx context.Context, token string, factoryID u
 	if err := s.audit(ctx, &admin.ID, nil, &factoryID, "delete_factory", factoryID.String(), audit.Allow); err != nil {
 		return nil, err
 	}
+	// 这家厂断开时清掉未完成问询。
 	s.dropFactory(factoryID)
 	return nil, nil
 }
@@ -196,13 +239,17 @@ func (s *Factories) DeleteFactory(ctx context.Context, token string, factoryID u
 func (s *Factories) setStatus(ctx context.Context, token string, factoryID uuid.UUID, status, action string) (Factory, error) {
 	// 只有 WAN 管理员能改工厂治理状态。
 	admin, err := s.RequireAdmin(ctx, token)
+	// 无效就不能继续，不当已经登录。
 	if err != nil {
+		// 被拒绝时留审计，不写口令或正文。
 		_ = s.audit(ctx, nil, nil, &factoryID, action, factoryID.String(), audit.Deny)
 		return Factory{}, err
 	}
 	// 写入治理状态并升高修订；厂端只接受更高修订。
 	out, err := s.store.SetFactoryStatus(ctx, factoryID, status)
+	// 不合法或写失败就拒绝。
 	if err != nil {
+		// 被拒绝时留审计，不写口令或正文。
 		_ = s.audit(ctx, &admin.ID, nil, &factoryID, action, factoryID.String(), audit.Deny)
 		return Factory{}, err
 	}
@@ -210,16 +257,19 @@ func (s *Factories) setStatus(ctx context.Context, token string, factoryID uuid.
 	if err := s.audit(ctx, &admin.ID, nil, &factoryID, action, factoryID.String(), audit.Allow); err != nil {
 		return Factory{}, err
 	}
+	// 通知厂端治理状态变了。
 	s.notifyLifecycle(out)
 	return out, nil
 }
 
 // ListFactoryPeople 从 WAN 查厂内人员，一律拒绝。
 func (s *Factories) ListFactoryPeople(ctx context.Context, token string, factoryID uuid.UUID) error {
+	// 拒绝代管厂内人员、组织和角色。
 	return s.denyFactoryManage(ctx, token, factoryID, "list_factory_people", factoryID.String())
 }
 
 // ReadAuthSecret 从 WAN 读任何认证秘密，一律拒绝。
 func (s *Factories) ReadAuthSecret(ctx context.Context, token string, factoryID uuid.UUID) error {
+	// 拒绝代管厂内人员、组织和角色。
 	return s.denyFactoryManage(ctx, token, factoryID, "read_auth_secret", factoryID.String())
 }
