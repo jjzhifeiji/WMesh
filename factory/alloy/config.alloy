@@ -1,4 +1,5 @@
-// 采本 compose 容器日志，并收 Pad 的 Loki push；一并推到 LOKI_URL。
+// 采本 compose 项目里打了 observe=true 的容器，并收 Pad 的 Loki push，一并推到 LOKI_URL。
+// Loki 索引只留 product、service、level。factory 等业务字段留在正文里。
 
 discovery.docker "containers" {
 	host             = "unix:///var/run/docker.sock"
@@ -8,84 +9,90 @@ discovery.docker "containers" {
 		name   = "label"
 		values = ["com.docker.compose.project=" + sys.env("COMPOSE_PROJECT_NAME")]
 	}
+
+	// 用标签名过滤。observe=true 在部分 Alloy 版本的 Docker 客户端里会匹配成 0 个容器。
+	filter {
+		name   = "label"
+		values = ["observe"]
+	}
 }
 
-discovery.relabel "logs" {
-	targets = []
+discovery.relabel "containers" {
+	targets = discovery.docker.containers.targets
 
 	rule {
-		source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
-		regex         = "app"
-		target_label  = "service_name"
-		replacement   = sys.env("WMESH_SIDE")
+		source_labels = ["__meta_docker_container_label_observe"]
+		regex         = "true"
+		action        = "keep"
 	}
 
 	rule {
-		source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
-		regex         = "(db|oss|alloy)"
-		target_label  = "service_name"
-		replacement   = sys.env("WMESH_SIDE") + "-${1}"
+		source_labels = ["__meta_docker_container_label_obs_product", "__meta_docker_container_label_obs_service"]
+		separator     = ";"
+		regex         = "([a-z0-9-]+);([a-z0-9-]+)"
+		action        = "keep"
+	}
+
+	// Loki service = {product}-{component}，容器标签 obs.service 必须已带 product 前缀
+
+	rule {
+		source_labels = ["__meta_docker_container_label_obs_product"]
+		target_label  = "product"
 	}
 
 	rule {
-		source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
-		regex         = "app"
-		target_label  = "serviceName"
-		replacement   = "wmesh-" + sys.env("WMESH_SIDE")
-	}
-
-	rule {
-		source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
-		regex         = "(db|oss|alloy)"
-		target_label  = "serviceName"
-		replacement   = "wmesh-" + sys.env("WMESH_SIDE") + "-${1}"
-	}
-
-	rule {
-		source_labels = ["__meta_docker_container_name"]
-		regex         = "/(.*)"
-		target_label  = "container"
+		source_labels = ["__meta_docker_container_label_obs_service"]
+		target_label  = "service"
 	}
 }
 
 loki.source.docker "containers" {
-	host          = "unix:///var/run/docker.sock"
-	targets       = discovery.docker.containers.targets
-	relabel_rules = discovery.relabel.logs.rules
-	labels        = {
-		job  = "wmesh",
-		side = sys.env("WMESH_SIDE"),
-	}
-	forward_to = [loki.process.app_json.receiver]
+	host       = "unix:///var/run/docker.sock"
+	targets    = discovery.relabel.containers.output
+	forward_to = [loki.process.apps.receiver]
 }
 
-loki.process "app_json" {
+loki.process "apps" {
 	forward_to = [loki.write.loki.receiver]
 
-	stage.match {
-		selector = "{service_name=\"" + sys.env("WMESH_SIDE") + "\"}"
+	stage.label_drop {
+		values = ["container", "job", "side", "service_name", "serviceName", "factory", "client"]
+	}
 
-        stage.json {
-			expressions = {
-				ts      = `"@timestamp" || time`,
-				level   = "level",
-				factory = "factory",
-				client  = "client",
-			}
+	stage.json {
+		expressions = {
+			level = "level",
+			ts    = `ts || "@timestamp"`,
+			msg   = "msg",
 		}
+		drop_malformed = false
+	}
 
-		stage.timestamp {
-			source = "ts"
-			format = "RFC3339Nano"
-		}
+	// 只把 INFO / WARN / ERROR 提升成标签。
+	stage.template {
+		source   = "keep_level"
+		template = `{{ if or (eq .level "INFO") (eq .level "WARN") (eq .level "ERROR") }}{{ .level }}{{ end }}`
+	}
 
-		stage.labels {
-			values = {
-				level   = "",
-				factory = "",
-				client  = "",
-			}
+	stage.labels {
+		values = {
+			level = "keep_level",
 		}
+	}
+
+	stage.timestamp {
+		source = "ts"
+		format = "RFC3339Nano"
+	}
+
+	stage.structured_metadata {
+		values = {
+			msg = "",
+		}
+	}
+
+	stage.label_keep {
+		values = ["product", "service", "level"]
 	}
 }
 
@@ -95,16 +102,16 @@ loki.write "loki" {
 	}
 }
 
-// Pad 直推，不登录；时间用平板钟，厂网可达才到得了。
+// Pad 直推。时间用平板钟，厂网可达才到得了。
 loki.source.api "pad" {
 	http {
 		listen_address = "0.0.0.0"
 		listen_port    = 3500
 	}
 	use_incoming_timestamp = true
-	labels = {
-		job  = "shijiaoqi",
-		side = "pad",
+	labels                 = {
+		product = "wmesh",
+		service = "wmesh-pad",
 	}
-	forward_to = [loki.write.loki.receiver]
+	forward_to = [loki.process.apps.receiver]
 }

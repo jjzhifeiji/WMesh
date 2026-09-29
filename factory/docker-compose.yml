@@ -40,6 +40,10 @@ services:
       updater:
         condition: service_started
     restart: unless-stopped
+    labels:
+      observe: "true"
+      obs.product: wmesh
+      obs.service: wmesh-factory
     logging: &logging
       driver: json-file
       options:
