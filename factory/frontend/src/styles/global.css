@@ -130,9 +130,45 @@ body,
   background: #f5f7f6;
 }
 
+.fs-tree .ant-tree-treenode {
+  align-items: center;
+  white-space: nowrap;
+}
+
+.fs-tree .ant-tree-switcher,
+.fs-tree .ant-tree-node-content-wrapper,
+.fs-tree .ant-tree-title {
+  display: inline-flex;
+  align-items: center;
+}
+
+.fs-tree .ant-tree-node-content-wrapper,
+.fs-tree .ant-tree-title {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+}
+
 .fs-tree-title {
-  display: block;
-  padding: 2px 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+  white-space: nowrap;
+}
+
+.fs-tree-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fs-tree-count {
+  flex: none;
+  color: rgba(0, 0, 0, 0.45);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
 }
 
 .fs-tree-body,

@@ -1,5 +1,5 @@
 import { FolderOutlined, PlusOutlined } from "@ant-design/icons";
-import { App, Button, Card, Descriptions, Empty, Form, Input, Modal, Select, Space, Switch, Table, Tag, Tooltip, Typography } from "antd";
+import { App, Button, Card, Descriptions, Empty, Form, Input, Modal, Select, Space, Switch, Tag, Tooltip, Typography } from "antd";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { errorMessage } from "@/shared/api/client";
 import { formatTime } from "@/shared/format";
@@ -20,7 +20,6 @@ import {
   useEnableAsset,
   useDeleteAsset,
   usePromoteFromFactory,
-  usePromotableAssets,
   usePublishAsset,
   useRenameAsset,
   useCreateFSFolder,
@@ -34,9 +33,9 @@ import {
   type AssetKind,
   type CreateAssetInput,
   type FSNode,
-  type PromotableAsset,
 } from "./api";
 import { fsFolderOptions, ProcessExplorer } from "./ProcessExplorer";
+import { PromotePicker } from "./PromotePicker";
 import { emptyWeld, ProjectWeldEditor } from "./ProjectWeldEditor";
 
 type CreateForm = { name: string; content: string; weldKind: string; copyable: boolean; parentId?: string };
@@ -69,13 +68,6 @@ function statusColor(status: string) {
   if (status === "draft") return "gold";
   if (status === "available") return "green";
   return "default";
-}
-
-function levelLabel(level: string) {
-  if (level === "factory") return "厂级";
-  if (level === "personal") return "个人级";
-  if (level === "platform") return "平台级";
-  return level;
 }
 
 function canCopy(row: Asset) {
@@ -142,9 +134,6 @@ function AssetsBody({ kind }: { kind: AssetKind }) {
   const [factoryId, setFactoryId] = useState<string | null>(null);
   const [browseFactory, setBrowseFactory] = useState<string | null>(null);
   const [mkdirOpen, setMkdirOpen] = useState(false);
-  const [promoteQuery, setPromoteQuery] = useState("");
-  const [promotePage, setPromotePage] = useState(1);
-  const [promotePageSize, setPromotePageSize] = useState(10);
   const [fsQuery, setFsQuery] = useState("");
   const [fsWeld, setFsWeld] = useState("all");
   const [form] = Form.useForm<CreateForm>();
@@ -156,8 +145,6 @@ function AssetsBody({ kind }: { kind: AssetKind }) {
     const rows = projectTemplatesForWeld(projectTpls.data, createWeld);
     return rows.length ? projectContentSchema(rows) : schema;
   }, [isProcess, schema, projectTpls.data, createWeld]);
-  const promotable = usePromotableAssets(promoteOpen ? factoryId : null, kind);
-
   const factories = useMemo(() => (directory.data?.factories ?? []).filter((f) => (f.status ?? "active") === "active"), [directory.data]);
   const folderOpts = useMemo(() => fsFolderOptions(fs.data ?? [], (n) => n.treeLevel === "platform"), [fs.data]);
   const availableProcesses = useMemo(() => (processes.data ?? []).filter((p) => p.status === "available"), [processes.data]);
@@ -207,24 +194,10 @@ function AssetsBody({ kind }: { kind: AssetKind }) {
   const closePromote = () => {
     setPromoteOpen(false);
     setFactoryId(null);
-    setPromoteQuery("");
-    setPromotePage(1);
-    setPromotePageSize(10);
   };
   const pickFactory = (id: string) => {
     setFactoryId(id);
-    setPromoteQuery("");
-    setPromotePage(1);
   };
-  const promoteRows = useMemo(() => {
-    const needle = promoteQuery.trim().toLowerCase();
-    const exact = promoteQuery.trim();
-    return (promotable.data ?? []).filter((a) => {
-      if (!needle) return true;
-      if (a.code && (a.code === exact || a.code === exact.toUpperCase())) return true;
-      return a.name.toLowerCase().includes(needle) || (a.code ?? "").toLowerCase().includes(needle);
-    });
-  }, [promotable.data, promoteQuery]);
 
   return (
     <>
@@ -660,125 +633,34 @@ function AssetsBody({ kind }: { kind: AssetKind }) {
           </Form.Item>
         </Form>
       </Modal>
-      <Modal title="从工厂升档" open={promoteOpen} onCancel={closePromote} footer={null} width={720} destroyOnHidden>
+      <Modal title="从工厂升档" open={promoteOpen} onCancel={closePromote} footer={null} width={960} destroyOnHidden>
         <Typography.Paragraph type="secondary">
-          列出该厂全部{isProcess ? "工艺" : "工程"}：厂级、个人级、已下发的平台级，不分状态。正文没变则跳过；有变更则覆盖已升档的那条，不另开身份。
+          按该厂文件夹逐级看{isProcess ? "工艺" : "工程"}：厂级、个人级、已下发的平台级，不分状态。正文没变则跳过；有变更则覆盖已升档的那条，不另开身份。
         </Typography.Paragraph>
-        <Select
-          style={{ width: "100%", marginBottom: 12 }}
-          placeholder="选择工厂"
-          value={factoryId ?? undefined}
-          onChange={pickFactory}
-          options={factories.map((f) => ({
-            value: f.id,
-            label: `${f.name}${f.channelOnline ? " · 在线" : " · 离线"}`,
-            disabled: !f.channelOnline,
-          }))}
-        />
-        <Input.Search
-          allowClear
-          placeholder={`搜索${isProcess ? "工艺" : "工程"}名称或编号`}
-          value={promoteQuery}
-          onChange={(e) => {
-            setPromoteQuery(e.target.value);
-            setPromotePage(1);
-          }}
-          style={{ width: "100%", marginBottom: 12 }}
-        />
-        <Table<PromotableAsset>
-          rowKey="id"
-          size="small"
-          loading={promotable.isFetching}
-          dataSource={promoteRows}
-          pagination={{
-            current: promotePage,
-            pageSize: promotePageSize,
-            total: promoteRows.length,
-            showSizeChanger: true,
-            pageSizeOptions: [10, 20, 50],
-            showTotal: (n) => `共 ${n} 条`,
-            onChange: (page, size) => {
-              setPromotePage(page);
-              setPromotePageSize(size);
-            },
-          }}
-          locale={{
-            emptyText: (
-              <Empty
-                image={Empty.PRESENTED_IMAGE_SIMPLE}
-                description={
-                  promotable.isError
-                    ? errorMessage(promotable.error)
-                    : promoteQuery.trim()
-                      ? `没有匹配的${isProcess ? "工艺" : "工程"}。`
-                      : `该厂没有${isProcess ? "工艺" : "工程"}，或厂端不在线。`
-                }
-              />
-            ),
-          }}
-          columns={[
-            { title: isProcess ? "工艺名称" : "工程名称", dataIndex: "name", ellipsis: true, sorter: (a, b) => a.name.localeCompare(b.name, "zh") },
-            { title: "编号", dataIndex: "code", width: 150, sorter: (a, b) => (a.code || "").localeCompare(b.code || "", "zh", { numeric: true }) },
-            {
-              title: "级别",
-              dataIndex: "level",
-              width: 80,
-              render: (l: string) => <Tag color={l === "factory" ? "blue" : l === "platform" ? "cyan" : "purple"}>{levelLabel(l)}</Tag>,
-            },
-            {
-              title: "类型",
-              dataIndex: "weldKind",
-              width: 100,
-              render: (v: string) => weldKindLabel(v || WELD_SINGLE),
-            },
-            {
-              title: "状态",
-              dataIndex: "status",
-              width: 90,
-              render: (s: string) => <Tag color={statusColor(s)}>{statusLabel(s)}</Tag>,
-            },
-            { title: "修订", dataIndex: "revision", width: 70 },
-            {
-              title: "",
-              key: "go",
-              width: 110,
-              render: (_, row) => {
-                const plat = (assets.data ?? []).find((a) => a.id === row.id || a.sourceId === row.id);
-                const same = Boolean(plat && plat.digest === row.digest);
-                if (row.level === "platform") {
-                  return (
-                    <Button size="small" disabled>
-                      {plat ? (same ? "已是最新" : "已在云端") : "已在云端"}
-                    </Button>
-                  );
-                }
-                return (
-                  <Button
-                    size="small"
-                    type="primary"
-                    loading={promote.isPending}
-                    onClick={() => {
-                      if (!factoryId) return;
-                      promote.mutate(
-                        { factoryId, assetId: row.id },
-                        {
-                          onSuccess: () => {
-                            if (same) message.success("正文未变，未重复升档");
-                            else if (plat) message.success("已覆盖，未发布");
-                            else message.success("已升档，未发布");
-                            closePromote();
-                          },
-                          onError: onErr,
-                        },
-                      );
-                    }}
-                  >
-                    {same ? "已是最新" : plat ? "覆盖" : "升档"}
-                  </Button>
-                );
+        <PromotePicker
+          key={factoryId ?? "none"}
+          kind={kind}
+          noun={isProcess ? "工艺" : "工程"}
+          factoryId={factoryId}
+          factories={factories}
+          platformAssets={assets.data ?? []}
+          promoting={promote.isPending}
+          onPickFactory={pickFactory}
+          onPromote={(assetId, outcome) => {
+            if (!factoryId) return;
+            promote.mutate(
+              { factoryId, assetId },
+              {
+                onSuccess: () => {
+                  if (outcome === "same") message.success("正文未变，未重复升档");
+                  else if (outcome === "cover") message.success("已覆盖，未发布");
+                  else message.success("已升档，未发布");
+                  closePromote();
+                },
+                onError: onErr,
               },
-            },
-          ]}
+            );
+          }}
         />
       </Modal>
       <EditModal

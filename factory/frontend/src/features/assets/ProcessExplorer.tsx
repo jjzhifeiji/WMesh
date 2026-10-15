@@ -19,6 +19,29 @@ export function fsNodeTitle(n: FSNode) {
   return n.name || "未命名";
 }
 
+/** 每个文件夹内部的节点数，下级文件夹和文件都算，含更深一层。 */
+function innerCounts(nodes: FSNode[]) {
+  const byParent = new Map<string, FSNode[]>();
+  for (const n of nodes) {
+    if (!n.parentId) continue;
+    const list = byParent.get(n.parentId);
+    if (list) list.push(n);
+    else byParent.set(n.parentId, [n]);
+  }
+  const count = new Map<string, number>();
+  const walk = (id: string): number => {
+    const cached = count.get(id);
+    if (cached != null) return cached;
+    const kids = byParent.get(id) ?? [];
+    let total = 0;
+    for (const kid of kids) total += 1 + (kid.nodeKind === "folder" ? walk(kid.id) : 0);
+    count.set(id, total);
+    return total;
+  };
+  for (const n of nodes) if (n.nodeKind === "folder") walk(n.id);
+  return count;
+}
+
 export function fsFolderPath(n: FSNode, byId: Map<string, FSNode>) {
   const parts: string[] = [];
   const seen = new Set<string>();
@@ -83,6 +106,7 @@ function canCopyInto(src: FSNode, dest: FSNode, byId: Map<string, FSNode>) {
 
 function TreeTitle({
   n,
+  count,
   dragging,
   over,
   canDrag,
@@ -91,6 +115,7 @@ function TreeTitle({
   onDrop,
 }: {
   n: FSNode;
+  count: number;
   dragging: boolean;
   over: boolean;
   canDrag: boolean;
@@ -107,7 +132,9 @@ function TreeTitle({
       onDragOver={onDragOver}
       onDrop={onDrop}
     >
-      {fsNodeTitle(n)}
+      <FolderOutlined />
+      <span className="fs-tree-name">{fsNodeTitle(n)}</span>
+      <span className="fs-tree-count">{count}</span>
     </span>
   );
 }
@@ -157,6 +184,7 @@ export function ProcessExplorer({
   const didDrag = useRef(false);
 
   const byId = useMemo(() => new Map(nodes.map((n) => [n.id, n])), [nodes]);
+  const folderCounts = useMemo(() => innerCounts(nodes), [nodes]);
   const roots = useMemo(() => nodes.filter((n) => !n.parentId && n.nodeKind === "folder"), [nodes]);
   const current = (pickedId && byId.get(pickedId)) || roots[0] || null;
   const dragSrc = dragId ? (byId.get(dragId) ?? null) : null;
@@ -522,6 +550,7 @@ export function ProcessExplorer({
         title: n ? (
           <TreeTitle
             n={n}
+            count={folderCounts.get(n.id) ?? 0}
             dragging={dragId === n.id}
             over={overId === n.id}
             canDrag={Boolean(n.parentId && writable(n))}
@@ -532,7 +561,6 @@ export function ProcessExplorer({
         ) : (
           id
         ),
-        icon: <FolderOutlined />,
         children: folders.map((f) => walk(f.id)),
       };
     };
@@ -553,7 +581,6 @@ export function ProcessExplorer({
               <Typography.Text type="secondary">载入目录…</Typography.Text>
             ) : (
               <Tree
-                showIcon
                 blockNode
                 selectedKeys={current ? [current.id] : []}
                 expandedKeys={expandedKeys}
