@@ -1,5 +1,5 @@
 /** 前端版本号，只向前比较。 */
-export const VERSION_CODE = 27;
+export const VERSION_CODE = 28;
 
 /** 前端版本名。 */
-export const VERSION_NAME = "1.1.25";
+export const VERSION_NAME = "1.1.26";
