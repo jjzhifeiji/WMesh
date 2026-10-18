@@ -314,12 +314,14 @@ func (h *Hub) Claim(ctx context.Context, wanURL, enrollmentCode, password string
 	if err != nil {
 		return SiteFactory{}, err
 	}
-	// 把公钥交给平台并作废建厂码，失败则未认领完。
-	if err := wanchannel.Confirm(ctx, wanURL, enrollmentCode, pub); err != nil {
-		return SiteFactory{}, err
-	}
-	// 确认成功后接上出站，断了会自己重连。
+	// 把公钥交给平台并作废建厂码，结果等接上出站后再交回。
+	confirmErr := wanchannel.Confirm(ctx, wanURL, enrollmentCode, pub)
+	// 签发钥已落本厂就接上出站，回包丢了平台已登记也能连上；未登记则按未授权长退避空转。
 	h.ensureChannel(offer.FactoryID)
+	// 确认失败照旧交回原错误，页面据此提示重试。
+	if confirmErr != nil {
+		return SiteFactory{}, confirmErr
+	}
 	return SiteFactory{ID: offer.FactoryID, Name: offer.Name, ShortCode: offer.ShortCode, SALogin: offer.SALogin, Status: store.FactoryActive}, nil
 }
 

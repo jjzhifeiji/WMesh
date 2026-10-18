@@ -2,6 +2,7 @@
 package service_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"strings"
@@ -96,6 +97,13 @@ func TestFactoryLifecycle(t *testing.T) {
 		// 不符即停：核对该厂公钥失败。
 		t.Fatal(err)
 	}
+	// 在用时先签一份租约，停用后拿它比对是不是同一把 L。
+	lease, err := h.WAN.IssueContentLease(ctx, a.Factory.ID)
+	// 在用厂签不出租约就停，后面比对没有基准。
+	if err != nil {
+		// 不符即停：在用厂签发租约失败。
+		t.Fatalf("lease while active: %v", err)
+	}
 	// 停用工厂失败就停，停用失败后面没有可启用的厂。
 	if _, err := h.WAN.DisableFactory(ctx, tok, a.Factory.ID); err != nil {
 		// 不符即停：停用工厂失败。
@@ -105,6 +113,13 @@ func TestFactoryLifecycle(t *testing.T) {
 	if err := h.WAN.RequireFactoryKey(ctx, a.Factory.ID); err != nil {
 		// 不符即停：核对该厂公钥失败。
 		t.Fatalf("key while disabled: %v", err)
+	}
+	// 停用期间续租，停用的厂还能再启用，应照常续上。
+	renewed, err := h.WAN.IssueContentLease(ctx, a.Factory.ID)
+	// 停用时续租失败或换了钥就停，厂端会解不开已有密文。
+	if err != nil || !bytes.Equal(renewed.Key, lease.Key) {
+		// 不符即停：停用期间续租失败或租约钥变了。
+		t.Fatalf("lease while disabled: %v", err)
 	}
 	// 注销工厂，注销失败名录里还会看见。
 	retired, err := h.WAN.DeleteFactory(ctx, tok, a.Factory.ID)
@@ -122,6 +137,11 @@ func TestFactoryLifecycle(t *testing.T) {
 	if err := h.WAN.RequireFactoryKey(ctx, a.Factory.ID); !errors.Is(err, domain.ErrFactoryRetired) {
 		// 不符即停：核对该厂公钥应被拒为厂已注销。
 		t.Fatalf("key retired: %v", err)
+	}
+	// 注销后续租应被拒为厂已注销，放行就等于 WAN 收不回钥。
+	if _, err := h.WAN.IssueContentLease(ctx, a.Factory.ID); !errors.Is(err, domain.ErrFactoryRetired) {
+		// 不符即停：注销后续租没被拒为厂已注销。
+		t.Fatalf("lease retired: %v", err)
 	}
 	// 读工厂名录，名录读不到就无法对厂。
 	dir, err := h.WAN.Directory(ctx, tok)
@@ -184,6 +204,11 @@ func TestFactoryLifecycle(t *testing.T) {
 	if err := h.WAN.RequireFactoryKey(ctx, b.Factory.ID); !errors.Is(err, domain.ErrFactoryRetired) {
 		// 不符即停：核对该厂公钥应被拒为厂已注销。
 		t.Fatalf("key after delete: %v", err)
+	}
+	// 名录里已删掉的厂签租约也按注销拒绝，不报成别的故障。
+	if _, err := h.WAN.IssueContentLease(ctx, b.Factory.ID); !errors.Is(err, domain.ErrFactoryRetired) {
+		// 不符即停：已删的厂签租约没被拒为厂已注销。
+		t.Fatalf("lease after delete: %v", err)
 	}
 }
 

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"strconv"
 
+	"github.com/google/uuid"
+
 	"wmesh/factory/internal/platform/audit"
 	"wmesh/factory/internal/platform/contenttpl"
 	"wmesh/factory/internal/platform/digest"
@@ -227,6 +229,22 @@ func (s *Templates) ListProjectTemplates(ctx context.Context, token string) ([]C
 		return nil, err
 	}
 	return out, nil
+}
+
+// HasTemplateDelivery 本厂已收下这一修订的模版；工程模版还要已有名称才算收齐。
+func (s *Closure) HasTemplateDelivery(ctx context.Context, id uuid.UUID, revision int64) (bool, error) {
+	// 按身份和修订读已收模版
+	t, err := s.store.TemplateReplicaByIDRev(ctx, id, revision)
+	// 没收过这一修订就要去拉
+	if errors.Is(err, domain.ErrNotFound) {
+		return false, nil
+	}
+	// 读失败交回，通道照常去拉
+	if err != nil {
+		return false, err
+	}
+	// 工程模版旧行可能缺名称，要重收补上；工艺模版本来不带名称
+	return t.Kind != KindProject || t.Name != "", nil
 }
 
 // AcceptTemplateDelivery 把 WAN 送达的模版写入只读副本，不改已有正文。

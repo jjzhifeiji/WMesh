@@ -1,4 +1,4 @@
-// 钉机械臂号：本厂入口不覆盖已钉别号，WAN 下发才覆盖，查重谁都绕不过。
+// 钉机械臂号：不覆盖时拒绝换号，覆盖分支能换号，查重谁都绕不过。
 package store_test
 
 import (
@@ -12,7 +12,7 @@ import (
 	"wmesh/factory/internal/store"
 )
 
-// 不覆盖时同号幂等、换号拒绝；覆盖只给通道用，仍挡撞号、空号和作废。
+// 不覆盖时同号幂等、换号拒绝；覆盖分支能换号，仍挡撞号、空号和作废。
 func TestPinDeviceSerialOverwrite(t *testing.T) {
 	// 测试没有取消信号，用空白上下文即可。
 	ctx := context.Background()
@@ -60,9 +60,9 @@ func TestPinDeviceSerialOverwrite(t *testing.T) {
 		// 号被改掉就停测。
 		t.Fatalf("after deny %+v %v", row, err)
 	}
-	// 通道那条路覆盖换号应当成功。
+	// 走覆盖分支换号应当成功，模拟现场换臂。
 	if row, err := s.PinDeviceSerial(ctx, cidA, "ARM-2", true); err != nil || row.DeviceSerial != "ARM-2" {
-		// WAN 下发覆盖失败就停测，通道会反复重拨。
+		// 覆盖分支换号失败就停测，后面的查重没有前提。
 		t.Fatalf("replace %+v %v", row, err)
 	}
 	// 覆盖也绕不过查重，B 台不能抢 A 台的号。

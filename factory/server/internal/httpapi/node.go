@@ -13,8 +13,6 @@ import (
 func (h *Handler) mountNode(mux *http.ServeMux) {
 	// 列出本厂已经绑定的现场设备。
 	mux.HandleFunc("GET /v1/factories/{id}/clients", h.listClients)
-	// 按修订登记绑定，公钥可以不带。
-	mux.HandleFunc("POST /v1/factories/{id}/clients", h.registerClient)
 	// 修改本厂设备的显示名。
 	mux.HandleFunc("PATCH /v1/factories/{id}/clients/{clientId}", h.renameClient)
 	// 本厂超管把读到的机械臂号钉到已绑定设备，已钉别的号拒绝。
@@ -35,14 +33,6 @@ func (h *Handler) mountNode(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/factories/{id}/runtime-grants", h.listRuntime)
 	// 登录仍有效才返回签发公钥。
 	mux.HandleFunc("GET /v1/factories/{id}/signing-key", h.signingPublicKey)
-}
-
-// 登记绑定时的名称、公钥和修订。
-type acceptClientReq struct {
-	ID              string `json:"id"`              // Client 稳定身份
-	Name            string `json:"name"`            // 给人看的设备名
-	PublicKey       string `json:"publicKey"`       // 本机公钥，可空
-	BindingRevision int64  `json:"bindingRevision"` // 绑定修订，必须向前
 }
 
 // 只改设备显示名，绑定身份不变。
@@ -119,47 +109,6 @@ func (h *Handler) listClients(w http.ResponseWriter, r *http.Request) {
 		}
 		// 通过之后把结果回给调用方。
 		writeJSON(w, http.StatusOK, rows)
-	})
-}
-
-// 解析可选公钥后按修订向前登记绑定。
-func (h *Handler) registerClient(w http.ResponseWriter, r *http.Request) {
-	// 解析可选公钥后按修订向前登记绑定。
-	h.withFactory(w, r, func(svc *service.Service) {
-		// 承接绑定名称和可选公钥。
-		var req acceptClientReq
-		// 正文无法解析则拒绝，不进入业务。
-		if err := decodeJSON(r, &req); err != nil {
-			// 请求不合法，回非法请求并不进入业务。
-			writeBadRequest(w, err)
-			return
-		}
-		// 带来的身份必须合法，否则拒绝新建。
-		cid, err := uuid.Parse(req.ID)
-		// 解析失败则拒绝，不用这个残缺的值继续。
-		if err != nil {
-			// 编号不合法，回非法请求并不进入业务。
-			writeBadRequest(w, errInvalidID)
-			return
-		}
-		// 公钥可以不带，带了就必须是规定长度。
-		pub, err := decodeOptionalPublicKey(req.PublicKey)
-		// 上一步没通过则停止，不把失败写成成功。
-		if err != nil {
-			// 把失败译成状态回给调用方，不写成功。
-			writeErr(w, err)
-			return
-		}
-		// 按修订向前落本厂绑定，公钥可空。
-		row, err := svc.Node.RegisterBinding(r.Context(), bearer(r), cid, req.Name, pub, req.BindingRevision)
-		// 上一步没通过则停止，不把失败写成成功。
-		if err != nil {
-			// 把失败译成状态回给调用方，不写成功。
-			writeErr(w, err)
-			return
-		}
-		// 创建成功，把新记录回给调用方。
-		writeJSON(w, http.StatusCreated, row)
 	})
 }
 

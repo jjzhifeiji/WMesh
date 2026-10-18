@@ -165,6 +165,24 @@ func (s *Channel) ReportFactoryRelease(ctx context.Context, factoryID uuid.UUID,
 
 // IssueContentLease 给该厂签发或续期内容租约；同一把 L，窗口最多 24 小时。
 func (s *Channel) IssueContentLease(ctx context.Context, factoryID uuid.UUID) (ContentLease, error) {
+	// 先看厂状态，注销的厂不能再续租解密文。
+	fac, err := s.store.FactoryByID(ctx, factoryID)
+	// 名录里没了与注销同口径，WAN 这侧收回租约。
+	if errors.Is(err, domain.ErrNotFound) {
+		// 租约被拒就留审计。
+		_ = s.audit(ctx, nil, nil, &factoryID, "content_lease", factoryID.String(), audit.Deny)
+		return ContentLease{}, domain.ErrFactoryRetired
+	}
+	// 读名录失败就停，不能在状态不明时发钥。
+	if err != nil {
+		return ContentLease{}, err
+	}
+	// 停用的厂还能重新启用，照常续租；注销则拒绝。
+	if fac.Status == FactoryRetired {
+		// 租约被拒就留审计。
+		_ = s.audit(ctx, nil, nil, &factoryID, "content_lease", factoryID.String(), audit.Deny)
+		return ContentLease{}, domain.ErrFactoryRetired
+	}
 	// 同一把 L 续期，窗口重新算 24 小时。
 	lease, err := s.store.IssueContentLease(ctx, factoryID)
 	// 失败则对方解不开或用不了。

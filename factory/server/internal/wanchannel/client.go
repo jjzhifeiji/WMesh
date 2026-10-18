@@ -117,6 +117,9 @@ type LeaseHandler func(Lease) error
 // RetractHandler 落地 WAN 推来的平台级删除撤回；失败不拆连接。
 type RetractHandler func(assetID uuid.UUID) error
 
+// HaveHandler 问本厂是否已收下这一修订的闭包或模版；已有就不再拉正文、不再记审计。
+type HaveHandler func(typ string, id uuid.UUID, revision int64) (bool, error)
+
 // SyncRequest 是厂端向 WAN 要当前快照的控制面请求。
 type SyncRequest struct {
 	Typ  string // sync_closures / sync_templates

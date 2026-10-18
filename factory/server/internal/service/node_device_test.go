@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"wmesh/factory/internal/platform/audit"
 	"wmesh/factory/internal/platform/domain"
 	"wmesh/factory/internal/platform/id"
@@ -673,6 +675,69 @@ func TestPersonLoginLogsKeepDeviceAndWifi(t *testing.T) {
 	}
 }
 
+// 验收网络名和臂号带 WM2 的在场上报照常记进登录记录
+func TestPresenceWithWM2RecordsLogin(t *testing.T) {
+	// 准备空上下文，后续调用都挂在这上面
+	ctx := context.Background()
+	// 起一套测试库和厂服务，起不来则本例无法开始
+	h := New(t)
+	// 建厂并种初始超管，失败则本步验收不能继续
+	seed, fac, err := h.Provision(ctx, "sa", "超管")
+	// 建厂并种初始超管失败就停，避免带着错误继续验
+	if err != nil {
+		// 建厂并种初始超管失败就把原因打出并停掉本例
+		t.Fatal(err)
+	}
+	// 激活初始超管失败就停，避免带着错误继续验
+	if err := fac.Activate(ctx, "sa", seed.ActivationToken, "sa-pass"); err != nil {
+		// 激活初始超管失败就把原因打出并停掉本例
+		t.Fatal(err)
+	}
+	// 登录取出令牌，登不上则后面没有身份
+	saTok := mustLogin(t, ctx, fac, "sa", "sa-pass")
+	// 建人并授角色，失败则夹具缺这个身份
+	op := mustCreateRole(t, ctx, fac, saTok, "op", "op-pass", factory.RoleOperator, factory.ScopeFactory, nil)
+	// 新开一个身份，避免和别的绑定撞号
+	cid := id.New()
+	// 生成焊机密钥，失败则绑定无法开始
+	pub, _, err := nodekey.Generate()
+	// 生成焊机密钥失败就停，避免带着错误继续验
+	if err != nil {
+		// 生成焊机密钥失败就把原因打出并停掉本例
+		t.Fatal(err)
+	}
+	// 接受焊机绑定失败就停，避免带着错误继续验
+	if _, err := fac.AcceptBinding(ctx, cid, "焊机A", pub, 1); err != nil {
+		// 接受焊机绑定失败就把原因打出并停掉本例
+		t.Fatal(err)
+	}
+	// 钉一个带 WM2 的臂号，失败则上报对不上设备
+	if _, err := fac.RegisterDevice(ctx, saTok, cid, "ARM-WM2"); err != nil {
+		// 登记机械臂号失败就把原因打出并停掉本例
+		t.Fatal(err)
+	}
+
+	// 网络名和臂号都带 WM2 的在场上报
+	raw, _ := json.Marshal(map[string]any{
+		"typ": "presence", "version": 52, "versionName": "6.1.1",
+		"deviceSerial": "ARM-WM2", "networkName": "WM2-Line",
+	})
+	// 送上应用上报，被当成夹带就记不进登录
+	fac.HandleAppUp(ctx, op.acc.ID, raw)
+	// 列出人员登录记录，失败则本步验收不能继续
+	rows, err := fac.ListPersonLogins(ctx, saTok, op.acc.ID)
+	// 没记成一条通道登录或网络名不对就失败
+	if err != nil || len(rows) != 1 || rows[0].Kind != factory.LoginKindMQTT || rows[0].NetworkName != "WM2-Line" {
+		// 带 WM2 的上报被丢了，打出登录记录
+		t.Fatalf("wm2 presence %+v %v", rows, err)
+	}
+	// 臂号要对上这台焊机，对不上即上报没认出设备
+	if rows[0].DeviceSerial != "ARM-WM2" || rows[0].ClientID == nil || *rows[0].ClientID != cid {
+		// 设备对不上就失败，打出这条记录
+		t.Fatalf("wm2 device %+v", rows[0])
+	}
+}
+
 // 验收平板登录发解钥且不要求臂号，缺钥即失败
 func TestPadLoginIssuesUnwrapKeyWithoutSerial(t *testing.T) {
 	// 准备空上下文，后续调用都挂在这上面
@@ -1025,5 +1090,130 @@ func TestSecondPadLoginRevokesOldAppToken(t *testing.T) {
 				t.Fatalf("other person token: %v", err)
 			}
 		})
+	}
+}
+
+// 通道落绑定：撞号、公钥不符、修订过旧只跳过这一台，后面照常落库，对账也不作废
+func TestApplyWANBindingSkipsConflicts(t *testing.T) {
+	// 准备空上下文，后续调用都挂在这上面
+	ctx := context.Background()
+	// 起一套测试库和厂服务，起不来则本例无法开始
+	h := New(t)
+	// 建厂并种初始超管，失败则本步验收不能继续
+	_, fac, err := h.Provision(ctx, "sa", "超管")
+	// 建厂失败就停，避免带着错误继续验
+	if err != nil {
+		// 建厂失败就把原因打出并停掉本例
+		t.Fatal(err)
+	}
+	// 生成六把焊机公钥，第五把专拿来冒充换钥
+	keys := make([][]byte, 6)
+	// 逐把生成，任何一把失败就停
+	for i := range keys {
+		// 生成焊机密钥，失败则绑定无法开始
+		pub, _, err := nodekey.Generate()
+		// 生成焊机密钥失败就停，避免带着错误继续验
+		if err != nil {
+			// 生成焊机密钥失败就把原因打出并停掉本例
+			t.Fatal(err)
+		}
+		// 记下这把公钥，后面按序号取用
+		keys[i] = pub
+	}
+	// A 已钉臂号，B 撞 A 的号，K 公钥不符，S 修订过旧，D 是正常的一台
+	cidA, cidB, cidK, cidS, cidD := id.New(), id.New(), id.New(), id.New(), id.New()
+	// 先把 A 随绑定补上 ARM-1，本机没号时应补上
+	if err := fac.ApplyWANBinding(ctx, factory.WANBinding{ClientID: cidA, Name: "焊机A", PublicKey: keys[0], Revision: 1, DeviceSerial: "ARM-1"}); err != nil {
+		// A 落不上就把原因打出并停掉本例
+		t.Fatalf("bind a: %v", err)
+	}
+	// K 先以原公钥落下，后面换钥重推应被跳过
+	if err := fac.ApplyWANBinding(ctx, factory.WANBinding{ClientID: cidK, Name: "焊机K", PublicKey: keys[2], Revision: 1}); err != nil {
+		// K 落不上就把原因打出并停掉本例
+		t.Fatalf("bind k: %v", err)
+	}
+	// S 先落到修订三，后面修订二重推应被跳过
+	if err := fac.ApplyWANBinding(ctx, factory.WANBinding{ClientID: cidS, Name: "焊机S", PublicKey: keys[3], Revision: 3}); err != nil {
+		// S 落不上就把原因打出并停掉本例
+		t.Fatalf("bind s: %v", err)
+	}
+
+	// 模拟回连一轮：三台冲突排在前面，正常的 D 排在最后
+	round := []factory.WANBinding{
+		{ClientID: cidB, Name: "焊机B", PublicKey: keys[1], Revision: 1, ShortCode: "C0011", DeviceSerial: "ARM-1"},
+		{ClientID: cidK, Name: "焊机K", PublicKey: keys[4], Revision: 2},
+		{ClientID: cidS, Name: "焊机S-旧", PublicKey: keys[3], Revision: 2},
+		{ClientID: cidD, Name: "焊机D", PublicKey: keys[5], Revision: 1, ShortCode: "C0012", DeviceSerial: "ARM-4"},
+	}
+	// 对账名单先放上 A，后面每落一台就加一台
+	keep := []uuid.UUID{cidA}
+	// 逐台落下，冲突也不能报错拖垮整轮
+	for _, in := range round {
+		// 冲突的设备应当只被跳过，报错即失败
+		if err := fac.ApplyWANBinding(ctx, in); err != nil {
+			// 单台冲突中止整轮就失败，通道会进不了常驻循环
+			t.Fatalf("apply %s: %v", in.Name, err)
+		}
+		// 跳过的设备也留在对账名单里
+		keep = append(keep, in.ClientID)
+	}
+	// 按名单对账，名单里的设备都不该被作废
+	if err := fac.ReconcileBindings(ctx, keep); err != nil {
+		// 对账失败就把原因打出并停掉本例
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	// 逐台读回，核对状态、修订、臂号和短码
+	read := func(cid uuid.UUID) factory.Client {
+		// 读回这台设备，读不到就停
+		c, err := fac.Store().ClientByID(ctx, cid)
+		// 读不到说明落库或对账出了错
+		if err != nil {
+			// 读设备失败就把原因打出并停掉本例
+			t.Fatalf("read %s: %v", cid, err)
+		}
+		return c
+	}
+	// A 仍有效且保留 ARM-1
+	if a := read(cidA); a.Status != factory.ClientStatusBound || a.DeviceSerial != "ARM-1" {
+		// A 的号被抢或被作废就失败
+		t.Fatalf("a %+v", a)
+	}
+	// B 绑定和短码落下，但撞号的臂号不补
+	if b := read(cidB); b.Status != factory.ClientStatusBound || b.DeviceSerial != "" || b.ShortCode != "C0011" {
+		// B 被作废、抢到号或短码没落就失败
+		t.Fatalf("b %+v", b)
+	}
+	// K 保持原公钥和修订一，没被换钥也没被作废
+	if k := read(cidK); k.Status != factory.ClientStatusBound || k.BindingRevision != 1 || string(k.PublicKey) != string(keys[2]) {
+		// K 被换钥、升修订或作废就失败
+		t.Fatalf("k %+v", k)
+	}
+	// S 保持修订三和原名，旧帧没覆盖也没被作废
+	if s := read(cidS); s.Status != factory.ClientStatusBound || s.BindingRevision != 3 || s.Name != "焊机S" {
+		// S 被旧帧覆盖或作废就失败
+		t.Fatalf("s %+v", s)
+	}
+	// 排在冲突后面的 D 照常落下臂号和短码
+	if d := read(cidD); d.Status != factory.ClientStatusBound || d.DeviceSerial != "ARM-4" || d.ShortCode != "C0012" {
+		// D 没落全说明冲突拖累了后面的设备
+		t.Fatalf("d %+v", d)
+	}
+
+	// 取一个已取消的上下文，模拟库连不上
+	dead, cancel := context.WithCancel(ctx)
+	// 立即取消，后面的库操作都会失败
+	cancel()
+	// 新开一台身份，库错时它不该落下
+	cidX := id.New()
+	// 库错不是单台冲突，必须交回让通道重连
+	if err := fac.ApplyWANBinding(dead, factory.WANBinding{ClientID: cidX, Name: "焊机X", Revision: 1}); err == nil {
+		// 库错被吞掉就失败，通道会以为已经落下
+		t.Fatal("db error swallowed")
+	}
+	// 库错的那台不该留在本厂名录里
+	if _, err := fac.Store().ClientByID(ctx, cidX); !errors.Is(err, domain.ErrNotFound) {
+		// 库错却落下了设备就失败
+		t.Fatalf("x landed: %v", err)
 	}
 }

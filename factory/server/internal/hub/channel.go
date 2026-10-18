@@ -331,41 +331,26 @@ func (h *Hub) dialHold(ctx context.Context, factoryID uuid.UUID) error {
 	}, func(in wanchannel.ClientIntent) error { // 绑定或作废落到本厂，缺身份则拒绝这次。
 		// WAN 分配或改分：本厂直接落库，不必人手抄身份和公钥。
 		if in.Typ == "client_void" {
-			// 作废只解除绑定，没有这份就当已经完成。
-			err := svc.Node.VoidBinding(ctx, in.ClientID)
+			// 带上作废指令的修订，迟到的旧作废不能把已落下的新绑定作废。
+			err := svc.Node.ApplyWANVoid(ctx, in.ClientID, in.Revision)
 			// 本来就没有这份绑定，当作废已经完成。
 			if errors.Is(err, domain.ErrNotFound) {
 				return nil
 			}
 			return err
 		}
-		// 把分配或改分落库，失败则平台会再推。
-		_, err := svc.Node.AcceptBinding(ctx, in.ClientID, in.Name, in.PublicKey, in.Revision)
-		// 绑定落不上就退回，平台会再推一次。
-		if err != nil {
-			return err
-		}
-		// 带了短码才写入，空的不去清掉已有短码。
-		if in.ShortCode != "" {
-			// 短码写不进去就退回，避免和平台对不上。
-			if err := svc.Store().PutClientShortCode(ctx, in.ClientID, in.ShortCode); err != nil {
-				return err
-			}
-		}
-		// WAN 登记的识别号随绑定落到本厂，供连臂时匹配。
-		if strings.TrimSpace(in.DeviceSerial) != "" {
-			// WAN 名录是识别号的真相，必须覆盖；改成不覆盖会让旧号回推失败、通道反复重拨。
-			_, err = svc.Store().PinDeviceSerial(ctx, in.ClientID, in.DeviceSerial, true)
-			return err
-		}
-		return nil
+		// 落绑定、短码和臂号都交给本厂服务；单台冲突它只记日志跳过，库错才退回重连。
+		return svc.Node.ApplyWANBinding(ctx, service.WANBinding{
+			ClientID: in.ClientID, Name: in.Name, PublicKey: in.PublicKey, Revision: in.Revision,
+			ShortCode: in.ShortCode, DeviceSerial: in.DeviceSerial,
+		})
 	}, func(keep []uuid.UUID) error { // 按索引对账仍有效的绑定，漏掉的应作废。
 		// 漏掉的绑定应作废，失败则退出重连。
 		return svc.Node.ReconcileBindings(ctx, keep)
-	}, func(raw json.RawMessage) error { // 闭包正文落到只读副本，失败不断开通道。
-		// 已发布平台级：写入只读副本，失败只记日志，不断通道。
+	}, func(raw json.RawMessage) error { // 闭包正文落到只读副本，收不下交回通道补拉。
+		// 已发布平台级：写入只读副本；收不下交回通道，它分辨内容坏还是该补拉。
 		var snap service.ClosureSnapshot
-		// 闭包正文解不开只记日志，不去覆盖已有副本。
+		// 闭包正文解不开只记日志，重拉也一样解不开。
 		if err := json.Unmarshal(raw, &snap); err != nil {
 			// 记下坏的闭包正文，连接继续留着。
 			slog.Warn("platform closure json", "factory", factoryID, "err", err)
@@ -375,27 +360,19 @@ func (h *Hub) dialHold(ctx context.Context, factoryID uuid.UUID) error {
 		if !closureHasBody(snap) {
 			return nil
 		}
-		// 写入只读副本失败只记日志，不断开通道。
-		if err := svc.Closure.AcceptPlatformDelivery(ctx, snap); err != nil {
-			// 记下没能收下闭包，连接继续留着。
-			slog.Warn("accept platform closure", "factory", factoryID, "err", err)
-		}
-		return nil
-	}, func(raw json.RawMessage) error { // 模版落到只读副本，不改已有正文。
-		// 当前内容模版：写入只读副本，不改已有正文；失败只记日志。
+		// 收不下就交回：内容坏的通道只记日志，库错或租约未到按退避补拉。
+		return svc.Closure.AcceptPlatformDelivery(ctx, snap)
+	}, func(raw json.RawMessage) error { // 模版落到只读副本，收不下交回通道补拉。
+		// 当前内容模版：写入只读副本，不改已有正文；收不下交回通道。
 		var snap service.TemplateSnapshot
-		// 模版解不开只记日志，不改已有正文。
+		// 模版解不开只记日志，重拉也一样解不开。
 		if err := json.Unmarshal(raw, &snap); err != nil {
 			// 记下坏的模版正文，连接继续留着。
 			slog.Warn("content template json", "factory", factoryID, "err", err)
 			return nil
 		}
-		// 写入模版副本失败只记日志，不断开。
-		if err := svc.Closure.AcceptTemplateDelivery(ctx, snap); err != nil {
-			// 记下没能收下模版，连接继续留着。
-			slog.Warn("accept content template", "factory", factoryID, "err", err)
-		}
-		return nil
+		// 收不下就交回：内容坏的通道只记日志，库错等按退避补拉。
+		return svc.Closure.AcceptTemplateDelivery(ctx, snap)
 	}, func(raw json.RawMessage) error { // 软件通知交给本厂，没字节再按版本去拉。
 		// 软件包：本厂没有完整副本才去拉，失败只记日志，不断通道。
 		var offer service.SoftwareOffer
@@ -420,34 +397,41 @@ func (h *Hub) dialHold(ctx context.Context, factoryID uuid.UUID) error {
 			slog.Warn("accept software", "factory", factoryID, "err", err)
 		}
 		return nil
-	}, func(assetID uuid.UUID) error { // 平台删除落到本厂列表，失败只记日志。
-		// 云端删除：列表撤回，失败只记日志，不断通道。
-		if err := svc.Closure.RetractPlatformDelivery(ctx, assetID); err != nil {
-			// 记下没能撤回副本，连接继续留着。
-			slog.Warn("retract platform replica", "factory", factoryID, "err", err)
-		}
-		return nil
-	}, func(raw json.RawMessage) error { // 按平台目录对齐本厂副本，失败只记日志。
+	}, func(assetID uuid.UUID) error { // 平台删除落到本厂列表，失败交回通道补拉。
+		// 云端删除：列表撤回；撤不下交回通道，它标全量按退避补拉。
+		return svc.Closure.RetractPlatformDelivery(ctx, assetID)
+	}, func(raw json.RawMessage) error { // 按平台目录对齐本厂副本，失败交回通道补拉。
 		// 云端目录搬家：按 WAN 文件夹身份对齐本厂已到达的副本。
 		var layout service.PlatformFSLayout
-		// 目录解不开只记日志，不去改本厂文件夹。
+		// 目录解不开只记日志，重拉也一样解不开。
 		if err := json.Unmarshal(raw, &layout); err != nil {
 			// 记下坏的目录正文，连接继续留着。
 			slog.Warn("platform fs json", "factory", factoryID, "err", err)
 			return nil
 		}
-		// 目录对齐失败只记日志，不断开通道。
-		if err := svc.Assets.ApplyPlatformFSLayout(ctx, layout); err != nil {
-			// 记下没能对齐目录，连接继续留着。
-			slog.Warn("apply platform fs", "factory", factoryID, "err", err)
-		}
-		return nil
+		// 对不齐就交回：内容坏的通道只记日志，库错等按种类补拉。
+		return svc.Assets.ApplyPlatformFSLayout(ctx, layout)
 	}, func(lease wanchannel.Lease) error { // 把解包钥放进内存，用来解开本厂正文。
 		// 把 WAN 发来的解包钥放进内存，解开本厂 MK。
 		return svc.ApplyContentLease(ctx, lease.Key, lease.NotAfter)
 	}, func(typ, _, kind, assetID string) (json.RawMessage, json.RawMessage, error) { // 升档问询交给本厂回答，失败不断开去重试。
 		// 按问询类型回清单或快照，失败则这问失败。
 		return h.answerAsset(ctx, svc, typ, kind, assetID)
+	}, func(typ string, id uuid.UUID, revision int64) (bool, error) { // 问本厂是否已收下这一修订，已有就不再拉。
+		// 闭包和模版各按自己的副本判断，别的一律当没有。
+		switch typ {
+		// 闭包看根修订、撤回和依赖修订。
+		case wanchannel.CmdClosure:
+			// 根在、未撤回、依赖都在才算已有。
+			return svc.Closure.HasPlatformDelivery(ctx, id, revision)
+		// 模版看同修订是否已收齐。
+		case wanchannel.CmdTemplate:
+			// 同修订在且收齐才算已有。
+			return svc.Closure.HasTemplateDelivery(ctx, id, revision)
+		// 别的指令不跳过，照常去拉。
+		default:
+			return false, nil
+		}
 	}, out)
 	// 注销若发生在租约之前，也要落到本厂库。
 	if errors.Is(err, domain.ErrFactoryRetired) {

@@ -158,13 +158,33 @@ func Drop(admin *gorm.DB, name string) error {
 func OpenMigrated(dsn string) (*gorm.DB, error) {
 	// 把库日志关掉，免得刷屏。
 	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
-	// 没能把库日志关掉，免得刷屏就停，避免带着残缺继续。
+	// 没能打开厂库就停，带着半开的池也要先关掉。
 	if err != nil {
+		// 打开出错时也可能留下已开的池，关掉免得每次重试漏一池。
+		closePool(db)
 		return nil, err
 	}
 	// 没能把库结构迁到当前版本就停，避免带着残缺继续。
 	if err := migrate.Up(db, migrations.FS, "."); err != nil {
+		// 迁移失败不交出库，池要先关掉，免得重试越积越多。
+		closePool(db)
 		return nil, err
 	}
 	return db, nil
+}
+
+// closePool 关掉打开或迁移失败时留下的连接池，原错误照旧交回。
+func closePool(db *gorm.DB) {
+	// 没拿到库对象就没有池可关。
+	if db == nil {
+		return
+	}
+	// 取出底层连接池好去关掉。
+	sqlDB, err := db.DB()
+	// 取不出底层连接池就没有可关的，直接回去。
+	if err != nil {
+		return
+	}
+	// 关池出错不盖过原错误，调用方只需看根因。
+	_ = sqlDB.Close()
 }

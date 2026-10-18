@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
-	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -111,25 +110,17 @@ func TestClientChannelHTTP(t *testing.T) {
 	cid := id.New().String()
 	// 分配一个新身份，避免和别的测试撞上。
 	cidB := id.New().String()
-	// 把公钥收成文本，才能放进绑定请求。
-	pk := base64.StdEncoding.EncodeToString(pub)
-	// 登记或查看绑定设备。
-	code, body = do(t, srv, "POST", base+"/clients", saTok, `{"id":"`+cid+`","name":"焊机","publicKey":"`+pk+`","bindingRevision":1}`)
-	// 不是已创建则本测失败。
-	if code != http.StatusCreated {
+	// 绑定只认 WAN 通道这一个入口，测试直接走它预置。
+	if _, err := svc.Node.AcceptBinding(context.Background(), uuid.MustParse(cid), "焊机", pub, 1); err != nil {
 		// 与预期不符就停测，避免后面连环误判。
-		t.Fatalf("bind %d %s", code, body)
+		t.Fatalf("bind: %v", err)
 	}
 	// 再生成一台的公钥，用来验证他机被拒绝。
 	pubB, _, _ := ed25519.GenerateKey(rand.Reader)
-	// 把公钥收成文本，才能放进绑定请求。
-	pkB := base64.StdEncoding.EncodeToString(pubB)
-	// 登记或查看绑定设备。
-	code, body = do(t, srv, "POST", base+"/clients", saTok, `{"id":"`+cidB+`","name":"焊机B","publicKey":"`+pkB+`","bindingRevision":1}`)
-	// 不是已创建则本测失败。
-	if code != http.StatusCreated {
+	// 另一台同样走 WAN 通道入口预置，用来验他机被拒。
+	if _, err := svc.Node.AcceptBinding(context.Background(), uuid.MustParse(cidB), "焊机B", pubB, 1); err != nil {
 		// 与预期不符就停测，避免后面连环误判。
-		t.Fatalf("bind b %d %s", code, body)
+		t.Fatalf("bind b: %v", err)
 	}
 	// 把机械臂号钉到这台设备上。
 	code, body = do(t, srv, "POST", base+"/clients/"+cid+"/device", saTok, `{"deviceSerial":"ARM-1"}`)

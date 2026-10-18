@@ -79,13 +79,51 @@ func (s *Closure) AcceptPlatformDelivery(ctx context.Context, snap ClosureSnapsh
 	return nil
 }
 
+// HasPlatformDelivery 本厂已收下这一修订的闭包：根在且未撤回，依赖各修订也都在。
+func (s *Closure) HasPlatformDelivery(ctx context.Context, assetID uuid.UUID, revision int64) (bool, error) {
+	// 读根这一修订的副本元数据，不解正文
+	root, err := s.store.ReplicaMetaByIDRev(ctx, assetID, revision)
+	// 没有这一修订就要去拉
+	if errors.Is(err, domain.ErrNotFound) {
+		return false, nil
+	}
+	// 读失败交回，通道照常去拉
+	if err != nil {
+		return false, err
+	}
+	// 已撤回的要重收，不能跳过
+	if root.Retracted {
+		return false, nil
+	}
+	// 逐个依赖核对钉住的修订在不在
+	for _, d := range root.Deps {
+		// 读依赖这一修订的元数据，缺了就要整包重收
+		_, err := s.store.ReplicaMetaByIDRev(ctx, d.ID, d.Revision)
+		// 依赖修订没收过就算没有
+		if errors.Is(err, domain.ErrNotFound) {
+			return false, nil
+		}
+		// 读失败交回，通道照常去拉
+		if err != nil {
+			return false, err
+		}
+	}
+	return true, nil
+}
+
 // RetractPlatformDelivery 云端删除后撤回展示；没有副本也算成功，已钉修订仍可读。
 func (s *Closure) RetractPlatformDelivery(ctx context.Context, assetID uuid.UUID) error {
 	// 撤回展示；没有副本也算成功，已钉修订仍可读。
-	if err := s.store.RetractReplicas(ctx, assetID); err != nil {
+	changed, err := s.store.RetractReplicas(ctx, assetID)
+	// 撤不下就记拒绝并交回，通道会补拉
+	if err != nil {
 		// 记下撤回闭包被拒绝，写失败不改变结果
 		_ = s.audit(ctx, nil, nil, "retract_closure", assetID.String(), audit.Deny)
 		return err
+	}
+	// 早已撤回或没收过，重复送达不再记审计
+	if !changed {
+		return nil
 	}
 	// 撤回闭包成功后记审计，再把结果交回
 	return s.audit(ctx, nil, nil, "retract_closure", assetID.String(), audit.Allow)

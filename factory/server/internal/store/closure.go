@@ -337,17 +337,28 @@ func (s *Store) ListReplicas(ctx context.Context) ([]AssetReplica, error) {
 	return out, nil
 }
 
-// RetractReplicas 把该身份全部副本标成撤回；没有副本也算成功。
-func (s *Store) RetractReplicas(ctx context.Context, assetID uuid.UUID) error {
+// RetractReplicas 把该身份还没撤回的副本标成撤回，交回有没有改到；文件节点照常删，没有副本也算成功。
+func (s *Store) RetractReplicas(ctx context.Context, assetID uuid.UUID) (bool, error) {
+	// 先当没改到，事务里改到了再改过来。
+	changed := false
 	// 放进同一事务，中途失败就整单回滚。
-	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// 更新指定列失败就停，避免带着错误继续。
-		if err := tx.Model(&replicaRow{}).Where("id = ?", assetID).Update("retracted", true).Error; err != nil {
-			return err
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// 只改还没撤回的行，重复送达改不到就不算新撤回。
+		res := tx.Model(&replicaRow{}).Where("id = ? AND retracted = ?", assetID, false).Update("retracted", true)
+		// 更新失败就停，避免带着错误继续。
+		if res.Error != nil {
+			return res.Error
 		}
+		// 记下这次有没有真改到行。
+		changed = res.RowsAffected > 0
 		// 删掉匹配行，库错误原样交回。
 		return tx.Where("asset_id = ? AND node_kind = ?", assetID, FSNodeFile).Delete(&fsNodeRow{}).Error
 	})
+	// 事务失败就交回库错误，不算撤回过。
+	if err != nil {
+		return false, err
+	}
+	return changed, nil
 }
 
 // TamperReplicaContent 只改正文不改摘要，供完整性夹具使用。

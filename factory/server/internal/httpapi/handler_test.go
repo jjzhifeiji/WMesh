@@ -292,21 +292,26 @@ func TestFactoryHTTP(t *testing.T) {
 		// 与预期不符就停测，避免后面连环误判。
 		t.Fatal(err)
 	}
-	// 把公钥收成文本，才能放进绑定请求。
-	pk := base64.StdEncoding.EncodeToString(pub)
 	// 分配一个新身份，避免和别的测试撞上。
-	cid := id.New().String()
-	// 登记或查看绑定设备。
-	code, body = do(t, srv, "POST", base+"/clients", tok, `{"id":"`+cid+`","name":"焊机-1","publicKey":"`+pk+`","bindingRevision":1}`)
-	// 不是已创建则本测失败。
-	if code != http.StatusCreated {
+	cidID := id.New()
+	// 转成文本，后面拼路径和核对名录要用。
+	cid := cidID.String()
+	// 绑定只认 WAN 通道这一个入口，测试直接走它预置。
+	if _, err := svc.Node.AcceptBinding(context.Background(), cidID, "焊机-1", pub, 1); err != nil {
 		// 与预期不符就停测，避免后面连环误判。
-		t.Fatalf("accept client %d %s", code, body)
+		t.Fatalf("accept client: %v", err)
+	}
+	// 超管手填修订登记设备的口子已撤，应落到兜底的找不到。
+	code, body = do(t, srv, "POST", base+"/clients", tok, `{"id":"`+cid+`","name":"焊机-1","bindingRevision":99}`)
+	// 不是找不到，或正文与预期不符则失败。
+	if code != http.StatusNotFound || gjson(t, body, "error") != "not found" {
+		// 与预期不符就停测，避免后面连环误判。
+		t.Fatalf("manual bind %d %s", code, body)
 	}
 	// 登记或查看绑定设备。
 	code, body = do(t, srv, "GET", base+"/clients", tok, "")
-	// 不是成功，或正文与预期不符则失败。
-	if code != http.StatusOK || !strings.Contains(body, cid) {
+	// 名录里没有这台，或修订被手填改大，则本测失败。
+	if code != http.StatusOK || !strings.Contains(body, cid) || !strings.Contains(body, `"bindingRevision":1,`) {
 		// 与预期不符就停测，避免后面连环误判。
 		t.Fatalf("list clients %d %s", code, body)
 	}

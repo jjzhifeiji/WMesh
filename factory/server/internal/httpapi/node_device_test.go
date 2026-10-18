@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
-	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -96,16 +95,12 @@ func TestClientDeviceLoginHTTP(t *testing.T) {
 		// 与预期不符就停测，避免后面连环误判。
 		t.Fatal(err)
 	}
-	// 把公钥收成文本，才能放进绑定请求。
-	pk := base64.StdEncoding.EncodeToString(pub)
 	// 分配一个新身份，避免和别的测试撞上。
 	cid := id.New().String()
-	// 登记或查看绑定设备。
-	code, body = do(t, srv, "POST", base+"/clients", tok, `{"id":"`+cid+`","name":"焊机","publicKey":"`+pk+`","bindingRevision":1}`)
-	// 不是已创建则本测失败。
-	if code != http.StatusCreated {
+	// 绑定只认 WAN 通道这一个入口，测试直接走它预置。
+	if _, err := svc.Node.AcceptBinding(context.Background(), uuid.MustParse(cid), "焊机", pub, 1); err != nil {
 		// 与预期不符就停测，避免后面连环误判。
-		t.Fatalf("bind %d %s", code, body)
+		t.Fatalf("bind: %v", err)
 	}
 	// 补登这台焊机的短码，示教器自带的 C 段号才会被认。
 	if err := svc.Store().PutClientShortCode(context.Background(), uuid.MustParse(cid), "C0008"); err != nil {

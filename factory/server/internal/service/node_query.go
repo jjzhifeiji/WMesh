@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -25,43 +24,6 @@ type RuntimeGrantView struct {
 	NotBefore time.Time `json:"notBefore"` // 生效时间
 	NotAfter  time.Time `json:"notAfter"`  // 失效时间
 	CreatedAt time.Time `json:"createdAt"` // 写入时间
-}
-
-// RegisterBinding 由本厂有效超管登记 WAN 已送达的 Client 绑定。
-func (s *Node) RegisterBinding(ctx context.Context, token string, clientID uuid.UUID, name string, publicKey []byte, revision int64) (Client, error) {
-	// 先确认会话仍有效，过期或停用直接拒绝
-	acc, err := s.RequireActive(ctx, token)
-	// 会话无效或账号已停用，拒绝继续
-	if err != nil {
-		return Client{}, err
-	}
-	// 只有工厂超管能登记 WAN 已送达的绑定。失败一律记拒绝。
-	if err := s.can(ctx, acc, permManageAccount, nil); err != nil {
-		// 不是工厂超管，记下登记绑定被拒绝，写失败不改变结果
-		_ = s.audit(ctx, &acc.ID, nil, "accept_binding", clientID.String(), audit.Deny)
-		return Client{}, err
-	}
-	// 名字或识别号为空则拒绝或去名录补
-	if strings.TrimSpace(name) != "" {
-		// 去掉空白并限制名字长度
-		name, err = normalizeClientName(name)
-		// 名字空或太长，拒绝改名
-		if err != nil {
-			// 记下登记绑定被拒绝，写失败不改变结果
-			_ = s.audit(ctx, &acc.ID, nil, "accept_binding", clientID.String(), audit.Deny)
-			return Client{}, err
-		}
-	}
-	// 修订只向前。
-	row, err := s.store.AcceptBinding(ctx, clientID, name, publicKey, revision)
-	// 落库失败则本厂仍不认这台
-	if err != nil {
-		// 记下登记绑定被拒绝，写失败不改变结果
-		_ = s.audit(ctx, &acc.ID, nil, "accept_binding", clientID.String(), audit.Deny)
-		return Client{}, err
-	}
-	// 登记绑定成功后记审计，再把结果交回
-	return row, s.audit(ctx, &acc.ID, nil, "accept_binding", clientID.String(), audit.Allow)
 }
 
 // RenameClient 由本厂有效超管改给人看的名字，不改归属。

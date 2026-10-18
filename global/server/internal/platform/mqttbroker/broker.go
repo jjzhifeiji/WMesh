@@ -29,11 +29,14 @@ type Hooks struct {
 
 // Broker 是 WAN 进程内的 MQTT 服务。
 type Broker struct {
-	server *mqtt.Server           // 内嵌的消息服务
-	addr   string                 // 实际监听地址
-	hooks  Hooks                  // 鉴权和在线交给应用服务
-	mu     sync.Mutex             // 保护等回执的槽位
-	wait   map[string]chan []byte // 厂+问询号，等升档回执
+	server *mqtt.Server               // 内嵌的消息服务
+	addr   string                     // 实际监听地址
+	hooks  Hooks                      // 鉴权和在线交给应用服务
+	mu     sync.Mutex                 // 保护等回执的槽位
+	wait   map[string]chan []byte     // 厂+问询号，等升档回执
+	pmu    sync.Mutex                 // 只护每厂锁和当前连接两张表的取放，不包库写
+	locks  map[uuid.UUID]*sync.Mutex  // 每厂一把锁，同厂上下线按连接先后落库
+	conns  map[uuid.UUID]*mqtt.Client // 每厂当前登记的连接，旧连接晚到的离线据此跳过
 }
 
 // DownTopic 仅该厂可订的下行 Topic。
@@ -66,6 +69,8 @@ func Listen(addr string, hooks Hooks) (*Broker, error) {
 		addr:  ln.Addr().String(),
 		hooks: hooks,
 		wait:  map[string]chan []byte{},
+		locks: map[uuid.UUID]*sync.Mutex{},
+		conns: map[uuid.UUID]*mqtt.Client{},
 	}
 	// 内嵌客户端用于本进程下发，日志丢掉。
 	server := mqtt.New(&mqtt.Options{
@@ -212,6 +217,95 @@ func (b *Broker) deliver(id uuid.UUID, payload []byte) bool {
 	return true
 }
 
+// 取该厂的上下线锁，头一次见到这一厂就新建一把。
+func (b *Broker) factoryLock(id uuid.UUID) *sync.Mutex {
+	// 取放表项前先独占小锁。
+	b.pmu.Lock()
+	// 取完就放开，不让别厂等着。
+	defer b.pmu.Unlock()
+	// 先看这一厂有没有锁。
+	lock := b.locks[id]
+	// 头一次上线就给这一厂配一把。
+	if lock == nil {
+		// 新建一把锁，此后同厂都排在这把上。
+		lock = &sync.Mutex{}
+		// 记进表里，下次同厂取到同一把。
+		b.locks[id] = lock
+	}
+	return lock
+}
+
+// 把本连接登记成该厂当前连接，盖掉之前的。
+func (b *Broker) setConn(id uuid.UUID, cl *mqtt.Client) {
+	// 改登记表前先独占小锁。
+	b.pmu.Lock()
+	// 这一厂此后以本连接为准。
+	b.conns[id] = cl
+	// 登记完就放开小锁。
+	b.pmu.Unlock()
+}
+
+// 登记的仍是本连接才清掉并报真；已被顶掉则不动。
+func (b *Broker) dropConn(id uuid.UUID, cl *mqtt.Client) bool {
+	// 查改登记表前先独占小锁。
+	b.pmu.Lock()
+	// 查改完就放开小锁。
+	defer b.pmu.Unlock()
+	// 登记的已是别的连接，说明本连接被顶掉了。
+	if b.conns[id] != cl {
+		return false
+	}
+	// 本连接就是当前连接，断开后清掉登记。
+	delete(b.conns, id)
+	return true
+}
+
+// 在该厂锁内登记本连接再标在线；已被顶掉的旧连接不登记。
+func (b *Broker) online(id uuid.UUID, cl *mqtt.Client) {
+	// 取该厂的锁，同厂上下线排队、别厂不受影响。
+	lock := b.factoryLock(id)
+	// 占住该厂锁，登记和落库按连接先后来。
+	lock.Lock()
+	// 落库完再放开，同厂后到的上下线接着跑。
+	defer lock.Unlock()
+	// 已被新连接顶掉就不登记，免得盖住新连接。
+	if cl.IsTakenOver() {
+		return
+	}
+	// 记下本连接是这一厂的当前连接。
+	b.setConn(id, cl)
+	// 装了上线回调才去动名录。
+	if b.hooks.Online != nil {
+		// 把这一厂标成在线。
+		b.hooks.Online(id)
+	}
+	// 留下上线记录，方便对通道。
+	slog.Info("factory mqtt online", "factory", id)
+}
+
+// 在该厂锁内只让当前连接标离线；被顶掉的旧连接晚到就跳过。
+func (b *Broker) offline(id uuid.UUID, cl *mqtt.Client) {
+	// 取该厂的锁，和上线用同一把。
+	lock := b.factoryLock(id)
+	// 占住该厂锁，避免和新连接的上线交错。
+	lock.Lock()
+	// 落库完再放开，同厂后到的上下线接着跑。
+	defer lock.Unlock()
+	// 登记的已是新连接，旧连接断开不改名录。
+	if !b.dropConn(id, cl) {
+		// 留下跳过记录，方便对接管时序。
+		slog.Info("factory mqtt stale disconnect skipped", "factory", id)
+		return
+	}
+	// 装了离线回调才去动名录。
+	if b.hooks.Offline != nil {
+		// 把这一厂标成离线。
+		b.hooks.Offline(id)
+	}
+	// 留下离线记录，方便对通道。
+	slog.Info("factory mqtt offline", "factory", id)
+}
+
 // 厂端连接的鉴权钩子，只覆盖要用的回调。
 type factoryHook struct {
 	mqtt.HookBase         // 钩子缺省实现，只覆盖要用的回调
@@ -291,10 +385,10 @@ func (h *factoryHook) OnACLCheck(cl *mqtt.Client, topic string, write bool) bool
 	return topic == DownTopic(fid)
 }
 
-// OnSessionEstablished 名录标在线。
+// OnSessionEstablished 登记本连接为该厂当前连接，名录标在线。
 func (h *factoryHook) OnSessionEstablished(cl *mqtt.Client, _ packets.Packet) {
-	// 本进程或没装上线回调就不动名录。
-	if cl.Net.Inline || h.broker.hooks.Online == nil {
+	// 本进程下发的连接不进名录。
+	if cl.Net.Inline {
 		return
 	}
 	// 会话号就是厂身份。
@@ -303,16 +397,14 @@ func (h *factoryHook) OnSessionEstablished(cl *mqtt.Client, _ packets.Packet) {
 	if err != nil {
 		return
 	}
-	// 把这一厂标成在线。
-	h.broker.hooks.Online(fid)
-	// 留下上线记录，方便对通道。
-	slog.Info("factory mqtt online", "factory", fid)
+	// 按厂排队登记并标在线，旧连接晚到也盖不住新连接。
+	h.broker.online(fid, cl)
 }
 
-// OnDisconnect 名录标离线。
+// OnDisconnect 当前连接断开才标离线，被接管的旧连接跳过。
 func (h *factoryHook) OnDisconnect(cl *mqtt.Client, _ error, _ bool) {
-	// 本进程或没装离线回调就不动名录。
-	if cl.Net.Inline || h.broker.hooks.Offline == nil {
+	// 本进程下发的连接不进名录。
+	if cl.Net.Inline {
 		return
 	}
 	// 会话号就是厂身份。
@@ -321,10 +413,8 @@ func (h *factoryHook) OnDisconnect(cl *mqtt.Client, _ error, _ bool) {
 	if err != nil {
 		return
 	}
-	// 把这一厂标成离线。
-	h.broker.hooks.Offline(fid)
-	// 留下离线记录，方便对通道。
-	slog.Info("factory mqtt offline", "factory", fid)
+	// 只有登记的仍是本连接才标离线。
+	h.broker.offline(fid, cl)
 }
 
 // OnPublished 升档回执交给 Call，其余交给业务。

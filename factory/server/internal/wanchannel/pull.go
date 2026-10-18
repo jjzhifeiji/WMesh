@@ -50,7 +50,7 @@ func (p *puller) get(ctx context.Context, path string, dst any) error {
 	// 补上厂钥签名，没有签名平台会拒绝。
 	p.sign(req)
 	// 送出拉取，网络失败就当平台不可达。
-	res, err := p.client.Do(req)
+	res, err := p.do(req)
 	// 送不出去就当不可达，调用方可以再试。
 	if err != nil {
 		return domain.ErrWANUnreachable
@@ -94,7 +94,7 @@ func (p *puller) post(ctx context.Context, path string, dst any) error {
 	// 补上厂钥签名，没有签名平台会拒绝。
 	p.sign(req)
 	// 送出提交，网络失败就当平台不可达。
-	res, err := p.client.Do(req)
+	res, err := p.do(req)
 	// 送不出去就当不可达，调用方可以再试。
 	if err != nil {
 		return domain.ErrWANUnreachable
@@ -142,7 +142,7 @@ func (p *puller) postJSON(ctx context.Context, path string, payload, dst any) er
 	// 补上厂钥签名，没有签名平台会拒绝。
 	p.sign(req)
 	// 送出上送，网络失败就当平台不可达。
-	res, err := p.client.Do(req)
+	res, err := p.do(req)
 	// 送不出去就当不可达，调用方可以再试。
 	if err != nil {
 		return domain.ErrWANUnreachable
@@ -171,10 +171,24 @@ func (p *puller) postJSON(ctx context.Context, path string, payload, dst any) er
 	return nil
 }
 
+// 送出请求，拿到响应头就按 Date 取时间样本，不等正文。
+func (p *puller) do(req *http.Request) (*http.Response, error) {
+	// 记下发出时刻，往返中点要用。
+	sent := time.Now()
+	// 送出请求，返回时只拿到了头，正文还在路上。
+	res, err := p.client.Do(req)
+	// 拿到头才取样，网络失败没有 Date 可看。
+	if err == nil {
+		// 按回包 Date 记下时差，401、404 也算。
+		sampleClock(sent, res)
+	}
+	return res, err
+}
+
 // 写时间窗签名头。
 func (p *puller) sign(req *http.Request) {
-	// 取当前时间做签名窗，过期会被拒绝。
-	unix := time.Now().Unix()
+	// 按 WAN 校正后的时间签，本机钟偏了也不被时间窗拒绝。
+	unix := wanNow().Unix()
 	// 用签发私钥签这次请求，平台据此认厂。
 	sig := nodekey.Sign(p.priv, nodekey.MQTTConnectPayload(p.factoryID, unix))
 	// 写上工厂身份，平台才知道是哪一家。

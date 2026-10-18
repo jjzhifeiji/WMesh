@@ -128,6 +128,7 @@ func Verify(pub []byte, factoryID, clientID uuid.UUID, raw []byte) (Intent, erro
 }
 
 // HasBody 控制面夹带了正文或成员，视为实现错误。
+// 只按键名判断，不扫原始字节：签名、摘要和网络名里碰巧有 WM2 不算。
 func HasBody(raw []byte) bool {
 	// 先窥一眼有没有正文、成员或包装。
 	var peek map[string]json.RawMessage
@@ -146,19 +147,6 @@ func HasBody(raw []byte) bool {
 	// 带了包装字段就当成控制面夹带了正文。
 	if _, ok := peek["wrap"]; ok {
 		return true
-	}
-	// 交回扫描里面有没有封装魔数的结果。
-	return bytesHasWM2(raw)
-}
-
-// bytesHasWM2 控制面出现 WM2 魔数即视为夹带正文。
-func bytesHasWM2(raw []byte) bool {
-	// 按下标扫过去，直到越界或提前结束。
-	for i := 0; i+3 <= len(raw); i++ {
-		// 连续三个字母对上魔数才算信封。
-		if raw[i] == 'W' && raw[i+1] == 'M' && raw[i+2] == '2' {
-			return true
-		}
 	}
 	return false
 }

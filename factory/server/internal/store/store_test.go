@@ -579,6 +579,76 @@ func TestClientBindingAndGrants(t *testing.T) {
 	}
 }
 
+// 作废设备的旧臂号被别台占用后，以更高修订恢复绑定要成功并清号。
+func TestAcceptBindingReviveClearsTakenSerial(t *testing.T) {
+	// 测试没有取消信号，用空白上下文即可。
+	ctx := context.Background()
+	// 单独起一套厂库，免得用例互相踩到。
+	facDB, facID := testpg.Fresh(t)
+	// 按这家厂的稳定身份打开库。
+	s := store.Open(facDB, facID)
+
+	// 现发旧机身份，它先钉号再被作废。
+	oldID := id.New()
+	// 现发新机身份，它接过旧机的号。
+	newID := id.New()
+	// 现发另一台身份，验旧号没人占时恢复后保留。
+	keepID := id.New()
+	// 逐台接下初始绑定，任何一台失败就停测。
+	for _, cid := range []uuid.UUID{oldID, newID, keepID} {
+		// 接受绑定失败就停测，避免后面没有前提。
+		if _, err := s.AcceptBinding(ctx, cid, "焊机", nil, 1); err != nil {
+			// 接受绑定失败就停测。
+			t.Fatalf("accept %s: %v", cid, err)
+		}
+	}
+	// 旧机先钉上 ARM-1，失败就停测。
+	if _, err := s.PinDeviceSerial(ctx, oldID, "ARM-1", false); err != nil {
+		// 钉号失败就停测。
+		t.Fatalf("pin old: %v", err)
+	}
+	// 另一台钉上 ARM-9，失败就停测。
+	if _, err := s.PinDeviceSerial(ctx, keepID, "ARM-9", false); err != nil {
+		// 钉号失败就停测。
+		t.Fatalf("pin keep: %v", err)
+	}
+	// 逐台作废旧机和另一台，失败就停测。
+	for _, cid := range []uuid.UUID{oldID, keepID} {
+		// 作废失败就停测，避免后面没有前提。
+		if err := s.VoidBinding(ctx, cid); err != nil {
+			// 作废失败就停测。
+			t.Fatalf("void %s: %v", cid, err)
+		}
+	}
+	// 新机接过旧号，作废行不占唯一索引所以应成功。
+	if _, err := s.PinDeviceSerial(ctx, newID, "ARM-1", false); err != nil {
+		// 新机钉旧号失败就停测。
+		t.Fatalf("pin new: %v", err)
+	}
+
+	// 旧机以更高修订恢复绑定，不能再报唯一索引原文。
+	revived, err := s.AcceptBinding(ctx, oldID, "焊机", nil, 2)
+	// 恢复失败、仍作废、修订没升或号没清都算错。
+	if err != nil || revived.Status != store.ClientStatusBound || revived.BindingRevision != 2 || revived.DeviceSerial != "" {
+		// 打出恢复结果，便于看是哪一项不对。
+		t.Fatalf("revive old %+v %v", revived, err)
+	}
+	// 读回新机，确认它的号没被动过。
+	got, err := s.ClientByID(ctx, newID)
+	// 读不到或号变了就停测。
+	if err != nil || got.DeviceSerial != "ARM-1" || got.Status != store.ClientStatusBound {
+		// 新机的号被清就停测。
+		t.Fatalf("new kept %+v %v", got, err)
+	}
+	// 旧号没人占的那台恢复后应保留原号。
+	kept, err := s.AcceptBinding(ctx, keepID, "焊机", nil, 2)
+	// 恢复失败或原号被清都算错。
+	if err != nil || kept.Status != store.ClientStatusBound || kept.DeviceSerial != "ARM-9" {
+		// 打出恢复结果，便于看是哪一项不对。
+		t.Fatalf("revive keep %+v %v", kept, err)
+	}
+}
+
 // 没有解封钥的账号要补一把且保持稳定。
 func TestEnsurePersonUnwrapKeyBackfills(t *testing.T) {
 	// 测试没有取消信号，用空白上下文即可。
