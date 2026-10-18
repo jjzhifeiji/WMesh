@@ -203,7 +203,7 @@ func (s *Closure) packFromMember(ctx context.Context, root ClosureMember) (Closu
 	return snap, nil
 }
 
-// packForPad 只组包，可拉范围由调用方裁：草稿也拉；工艺单独成包；工程只带根和工艺 Id。
+// packForPad 只组包，可拉范围和过站加封由调用方办：草稿也拉；工艺单独成包；工程只带根和工艺 Id。
 func (s *Closure) packForPad(ctx context.Context, assetID uuid.UUID) (ClosureSnapshot, error) {
 	// 组包根优先用本厂原件，否则用副本。
 	root, err := s.loadRootForPack(ctx, assetID)

@@ -54,6 +54,7 @@ func (s *Node) RegisterDevice(ctx context.Context, token string, clientID uuid.U
 }
 
 // LoginOnClient 本厂有效账号在已钉设备号的本机登录并领取人钥；他厂、未绑定、号不对都拒绝。
+// 登录成功后此人别处的示教器令牌作废，网页会话保留。
 func (s *Node) LoginOnClient(ctx context.Context, clientID uuid.UUID, serial, loginName, password string) (ClientSession, error) {
 	// 去掉首尾空白后再做判断
 	loginName = strings.TrimSpace(loginName)
@@ -198,6 +199,12 @@ func (s *Node) LoginOnClient(ctx context.Context, clientID uuid.UUID, serial, lo
 		// 把这一条收进结果，漏了清单就不齐
 		roles = append(roles, g.Role)
 	}
+	// 整次登录成功才作废此人更早的示教器令牌，网页会话保留
+	if err := s.store.DeleteOtherAppSessions(ctx, p.ID, secret.TokenHash(token)); err != nil {
+		// 旧令牌清不掉就连本次新令牌一起作废，失败不打断当前返回
+		_ = s.store.DeleteSessionByTokenHash(ctx, secret.TokenHash(token))
+		return ClientSession{}, err
+	}
 	// 复制一份字节，避免和原来的钥或正文共用底层
 	key := append([]byte(nil), who.UnwrapKey...)
 	return ClientSession{
@@ -228,6 +235,7 @@ type PadSession struct {
 }
 
 // LoginPad 本厂有效账号在厂网登录，领取人钥和设备名录；不校验机械臂号，不占操作员位。
+// 登录成功后此人别处的示教器令牌作废，网页会话保留。
 func (s *Node) LoginPad(ctx context.Context, loginName, password string) (PadSession, error) {
 	// 去掉首尾空白后再做判断
 	loginName = strings.TrimSpace(loginName)
@@ -356,6 +364,12 @@ func (s *Node) LoginPad(ctx context.Context, loginName, password string) (PadSes
 	// 审计没写下则整次不算完成
 	if err := s.audit(ctx, &p.ID, &loginName, "pad_login", s.store.FactoryID().String(), audit.Allow); err != nil {
 		// 只拿令牌摘要对会话，原文不入库，失败不打断当前返回
+		_ = s.store.DeleteSessionByTokenHash(ctx, secret.TokenHash(token))
+		return PadSession{}, err
+	}
+	// 整次登录成功才作废此人更早的示教器令牌，网页会话保留
+	if err := s.store.DeleteOtherAppSessions(ctx, p.ID, secret.TokenHash(token)); err != nil {
+		// 旧令牌清不掉就连本次新令牌一起作废，失败不打断当前返回
 		_ = s.store.DeleteSessionByTokenHash(ctx, secret.TokenHash(token))
 		return PadSession{}, err
 	}

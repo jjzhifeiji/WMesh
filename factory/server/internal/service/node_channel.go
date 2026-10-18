@@ -29,10 +29,10 @@ type ClientInbox struct {
 	SigningPublicKey []byte       `json:"signingPublicKey"` // 验下行 Intent
 }
 
-// TransitClosure 过站包：工艺成员是过站信封；工程根是明文，Wrap 为空。
+// TransitClosure 过站包：工程根和工艺成员都是过站信封，Wrap 封着过站 DEK。
 type TransitClosure struct {
-	Wrap     []byte          `json:"wrap,omitempty"` // 过站 DEK；工程明文不封
-	Snapshot ClosureSnapshot `json:"snapshot"`       // 工艺为过站信封，工程根为明文
+	Wrap     []byte          `json:"wrap,omitempty"` // 过站 DEK，用登录人或本机钥封
+	Snapshot ClosureSnapshot `json:"snapshot"`       // 成员正文都是过站信封
 }
 
 // AuthClientMQTT 厂网或本机 CONNECT：令牌有效；已登记 Client 须绑定未作废；未登记身份允许厂网登录人收听回连。
@@ -201,7 +201,7 @@ func (s *Closure) PullClientClosure(ctx context.Context, token string, clientID,
 	return out, s.audit(ctx, &acc.ID, nil, "pull_closure", target, audit.Allow)
 }
 
-// PadPullClientClosure 厂网登录后拉包：工程明文，工艺用登录人钥封过站 DEK；列表外钉住的平台工艺按钉死修订给。
+// PadPullClientClosure 厂网登录后拉包：工程和工艺都用登录人钥封过站 DEK；列表外钉住的平台工艺按钉死修订给。
 func (s *Closure) PadPullClientClosure(ctx context.Context, token string, assetID uuid.UUID) (TransitClosure, error) {
 	// 先确认会话仍有效，过期或停用直接拒绝
 	acc, err := s.RequireActive(ctx, token)
@@ -229,7 +229,7 @@ func (s *Closure) PadPullClientClosure(ctx context.Context, token string, assetI
 		snap, err = s.packPinnedForPad(ctx, *pin)
 		// 列表里有的照旧组包
 	} else {
-		// 厂网拉包组出工程，工艺另封
+		// 组出工程根或单工艺包，正文随后统一封过站
 		snap, err = s.packForPad(ctx, assetID)
 	}
 	// 组包失败则这次拉包拒绝
@@ -238,12 +238,7 @@ func (s *Closure) PadPullClientClosure(ctx context.Context, token string, assetI
 		_ = s.audit(ctx, &acc.ID, nil, "pad_pull", target, audit.Deny)
 		return TransitClosure{}, err
 	}
-	// 不是工程则拒绝装袋或授权
-	if snap.Kind == KindProject {
-		// 工程明文过站，只引用工艺 Id，不封过站 DEK。
-		return TransitClosure{Snapshot: snap}, s.audit(ctx, &acc.ID, nil, "pad_pull", target, audit.Allow)
-	}
-	// 过站 DEK 用登录人钥封，AAD 绑登录人，不绑焊机。
+	// 工程根和工艺同样封：过站 DEK 用登录人钥封，AAD 绑登录人，不绑焊机。
 	who, err := s.store.EnsurePersonUnwrapKey(ctx, acc.ID)
 	// 解封钥读不到或长度不对，拒绝继续
 	if err != nil || len(who.UnwrapKey) != contentcrypt.KeySize {

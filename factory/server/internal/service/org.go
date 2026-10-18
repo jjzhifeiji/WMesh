@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"strings"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 
@@ -50,6 +52,19 @@ func (s *Org) SetKeepPouch(ctx context.Context, token string, personID uuid.UUID
 	return accountOf(p), nil
 }
 
+// normalizeLoginName 去掉首尾空白后须 1～64 字；建档、改名和登录都按规范后的名字认人。
+func normalizeLoginName(name string) (string, error) {
+	// 去掉首尾空白，表格复制带的空格不进库
+	name = strings.TrimSpace(name)
+	// 按字数而不是字节数限长
+	n := utf8.RuneCountInString(name)
+	// 名字空了或超过六十四字，拒绝保存
+	if n < 1 || n > 64 {
+		return "", domain.ErrInvalidName
+	}
+	return name, nil
+}
+
 // CreatePerson 由工厂超管创建本厂账号，默认日常密码为登录名+123456，直接有效；不发激活码。
 func (s *Org) CreatePerson(ctx context.Context, token, loginName, displayName string) (Account, error) {
 	// 先确认会话仍有效，过期或停用直接拒绝
@@ -64,6 +79,16 @@ func (s *Org) CreatePerson(ctx context.Context, token, loginName, displayName st
 		_ = s.audit(ctx, &acc.ID, &loginName, "create_person", loginName, audit.Deny)
 		return Account{}, err
 	}
+	// 先去首尾空白再限长，默认密码也按规范后的名字拼
+	name, err := normalizeLoginName(loginName)
+	// 名字空了或太长，拒绝建档
+	if err != nil {
+		// 记下建账号被拒绝，写失败不改变结果
+		_ = s.audit(ctx, &acc.ID, &loginName, "create_person", loginName, audit.Deny)
+		return Account{}, err
+	}
+	// 往下审计、建档、拼默认密码都用规范后的名字
+	loginName = name
 	// 写下本厂新账号，口令原文不进审计
 	p, err := s.store.CreatePerson(ctx, loginName, displayName, false)
 	// 账号写不进去，不留下半截人员

@@ -179,3 +179,68 @@ func TestAppliesEmbeddedSQL(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// 登录名去空白的迁移：只去能去的，去后为空或撞名的原样留着，重跑也不报错。
+func TestTrimLoginNameMigration(t *testing.T) {
+	// 打开一个测完就删的临时库。
+	db := openTemp(t)
+	// 没能把库结构迁到当前版本就停住本用例。
+	if err := migrate.Up(db, migrations.FS, "."); err != nil {
+		// 没能把库结构迁到当前版本就停住本用例。
+		t.Fatal(err)
+	}
+	// 迁好之后再塞进带空白的旧账号，模拟升级前的存量。
+	names := []string{" zhang3", "zhang3 ", "li4\u3000", "wang5\t", "\u00a0qian7\u2028", " sun8 ", "\u3000 ", "zhao6", "zhao6\u00a0"}
+	// 逐个写进人员表，状态随便给一个合法值。
+	for _, n := range names {
+		// 写不进去就停，后面的断言没有底数。
+		if err := db.Exec(`INSERT INTO people (id, login_name, display_name, status) VALUES (gen_random_uuid(), ?, '旧账号', 'active')`, n).Error; err != nil {
+			// 把写旧账号的错误打出来并停住。
+			t.Fatalf("insert %q: %v", n, err)
+		}
+	}
+	// 取出嵌进程序的那份迁移原文，和升级时跑的是同一份。
+	body, err := migrations.FS.ReadFile("0041_trim_login_name.up.sql")
+	// 读不出迁移原文就停，说明文件名或嵌入不对。
+	if err != nil {
+		// 把读迁移原文的错误打出来并停住。
+		t.Fatal(err)
+	}
+	// 连跑两遍，撞名的不改也不能撞唯一约束，重跑不报错。
+	for i := 0; i < 2; i++ {
+		// 执行失败就停，说明撞了唯一约束或语法不对。
+		if err := db.Exec(string(body)).Error; err != nil {
+			// 把第几遍失败打出来并停住。
+			t.Fatalf("run %d: %v", i+1, err)
+		}
+	}
+	// 准备承接库里现在的全部登录名。
+	var got []string
+	// 读不出登录名就停，后面没法比对。
+	if err := db.Raw(`SELECT login_name FROM people`).Scan(&got).Error; err != nil {
+		// 把读登录名的错误打出来并停住。
+		t.Fatal(err)
+	}
+	// 记下每个登录名出现了几次，方便按集合比对。
+	seen := map[string]int{}
+	// 逐个计数，顺序不要紧。
+	for _, n := range got {
+		// 这个名字再记一次。
+		seen[n]++
+	}
+	// 能去的已去掉，互撞、和干净名撞、全空白的都原样。
+	want := []string{" zhang3", "zhang3 ", "li4", "wang5", "qian7", "sun8", "\u3000 ", "zhao6", "zhao6\u00a0"}
+	// 条数对不上说明多改或少改了行。
+	if len(got) != len(want) {
+		// 把实际读到的名字打出来便于对照。
+		t.Fatalf("rows %q", got)
+	}
+	// 逐个核对期望的名字都在。
+	for _, n := range want {
+		// 缺了这个名字说明去空白规则不对。
+		if seen[n] != 1 {
+			// 把缺的名字和实际结果打出来。
+			t.Fatalf("want %q in %q", n, got)
+		}
+	}
+}

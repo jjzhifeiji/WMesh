@@ -172,19 +172,26 @@ func TestPadInboxTrimsOthersPersonal(t *testing.T) {
 	// 平板拉取这份组包，失败说明没收进收件箱。
 	gotDraft, err := fac.PadPullClientClosure(ctx, sess.Token, draftProj.ID)
 	// 平板拉包失败或条数不对就停，说明没达预期。
-	if err != nil || gotDraft.Snapshot.Kind != factory.KindProject || len(gotDraft.Wrap) != 0 || len(gotDraft.Snapshot.Members) != 1 {
-		// 状态还停在草稿，说明保存没有落成可用。
+	if err != nil || gotDraft.Snapshot.Kind != factory.KindProject || len(gotDraft.Snapshot.Members) != 1 {
+		// 草稿工程拉不到或成员不止根，说明组包口径变了。
 		t.Fatalf("draft pull %+v %v", gotDraft, err)
 	}
-	// 传输形态应是信封或明文中的预期那种，反了即失败。
-	if contentcrypt.IsEnvelope(gotDraft.Snapshot.Members[0].Content) {
-		// 断言没通过就停，结果和这条用例的预期不一致。
-		t.Fatal("project must be plaintext")
+	// 工程根也要过站加封：Wrap 和成员正文都得是信封，明文即漏。
+	if !contentcrypt.IsEnvelope(gotDraft.Wrap) || !contentcrypt.IsEnvelope(gotDraft.Snapshot.Members[0].Content) {
+		// 工程正文或过站钥以明文下发，同网段抓包就能看到。
+		t.Fatalf("project must be sealed %+v", gotDraft)
 	}
-	// 正文里应能对上这段，对不上说明没写进去。
-	if !bytes.Contains(gotDraft.Snapshot.Members[0].Content, []byte(proc.ID.String())) {
-		// 应存在的记录没有出现，说明这一步没落下。
-		t.Fatalf("project missing processId %s", gotDraft.Snapshot.Members[0].Content)
+	// 用登录人钥解开工程过站包，和示教器解包同一套 AAD。
+	openedDraft, err := factory.OpenTransit(fac.Store().FactoryID(), sess.Account.ID, sess.UnwrapKey, gotDraft)
+	// 解不开或条数不对，说明封包钥或 AAD 与示教器对不上。
+	if err != nil || len(openedDraft.Members) != 1 {
+		// 示教器按登录人钥解不开工程，拉下来也用不了。
+		t.Fatalf("project open %+v %v", openedDraft, err)
+	}
+	// 解出的正文里应能对上工艺引用，对不上说明封错了内容。
+	if !bytes.Contains(openedDraft.Members[0].Content, []byte(proc.ID.String())) {
+		// 工程正文没解回原样，焊道引用的工艺找不到。
+		t.Fatalf("project missing processId %s", openedDraft.Members[0].Content)
 	}
 	// 拉别人的个人工程应按找不到拒绝，与清单同一套裁剪。
 	if _, err := fac.PadPullClientClosure(ctx, sess.Token, mine.ID); !errors.Is(err, domain.ErrNotFound) {
@@ -323,10 +330,17 @@ func TestPadPinnedPersonalProcess(t *testing.T) {
 		// 工程拉不到或成员不对，说明裁剪误伤了厂级工程。
 		t.Fatalf("op pull project %+v %v", gotProj, err)
 	}
+	// 工程正文已过站加封，用 op 的登录人钥解开再看。
+	openedProj, err := factory.OpenTransit(fac.Store().FactoryID(), opSess.Account.ID, opSess.UnwrapKey, gotProj)
+	// 解不开说明工程没按登录人钥封，示教器也解不开。
+	if err != nil || len(openedProj.Members) != 1 {
+		// 工程过站包解不开或条数不对，停住本用例。
+		t.Fatalf("op open project %+v %v", openedProj, err)
+	}
 	// 工程正文里只留工艺引用，示教器靠它对上焊道。
-	if !bytes.Contains(gotProj.Snapshot.Members[0].Content, []byte(pinned.ID.String())) {
+	if !bytes.Contains(openedProj.Members[0].Content, []byte(pinned.ID.String())) {
 		// 正文里没有工艺引用，说明工程正文不完整。
-		t.Fatalf("project missing processId %s", gotProj.Snapshot.Members[0].Content)
+		t.Fatalf("project missing processId %s", openedProj.Members[0].Content)
 	}
 
 	// 组织管理员用平板登录，看示教器上是否仍不给。

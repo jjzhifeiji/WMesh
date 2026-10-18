@@ -3,6 +3,8 @@ package service
 import (
 	"context"
 	"errors"
+	"strings"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 
@@ -25,6 +27,19 @@ type Directory struct {
 	Initials  []InitialSuperAdmin `json:"initials"`  // 各厂初始超管身份，不含密码
 }
 
+// normalizeLoginName 去掉首尾空白后须 1～64 字，和厂端认领口径一致。
+func normalizeLoginName(name string) (string, error) {
+	// 去掉首尾空白，全空格的名字当空名。
+	name = strings.TrimSpace(name)
+	// 按字数而不是字节数限长。
+	n := utf8.RuneCountInString(name)
+	// 名字空了或超过六十四字，厂端认领必拒，这里先挡下。
+	if n < 1 || n > 64 {
+		return "", domain.ErrInvalidName
+	}
+	return name, nil
+}
+
 // CreateFactory 只在 WAN 名录写下工厂与初始超管身份，发建厂码；不反打厂内网。
 func (s *Factories) CreateFactory(ctx context.Context, token, name, saLogin, saDisplay string) (CreatedFactory, error) {
 	// 只有 WAN 管理员能建厂。失败一律记拒绝。
@@ -33,6 +48,14 @@ func (s *Factories) CreateFactory(ctx context.Context, token, name, saLogin, saD
 	if err != nil {
 		// 建厂被拒就留审计，不写建厂码。
 		_ = s.audit(ctx, nil, nil, nil, "create_factory", name, audit.Deny)
+		return CreatedFactory{}, err
+	}
+	// 超管登录名先规范，落库和厂端认领用同一个名字。
+	saLogin, err = normalizeLoginName(saLogin)
+	// 名字空了或太长，厂端认领必失败，不发建厂码。
+	if err != nil {
+		// 建厂被拒就留审计，不写建厂码。
+		_ = s.audit(ctx, &admin.ID, nil, nil, "create_factory", name, audit.Deny)
 		return CreatedFactory{}, err
 	}
 	// 发一次性建厂码，只回给持有者。

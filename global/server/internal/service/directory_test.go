@@ -4,6 +4,7 @@ package service_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"wmesh/global/internal/platform/domain"
@@ -260,5 +261,95 @@ func TestEnableFactoryDropsSession(t *testing.T) {
 	if len(bus.drops) != 1 {
 		// 不符即停：重复启用多踢了会话。
 		t.Fatalf("repeat enable dropped %+v", bus.drops)
+	}
+}
+
+// 验建厂时超管登录名先去首尾空白再限长，免得发出厂端认领不了的建厂码。
+func TestCreateFactoryNormalizesSALogin(t *testing.T) {
+	// 准备本测上下文，没有它库和服务都开不了。
+	ctx := context.Background()
+	// 起云端库和服务，起不来整段验收作废。
+	h := New(t)
+	// 立云端超管失败就停，立不住后面没有人能登录。
+	if err := h.WAN.BootstrapAdmin(ctx, "w", "wan-secret"); err != nil {
+		// 不符即停：立云端超管失败。
+		t.Fatal(err)
+	}
+	// 登录拿会话，没有票后面接口都进不去。
+	tok, err := h.WAN.Login(ctx, "w", "wan-secret")
+	// 登录拿会话失败就停，没有票后面接口都进不去。
+	if err != nil {
+		// 不符即停：登录拿会话失败。
+		t.Fatal(err)
+	}
+	// 全空白和超长两种名字都该被拒，厂端认领一定过不了。
+	for _, bad := range []string{" \t\u3000 ", strings.Repeat("超", 65)} {
+		// 名字不合规应按名称不合法拒绝，放行或错类都算没拦住。
+		if _, err := h.WAN.CreateFactory(ctx, tok, "厂X", bad, "超管X"); !errors.Is(err, domain.ErrInvalidName) {
+			// 不符即停：坏名字建出了厂或错类不对。
+			t.Fatalf("bad login %q: %v", bad, err)
+		}
+	}
+	// 被拒的建厂不该在名录里留下半截。
+	dir, err := h.WAN.Directory(ctx, tok)
+	// 读工厂名录失败就停，名录读不到就无法对厂。
+	if err != nil {
+		// 不符即停：读工厂名录失败。
+		t.Fatal(err)
+	}
+	// 逐个工厂看，坏名字一个厂都不该建出来。
+	for _, f := range dir.Factories {
+		// 名录里出现被拒的厂就停。
+		if f.Name == "厂X" {
+			// 不符即停：被拒的建厂仍落了库。
+			t.Fatalf("rejected factory listed %+v", f)
+		}
+	}
+	// 正好六十四字仍可建，上限本身不能误拒。
+	if _, err := h.WAN.CreateFactory(ctx, tok, "厂L", strings.Repeat("超", 64), "超管L"); err != nil {
+		// 不符即停：上限内的名字被误拒。
+		t.Fatalf("64 runes: %v", err)
+	}
+	// 带首尾空格的名字建厂，应存成去空白后的样子。
+	a, err := h.WAN.CreateFactory(ctx, tok, "厂A", " boss ", "超管A")
+	// 登记工厂「厂A」失败就停，建不成后面没得核对。
+	if err != nil {
+		// 不符即停：登记工厂「厂A」失败。
+		t.Fatal(err)
+	}
+	// 再读名录，核对落库的超管登录名。
+	dir, err = h.WAN.Directory(ctx, tok)
+	// 读工厂名录失败就停，名录读不到就无法对厂。
+	if err != nil {
+		// 不符即停：读工厂名录失败。
+		t.Fatal(err)
+	}
+	// 先当没找到，循环里命中再改成真。
+	found := false
+	// 逐条初始超管找到厂A那一条。
+	for _, sa := range dir.Initials {
+		// 不是厂A的就跳过，看下一条。
+		if sa.FactoryID != a.Factory.ID {
+			continue
+		}
+		// 标成已命中，最后仍为假说明名录里没有。
+		found = true
+		// 名录里的登录名还带空白就停，厂端拿到的名字会对不上。
+		if sa.LoginName != "boss" {
+			// 不符即停：登录名没有去空白。
+			t.Fatalf("stored login %q", sa.LoginName)
+		}
+	}
+	// 名录里找不到厂A的初始超管就停。
+	if !found {
+		// 不符即停：厂A的初始超管没落库。
+		t.Fatal("initial super admin missing")
+	}
+	// 用建厂码认领，厂端拿到的超管名也应是规范后的。
+	offer, err := h.WAN.OfferEnroll(ctx, a.EnrollmentToken)
+	// 认领失败或名字仍带空白就停，厂端会按错的名字建档。
+	if err != nil || offer.SALogin != "boss" {
+		// 不符即停：认领交给厂端的登录名不对。
+		t.Fatalf("offer %+v %v", offer, err)
 	}
 }

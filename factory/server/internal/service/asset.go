@@ -142,7 +142,7 @@ func (s *kernel) canAuthorFactory(ctx context.Context, acc Account, unit *uuid.U
 	return nil
 }
 
-// canTouchPersonal 个人级正文：创建人或覆盖该处的管理员。
+// canTouchPersonal 个人级正文：创建人、工厂超管或整厂组织管理员。
 func (s *kernel) canTouchPersonal(ctx context.Context, acc Account, a Asset) error {
 	// 不是个人级就放行，厂级不在这里拦人。
 	if a.Level != AssetLevelPersonal {
@@ -152,8 +152,8 @@ func (s *kernel) canTouchPersonal(ctx context.Context, acc Account, a Asset) err
 	if acc.ID == a.CreatorID {
 		return nil
 	}
-	// 按本厂权限判断当前人能不能做。
-	return s.can(ctx, acc, permManageOrg, a.OrgUnitID)
+	// 只认整厂管理员，节点管理员不能碰下属个人级，和个人树同口径。
+	return s.can(ctx, acc, permManageOrg, nil)
 }
 
 // opCovers 下发按操作员作用域；制作不走这里。
@@ -582,7 +582,7 @@ func (s *kernel) canCopyProcess(ctx context.Context, acc Account, src Asset) err
 	if !src.Copyable {
 		return domain.ErrAssetNotCopyable
 	}
-	// 个人级须是创建人或覆盖该处的管理员。
+	// 个人级须是创建人或整厂管理员。
 	return s.canTouchPersonal(ctx, acc, src)
 }
 
@@ -1428,7 +1428,7 @@ func (s *Assets) DeleteAsset(ctx context.Context, token string, assetID uuid.UUI
 	return s.audit(ctx, &acc.ID, nil, "delete_asset", assetTarget(assetID, cur.Revision), audit.Allow)
 }
 
-// mutateAsset 按期望修订改本厂原件；个人级须创建人或覆盖该处的管理员。
+// mutateAsset 按期望修订改本厂原件；个人级须创建人或整厂管理员。
 func (s *kernel) mutateAsset(ctx context.Context, acc Account, assetID uuid.UUID, expected int64, action string, patch func(Asset) (store.AssetWrite, error)) (Asset, error) {
 	// 须有制作权；个人级另验创建人或管理员。失败一律记拒绝。
 	cur, err := s.loadCheckedMeta(ctx, assetID)
@@ -1631,7 +1631,7 @@ func (s *Assets) ReadAssetContent(ctx context.Context, token string, assetID uui
 	if err != nil {
 		return nil, err
 	}
-	// 个人级创建人或覆盖该处的管理员；不可复制平台级工艺不给人看。失败一律记拒绝。
+	// 个人级只给创建人或整厂管理员；不可复制平台级工艺不给人看。失败一律记拒绝。
 	meta, err := s.loadAnyMeta(ctx, assetID)
 	// 元数据读不到则记拒绝，不继续。
 	if err != nil {

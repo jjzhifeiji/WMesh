@@ -892,3 +892,138 @@ func TestAppTokenUsesKeyTTL(t *testing.T) {
 		t.Fatalf("ttl 90s expires %s", row.ExpiresAt)
 	}
 }
+
+// 验收同一人第二次示教器登录后旧令牌作废，网页令牌和别人的不受影响
+func TestSecondPadLoginRevokesOldAppToken(t *testing.T) {
+	// 两种第二次登录各跑一遍：厂网登录和本机登录
+	cases := []struct {
+		name   string // 子用例名，失败时好认是哪种登录
+		viaPad bool   // 真则第二次走厂网登录，假则走本机登录
+	}{
+		{name: "pad", viaPad: true},
+		{name: "client", viaPad: false},
+	}
+	// 逐种第二次登录各起一座厂验一遍
+	for _, tc := range cases {
+		// 每种登录单独成子用例，互不串库
+		t.Run(tc.name, func(t *testing.T) {
+			// 准备空上下文，后续调用都挂在这上面
+			ctx := context.Background()
+			// 起一套测试库和厂服务，起不来则本例无法开始
+			h := New(t)
+			// 建厂并种初始超管，失败则本步验收不能继续
+			seed, fac, err := h.Provision(ctx, "sa", "超管")
+			// 建厂并种初始超管失败就停，避免带着错误继续验
+			if err != nil {
+				// 建厂并种初始超管失败就把原因打出并停掉本例
+				t.Fatal(err)
+			}
+			// 激活初始超管失败就停，避免带着错误继续验
+			if err := fac.Activate(ctx, "sa", seed.ActivationToken, "sa-pass"); err != nil {
+				// 激活初始超管失败就把原因打出并停掉本例
+				t.Fatal(err)
+			}
+			// 登录取出令牌，登不上则后面没有身份
+			saTok := mustLogin(t, ctx, fac, "sa", "sa-pass")
+			// 建人并授角色，带回的令牌是网页会话
+			op := mustCreateRole(t, ctx, fac, saTok, "op", "op-pass", factory.RoleOperator, factory.ScopeFactory, nil)
+
+			// 新开一个身份，避免和别的绑定撞号
+			cid := id.New()
+			// 生成焊机密钥，失败则绑定无法开始
+			pub, _, err := nodekey.Generate()
+			// 生成焊机密钥失败就停，避免带着错误继续验
+			if err != nil {
+				// 生成焊机密钥失败就把原因打出并停掉本例
+				t.Fatal(err)
+			}
+			// 接受焊机绑定失败就停，避免带着错误继续验
+			if _, err := fac.AcceptBinding(ctx, cid, "焊机", pub, 1); err != nil {
+				// 接受焊机绑定失败就把原因打出并停掉本例
+				t.Fatal(err)
+			}
+			// 登记机械臂号失败就停，本机登录要先钉号
+			if _, err := fac.RegisterDevice(ctx, saTok, cid, "ARM-1"); err != nil {
+				// 登记机械臂号失败就把原因打出并停掉本例
+				t.Fatal(err)
+			}
+
+			// 别人先在厂网登录，用来验只删本人的令牌
+			other, err := fac.LoginPad(ctx, "sa", "sa-pass")
+			// 别人登录失败就停，避免带着错误继续验
+			if err != nil {
+				// 别人登录失败就把原因打出并停掉本例
+				t.Fatal(err)
+			}
+			// 第一台示教器登录拿到旧令牌 A
+			first, err := fac.LoginPad(ctx, "op", "op-pass")
+			// 第一次登录失败就停，避免带着错误继续验
+			if err != nil {
+				// 第一次登录失败就把原因打出并停掉本例
+				t.Fatal(err)
+			}
+			// 第二次登录前旧令牌应当可用，否则后面的断言没意义
+			if _, err := fac.RequireActive(ctx, first.Token); err != nil {
+				// 旧令牌一登录就不能用即失败，夹具不对
+				t.Fatalf("first token before second login: %v", err)
+			}
+
+			// 准备承接第二次登录拿到的新令牌 B
+			var second string
+			// 按子用例选第二次登录走厂网还是本机
+			if tc.viaPad {
+				// 第二台示教器厂网登录拿到新令牌
+				sess, err := fac.LoginPad(ctx, "op", "op-pass")
+				// 第二次厂网登录失败就停，避免带着错误继续验
+				if err != nil {
+					// 第二次厂网登录失败就把原因打出并停掉本例
+					t.Fatal(err)
+				}
+				// 记下新令牌，后面验它仍可用
+				second = sess.Token
+				// 第二次走本机登录
+			} else {
+				// 在钉好号的焊机上本机登录拿到新令牌
+				sess, err := fac.LoginOnClient(ctx, cid, "ARM-1", "op", "op-pass")
+				// 第二次本机登录失败就停，避免带着错误继续验
+				if err != nil {
+					// 第二次本机登录失败就把原因打出并停掉本例
+					t.Fatal(err)
+				}
+				// 记下新令牌，后面验它仍可用
+				second = sess.Token
+			}
+
+			// 旧令牌续接会话应被拒为未登录，放行即失败
+			if _, err := fac.RequireActive(ctx, first.Token); !errors.Is(err, domain.ErrUnauthorized) {
+				// 旧机令牌还能拉包上送就失败
+				t.Fatalf("old token still active: %v", err)
+			}
+			// 旧令牌连通道应被拒为未登录，放行即失败
+			if _, err := fac.AuthClientMQTT(ctx, cid, first.Token); !errors.Is(err, domain.ErrUnauthorized) {
+				// 旧机令牌还能连通道就失败
+				t.Fatalf("old token mqtt: %v", err)
+			}
+			// 新令牌续接会话失败即失败，第二台应当能用
+			if _, err := fac.RequireActive(ctx, second); err != nil {
+				// 新令牌被误删就失败
+				t.Fatalf("new token: %v", err)
+			}
+			// 新令牌连通道失败即失败，第二台应当能连
+			if _, err := fac.AuthClientMQTT(ctx, cid, second); err != nil {
+				// 新令牌连不上通道就失败
+				t.Fatalf("new token mqtt: %v", err)
+			}
+			// 本人网页令牌应当保留，被一起删掉即失败
+			if _, err := fac.RequireActive(ctx, op.tok); err != nil {
+				// 网页会话被示教器登录踢掉就失败
+				t.Fatalf("web token: %v", err)
+			}
+			// 别人的示教器令牌应当保留，被一起删掉即失败
+			if _, err := fac.RequireActive(ctx, other.Token); err != nil {
+				// 删到别人的会话就失败
+				t.Fatalf("other person token: %v", err)
+			}
+		})
+	}
+}

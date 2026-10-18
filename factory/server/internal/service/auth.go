@@ -35,6 +35,12 @@ func appTokenExpiry(pol ClientPolicy, now time.Time) time.Time {
 
 // BootstrapInitial 在本厂写入待启用初始超管和预置厂级超管角色，激活码只返回给交付方。
 func (s *Auth) BootstrapInitial(ctx context.Context, saLogin, saDisplay string) (Account, string, error) {
+	// 先去首尾空白再限长，建厂表单带的空格不进库
+	saLogin, err := normalizeLoginName(saLogin)
+	// 名字空了或太长，交付中止
+	if err != nil {
+		return Account{}, "", err
+	}
 	// 写入待启用初始超管，尚无日常密码。
 	p, err := s.store.CreatePerson(ctx, saLogin, saDisplay, true)
 	// 账号写不进去，不留下半截人员
@@ -64,10 +70,21 @@ func (s *Auth) BootstrapInitial(ctx context.Context, saLogin, saDisplay string) 
 }
 
 // AcceptEnrollment 按 WAN 约定身份写入初始超管并当场自设密码，完成激活。
+// 只有 Hub.Claim 在 WAN 刚认可建厂码后才调；WAN 只在确认成功时清码且不重签，
+// 所以超管已有效时一定是同一次没确认完的认领：口令一致按幂等成功，
+// 不一致就覆盖成这次的新口令并作废旧会话，不另设建厂码失效的分支。
 func (s *Auth) AcceptEnrollment(ctx context.Context, personID uuid.UUID, loginName, displayName, password string) (Account, error) {
 	// 没带口令则拒绝，不能把空口令当成已激活
 	if password == "" {
 		return Account{}, domain.ErrInvalidActivation
+	}
+	// 先去首尾空白再限长，库里去过空白的超管重试也对得上
+	loginName, err := normalizeLoginName(loginName)
+	// 名字空了或太长，拒绝建厂
+	if err != nil {
+		// 记下按约定建厂被拒绝，写失败不改变结果
+		_ = s.audit(ctx, nil, nil, "enroll_factory", personID.String(), audit.Deny)
+		return Account{}, err
 	}
 	// 身份须对上；尚无档则按约定写入。失败一律记拒绝。
 	p, err := s.store.PersonByID(ctx, personID)
@@ -96,8 +113,29 @@ func (s *Auth) AcceptEnrollment(ctx context.Context, personID uuid.UUID, loginNa
 		_ = s.audit(ctx, &p.ID, &loginName, "enroll_factory", p.ID.String(), audit.Deny)
 		return Account{}, err
 	}
-	// 已经有效则不必再激活，直接交回账号
+	// 已经有效说明是认领重试，按这次口令分两路处理
 	if p.Status == StatusActive {
+		// 口令和库里一致，按同一次重试幂等交回
+		if p.PasswordHash != nil && secret.VerifyPassword(*p.PasswordHash, password) {
+			// 收成不含口令的对外账号，再交回调用方
+			return accountOf(p), nil
+		}
+		// 这次换了口令，仍是同一次认领，只存新哈希
+		hash, err := secret.HashPassword(password)
+		// 口令摘要失败，拒绝落库
+		if err != nil {
+			return Account{}, err
+		}
+		// 换口令和清旧会话同一事务，免得旧口令开的会话留下
+		if err := s.store.ReplacePasswordDropSessions(ctx, p.ID, hash); err != nil {
+			// 记下按约定建厂被拒绝，写失败不改变结果
+			_ = s.audit(ctx, &p.ID, &loginName, "enroll_factory", p.ID.String(), audit.Deny)
+			return Account{}, err
+		}
+		// 审计没写下则整次不算完成
+		if err := s.audit(ctx, &p.ID, &loginName, "enroll_factory", p.ID.String(), audit.Allow); err != nil {
+			return Account{}, err
+		}
 		// 收成不含口令的对外账号，再交回调用方
 		return accountOf(p), nil
 	}
@@ -123,6 +161,8 @@ func (s *Auth) AcceptEnrollment(ctx context.Context, personID uuid.UUID, loginNa
 
 // Activate 由持有者自己设日常密码，账号转为有效；WAN 不得代设。
 func (s *Auth) Activate(ctx context.Context, loginName, activationToken, password string) error {
+	// 去掉登录名首尾空白，和建档时的规范一致
+	loginName = strings.TrimSpace(loginName)
 	// 工厂须开着；码不对或已激活一律记拒绝。
 	if err := s.requireFactoryOpen(ctx); err != nil {
 		// 厂已停用、注销或租约到期，记下激活被拒绝，写失败不改变结果
@@ -212,6 +252,8 @@ func activationOK(storedHash, token string) bool {
 
 // Login 只接受本厂有效账号；待启用、已停用或密码错误都拒绝，审计不记秘密。
 func (s *Auth) Login(ctx context.Context, loginName, password string) (string, error) {
+	// 去掉登录名首尾空白，和示教器登录一样认人
+	loginName = strings.TrimSpace(loginName)
 	// 只接受本厂有效账号；失败一律记拒绝，不记密码。
 	if err := s.requireFactoryOpen(ctx); err != nil {
 		// 厂已停用、注销或租约到期，记下登录被拒绝，写失败不改变结果
@@ -355,6 +397,16 @@ func (s *Auth) Rename(ctx context.Context, token, displayName, loginName string)
 	if err != nil {
 		return err
 	}
+	// 先去首尾空白再限长，免得改出登不上的名字
+	name, err := normalizeLoginName(loginName)
+	// 名字空了或太长，拒绝改名
+	if err != nil {
+		// 记下改名被拒绝，写失败不改变结果
+		_ = s.audit(ctx, &acc.ID, &loginName, "rename", acc.ID.String(), audit.Deny)
+		return err
+	}
+	// 往下落库和审计都用规范后的名字
+	loginName = name
 	// 改显示名或登录名，稳定身份不变。
 	if err := s.store.RenamePerson(ctx, acc.ID, displayName, loginName); err != nil {
 		// 记下改名被拒绝，写失败不改变结果
@@ -365,7 +417,7 @@ func (s *Auth) Rename(ctx context.Context, token, displayName, loginName string)
 	return s.audit(ctx, &acc.ID, &loginName, "rename", acc.ID.String(), audit.Allow)
 }
 
-// DisableAccount 停用本厂账号；若会去掉最后一名有效厂级超管则拒绝。
+// DisableAccount 停用本厂账号并作废其全部会话；若会去掉最后一名有效厂级超管则拒绝。
 func (s *Auth) DisableAccount(ctx context.Context, token string, targetID uuid.UUID) error {
 	// 先确认会话仍有效，过期或停用直接拒绝
 	acc, err := s.RequireActive(ctx, token)
@@ -385,8 +437,8 @@ func (s *Auth) DisableAccount(ctx context.Context, token string, targetID uuid.U
 		_ = s.audit(ctx, &acc.ID, nil, "disable_account", targetID.String(), audit.Deny)
 		return err
 	}
-	// 停用后新操作立刻按新状态判定。
-	if err := s.store.SetPersonStatus(ctx, targetID, StatusDisabled); err != nil {
+	// 改停用并清全部会话，再启用后旧令牌也不复活。
+	if err := s.store.DisablePerson(ctx, targetID); err != nil {
 		// 账号已停用，记下停用账号被拒绝，写失败不改变结果
 		_ = s.audit(ctx, &acc.ID, nil, "disable_account", targetID.String(), audit.Deny)
 		return err

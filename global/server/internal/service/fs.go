@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -17,6 +18,52 @@ type FSNodeView struct {
 	store.FSNode        // 目录节点本体，不含正文。
 	OwnerName    string `json:"ownerName,omitempty"` // 厂端个人树主人；平台树为空
 	Asset        *Asset `json:"asset,omitempty"`     // 文件才有；不含正文
+}
+
+// FactoryFSNode 是经通道拉到的厂目录一行，只认结构和文件元数据，不认人员字段。
+type FactoryFSNode struct {
+	ID        uuid.UUID       `json:"id"`                // 厂端目录节点身份
+	Name      string          `json:"name"`              // 显示名；根节点为空
+	ParentID  *uuid.UUID      `json:"parentId"`          // 父文件夹；空表示根
+	NodeKind  string          `json:"nodeKind"`          // folder 或 file
+	AssetKind string          `json:"assetKind"`         // process 或 project
+	TreeLevel string          `json:"treeLevel"`         // platform / factory / personal
+	AssetID   *uuid.UUID      `json:"assetId,omitempty"` // 文件才有的资产身份
+	Asset     *FactoryFSAsset `json:"asset,omitempty"`   // 文件才有；不含正文和创建人
+}
+
+// FactoryFSAsset 是厂目录文件挂的资产元数据，和升档清单同一份字段。
+type FactoryFSAsset struct {
+	ID       uuid.UUID `json:"id"`       // 厂端资产稳定身份
+	Kind     string    `json:"kind"`     // process 或 project
+	Level    string    `json:"level"`    // factory / personal / platform
+	Name     string    `json:"name"`     // 资产显示名
+	Code     string    `json:"code"`     // 只读编号，创建后不改
+	Revision int64     `json:"revision"` // 厂端当前修订号
+	Digest   []byte    `json:"digest"`   // 内容摘要，用来比对是否最新
+	Status   string    `json:"status"`   // draft / available / disabled
+	Copyable bool      `json:"copyable"` // 工艺可否复制；工程恒为是
+	WeldKind string    `json:"weldKind"` // 作业类型
+}
+
+// DecodeFactoryFS 按白名单解开厂端目录回包，旧厂端多带的人员字段一律丢掉。
+func DecodeFactoryFS(raw []byte) ([]FactoryFSNode, error) {
+	// 先备空数组，厂没回目录时照样回空列表。
+	rows := []FactoryFSNode{}
+	// 厂没回目录就给空列表，不当成故障。
+	if len(raw) == 0 {
+		return rows, nil
+	}
+	// 只解白名单字段，主人和创建人等多余字段自然落空。
+	if err := json.Unmarshal(raw, &rows); err != nil {
+		return nil, err
+	}
+	// 厂回了 null 时也给空数组，免得浏览器拿到 null。
+	if rows == nil {
+		// 厂回 null 改成空数组，前端按列表处理。
+		rows = []FactoryFSNode{}
+	}
+	return rows, nil
 }
 
 // ListFS 列出该种类平台目录；没有根则建。

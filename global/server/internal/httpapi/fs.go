@@ -2,7 +2,6 @@ package httpapi
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 
 	"github.com/google/uuid"
@@ -252,26 +251,16 @@ func (h *Handler) listFactoryFS(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	// 厂没回目录就给空列表，不当成故障。
-	if len(msg.Assets) == 0 {
-		// 厂没回目录，回空列表而不是失败。
-		writeJSON(w, http.StatusOK, []struct{}{})
-		return
-	}
-	// 原样回厂端目录 JSON，保留个人树主人名和厂内资产字段。
-	var probe []json.RawMessage
-	// 厂端目录或列表解不开，就当厂不在线。
-	if err := json.Unmarshal(msg.Assets, &probe); err != nil {
+	// 按白名单重编厂端目录，主人和创建人等人员字段不进浏览器。
+	rows, err := service.DecodeFactoryFS(msg.Assets)
+	// 厂端目录解不开，就当厂不在线。
+	if err != nil {
 		// 按业务错误回写，内部细节不出网。
 		writeErr(w, domain.ErrFactoryOffline)
 		return
 	}
-	// 原样声明 JSON，保留厂端目录字段。
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	// 先写成功，再原样送出厂端目录。
-	w.WriteHeader(http.StatusOK)
-	// 原样送出厂端目录，字段不在这里改。
-	_, _ = w.Write(msg.Assets)
+	// 把重编后的目录交回调用方。
+	writeJSON(w, http.StatusOK, rows)
 }
 
 // parseNodeID 从路径取出目录节点身份。

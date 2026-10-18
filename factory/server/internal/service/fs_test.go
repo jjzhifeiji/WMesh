@@ -3,6 +3,7 @@ package service_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -36,8 +37,10 @@ func TestFactoryFS(t *testing.T) {
 	}
 	// 登录取会话，供后面步骤使用，失败则前提断了。
 	sa := mustLogin(t, ctx, fac, "sa", "sa-pass")
+	// 个人树主人用好认的名字，后面查通道回包里有没有漏出它。
+	const peLogin = "fsowner-liu"
 	// 建人并授角色，供后面步骤使用，失败则前提断了。
-	pe := mustCreateRole(t, ctx, fac, sa, "pe", "pe-pass", factory.RoleOperator, factory.ScopeFactory, nil)
+	pe := mustCreateRole(t, ctx, fac, sa, peLogin, "pe-pass", factory.RoleOperator, factory.ScopeFactory, nil)
 	// 建人并授角色，供后面步骤使用，失败则前提断了。
 	other := mustCreateRole(t, ctx, fac, sa, "ot", "ot-pass", factory.RoleOperator, factory.ScopeFactory, nil)
 	// 用直属上下文写工艺，不把它挂到车间。
@@ -148,10 +151,56 @@ func TestFactoryFS(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 通道视角必须能看见个人工艺所在的目录结构。
-	if !fsHasAsset(chanNodes, mine.ID) {
+	if !chanHasAsset(chanNodes, mine.ID) || !chanHasAsset(chanNodes, facRow.ID) {
 		// 通道看不见个人结构就停，云端缺了这棵树。
 		t.Fatal("cloud should see personal structure")
 	}
+	// 个人工艺挂在个人树上，元数据仍带名称和级别。
+	if !chanHasPersonalFile(chanNodes, mine.ID, "我的工艺") {
+		// 个人文件的级别或名称对不上就停，云端认不出它。
+		t.Fatal("personal file should keep tree level and asset name")
+	}
+	// 把通道回包编成 JSON，按云端实际收到的样子查。
+	raw, err := json.Marshal(chanNodes)
+	// 编码失败就停，后面无从查字段。
+	if err != nil {
+		// 编码失败即停，不能把这一步的失败当成通过。
+		t.Fatal(err)
+	}
+	// 回包整段文本，逐个查不该出厂的字段和人名。
+	body := string(raw)
+	// 创建人、组织、主人字段和主人登录名、显示名、身份都不能出现。
+	for _, bad := range []string{`"creator`, `"orgPath"`, `"orgUnitId"`, `"ownerId"`, `"ownerName"`, peLogin, pe.acc.ID.String()} {
+		// 回包里出现了人员或组织信息就停，名册出了厂。
+		if strings.Contains(body, bad) {
+			// 带出人员信息即失败，打出漏出的字段。
+			t.Fatalf("channel fs leaks %q: %s", bad, body)
+		}
+	}
+}
+
+// 判断通道目录行里有没有指定的资产。
+func chanHasAsset(nodes []factory.ChannelFSNode, id [16]byte) bool {
+	// 逐个通道目录行查看，找指向目标资产的文件。
+	for _, n := range nodes {
+		// 这一行指向目标资产，就算在目录里找到了。
+		if n.AssetID != nil && *n.AssetID == id {
+			return true
+		}
+	}
+	return false
+}
+
+// 判断通道目录里有没有挂在个人树、带着名称的这个文件。
+func chanHasPersonalFile(nodes []factory.ChannelFSNode, id [16]byte, name string) bool {
+	// 逐个通道目录行查看，找个人树上的目标文件。
+	for _, n := range nodes {
+		// 资产、树级别和元数据名称都对上，才算找到。
+		if n.AssetID != nil && *n.AssetID == id && n.TreeLevel == store.FSTreePersonal && n.Asset != nil && n.Asset.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 // 验收平台下发的目录路径会落到本厂树上。
@@ -1666,6 +1715,95 @@ func TestCreateAssetIntoFolder(t *testing.T) {
 		if nodes != nodes0 || assets != assets0 {
 			// 留下了半截即停。
 			t.Fatalf("rejected create left rows: nodes %d->%d assets %d->%d", nodes0, nodes, assets0, assets)
+		}
+	}
+}
+
+// 验收节点组织管理员碰不了下属个人级，整厂管理员和超管仍能读。
+func TestPersonalAssetNodeAdminDenied(t *testing.T) {
+	// 准备贯穿本用例的上下文，不设截止时间。
+	ctx := context.Background()
+	// 起一套隔离厂库，起不来则本用例没有库可测。
+	h := New(t)
+	// 开通本厂，供后面步骤使用，失败则前提断了。
+	seed, fac, err := h.Provision(ctx, "sa", "超管")
+	// 开通本厂没成功，后面的断言就没有依据。
+	if err != nil {
+		// 开通本厂失败即停，不能把这一步的失败当成通过。
+		t.Fatal(err)
+	}
+	// 激活账号没成功，后面的断言就没有依据。
+	if err := fac.Activate(ctx, "sa", seed.ActivationToken, "sa-pass"); err != nil {
+		// 激活账号失败即停，不能把这一步的失败当成通过。
+		t.Fatal(err)
+	}
+	// 登录取超管会话，后面建人建车间并对照读正文。
+	sa := mustLogin(t, ctx, fac, "sa", "sa-pass")
+	// 建车间，个人工艺记在它下面，节点管理员只管它。
+	shop, err := fac.CreateOrgUnit(ctx, sa, "车间", nil)
+	// 建车间没成功，后面的断言就没有依据。
+	if err != nil {
+		// 建车间失败即停，不能把这一步的失败当成通过。
+		t.Fatal(err)
+	}
+	// 建车间操作员，他是这条个人工艺的主人。
+	owner := mustCreateRole(t, ctx, fac, sa, "owner", "owner-pass", factory.RoleOperator, factory.ScopeOrgUnit, &shop.ID)
+	// 把主人分到车间，才能用车间当工作上下文。
+	if err := fac.Assign(ctx, sa, owner.acc.ID, shop.ID); err != nil {
+		// 分配失败即停，主人没落在车间里。
+		t.Fatal(err)
+	}
+	// 主人用车间上下文建个人工艺，资产记在车间下。
+	mine, err := fac.CreatePersonalProcess(ctx, owner.tok, factory.WorkContext{OrgUnitID: &shop.ID}, "车间个人工艺", []byte("p"))
+	// 建个人工艺没成功，后面的断言就没有依据。
+	if err != nil {
+		// 建个人工艺失败即停，不能把这一步的失败当成通过。
+		t.Fatal(err)
+	}
+	// 资产须记在车间下，否则测不到节点管理员越权。
+	if mine.OrgUnitID == nil || *mine.OrgUnitID != shop.ID {
+		// 没记到车间即停，本用例的前提不成立。
+		t.Fatalf("asset org unit %v want %s", mine.OrgUnitID, shop.ID)
+	}
+	// 主人先读一遍正文，后面拿它对照别人读到的。
+	want, err := fac.ReadAssetContent(ctx, owner.tok, mine.ID)
+	// 主人读不到自己的正文，后面的对照就没有依据。
+	if err != nil {
+		// 主人读正文失败即停，不能把这一步的失败当成通过。
+		t.Fatal(err)
+	}
+	// 建只管车间的组织管理员，他不该碰下属个人级。
+	shopAdmin := mustCreateRole(t, ctx, fac, sa, "oashop", "oashop-pass", factory.RoleOrgAdmin, factory.ScopeOrgUnit, &shop.ID)
+	// 建整厂组织管理员，他和超管一样能打开个人级。
+	facAdmin := mustCreateRole(t, ctx, fac, sa, "oafac", "oafac-pass", factory.RoleOrgAdmin, factory.ScopeFactory, nil)
+	// 节点管理员读下属个人级正文必须被拒。
+	if _, err := fac.ReadAssetContent(ctx, shopAdmin.tok, mine.ID); !errors.Is(err, domain.ErrForbidden) {
+		// 能读到即停，个人级参数漏给了节点管理员。
+		t.Fatalf("shop admin read: %v", err)
+	}
+	// 节点管理员改下属个人级正文必须被拒。
+	if _, err := fac.UpdateAssetContent(ctx, shopAdmin.tok, mine.ID, mine.Revision, []byte("x")); !errors.Is(err, domain.ErrForbidden) {
+		// 能改即停，别人的个人级被节点管理员覆盖了。
+		t.Fatalf("shop admin update: %v", err)
+	}
+	// 节点管理员另存下属个人级工艺必须被拒。
+	if _, err := fac.CopyProcess(ctx, shopAdmin.tok, mine.ID, "节点另存"); !errors.Is(err, domain.ErrForbidden) {
+		// 能另存即停，个人级正文借复制漏了出去。
+		t.Fatalf("shop admin copy: %v", err)
+	}
+	// 节点管理员删下属个人级必须被拒。
+	if err := fac.DeleteAsset(ctx, shopAdmin.tok, mine.ID); !errors.Is(err, domain.ErrForbidden) {
+		// 能删即停，别人的个人级被节点管理员删了。
+		t.Fatalf("shop admin delete: %v", err)
+	}
+	// 整厂组织管理员和超管都应读到原样正文。
+	for _, tok := range []string{facAdmin.tok, sa} {
+		// 用整厂管理员身份读个人级正文。
+		got, err := fac.ReadAssetContent(ctx, tok, mine.ID)
+		// 读不到或内容变了，说明整厂口径被收窄或被改过。
+		if err != nil || string(got) != string(want) {
+			// 读失败或正文不对即停，打出实际结果。
+			t.Fatalf("factory admin read: %q %v want %q", got, err, want)
 		}
 	}
 }

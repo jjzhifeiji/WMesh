@@ -738,9 +738,9 @@ func TestMatrix(t *testing.T) {
 			// 停用账号失败就把原因打出并停掉本例
 			t.Fatal(err)
 		}
-		// 期望校验会话仍有效被拒为账号已停用，放行即失败
-		if _, err := facA.RequireActive(ctx, pTok); !errors.Is(err, domain.ErrAccountDisabled) {
-			// 没拒成账号已停用就失败，并打出实际错误
+		// 停用已删掉会话，期望旧令牌被拒为未授权，放行即失败
+		if _, err := facA.RequireActive(ctx, pTok); !errors.Is(err, domain.ErrUnauthorized) {
+			// 没拒成未授权就失败，并打出实际错误
 			t.Fatalf("got %v", err)
 		}
 	})

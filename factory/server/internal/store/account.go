@@ -395,6 +395,25 @@ func (s *Store) SetPasswordHash(ctx context.Context, personID uuid.UUID, passwor
 	return nil
 }
 
+// ReplacePasswordDropSessions 同一事务换日常密码哈希并作废此人全部会话；任一步失败都不改。
+func (s *Store) ReplacePasswordDropSessions(ctx context.Context, personID uuid.UUID, passwordHash string) error {
+	// 放进同一事务，换了口令却没清会话就整单回滚。
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// 只改密码哈希一列，避免把别的字段写成零值。
+		res := tx.Model(&Person{}).Where("id = ?", personID).Update("password_hash", passwordHash)
+		// 更新失败则交回库错误，事务随之回滚。
+		if res.Error != nil {
+			return res.Error
+		}
+		// 没有改到行就当目标不存在。
+		if res.RowsAffected == 0 {
+			return domain.ErrNotFound
+		}
+		// 删掉此人全部会话，旧口令开出的登录立刻失效。
+		return tx.Where("person_id = ?", personID).Delete(&Session{}).Error
+	})
+}
+
 // ApplyPersonPassword 写入日常密码哈希并清激活码；status 空则不改状态。
 func (s *Store) ApplyPersonPassword(ctx context.Context, personID uuid.UUID, passwordHash, status string) error {
 	// 只收集这次要改的列，避免整行覆盖。
@@ -446,6 +465,25 @@ func (s *Store) SetPersonStatus(ctx context.Context, personID uuid.UUID, status 
 	return nil
 }
 
+// DisablePerson 同一事务改成停用并作废此人全部会话，再启用也不复活旧令牌。
+func (s *Store) DisablePerson(ctx context.Context, personID uuid.UUID) error {
+	// 放进同一事务，停了用却没清会话就整单回滚。
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// 只改状态一列，避免把别的字段写成零值。
+		res := tx.Model(&Person{}).Where("id = ?", personID).Update("status", StatusDisabled)
+		// 更新失败则交回库错误，事务随之回滚。
+		if res.Error != nil {
+			return res.Error
+		}
+		// 没有改到行就当目标不存在。
+		if res.RowsAffected == 0 {
+			return domain.ErrNotFound
+		}
+		// 网页和示教器会话同在一表，一并删掉才算吊销。
+		return tx.Where("person_id = ?", personID).Delete(&Session{}).Error
+	})
+}
+
 // SessionByTokenHash 按令牌哈希取会话；过期立刻无效。
 func (s *Store) SessionByTokenHash(ctx context.Context, tokenHash string) (Session, error) {
 	// 准备承接查到的会话。
@@ -484,6 +522,16 @@ func (s *Store) DeleteSessionByTokenHash(ctx context.Context, tokenHash string) 
 func (s *Store) DeleteSessionsForPerson(ctx context.Context, personID uuid.UUID) error {
 	// 删掉匹配行，库错误原样交回。
 	return s.db.WithContext(ctx).Where("person_id = ?", personID).Delete(&Session{}).Error
+}
+
+// DeleteOtherAppSessions 作废此人比本次更早的示教器会话；网页会话不动，没有可删不算错。
+// 只删更早的，两次登录并发时最新那条总能留下，不会互删成两张废票。
+func (s *Store) DeleteOtherAppSessions(ctx context.Context, personID uuid.UUID, keepTokenHash string) error {
+	// 按建立时间加身份排先后，同一微秒也分得出新旧；本次令牌已不在则一条不删。
+	return s.db.WithContext(ctx).
+		Where("person_id = ? AND kind = ? AND (created_at, id) < (SELECT created_at, id FROM sessions WHERE token_hash = ?)",
+			personID, SessionKindApp, keepTokenHash).
+		Delete(&Session{}).Error
 }
 
 // PersonCount 数本厂账号行。

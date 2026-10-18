@@ -809,8 +809,8 @@ func testAssetPromote(t *testing.T, run func(string, func(*testing.T))) {
 			// 停用这个账号失败即停，不能把这一步的失败当成通过。
 			t.Fatal(err)
 		}
-		// 账号停用之后改正文必须因停用被拒绝。
-		if _, err := facA.UpdateAssetContent(ctx, pe.tok, personal.ID, personal.Revision, []byte("after-disable")); !errors.Is(err, domain.ErrAccountDisabled) {
+		// 停用已删掉会话，旧令牌改正文必须按未登录被拒绝。
+		if _, err := facA.UpdateAssetContent(ctx, pe.tok, personal.ID, personal.Revision, []byte("after-disable")); !errors.Is(err, domain.ErrUnauthorized) {
 			// 停用之后还能改正文就停，停用没有生效。
 			t.Fatalf("got %v", err)
 		}

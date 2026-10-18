@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"strings"
 
 	"github.com/google/uuid"
 
@@ -12,6 +13,8 @@ import (
 
 // loginPerson 核对本厂有效账号和密码；不签发授权，他厂袋直接拒绝。
 func (s *kernel) loginPerson(ctx context.Context, bag Bag, clocks Clocks, loginName, password string) (Person, NodeEval) {
+	// 去掉登录名首尾空白，和建档时的规范一致
+	loginName = strings.TrimSpace(loginName)
 	// 连网用服务器钟，断网用本机钟
 	_, src := bagNow(bag, clocks)
 	// 先按拒绝，账号和凭证都过才改成允许

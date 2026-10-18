@@ -16,7 +16,7 @@ func (h *Handler) mountChannel(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/factories/{id}/clients/{clientId}/closures/{projectId}", h.pullClientClosure)
 	// 厂网登录后拉取按登录人裁过的资产清单。
 	mux.HandleFunc("GET /v1/factories/{id}/pad/inbox", h.padClientInbox)
-	// 厂网登录后拉取工程明文或工艺包。
+	// 厂网登录后拉取工程或工艺的过站包。
 	mux.HandleFunc("GET /v1/factories/{id}/pad/closures/{assetId}", h.padPullClientClosure)
 }
 
@@ -95,9 +95,9 @@ func (h *Handler) padClientInbox(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// 厂网登录后拉工程明文或工艺过站包。
+// 厂网登录后拉工程或工艺过站包，正文都是信封。
 func (h *Handler) padPullClientClosure(w http.ResponseWriter, r *http.Request) {
-	// 厂网登录后拉工程明文或工艺过站包。
+	// 厂网登录后拉工程或工艺过站包，正文都是信封。
 	h.withFactory(w, r, func(svc *service.Service) {
 		// 资产编号必须合法，否则拒绝这次办理。
 		assetID, err := uuid.Parse(r.PathValue("assetId"))
@@ -107,7 +107,7 @@ func (h *Handler) padPullClientClosure(w http.ResponseWriter, r *http.Request) {
 			writeBadRequest(w, errInvalidID)
 			return
 		}
-		// 厂网登录后拉取工程明文或工艺包。
+		// 厂网登录后拉取工程或工艺的过站包。
 		snap, err := svc.Closure.PadPullClientClosure(r.Context(), bearer(r), assetID)
 		// 上一步没通过则停止，不把失败写成成功。
 		if err != nil {

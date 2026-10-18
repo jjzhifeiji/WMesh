@@ -2,7 +2,9 @@
 package service_test
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -813,5 +815,113 @@ func TestPlatformCreateIntoFolder(t *testing.T) {
 			// 不符即停：被拒的新建留下了半截。
 			t.Fatalf("%s left rows: nodes %d->%d assets %d->%d", c.label, nodes0, nodes, assets0, assets)
 		}
+	}
+}
+
+// 验厂目录回包按白名单重编：旧厂端多带的主人、创建人和组织字段都到不了浏览器。
+func TestDecodeFactoryFSWhitelist(t *testing.T) {
+	// 个人树主人身份，回包里不该再出现。
+	const owner = "6f1c1d2e-1111-4a5b-8c9d-000000000001"
+	// 组织节点身份，回包里不该再出现。
+	const unit = "6f1c1d2e-2222-4a5b-8c9d-000000000002"
+	// 个人树根身份，文件挂在它下面。
+	const root = "6f1c1d2e-3333-4a5b-8c9d-000000000003"
+	// 文件节点和资产的身份。
+	const asset = "6f1c1d2e-4444-4a5b-8c9d-000000000004"
+	// 拼一份旧格式回包：根带主人，文件资产带创建人和组织路径。
+	raw := []byte(`[
+		{"id":"` + root + `","name":"","parentId":null,"nodeKind":"folder","assetKind":"process","treeLevel":"personal",
+		 "ownerId":"` + owner + `","ownerName":"刘焊工","createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z"},
+		{"id":"` + asset + `","name":"我的工艺","parentId":"` + root + `","nodeKind":"file","assetKind":"process","treeLevel":"personal",
+		 "ownerId":"` + owner + `","assetId":"` + asset + `",
+		 "asset":{"id":"` + asset + `","kind":"process","level":"personal","name":"我的工艺","code":"GY-1","revision":3,"digest":"AQID",
+		  "status":"draft","copyable":true,"weldKind":"single","creatorId":"` + owner + `","creatorLogin":"liu-welder",
+		  "creatorDisplay":"刘焊工","orgUnitId":"` + unit + `","orgPath":"一车间/焊接组","content":"c2VjcmV0"}}
+	]`)
+	// 按白名单解开旧格式回包。
+	rows, err := global.DecodeFactoryFS(raw)
+	// 解不开就停，旧厂端回包云端认不了。
+	if err != nil || len(rows) != 2 {
+		// 不符即停：旧格式回包没解成两行。
+		t.Fatalf("decode %d rows: %v", len(rows), err)
+	}
+	// 文件行的结构和元数据要原样留下。
+	file := rows[1]
+	// 父级、资产身份、编号、修订和摘要缺一不可。
+	if file.ParentID == nil || file.ParentID.String() != root || file.AssetID == nil || file.Asset == nil ||
+		file.Asset.Code != "GY-1" || file.Asset.Revision != 3 || !bytes.Equal(file.Asset.Digest, []byte{1, 2, 3}) {
+		// 不符即停：白名单字段在重编时丢了。
+		t.Fatalf("file row lost fields: %+v", file)
+	}
+	// 重编成浏览器收到的样子再查。
+	out, err := json.Marshal(rows)
+	// 编码失败就停，后面无从查字段。
+	if err != nil {
+		// 不符即停：重编失败。
+		t.Fatal(err)
+	}
+	// 按键名解开，逐个核对只剩白名单字段。
+	var back []map[string]json.RawMessage
+	// 解不开就停，重编结果不是对象数组。
+	if err := json.Unmarshal(out, &back); err != nil {
+		// 不符即停：重编结果解不开。
+		t.Fatal(err)
+	}
+	// 目录行允许出现的键。
+	nodeKeys := map[string]bool{"id": true, "name": true, "parentId": true, "nodeKind": true, "assetKind": true, "treeLevel": true, "assetId": true, "asset": true}
+	// 文件元数据允许出现的键。
+	assetKeys := map[string]bool{"id": true, "kind": true, "level": true, "name": true, "code": true, "revision": true, "digest": true, "status": true, "copyable": true, "weldKind": true}
+	// 逐行核对键名，白名单外的一个都不许有。
+	for _, row := range back {
+		// 逐个键看是不是白名单里的。
+		for k := range row {
+			// 白名单外的键出现就停，人员字段漏到了浏览器。
+			if !nodeKeys[k] {
+				// 不符即停：目录行多出字段。
+				t.Fatalf("node key %q leaked: %s", k, out)
+			}
+		}
+		// 没有资产的文件夹行不用再往下查。
+		if row["asset"] == nil {
+			continue
+		}
+		// 把资产元数据按键名解开。
+		var a map[string]json.RawMessage
+		// 解不开就停，资产元数据不是对象。
+		if err := json.Unmarshal(row["asset"], &a); err != nil {
+			// 不符即停：资产元数据解不开。
+			t.Fatal(err)
+		}
+		// 逐个键看是不是资产白名单里的。
+		for k := range a {
+			// 白名单外的键出现就停，创建人或正文漏到了浏览器。
+			if !assetKeys[k] {
+				// 不符即停：资产元数据多出字段。
+				t.Fatalf("asset key %q leaked: %s", k, out)
+			}
+		}
+	}
+	// 主人和组织的身份、人名、路径在值里也不许出现。
+	for _, bad := range []string{owner, unit, "刘焊工", "liu-welder", "一车间"} {
+		// 值里还留着人员或组织信息就停。
+		if strings.Contains(string(out), bad) {
+			// 不符即停：重编结果带出了人员信息。
+			t.Fatalf("value %q leaked: %s", bad, out)
+		}
+	}
+	// 空回包和 null 都要变成空数组，浏览器按列表处理。
+	for _, in := range []string{"", "null", "[]"} {
+		// 解开这一种空回包。
+		got, err := global.DecodeFactoryFS([]byte(in))
+		// 解失败或不是空数组就停，浏览器会拿到 null。
+		if err != nil || got == nil || len(got) != 0 {
+			// 不符即停：空回包没变成空数组。
+			t.Fatalf("empty %q: %v %v", in, got, err)
+		}
+	}
+	// 坏回包要报错，由接口层当成厂不在线。
+	if _, err := global.DecodeFactoryFS([]byte(`{"oops":1}`)); err == nil {
+		// 不符即停：坏回包被当成了目录。
+		t.Fatal("bad payload should fail")
 	}
 }

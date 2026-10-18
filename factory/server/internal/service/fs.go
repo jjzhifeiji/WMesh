@@ -21,6 +21,18 @@ type FSNodeView struct {
 	Asset        *AssetView `json:"asset,omitempty"`     // 文件才有；不含正文
 }
 
+// ChannelFSNode 是经通道给云端看的目录行，只留结构和文件元数据，不带人员。
+type ChannelFSNode struct {
+	ID        uuid.UUID        `json:"id"`                // 目录节点身份
+	Name      string           `json:"name"`              // 显示名；根节点为空
+	ParentID  *uuid.UUID       `json:"parentId"`          // 父文件夹；空表示根
+	NodeKind  string           `json:"nodeKind"`          // folder 或 file
+	AssetKind string           `json:"assetKind"`         // process 或 project
+	TreeLevel string           `json:"treeLevel"`         // platform / factory / personal
+	AssetID   *uuid.UUID       `json:"assetId,omitempty"` // 文件才有的资产身份
+	Asset     *PromotableAsset `json:"asset,omitempty"`   // 文件才有；不含正文和创建人
+}
+
 // ListFS 列出当前人能看见的目录；同事看不到别人的个人树。
 func (s *Assets) ListFS(ctx context.Context, token, kind string) ([]FSNodeView, error) {
 	// 核对登录仍有效，后面的操作都靠这次会话。
@@ -64,8 +76,8 @@ func (s *Assets) ListFS(ctx context.Context, token, kind string) ([]FSNodeView, 
 	return s.decorateFS(ctx, visible)
 }
 
-// ListFSForChannel 给云端看本厂全部目录结构，不含正文。
-func (s *Assets) ListFSForChannel(ctx context.Context, kind string) ([]FSNodeView, error) {
+// ListFSForChannel 给云端看本厂全部目录结构，不含正文，也不带主人和创建人。
+func (s *Assets) ListFSForChannel(ctx context.Context, kind string) ([]ChannelFSNode, error) {
 	// 通道只认工艺或工程目录，别的种类拒绝。
 	if kind != "" && kind != KindProcess && kind != KindProject {
 		return nil, domain.ErrNotFound
@@ -93,8 +105,35 @@ func (s *Assets) ListFSForChannel(ctx context.Context, kind string) ([]FSNodeVie
 	if err := s.audit(ctx, nil, nil, "list_fs", kind, audit.Allow); err != nil {
 		return nil, err
 	}
-	// 补主人名和文件元数据，不含正文。
-	return s.decorateFS(ctx, nodes)
+	// 只交结构和文件元数据，人员名册不出厂。
+	return s.channelFS(ctx, nodes), nil
+}
+
+// channelFS 把目录节点抄成通道行：不查人员表，主人和创建人都不带。
+func (s *Assets) channelFS(ctx context.Context, nodes []FSNode) []ChannelFSNode {
+	// 按节点数准备通道行，空目录也回空数组。
+	out := make([]ChannelFSNode, 0, len(nodes))
+	// 逐个节点抄结构，文件再补资产元数据。
+	for _, n := range nodes {
+		// 只抄白名单里的结构字段，个人树主人不抄。
+		row := ChannelFSNode{
+			ID: n.ID, Name: n.Name, ParentID: n.ParentID, NodeKind: n.NodeKind,
+			AssetKind: n.AssetKind, TreeLevel: n.TreeLevel, AssetID: n.AssetID,
+		}
+		// 文件节点才补资产元数据，文件夹不用。
+		if n.AssetID != nil {
+			// 元数据读得到才挂上，读不到就只留目录节点。
+			if a, err := s.loadAnyMeta(ctx, *n.AssetID); err == nil {
+				// 只留升档要看的元数据，正文和创建人都不带。
+				p := toPromotable(a)
+				// 文件节点挂上精简后的元数据。
+				row.Asset = &p
+			}
+		}
+		// 抄好的一行放进结果。
+		out = append(out, row)
+	}
+	return out
 }
 
 // ApplyPlatformFSLayout 通道对齐云端平台目录；只动已到达的副本。
