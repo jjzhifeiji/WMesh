@@ -175,12 +175,12 @@ func run(ctx context.Context, log *slog.Logger) error {
 		// 页面接在根路径，接口前缀不会被它吞掉。
 		mux.Handle("/", web.Handler(cfg.WebDir))
 	}
-	// 写上监听和超时，大包上传不被读超时掐断。
+	// 写上监听和超时；读正文限六十秒，大包在验过身份的入口里单独放宽。
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
 		Handler:           httpapi.Wrap(log, mux),
 		ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout:       10 * time.Minute, // 软件包上传会到百兆，30 秒会掐
+		ReadTimeout:       60 * time.Second, // 匿名慢传占不住内存；大包由 extendRead 放宽
 		WriteTimeout:      0,
 		IdleTimeout:       120 * time.Second,
 	}

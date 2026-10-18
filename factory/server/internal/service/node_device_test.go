@@ -55,19 +55,19 @@ func TestRegisterDeviceAndLogin(t *testing.T) {
 	}
 
 	// 期望登记机械臂号被拒为必须有臂号，放行即失败
-	if _, err := fac.RegisterDevice(ctx, cid, ""); !errors.Is(err, domain.ErrDeviceSerialRequired) {
+	if _, err := fac.RegisterDevice(ctx, saTok, cid, ""); !errors.Is(err, domain.ErrDeviceSerialRequired) {
 		// 空值没有被拒或结果是空就失败
 		t.Fatalf("empty: %v", err)
 	}
 	// 登记机械臂号，失败则本步验收不能继续
-	row, err := fac.RegisterDevice(ctx, cid, "ARM-1")
+	row, err := fac.RegisterDevice(ctx, saTok, cid, "ARM-1")
 	// 登记机械臂号失败就停，避免带着错误继续验
 	if err != nil || row.DeviceSerial != "ARM-1" || len(row.UnwrapKey) != 0 {
 		// 臂号没钉上就失败，并打出登记结果
 		t.Fatalf("pin %+v %v", row, err)
 	}
 	// 登记机械臂号，失败则本步验收不能继续
-	again, err := fac.RegisterDevice(ctx, cid, "ARM-1")
+	again, err := fac.RegisterDevice(ctx, saTok, cid, "ARM-1")
 	// 登记机械臂号失败就停，避免带着错误继续验
 	if err != nil || again.DeviceSerial != "ARM-1" {
 		// 重复登记没有保持原号就失败
@@ -88,8 +88,25 @@ func TestRegisterDeviceAndLogin(t *testing.T) {
 		// 接受焊机绑定失败就把原因打出并停掉本例
 		t.Fatal(err)
 	}
+	// 不带登录就钉号应当被拒为未登录，放行即失败
+	if _, err := fac.RegisterDevice(ctx, "", cid2, "ARM-X"); !errors.Is(err, domain.ErrUnauthorized) {
+		// 匿名钉号没被拒就失败，厂网谁都能改臂号
+		t.Fatalf("anon pin: %v", err)
+	}
+	// 操作员钉号应当被拒为无权，放行即失败
+	if _, err := fac.RegisterDevice(ctx, op.tok, cid2, "ARM-X"); !errors.Is(err, domain.ErrForbidden) {
+		// 非超管钉号没被拒就失败，只有超管能钉
+		t.Fatalf("operator pin: %v", err)
+	}
+	// 读回第二台，确认两次被拒都没把号钉上
+	c2, err := fac.Store().ClientByID(ctx, cid2)
+	// 读不到或号已被钉上就失败
+	if err != nil || c2.DeviceSerial != "" {
+		// 被拒的请求不该留下臂号
+		t.Fatalf("denied pin left serial %+v %v", c2, err)
+	}
 	// 期望登记机械臂号被拒为臂号已被占用，放行即失败
-	if _, err := fac.RegisterDevice(ctx, cid2, "ARM-1"); !errors.Is(err, domain.ErrDeviceSerialTaken) {
+	if _, err := fac.RegisterDevice(ctx, saTok, cid2, "ARM-1"); !errors.Is(err, domain.ErrDeviceSerialTaken) {
 		// 重复臂号没有被拒就失败
 		t.Fatalf("taken: %v", err)
 	}
@@ -155,20 +172,20 @@ func TestRegisterDeviceAndLogin(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// 登记机械臂号失败就停，避免带着错误继续验
-	if _, err := fac.RegisterDevice(ctx, cid, "ARM-2"); err != nil {
-		// 登记机械臂号失败就把原因打出并停掉本例
-		t.Fatal(err)
+	// 已钉 ARM-1 再换 ARM-2 应当被拒，不许悄悄覆盖
+	if _, err := fac.RegisterDevice(ctx, saTok, cid, "ARM-2"); !errors.Is(err, domain.ErrDeviceSerialMismatch) {
+		// 换号被放行就失败，已钉的号会被人对调
+		t.Fatalf("overwrite: %v", err)
 	}
-	// 期望在焊机上登录被拒为臂号对不上，放行即失败
-	if _, err := fac.LoginOnClient(ctx, cid, "ARM-1", "op", "op-pass"); !errors.Is(err, domain.ErrDeviceSerialMismatch) {
-		// 旧臂号还能用就失败，应当已经换掉
+	// 旧号仍应能登录，说明被拒的换号没落库
+	if _, err := fac.LoginOnClient(ctx, cid, "ARM-1", "op", "op-pass"); err != nil {
+		// 旧号登不上就失败，换号被拒却改了号
 		t.Fatalf("old arm: %v", err)
 	}
-	// 在焊机上登录失败就停，避免带着错误继续验
-	if _, err := fac.LoginOnClient(ctx, cid, "ARM-2", "op", "op-pass"); err != nil {
-		// 在焊机上登录失败就把原因打出并停掉本例
-		t.Fatal(err)
+	// 期望新号登录被拒为臂号对不上，放行即失败
+	if _, err := fac.LoginOnClient(ctx, cid, "ARM-2", "op", "op-pass"); !errors.Is(err, domain.ErrDeviceSerialMismatch) {
+		// 新号能登录就失败，说明号被换掉了
+		t.Fatalf("new arm: %v", err)
 	}
 
 	// 作废绑定失败就停，避免带着错误继续验
@@ -177,12 +194,12 @@ func TestRegisterDeviceAndLogin(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 期望登记机械臂号被拒为绑定已作废，放行即失败
-	if _, err := fac.RegisterDevice(ctx, cid, "ARM-3"); !errors.Is(err, domain.ErrBindingVoid) {
+	if _, err := fac.RegisterDevice(ctx, saTok, cid, "ARM-3"); !errors.Is(err, domain.ErrBindingVoid) {
 		// 作废绑定后还能登记臂号就失败
 		t.Fatalf("void pin: %v", err)
 	}
 	// 期望在焊机上登录被拒为绑定已作废，放行即失败
-	if _, err := fac.LoginOnClient(ctx, cid, "ARM-2", "op", "op-pass"); !errors.Is(err, domain.ErrBindingVoid) {
+	if _, err := fac.LoginOnClient(ctx, cid, "ARM-1", "op", "op-pass"); !errors.Is(err, domain.ErrBindingVoid) {
 		// 作废绑定后还能登录就失败
 		t.Fatalf("void login: %v", err)
 	}
@@ -210,6 +227,35 @@ func TestRegisterDeviceAndLogin(t *testing.T) {
 	if audit.ContainsAny(dump, "op-pass", "sa-pass") {
 		// 审计里出现密码就失败，说明口令泄了
 		t.Fatal("password leaked")
+	}
+	// 先当作没看到操作员被拒和超管成功，找到再标上
+	opDenied, saAllowed := false, false
+	// 逐条看钉号审计，每条都要认得出操作人
+	for _, r := range rows {
+		// 不是钉号这一类就跳过
+		if r.Action != "client_register" {
+			continue
+		}
+		// 钉号审计没有操作人就失败，查不出是谁改的号
+		if r.ActorID == nil {
+			// 打出这条缺操作人的审计
+			t.Fatalf("client_register without actor %#v", r)
+		}
+		// 操作员那次被拒要记在操作员名下
+		if r.Result == audit.Deny && *r.ActorID == op.acc.ID {
+			// 标上看到了操作员被拒
+			opDenied = true
+		}
+		// 超管钉号成功要记在超管名下
+		if r.Result == audit.Allow && *r.ActorID == seed.SuperAdminID {
+			// 标上看到了超管成功
+			saAllowed = true
+		}
+	}
+	// 两类审计少一类就失败，操作人没记对
+	if !opDenied || !saAllowed {
+		// 打出审计全文便于看缺哪条
+		t.Fatalf("client_register actors deny=%v allow=%v %s", opDenied, saAllowed, dump)
 	}
 }
 
@@ -255,12 +301,12 @@ func TestPadLoginListsDevicesWithoutSerial(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 登记机械臂号失败就停，避免带着错误继续验
-	if _, err := fac.RegisterDevice(ctx, cidA, "ARM-A"); err != nil {
+	if _, err := fac.RegisterDevice(ctx, saTok, cidA, "ARM-A"); err != nil {
 		// 登记机械臂号失败就把原因打出并停掉本例
 		t.Fatal(err)
 	}
 	// 登记机械臂号失败就停，避免带着错误继续验
-	if _, err := fac.RegisterDevice(ctx, cidB, "ARM-B"); err != nil {
+	if _, err := fac.RegisterDevice(ctx, saTok, cidB, "ARM-B"); err != nil {
 		// 登记机械臂号失败就把原因打出并停掉本例
 		t.Fatal(err)
 	}
@@ -525,7 +571,7 @@ func TestPersonLoginLogsKeepDeviceAndWifi(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 登记机械臂号失败就停，避免带着错误继续验
-	if _, err := fac.RegisterDevice(ctx, cid, "ARM-1"); err != nil {
+	if _, err := fac.RegisterDevice(ctx, saTok, cid, "ARM-1"); err != nil {
 		// 登记机械臂号失败就把原因打出并停掉本例
 		t.Fatal(err)
 	}
@@ -721,12 +767,12 @@ func TestLoginOnClientClearsOtherDevice(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 登记机械臂号失败就停，避免带着错误继续验
-	if _, err := fac.RegisterDevice(ctx, cidA, "ARM-A"); err != nil {
+	if _, err := fac.RegisterDevice(ctx, saTok, cidA, "ARM-A"); err != nil {
 		// 登记机械臂号失败就把原因打出并停掉本例
 		t.Fatal(err)
 	}
 	// 登记机械臂号失败就停，避免带着错误继续验
-	if _, err := fac.RegisterDevice(ctx, cidB, "ARM-B"); err != nil {
+	if _, err := fac.RegisterDevice(ctx, saTok, cidB, "ARM-B"); err != nil {
 		// 登记机械臂号失败就把原因打出并停掉本例
 		t.Fatal(err)
 	}

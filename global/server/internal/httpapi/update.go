@@ -14,6 +14,8 @@ import (
 
 const maxSoftwareUpload = 256 << 20 // 服务 tar / APK；JSON 再 base64 会胀，64MiB 不够
 
+const softwareReadWindow = 10 * time.Minute // 验过管理员后放宽读时限，大包才传得完
+
 // 挂软件发布、厂自拉、本机云端确认和存储占用。
 func (h *Handler) mountUpdate(mux *http.ServeMux) {
 	// 列出已发布的软件版本。
@@ -240,8 +242,16 @@ func (h *Handler) storageUsage(w http.ResponseWriter, r *http.Request) {
 
 // 发布一条只向前的软件版本；JSON 或 multipart 均可。
 func (h *Handler) publishSoftware(w http.ResponseWriter, r *http.Request) {
+	// 先验管理员；匿名不读包，免得白收几百兆。
+	if _, err := h.svc.Auth.RequireAdmin(r.Context(), bearer(r)); err != nil {
+		// 按业务错误回写，内部细节不出网。
+		writeErr(w, err)
+		return
+	}
+	// 验过身份才放宽读时限，大包不被六十秒掐断。
+	extendRead(w, softwareReadWindow)
 	// 读 JSON 或表单里的包，超限或坏包就拒绝。
-	kind, versionName, version, body, err := readSoftwareUpload(w, r)
+	kind, versionName, version, body, err := readSoftwareUpload(w, r, maxSoftwareUpload)
 	// 参数不合法就按坏请求拒绝。
 	if err != nil {
 		// 把不合法的原因回给调用方。
@@ -351,15 +361,19 @@ func (h *Handler) latestSoftware(w http.ResponseWriter, r *http.Request) {
 }
 
 // 读 JSON 或表单里的包文件；超上限拒绝。
-func readSoftwareUpload(w http.ResponseWriter, r *http.Request) (kind, versionName string, version int64, body []byte, err error) {
+func readSoftwareUpload(w http.ResponseWriter, r *http.Request, limit int64) (kind, versionName string, version int64, body []byte, err error) {
+	// 声明长度已超上限就一字节不读，直接回 413。
+	if r.ContentLength > limit {
+		return "", "", 0, nil, &http.MaxBytesError{Limit: limit}
+	}
 	// 超过上限直接掐断，避免大包拖垮进程。
-	r.Body = http.MaxBytesReader(w, r.Body, maxSoftwareUpload)
+	r.Body = http.MaxBytesReader(w, r.Body, limit)
 	// 看是表单还是 JSON，两条路不能混。
 	ct := r.Header.Get("Content-Type")
 	// 表单上传走文件，其余按 JSON 包体。
 	if strings.HasPrefix(ct, "multipart/form-data") {
 		// 表单读失败或超限，整包拒绝。
-		if err := r.ParseMultipartForm(maxSoftwareUpload); err != nil {
+		if err := r.ParseMultipartForm(limit); err != nil {
 			return "", "", 0, nil, err
 		}
 		// 从表单取出种类，缺了由服务拒绝。
@@ -390,8 +404,8 @@ func readSoftwareUpload(w http.ResponseWriter, r *http.Request) (kind, versionNa
 	}
 	// 接住请求体，解析失败再拒绝。
 	var req publishSoftwareReq
-	// 未知字段或坏 JSON 按坏请求拒绝。
-	if err := decodeJSON(r, &req); err != nil {
+	// 按包上限解码，不受普通接口一兆限制。
+	if err := decodeJSONLimit(r, &req, limit); err != nil {
 		return "", "", 0, nil, err
 	}
 	return req.Kind, req.VersionName, req.Version, req.Content, nil

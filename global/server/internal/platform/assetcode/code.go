@@ -94,6 +94,18 @@ func MatchKind(kind, code string) bool {
 	return len(code) >= 2 && code[:2] == p
 }
 
+// Origin 取编号中间的创建端短码；形态不对回空串。
+func Origin(code string) string {
+	// 按整串形态拆出种类、短码和序号。
+	m := codeRe.FindStringSubmatch(code)
+	// 形态对不上就没有短码可取。
+	if m == nil {
+		return ""
+	}
+	// 第二组就是创建端短码。
+	return m[2]
+}
+
 // ValidFactoryOrigin 是否为本厂短码 F01…F99；F00 只给迁移旧行，不得再发。
 func ValidFactoryOrigin(s string) bool {
 	// 三位、F 加两位数字，且不是留给迁移的全零。

@@ -52,14 +52,26 @@ type LegacyImportResult struct {
 	Skipped   []LegacyReject `json:"skipped"`   // 同名跳过，沿用已有身份
 }
 
-// ImportLegacy 由 WAN 管理员把旧文件收成平台级资产。
-func (s *Assets) ImportLegacy(ctx context.Context, token string, in LegacyImport) (LegacyImportResult, error) {
+// AuthorizeLegacyImport 导入前核对管理员；不通过就留导入拒绝审计。
+// HTTP 读大正文前先调它，匿名被挡时审计口径不丢。
+func (s *Assets) AuthorizeLegacyImport(ctx context.Context, token string) (Admin, error) {
 	// 核对当前管理员会话。
 	admin, err := s.RequireAdmin(ctx, token)
 	// 无效就不能继续，不当已经登录。
 	if err != nil {
 		// 导入被拒就留审计。
 		_ = s.audit(ctx, nil, nil, nil, "import_legacy", "wan", audit.Deny)
+		return Admin{}, err
+	}
+	return admin, nil
+}
+
+// ImportLegacy 由 WAN 管理员把旧文件收成平台级资产。
+func (s *Assets) ImportLegacy(ctx context.Context, token string, in LegacyImport) (LegacyImportResult, error) {
+	// 核对当前管理员会话，不通过已留导入拒绝审计。
+	admin, err := s.AuthorizeLegacyImport(ctx, token)
+	// 无效就不能继续，不当已经登录。
+	if err != nil {
 		return LegacyImportResult{}, err
 	}
 	// 先准备导入结果，坏文件单独收集。

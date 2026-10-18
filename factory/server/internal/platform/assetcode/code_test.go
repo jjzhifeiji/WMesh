@@ -50,3 +50,24 @@ func TestFormat(t *testing.T) {
 		t.Fatalf("client origin: %s %v", c, err)
 	}
 }
+
+// 三种短码都要原样取出，坏串和空串只回空。
+func TestOrigin(t *testing.T) {
+	// 逐条列出编号和应取出的短码。
+	cases := map[string]string{
+		"GY-C0008-000012": "C0008",
+		"GC-F01-000001":   "F01",
+		"GY-W-000001":     "W",
+		"GY-X01-000001":   "",
+		"GY-C0008-12":     "",
+		"":                "",
+	}
+	// 逐条核对取出的短码。
+	for code, want := range cases {
+		// 取出的短码和预期不同就报错。
+		if got := Origin(code); got != want {
+			// 带上编号和两边结果，便于看出偏在哪。
+			t.Errorf("Origin(%q) = %q, want %q", code, got, want)
+		}
+	}
+}

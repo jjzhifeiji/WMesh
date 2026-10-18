@@ -53,10 +53,18 @@ type weldFactsBody struct {
 func (h *Handler) flushWeldFacts(w http.ResponseWriter, r *http.Request) {
 	// 把本机待发焊事实汇进本厂；发送人不必等于创建人。
 	h.withFactory(w, r, func(svc *service.Service) {
+		// 大正文先验令牌再读，匿名者灌不进内存；被拒照留汇聚审计。
+		if _, err := svc.Stats.AuthorizeWeldFlush(r.Context(), bearer(r)); err != nil {
+			// 正文读完扔掉，示教器才能收到干净的 401。
+			discardBody(r, maxBulkJSONBody)
+			// 把失败译成状态回给调用方，不写成功。
+			writeErr(w, err)
+			return
+		}
 		// 承接一批焊事实，一条非法则整批拒绝。
 		var req weldFactsBody
-		// 正文无法解析则拒绝，不进入业务。
-		if err := decodeJSON(r, &req); err != nil {
+		// 积压多时正文大，按批量上限读，不限条数。
+		if err := decodeJSONLimit(r, &req, maxBulkJSONBody); err != nil {
 			// 请求不合法，回非法请求并不进入业务。
 			writeBadRequest(w, err)
 			return

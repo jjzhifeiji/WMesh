@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -16,21 +17,49 @@ import (
 
 var errInvalidID = errors.New("invalid id") // 路径或 JSON 里的 UUID 无法解析
 
+var errBodyTooLarge = errors.New("request body too large") // 正文超过本入口上限，回 413
+
+// 正文上限：超了回 413，局域网匿名者撑不爆内存。
+const (
+	maxJSONBody     = 1 << 20  // 普通接口一兆，最大单份工程约 67KB
+	maxBulkJSONBody = 32 << 20 // 焊事实和旧文件导入，验过令牌才按此读
+)
+
 // 错误回包，只放可以展示给调用方的原因。
 type errorBody struct {
 	Error string `json:"error"` // 英文业务错误，前端再译
 }
 
-// 拒绝未知字段。
+// 拒绝未知字段；正文按普通接口上限读。
 func decodeJSON(r *http.Request, dst any) error {
+	// 普通接口统一一兆上限，超了回 413。
+	return decodeJSONLimit(r, dst, maxJSONBody)
+}
+
+// 按给定上限解码 JSON，拒绝未知字段；超限交回 MaxBytesError。
+func decodeJSONLimit(r *http.Request, dst any, limit int64) error {
 	// 读完就关闭正文，避免连接一直被占。
 	defer r.Body.Close()
-	// 按文本对象读取正文。
-	dec := json.NewDecoder(r.Body)
+	// 声明长度已超上限就一字节不读，直接拒绝。
+	if r.ContentLength > limit {
+		return &http.MaxBytesError{Limit: limit}
+	}
+	// 按文本对象读取正文，读到上限就停。
+	dec := json.NewDecoder(http.MaxBytesReader(nil, r.Body, limit))
 	// 多出来的字段直接拒绝，避免悄悄忽略。
 	dec.DisallowUnknownFields()
 	// 解进目标，失败就把原因交回调用方。
 	return dec.Decode(dst)
+}
+
+// 读完正文直接扔掉，不进内存；最多读到上限，好让客户端收到干净回包。
+func discardBody(r *http.Request, limit int64) {
+	// 声明长度已超上限，读了也白读，留给服务器断开。
+	if r.ContentLength > limit {
+		return
+	}
+	// 边读边扔，读到上限就停，不占内存。
+	_, _ = io.Copy(io.Discard, http.MaxBytesReader(nil, r.Body, limit))
 }
 
 // 取出会话令牌，不校验。
@@ -57,8 +86,16 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-// 400 把解析错误回给前端。
+// 400 把解析错误回给前端；正文超限改回 413。
 func writeBadRequest(w http.ResponseWriter, err error) {
+	// 接住超限错误，解码时可能被包了一层。
+	var tooLarge *http.MaxBytesError
+	// 正文超限单独回 413，前端才知道是太大。
+	if errors.As(err, &tooLarge) {
+		// 只回约定句子，不带上限细节。
+		writeJSON(w, http.StatusRequestEntityTooLarge, errorBody{Error: errBodyTooLarge.Error()})
+		return
+	}
 	// 通过之后把结果回给调用方。
 	writeJSON(w, http.StatusBadRequest, errorBody{Error: err.Error()})
 }
@@ -93,6 +130,9 @@ func statusOf(err error) int {
 	// 平台暂时不可达，回上游故障。
 	case errors.Is(err, domain.ErrWANUnreachable):
 		return http.StatusBadGateway
+	// 激活码试得太勤，回请求过多，稍后再试。
+	case errors.Is(err, domain.ErrTooManyAttempts):
+		return http.StatusTooManyRequests
 	// 无权，或动到最后一名超管，则回禁止。
 	case errors.Is(err, domain.ErrForbidden), errors.Is(err, domain.ErrLastAdmin),
 		errors.Is(err, domain.ErrInitialSAExists), errors.Is(err, domain.ErrFactoryDisabled),

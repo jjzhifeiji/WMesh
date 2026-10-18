@@ -139,14 +139,26 @@ type WeldRunQuery struct {
 	Day       *time.Time // UTC 日历日
 }
 
-// FlushWeldFacts 把本机待发写入厂库；发送人不必等于创建人。
-func (s *Stats) FlushWeldFacts(ctx context.Context, token string, items []WeldFact) (WeldFlushResult, error) {
+// AuthorizeWeldFlush 汇聚前核对会话；不通过就留汇聚拒绝审计。
+// HTTP 读大正文前先调它，匿名被挡时审计口径不丢。
+func (s *Stats) AuthorizeWeldFlush(ctx context.Context, token string) (Account, error) {
 	// 先确认会话仍有效，过期或停用直接拒绝
 	acc, err := s.RequireActive(ctx, token)
 	// 会话无效或账号已停用，拒绝继续
 	if err != nil {
 		// 记下汇聚焊次被拒绝，写失败不改变结果
 		_ = s.audit(ctx, nil, nil, "flush_weld_facts", "batch", audit.Deny)
+		return Account{}, err
+	}
+	return acc, nil
+}
+
+// FlushWeldFacts 把本机待发写入厂库；发送人不必等于创建人。
+func (s *Stats) FlushWeldFacts(ctx context.Context, token string, items []WeldFact) (WeldFlushResult, error) {
+	// 先确认会话仍有效，不通过已留汇聚拒绝审计
+	acc, err := s.AuthorizeWeldFlush(ctx, token)
+	// 会话无效或账号已停用，拒绝继续
+	if err != nil {
 		return WeldFlushResult{}, err
 	}
 	// 先备好收下和拒绝两栏，失败的条仍留本机

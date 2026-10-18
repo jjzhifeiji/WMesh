@@ -57,6 +57,8 @@ func TestPadSaveLandsAvailable(t *testing.T) {
 		t.Fatalf("admin create: %+v", draft)
 	}
 
+	// 先登记 C0008 这台焊机，示教器自带的 C 段号才会被认。
+	mustClientShortCode(t, ctx, fac, "C0008")
 	// 新取一个编号，撞号会让两条记录分不清。
 	localID := id.New()
 	// 在平板上新建个人稿，失败说明会话或上下文不对。

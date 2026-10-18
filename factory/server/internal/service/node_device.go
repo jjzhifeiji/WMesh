@@ -24,26 +24,33 @@ type ClientSession struct {
 	Roles            []string     `json:"roles,omitempty"`            // 当前登录人有效角色，供本机入队判定
 }
 
-// RegisterDevice 把读到的机械臂号钉到已绑定 Client；空号拒绝，本厂未作废号不得重复。
-func (s *Node) RegisterDevice(ctx context.Context, clientID uuid.UUID, serial string) (Client, error) {
-	// 厂已停用、注销或租约到期，拒绝本次
-	if err := s.requireFactoryOpen(ctx); err != nil {
-		// 厂已停用、注销或租约到期，记下钉机械臂号被拒绝，写失败不改变结果
-		_ = s.audit(ctx, nil, nil, "client_register", clientID.String(), audit.Deny)
+// RegisterDevice 本厂超管把读到的机械臂号钉到尚未钉号的已绑定 Client；已钉别的号一律拒绝。
+// 换臂等 WAN 支持改识别号后再做。
+func (s *Node) RegisterDevice(ctx context.Context, token string, clientID uuid.UUID, serial string) (Client, error) {
+	// 先确认会话仍有效，过期、停用或厂已关都直接拒绝
+	acc, err := s.RequireActive(ctx, token)
+	// 会话无效或账号已停用，拒绝继续
+	if err != nil {
 		return Client{}, err
 	}
-	// 把读到的机械臂号钉到这台
-	row, err := s.store.PinDeviceSerial(ctx, clientID, serial)
-	// 钉号失败，避免两台抢同一个号
+	// 只有工厂超管能钉机械臂号。失败一律记拒绝。
+	if err := s.can(ctx, acc, permManageAccount, nil); err != nil {
+		// 不是工厂超管，记下钉机械臂号被拒绝，写失败不改变结果
+		_ = s.audit(ctx, &acc.ID, nil, "client_register", clientID.String(), audit.Deny)
+		return Client{}, err
+	}
+	// 把读到的机械臂号钉到这台，已钉别的号不覆盖
+	row, err := s.store.PinDeviceSerial(ctx, clientID, serial, false)
+	// 钉号失败，避免两台抢同一个号或悄悄换号
 	if err != nil {
 		// 记下钉机械臂号被拒绝，写失败不改变结果
-		_ = s.audit(ctx, nil, nil, "client_register", clientID.String(), audit.Deny)
+		_ = s.audit(ctx, &acc.ID, nil, "client_register", clientID.String(), audit.Deny)
 		return Client{}, err
 	}
 	// 解封钥不放进返回，避免把秘密交给调用方
 	row.UnwrapKey = nil
 	// 钉机械臂号成功后记审计，再把结果交回
-	return row, s.audit(ctx, nil, nil, "client_register", clientID.String(), audit.Allow)
+	return row, s.audit(ctx, &acc.ID, nil, "client_register", clientID.String(), audit.Allow)
 }
 
 // LoginOnClient 本厂有效账号在已钉设备号的本机登录并领取人钥；他厂、未绑定、号不对都拒绝。

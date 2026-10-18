@@ -33,10 +33,18 @@ type legacyImportReq struct {
 func (h *Handler) importLegacy(w http.ResponseWriter, r *http.Request) {
 	// 工厂超管或整厂管理员导入旧工艺/工程；缺路径的工程拒绝，已入工艺保留。
 	h.withFactory(w, r, func(svc *service.Service) {
+		// 大正文先验令牌再读，角色仍由业务核对。
+		if _, err := svc.Auth.RequireActive(r.Context(), bearer(r)); err != nil {
+			// 正文读完扔掉，浏览器才能收到干净的 401。
+			discardBody(r, maxBulkJSONBody)
+			// 把失败译成状态回给调用方，不写成功。
+			writeErr(w, err)
+			return
+		}
 		// 承接一批旧文件和同名时的策略。
 		var req legacyImportReq
-		// 正文无法解析则拒绝，不进入业务。
-		if err := decodeJSON(r, &req); err != nil {
+		// 一批旧文件可能很大，按批量上限读。
+		if err := decodeJSONLimit(r, &req, maxBulkJSONBody); err != nil {
 			// 请求不合法，回非法请求并不进入业务。
 			writeBadRequest(w, err)
 			return

@@ -132,12 +132,12 @@ func TestClientChannelPullAndPolicyFanout(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 钉臂号失败就停，否则后面没有可靠结果。
-	if _, err := fac.RegisterDevice(ctx, cid, "ARM-1"); err != nil {
+	if _, err := fac.RegisterDevice(ctx, sa, cid, "ARM-1"); err != nil {
 		// 把钉臂号的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
 	// 钉臂号失败就停，否则后面没有可靠结果。
-	if _, err := fac.RegisterDevice(ctx, cidB, "ARM-B"); err != nil {
+	if _, err := fac.RegisterDevice(ctx, sa, cidB, "ARM-B"); err != nil {
 		// 把钉臂号的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}

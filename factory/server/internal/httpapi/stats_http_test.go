@@ -11,6 +11,7 @@ import (
 
 	"wmesh/factory/internal/httpapi"
 	"wmesh/factory/internal/hub"
+	"wmesh/factory/internal/platform/audit"
 	"wmesh/factory/internal/platform/id"
 	"wmesh/factory/internal/platform/testpg"
 	"wmesh/factory/internal/service"
@@ -159,6 +160,20 @@ func TestWeldFactsHTTP(t *testing.T) {
 		// 与预期不符就停测，避免后面连环误判。
 		t.Fatalf("anon flush %d %s", code, body)
 	}
+	// 先数汇聚拒绝审计，匿名大正文被挡后应多一行。
+	denyBefore := auditDenies(t, svc, "flush_weld_facts")
+	// 匿名带两兆垃圾正文，应先验令牌回 401，不是 400 也不是 413。
+	code, body = do(t, srv, "POST", base+"/pad/weld-facts", "", strings.Repeat("x", 2<<20))
+	// 不是未授权则本测失败。
+	if code != http.StatusUnauthorized {
+		// 与预期不符就停测，避免后面连环误判。
+		t.Fatalf("anon big flush %d %s", code, body)
+	}
+	// 先验令牌不能丢掉汇聚拒绝审计，少了就停测。
+	if got := auditDenies(t, svc, "flush_weld_facts"); got != denyBefore+1 {
+		// 与预期不符就停测，避免后面连环误判。
+		t.Fatalf("flush_weld_facts deny audit %d -> %d", denyBefore, got)
+	}
 	// 上报焊事实，一条非法则整批应当被拒绝。
 	code, body = do(t, srv, "POST", base+"/pad/weld-facts", bTok, string(payload))
 	// 不是成功，或正文与预期不符则失败。
@@ -201,6 +216,49 @@ func TestWeldFactsHTTP(t *testing.T) {
 		// 与预期不符就停测，避免后面连环误判。
 		t.Fatalf("demo %d %s", code, body)
 	}
+	// 积压一大批：工程名拉长，凑出两兆多正文，超过普通一兆上限。
+	name := strings.Repeat("工程", 170)
+	// 一千六百条，约两兆多，核对既不限字节到一兆也不限条数。
+	facts := make([]map[string]any, 0, 1600)
+	// 逐条拼出合法焊事实，创建人都是焊工A。
+	for i := 0; i < 1600; i++ {
+		// 每条新身份，避免和前面的事实撞上。
+		facts = append(facts, map[string]any{
+			"id": id.New().String(), "creatorId": pa.ID.String(), "orgUnitId": shop.ID.String(),
+			"orgPath":     []map[string]string{{"id": shop.ID.String(), "name": shop.Name}},
+			"projectName": name, "lengthMm": 10, "durationSec": 1,
+			"occurredAt": time.Date(2026, 9, 18, 1, 0, 0, 0, time.UTC).Format(time.RFC3339),
+		})
+	}
+	// 收成正文，拼不出来就停测。
+	bigPayload, err := json.Marshal(map[string]any{"facts": facts})
+	// 正文拼不出来或不够两兆，测不到批量上限。
+	if err != nil || len(bigPayload) < 2<<20 {
+		// 与预期不符就停测，避免后面连环误判。
+		t.Fatalf("big payload %d %v", len(bigPayload), err)
+	}
+	// 登录后送这一大批，应当整批收下。
+	code, body = do(t, srv, "POST", base+"/pad/weld-facts", bTok, string(bigPayload))
+	// 不是成功则本测失败。
+	if code != http.StatusOK {
+		// 与预期不符就停测，避免后面连环误判。
+		t.Fatalf("big flush %d %.200s", code, body)
+	}
+	// 接住回包里收下和拒绝的清单。
+	var flushed struct {
+		Accepted []string `json:"accepted"` // 已收下的事实身份
+		Rejected []any    `json:"rejected"` // 被拒的事实
+	}
+	// 回包解不开则停测。
+	if err := json.Unmarshal([]byte(body), &flushed); err != nil {
+		// 与预期不符就停测，避免后面连环误判。
+		t.Fatalf("big flush body: %v", err)
+	}
+	// 收下条数应等于送出条数，说明没有条数上限。
+	if len(flushed.Accepted) != len(facts) || len(flushed.Rejected) != 0 {
+		// 与预期不符就停测，避免后面连环误判。
+		t.Fatalf("big flush accepted %d rejected %d", len(flushed.Accepted), len(flushed.Rejected))
+	}
 }
 
 // 登录网页并带回会话，失败则停测。
@@ -221,4 +279,28 @@ func loginWeb(t *testing.T, srv *httptest.Server, base, login, pass string) stri
 // 按登录名得到交付时的默认口令。
 func defaultPass(login string) string {
 	return login + "123456"
+}
+
+// 数本厂某个动作的拒绝审计有几行。
+func auditDenies(t *testing.T, svc *service.Service, action string) int {
+	// 标成辅助，失败行号落到调用它的测试。
+	t.Helper()
+	// 读出本厂全部审计行，再按动作和结果筛。
+	rows, err := svc.ListAudit(context.Background())
+	// 这一步失败则停测，避免在坏结果上继续。
+	if err != nil {
+		// 与预期不符就停测，避免后面连环误判。
+		t.Fatal(err)
+	}
+	// 从零起数，只算这一动作的拒绝。
+	n := 0
+	// 逐行看动作和结果。
+	for _, row := range rows {
+		// 动作对得上且是拒绝才算一行。
+		if row.Action == action && row.Result == audit.Deny {
+			// 多数一行拒绝。
+			n++
+		}
+	}
+	return n
 }

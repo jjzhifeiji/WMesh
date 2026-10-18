@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/uuid"
+
 	"wmesh/factory/internal/httpapi"
 	"wmesh/factory/internal/hub"
 	"wmesh/factory/internal/platform/id"
@@ -105,20 +107,53 @@ func TestClientDeviceLoginHTTP(t *testing.T) {
 		// 与预期不符就停测，避免后面连环误判。
 		t.Fatalf("bind %d %s", code, body)
 	}
+	// 补登这台焊机的短码，示教器自带的 C 段号才会被认。
+	if err := svc.Store().PutClientShortCode(context.Background(), uuid.MustParse(cid), "C0008"); err != nil {
+		// 登记短码失败就停测，后面的新建会被拒。
+		t.Fatal(err)
+	}
 
+	// 不带登录钉臂号，应当被拒。
+	code, body = do(t, srv, "POST", base+"/clients/"+cid+"/device", "", `{"deviceSerial":"ARM-1"}`)
+	// 不是未登录则本测失败，厂网谁都能改臂号。
+	if code != http.StatusUnauthorized {
+		// 与预期不符就停测，避免后面连环误判。
+		t.Fatalf("anon pin %d %s", code, body)
+	}
+	// 读回设备名录，看匿名那次有没有把号钉上。
+	code, body = do(t, srv, "GET", base+"/clients", tok, "")
+	// 读不到，或名录里已出现臂号，则本测失败。
+	if code != http.StatusOK || strings.Contains(body, `"deviceSerial"`) {
+		// 与预期不符就停测，避免后面连环误判。
+		t.Fatalf("anon pin left serial %d %s", code, body)
+	}
 	// 把机械臂号钉到这台设备上。
-	code, body = do(t, srv, "POST", base+"/clients/"+cid+"/device", "", `{"deviceSerial":""}`)
+	code, body = do(t, srv, "POST", base+"/clients/"+cid+"/device", tok, `{"deviceSerial":""}`)
 	// 不是非法请求则本测失败。
 	if code != http.StatusBadRequest {
 		// 与预期不符就停测，避免后面连环误判。
 		t.Fatalf("empty serial %d %s", code, body)
 	}
 	// 把机械臂号钉到这台设备上。
-	code, body = do(t, srv, "POST", base+"/clients/"+cid+"/device", "", `{"deviceSerial":"ARM-1"}`)
+	code, body = do(t, srv, "POST", base+"/clients/"+cid+"/device", tok, `{"deviceSerial":"ARM-1"}`)
 	// 状态不对，或回包泄出了不该给的秘密。
 	if code != http.StatusOK || gjson(t, body, "deviceSerial") != "ARM-1" || strings.Contains(body, "unwrapKey") {
 		// 与预期不符就停测，避免后面连环误判。
 		t.Fatalf("pin %d %s", code, body)
+	}
+	// 已钉 ARM-1 再换别的号，应当被拒。
+	code, body = do(t, srv, "POST", base+"/clients/"+cid+"/device", tok, `{"deviceSerial":"ARM-2"}`)
+	// 不是非法请求则本测失败，已钉的号被悄悄覆盖。
+	if code != http.StatusBadRequest {
+		// 与预期不符就停测，避免后面连环误判。
+		t.Fatalf("overwrite %d %s", code, body)
+	}
+	// 读回设备名录，确认号仍是 ARM-1。
+	code, body = do(t, srv, "GET", base+"/clients", tok, "")
+	// 读不到，或号已不是 ARM-1，则本测失败。
+	if code != http.StatusOK || !strings.Contains(body, `"deviceSerial":"ARM-1"`) {
+		// 与预期不符就停测，避免后面连环误判。
+		t.Fatalf("serial after overwrite %d %s", code, body)
 	}
 
 	// 登录并取得会话，口令错误应当被拒绝。

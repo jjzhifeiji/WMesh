@@ -2,6 +2,8 @@ package httpapi
 
 import (
 	"net/http"
+
+	"wmesh/global/internal/platform/domain"
 )
 
 // 挂登录、登出、当前管理员和改密码。
@@ -35,6 +37,12 @@ type meResp struct {
 
 // 校验密码开会话。
 func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
+	// 同一来源超频就先挡，不读正文、不跑口令派生。
+	if !h.loginGate.allow(r) {
+		// 回请求过多，访问日志留来源地址。
+		writeErr(w, domain.ErrTooManyAttempts)
+		return
+	}
 	// 接住请求体，解析失败再拒绝。
 	var req loginReq
 	// 未知字段或坏 JSON 按坏请求拒绝。

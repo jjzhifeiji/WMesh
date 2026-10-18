@@ -61,4 +61,6 @@ var (
 	ErrAssetCodeConflict   = errors.New("asset code already exists")       // 同号不同身份，或同身份编号不一致
 	ErrOriginCodeExhausted   = errors.New("origin code exhausted")            // 短码用尽或编号序号溢出
 	ErrSoftwareInstallFailed = errors.New("software install failed")         // 确认后落地失败，旧版本继续跑
+	ErrTooManyAttempts       = errors.New("too many login attempts")         // 登录超频或失败总闸已关，稍后再试
+	ErrTooManyRequests       = errors.New("too many requests")               // 匿名入口按来源超频，稍后再试
 )

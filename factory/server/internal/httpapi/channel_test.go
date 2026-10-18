@@ -132,14 +132,14 @@ func TestClientChannelHTTP(t *testing.T) {
 		t.Fatalf("bind b %d %s", code, body)
 	}
 	// 把机械臂号钉到这台设备上。
-	code, body = do(t, srv, "POST", base+"/clients/"+cid+"/device", "", `{"deviceSerial":"ARM-1"}`)
+	code, body = do(t, srv, "POST", base+"/clients/"+cid+"/device", saTok, `{"deviceSerial":"ARM-1"}`)
 	// 不是成功则本测失败。
 	if code != http.StatusOK {
 		// 与预期不符就停测，避免后面连环误判。
 		t.Fatalf("pin %d %s", code, body)
 	}
 	// 把机械臂号钉到这台设备上。
-	code, body = do(t, srv, "POST", base+"/clients/"+cidB+"/device", "", `{"deviceSerial":"ARM-B"}`)
+	code, body = do(t, srv, "POST", base+"/clients/"+cidB+"/device", saTok, `{"deviceSerial":"ARM-B"}`)
 	// 不是成功则本测失败。
 	if code != http.StatusOK {
 		// 与预期不符就停测，避免后面连环误判。

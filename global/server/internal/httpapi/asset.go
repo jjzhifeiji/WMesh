@@ -731,6 +731,12 @@ func (h *Handler) guardAskFactory(ctx context.Context, factoryID uuid.UUID) erro
 
 // 代建厂内原件，一律拒绝。
 func (h *Handler) createFactoryAsset(w http.ResponseWriter, r *http.Request) {
+	// 匿名也能调且每次写审计，同一来源超频先挡。
+	if !h.anonGate.allow(r) {
+		// 回请求过多，不读正文也不写审计。
+		writeErr(w, domain.ErrTooManyRequests)
+		return
+	}
 	// 从路径取出身份，不合法就拒绝这次操作。
 	id, err := parsePathID(r)
 	// 参数不合法就按坏请求拒绝。
@@ -753,6 +759,12 @@ func (h *Handler) createFactoryAsset(w http.ResponseWriter, r *http.Request) {
 
 // 代查厂内原件，一律拒绝。
 func (h *Handler) getFactoryAsset(w http.ResponseWriter, r *http.Request) {
+	// 匿名也能调且每次写审计，同一来源超频先挡。
+	if !h.anonGate.allow(r) {
+		// 回请求过多，不读正文也不写审计。
+		writeErr(w, domain.ErrTooManyRequests)
+		return
+	}
 	// 从路径取出身份，不合法就拒绝这次操作。
 	fid, err := parsePathID(r)
 	// 参数不合法就按坏请求拒绝。
@@ -775,6 +787,12 @@ func (h *Handler) getFactoryAsset(w http.ResponseWriter, r *http.Request) {
 
 // 代读厂内正文，一律拒绝。
 func (h *Handler) readFactoryAssetContent(w http.ResponseWriter, r *http.Request) {
+	// 匿名也能调且每次写审计，同一来源超频先挡。
+	if !h.anonGate.allow(r) {
+		// 回请求过多，不读正文也不写审计。
+		writeErr(w, domain.ErrTooManyRequests)
+		return
+	}
 	// 从路径取出身份，不合法就拒绝这次操作。
 	fid, err := parsePathID(r)
 	// 参数不合法就按坏请求拒绝。
@@ -797,6 +815,12 @@ func (h *Handler) readFactoryAssetContent(w http.ResponseWriter, r *http.Request
 
 // 代改厂内原件，一律拒绝。
 func (h *Handler) updateFactoryAsset(w http.ResponseWriter, r *http.Request) {
+	// 匿名也能调且每次写审计，同一来源超频先挡。
+	if !h.anonGate.allow(r) {
+		// 回请求过多，不读正文也不写审计。
+		writeErr(w, domain.ErrTooManyRequests)
+		return
+	}
 	// 从路径取出身份，不合法就拒绝这次操作。
 	fid, err := parsePathID(r)
 	// 参数不合法就按坏请求拒绝。

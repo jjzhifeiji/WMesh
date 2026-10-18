@@ -354,8 +354,8 @@ func (h *Hub) dialHold(ctx context.Context, factoryID uuid.UUID) error {
 		}
 		// WAN 登记的识别号随绑定落到本厂，供连臂时匹配。
 		if strings.TrimSpace(in.DeviceSerial) != "" {
-			// 把识别号钉上，连上机械臂时才能对上这台。
-			_, err = svc.Store().PinDeviceSerial(ctx, in.ClientID, in.DeviceSerial)
+			// WAN 名录是识别号的真相，必须覆盖；改成不覆盖会让旧号回推失败、通道反复重拨。
+			_, err = svc.Store().PinDeviceSerial(ctx, in.ClientID, in.DeviceSerial, true)
 			return err
 		}
 		return nil

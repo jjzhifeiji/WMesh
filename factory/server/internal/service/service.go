@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"golang.org/x/time/rate"
 
 	"wmesh/factory/internal/platform/audit"
 	"wmesh/factory/internal/platform/blob"
@@ -51,7 +52,9 @@ type ClientDown interface {
 
 // Auth 管登录、激活、会话、停用和密码重置。
 type Auth struct {
-	*kernel // 共用本厂库、审计和在线计数
+	*kernel                                   // 共用本厂库、审计和在线计数
+	activateMu    sync.Mutex                  // 护着激活限次表，避免并发写乱
+	activateGates map[uuid.UUID]*rate.Limiter // 待启用账号各自的激活限次，只在内存
 }
 
 // Org 管人员、组织、角色和名册。
@@ -142,7 +145,7 @@ func NewService(st *Store) *Service {
 	k := &kernel{store: st, blobs: blob.NewMemory()}
 	return &Service{
 		kernel:    k,
-		Auth:      &Auth{k},
+		Auth:      &Auth{kernel: k, activateGates: map[uuid.UUID]*rate.Limiter{}},
 		Org:       &Org{k},
 		Attr:      &Attr{k},
 		Node:      &Node{k},

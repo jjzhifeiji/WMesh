@@ -58,6 +58,12 @@ type claimResp struct {
 
 // channelEnroll 用建厂码换待认领身份；码不对或已用完则拒绝，成功也不消耗建厂码。
 func (h *Handler) channelEnroll(w http.ResponseWriter, r *http.Request) {
+	// 匿名可调且码错会写审计，同一来源超频先挡。
+	if !h.anonGate.allow(r) {
+		// 回请求过多，不读正文也不查建厂码。
+		writeErr(w, domain.ErrTooManyRequests)
+		return
+	}
 	// 接住请求体，解析失败再拒绝。
 	var req enrollReq
 	// 未知字段或坏 JSON 按坏请求拒绝。
@@ -87,6 +93,12 @@ func (h *Handler) channelEnroll(w http.ResponseWriter, r *http.Request) {
 
 // channelClaim 交厂钥并作废建厂码；须再验一次建厂码，不信客户端自报厂身份。
 func (h *Handler) channelClaim(w http.ResponseWriter, r *http.Request) {
+	// 匿名可调且码错会写审计，同一来源超频先挡。
+	if !h.anonGate.allow(r) {
+		// 回请求过多，不读正文也不查建厂码。
+		writeErr(w, domain.ErrTooManyRequests)
+		return
+	}
 	// 接住请求体，解析失败再拒绝。
 	var req claimReq
 	// 未知字段或坏 JSON 按坏请求拒绝。

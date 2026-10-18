@@ -5,6 +5,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"wmesh/global/internal/platform/domain"
 	"wmesh/global/internal/platform/id"
 )
 
@@ -229,6 +230,12 @@ func (h *Handler) rebindClient(w http.ResponseWriter, r *http.Request) {
 
 // 从 WAN 查厂内人员离线授权，一律拒绝。
 func (h *Handler) listFactoryOfflineGrants(w http.ResponseWriter, r *http.Request) {
+	// 匿名也能调且每次写审计，同一来源超频先挡。
+	if !h.anonGate.allow(r) {
+		// 回请求过多，不读正文也不写审计。
+		writeErr(w, domain.ErrTooManyRequests)
+		return
+	}
 	// 从路径取出身份，不合法就拒绝这次操作。
 	fid, err := parsePathID(r)
 	// 参数不合法就按坏请求拒绝。

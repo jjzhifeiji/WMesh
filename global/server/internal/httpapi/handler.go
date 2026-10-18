@@ -20,11 +20,17 @@ type Handler struct {
 	versionCode int64                       // 本进程版本号，来自 release 常量
 	versionName string                      // 本进程版本名，来自 release 常量
 	OSSProbe    func(context.Context) error // 探对象存储是否在线；空表示未接 OSS
+	loginGate   *ipGate                     // 登录按来源限速，读正文前就挡
+	anonGate    *ipGate                     // 匿名拒绝与认领入口按来源限速
 }
 
 // New 组装 WAN HTTP 适配器。
 func New(svc *service.Service, version string) *Handler {
-	return &Handler{svc: svc, version: version, versionCode: release.Code, versionName: release.Name}
+	return &Handler{
+		svc: svc, version: version, versionCode: release.Code, versionName: release.Name,
+		loginGate: newIPGate(gateEvery, gateBurst),
+		anonGate:  newIPGate(gateEvery, gateBurst),
+	}
 }
 
 // Router 只装配探活和各域路由；未知 API 路径统一回 JSON 404。

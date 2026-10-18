@@ -24,8 +24,41 @@ type Row struct {
 // 固定落在审计表，不跟类型名字走。
 func (Row) TableName() string { return "audit_events" }
 
+// 来自调用方的字符串落库前截断，免得超长正文灌进审计表。
+const (
+	maxClaimedLogin = 128 // 被声明登录名最多留的字数
+	maxTarget       = 512 // 作用对象最多留的字数
+)
+
+// clip 按字截到 n 个，超长末尾加省略号；不切坏多字节字符。
+func clip(s string, n int) string {
+	// 数到第几个字，按字而不是按字节。
+	count := 0
+	// 逐字往后走，走满 n 个就在这里切。
+	for i := range s {
+		// 已经留够 n 个字，后面的换成省略号。
+		if count == n {
+			// 在字的边界切开，多字节字符不会坏。
+			return s[:i] + "…"
+		}
+		// 再数一个字。
+		count++
+	}
+	return s
+}
+
 // RowFrom 把审计事件收成落库行，缺省时间来源和服务端时间。
+// 被声明登录名和作用对象按字截断，调用方的原值不改。
 func RowFrom(e Event) Row {
+	// 被声明登录名另存一份再截，不改调用方指向的值。
+	if e.ClaimedLogin != nil {
+		// 截到上限，超长末尾带省略号。
+		claimed := clip(*e.ClaimedLogin, maxClaimedLogin)
+		// 换成新指针，原值保持不动。
+		e.ClaimedLogin = &claimed
+	}
+	// 作用对象也可能来自调用方，同样截断。
+	e.Target = clip(e.Target, maxTarget)
 	// 没写时间来源就记成服务端。
 	if e.TimeSource == "" {
 		// 把这个值定下来，后面的判断才有依据。

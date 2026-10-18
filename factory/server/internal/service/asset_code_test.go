@@ -152,6 +152,8 @@ func TestFactoryAssetCodes(t *testing.T) {
 		t.Fatalf("personal after promote %+v %v", stillPers, err)
 	}
 
+	// 先登记 C0008 这台焊机，示教器自带的 C 段号才会被认。
+	mustClientShortCode(t, ctx, facA, "C0008")
 	// 写入受管资产，失败说明编号或来源冲突。
 	ingested, err := facA.Store().InsertGovernedAsset(ctx, store.Asset{
 		Kind: store.KindProcess, Level: store.AssetLevelPersonal, Name: "现场汇聚",

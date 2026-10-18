@@ -2,6 +2,8 @@ package httpapi
 
 import (
 	"net/http"
+
+	"wmesh/global/internal/platform/domain"
 )
 
 // 挂名录、建厂和明确拒绝的代管入口。
@@ -165,6 +167,12 @@ func (h *Handler) deleteFactory(w http.ResponseWriter, r *http.Request) {
 
 // 邀请第二 WAN 管理员，一律拒绝。
 func (h *Handler) inviteWANAdmin(w http.ResponseWriter, r *http.Request) {
+	// 匿名也能调且每次写审计，同一来源超频先挡。
+	if !h.anonGate.allow(r) {
+		// 回请求过多，不读正文也不写审计。
+		writeErr(w, domain.ErrTooManyRequests)
+		return
+	}
 	// 接住请求体，解析失败再拒绝。
 	var req inviteReq
 	// 未知字段或坏 JSON 按坏请求拒绝。
@@ -179,6 +187,12 @@ func (h *Handler) inviteWANAdmin(w http.ResponseWriter, r *http.Request) {
 
 // 代建厂内人员，一律拒绝。
 func (h *Handler) createFactoryPerson(w http.ResponseWriter, r *http.Request) {
+	// 匿名也能调且每次写审计，同一来源超频先挡。
+	if !h.anonGate.allow(r) {
+		// 回请求过多，不读正文也不写审计。
+		writeErr(w, domain.ErrTooManyRequests)
+		return
+	}
 	// 从路径取出身份，不合法就拒绝这次操作。
 	id, err := parsePathID(r)
 	// 参数不合法就按坏请求拒绝。
@@ -201,6 +215,12 @@ func (h *Handler) createFactoryPerson(w http.ResponseWriter, r *http.Request) {
 
 // 代建厂内组织，一律拒绝。
 func (h *Handler) createFactoryOrg(w http.ResponseWriter, r *http.Request) {
+	// 匿名也能调且每次写审计，同一来源超频先挡。
+	if !h.anonGate.allow(r) {
+		// 回请求过多，不读正文也不写审计。
+		writeErr(w, domain.ErrTooManyRequests)
+		return
+	}
 	// 从路径取出身份，不合法就拒绝这次操作。
 	id, err := parsePathID(r)
 	// 参数不合法就按坏请求拒绝。
@@ -223,6 +243,12 @@ func (h *Handler) createFactoryOrg(w http.ResponseWriter, r *http.Request) {
 
 // 代授厂内角色，一律拒绝。
 func (h *Handler) grantFactoryRole(w http.ResponseWriter, r *http.Request) {
+	// 匿名也能调且每次写审计，同一来源超频先挡。
+	if !h.anonGate.allow(r) {
+		// 回请求过多，不读正文也不写审计。
+		writeErr(w, domain.ErrTooManyRequests)
+		return
+	}
 	// 从路径取出身份，不合法就拒绝这次操作。
 	id, err := parsePathID(r)
 	// 参数不合法就按坏请求拒绝。
@@ -245,6 +271,12 @@ func (h *Handler) grantFactoryRole(w http.ResponseWriter, r *http.Request) {
 
 // 从 WAN 查厂内人员，一律拒绝。
 func (h *Handler) listFactoryPeople(w http.ResponseWriter, r *http.Request) {
+	// 匿名也能调且每次写审计，同一来源超频先挡。
+	if !h.anonGate.allow(r) {
+		// 回请求过多，不读正文也不写审计。
+		writeErr(w, domain.ErrTooManyRequests)
+		return
+	}
 	// 从路径取出身份，不合法就拒绝这次操作。
 	id, err := parsePathID(r)
 	// 参数不合法就按坏请求拒绝。

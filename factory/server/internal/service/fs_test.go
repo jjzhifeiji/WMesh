@@ -269,6 +269,8 @@ func TestPadNestedFS(t *testing.T) {
 	op := mustCreateRole(t, ctx, fac, sa, "op", "op-pass", factory.RoleOperator, factory.ScopeFactory, nil)
 	// 准备一段正文，读回或检索时要拿它对照。
 	body := []byte(`{"name":"mine","current":170}`)
+	// 先登记 C0008 这台焊机，示教器自带的 C 段号才会被认。
+	mustClientShortCode(t, ctx, fac, "C0008")
 	// 建平板个人工艺，供后面步骤使用，失败则前提断了。
 	got, err := fac.CreatePadPersonal(ctx, op.tok, factory.KindProcess, "平板工艺", body, id.New(), "GY-C0008-000001", nil)
 	// 建平板个人工艺没成功，后面的断言就没有依据。

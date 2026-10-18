@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"wmesh/factory/internal/platform/assetcode"
 	"wmesh/factory/internal/platform/domain"
@@ -325,8 +326,9 @@ func (s *Store) ClearOperatorForPersonExcept(ctx context.Context, personID, keep
 		Update("operator_id", nil).Error
 }
 
-// PinDeviceSerial 把机械臂号钉到已绑定 Client；换臂覆盖本机旧号。本厂未作废号不得重复。
-func (s *Store) PinDeviceSerial(ctx context.Context, clientID uuid.UUID, serial string) (Client, error) {
+// PinDeviceSerial 把机械臂号钉到已绑定 Client；本厂未作废号不得重复。
+// 已钉别的号时 replace=false 拒绝；replace=true 只给 WAN 下发，以名录为准覆盖。
+func (s *Store) PinDeviceSerial(ctx context.Context, clientID uuid.UUID, serial string, replace bool) (Client, error) {
 	// 去掉首尾空白，纯空白不当有效内容。
 	serial = strings.TrimSpace(serial)
 	// 去掉空白这一支不成立就换路。
@@ -339,8 +341,8 @@ func (s *Store) PinDeviceSerial(ctx context.Context, clientID uuid.UUID, serial 
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// 准备承接查到的现场设备。
 		var row Client
-		// 按条件取一行失败就停，避免带着错误继续。
-		if err := tx.First(&row, "id = ?", clientID).Error; err != nil {
+		// 行锁读这台设备，免得两个请求同时看到空号都写进去。
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&row, "id = ?", clientID).Error; err != nil {
 			// 没有这一行就当成不存在。
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return domain.ErrNotFound
@@ -350,6 +352,10 @@ func (s *Store) PinDeviceSerial(ctx context.Context, clientID uuid.UUID, serial 
 		// 不是有效绑定就不能继续签发或改登录人。
 		if row.Status != ClientStatusBound {
 			return domain.ErrBindingVoid
+		}
+		// 已钉别的号且不是 WAN 下发，拒绝悄悄覆盖；同号重钉算幂等。
+		if !replace && row.DeviceSerial != "" && row.DeviceSerial != serial {
+			return domain.ErrDeviceSerialMismatch
 		}
 		// 准备承接计数或合计。
 		var taken int64

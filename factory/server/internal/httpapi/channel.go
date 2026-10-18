@@ -14,7 +14,7 @@ func (h *Handler) mountChannel(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/factories/{id}/clients/{clientId}/inbox", h.clientInbox)
 	// 拉取过站密文，他机或未登录一律拒绝。
 	mux.HandleFunc("GET /v1/factories/{id}/clients/{clientId}/closures/{projectId}", h.pullClientClosure)
-	// 厂网登录后拉取与列表一致的资产清单。
+	// 厂网登录后拉取按登录人裁过的资产清单。
 	mux.HandleFunc("GET /v1/factories/{id}/pad/inbox", h.padClientInbox)
 	// 厂网登录后拉取工程明文或工艺包。
 	mux.HandleFunc("GET /v1/factories/{id}/pad/closures/{assetId}", h.padPullClientClosure)
@@ -78,11 +78,11 @@ func (h *Handler) pullClientClosure(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// 厂网登录后拉与厂端列表同一份资产，不含正文。
+// 厂网登录后拉按登录人裁过的资产清单，不含正文。
 func (h *Handler) padClientInbox(w http.ResponseWriter, r *http.Request) {
-	// 厂网登录后拉与厂端列表同一份资产，不含正文。
+	// 厂网登录后拉按登录人裁过的资产清单，不含正文。
 	h.withFactory(w, r, func(svc *service.Service) {
-		// 厂网登录后拉取与列表同一份清单。
+		// 厂网登录后拉取按登录人裁过的清单。
 		box, err := svc.Closure.PadClientInbox(r.Context(), bearer(r))
 		// 上一步没通过则停止，不把失败写成成功。
 		if err != nil {

@@ -35,6 +35,9 @@ const zh: Record<string, string> = {
   "asset origin code is not assigned": "还没有本端编号短码，不能新建",
   "asset code already exists": "编号已占用或与身份不一致",
   "origin code exhausted": "短码或编号已用尽",
+  "request body too large": "提交内容太大，超过服务端上限",
+  "too many login attempts": "登录尝试太频繁，请稍后再试",
+  "too many requests": "请求太频繁，请稍后再试",
 };
 
 export function translateError(code: string) {

@@ -9,7 +9,6 @@ import (
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 
-	"wmesh/factory/internal/platform/assetcode"
 	"wmesh/factory/internal/platform/domain"
 	"wmesh/factory/internal/platform/id"
 )
@@ -114,6 +113,7 @@ type governedAssetRow struct {
 func (governedAssetRow) TableName() string { return "assets" }
 
 // InsertGovernedAsset 写入本厂一条工艺或工程，修订从 1 起；正文必须封成 WM2。
+// 带身份或编号的先核：身份须是新的，自带号只认本厂登记的 C 段，删过的身份只沿用原号。
 func (s *Store) InsertGovernedAsset(ctx context.Context, in Asset) (Asset, error) {
 	// 人必须已经在本厂，否则不继续写。
 	if err := s.assertPersonExists(ctx, in.CreatorID); err != nil {
@@ -164,6 +164,17 @@ func (s *Store) InsertGovernedAsset(ctx context.Context, in Asset) (Asset, error
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// 先接调用方带来的编号，空的再现发。
 		code := in.Code
+		// 带了身份或编号就是示教器新建，先核身份和号段。
+		if in.ID != uuid.Nil || code != "" {
+			// 核对后交回要落的号，空串表示由本厂现发。
+			vetted, err := s.callerAssetCodeTx(ctx, tx, id, in.Kind, code)
+			// 身份或号段不合规就拒绝，此时还没动计数。
+			if err != nil {
+				return err
+			}
+			// 换成核对过的号，删过的身份会沿用原号。
+			code = vetted
+		}
 		// 没带编号就按本厂短码现发，不接收空号。
 		if code == "" {
 			// 先读本厂短码，结果留给紧跟着的判断。
@@ -178,9 +189,6 @@ func (s *Store) InsertGovernedAsset(ctx context.Context, in Asset) (Asset, error
 			if err != nil {
 				return err
 			}
-			// 自带编号必须对上种类，否则拒绝写入。
-		} else if !assetcode.MatchKind(in.Kind, code) {
-			return domain.ErrAssetCodeConflict
 		}
 		// 钉住编号失败就停，避免带着错误继续。
 		if err := bindAssetCode(tx, id, code); err != nil {

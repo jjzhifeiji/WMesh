@@ -3,9 +3,11 @@ package httpapi
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -14,21 +16,58 @@ import (
 
 var errInvalidID = errors.New("invalid id") // 路径或 JSON 里的 UUID 无法解析
 
+var errBodyTooLarge = errors.New("request body too large") // 正文超过本入口上限，回 413
+
+// 正文上限与大正文读时限；超限回 413，匿名者占不住内存。
+const (
+	maxJSONBody     = 1 << 20  // 普通接口一兆，最大单份工程约 67KB
+	maxBulkJSONBody = 32 << 20 // 旧文件导入，验过管理员才按此读
+	// 焊汇总上限：5000 行×每行最坏约 1.4KB≈6.8MB，取 8MiB。
+	maxWeldSummaryBody = 8 << 20
+	bulkReadWindow     = 5 * time.Minute // 验过身份的大正文放宽读时限
+)
+
 // 出错时给前端的英文原因，细节不出网。
 type errorBody struct {
 	Error string `json:"error"` // 英文业务错误，前端再译
 }
 
-// 拒绝未知字段。
+// 拒绝未知字段；正文按普通接口上限读。
 func decodeJSON(r *http.Request, dst any) error {
+	// 普通接口统一一兆上限，超了回 413。
+	return decodeJSONLimit(r, dst, maxJSONBody)
+}
+
+// 按给定上限解码 JSON，拒绝未知字段；超限交回 MaxBytesError。
+func decodeJSONLimit(r *http.Request, dst any, limit int64) error {
 	// 用完就关上，避免连接或文件一直占着。
 	defer r.Body.Close()
-	// 按 JSON 读请求体，坏包交给上一层拒绝。
-	dec := json.NewDecoder(r.Body)
+	// 声明长度已超上限就一字节不读，直接拒绝。
+	if r.ContentLength > limit {
+		return &http.MaxBytesError{Limit: limit}
+	}
+	// 按 JSON 读请求体，读到上限就停，坏包交给上一层拒绝。
+	dec := json.NewDecoder(http.MaxBytesReader(nil, r.Body, limit))
 	// 拒绝未知字段，避免多出来的人员字段混入。
 	dec.DisallowUnknownFields()
 	// 解码失败把原因交回，调用方再回坏请求。
 	return dec.Decode(dst)
+}
+
+// 读完正文直接扔掉，不进内存；最多读到上限，好让客户端收到干净回包。
+func discardBody(r *http.Request, limit int64) {
+	// 声明长度已超上限，读了也白读，留给服务器断开。
+	if r.ContentLength > limit {
+		return
+	}
+	// 边读边扔，读到上限就停，不占内存。
+	_, _ = io.Copy(io.Discard, http.MaxBytesReader(nil, r.Body, limit))
+}
+
+// 验过身份后单独放宽这次请求的读时限；不支持就沿用全局时限。
+func extendRead(w http.ResponseWriter, d time.Duration) {
+	// 穿过包装层改底层连接的读时限，出错就退回全局时限。
+	_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(d))
 }
 
 // 取出会话令牌，不校验。
@@ -47,8 +86,16 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-// 400 把解析错误回给前端。
+// 400 把解析错误回给前端；正文超限改回 413。
 func writeBadRequest(w http.ResponseWriter, err error) {
+	// 接住超限错误，JSON 和表单都可能包着它。
+	var tooLarge *http.MaxBytesError
+	// 正文超限单独回 413，前端才知道是太大。
+	if errors.As(err, &tooLarge) {
+		// 只回约定句子，不带上限细节。
+		writeJSON(w, http.StatusRequestEntityTooLarge, errorBody{Error: errBodyTooLarge.Error()})
+		return
+	}
 	// 把不合法原因按坏请求交回调用方。
 	writeJSON(w, http.StatusBadRequest, errorBody{Error: err.Error()})
 }
@@ -110,6 +157,9 @@ func statusOf(err error) int {
 	// 厂不在线，暂时不能问也不能下发。
 	case errors.Is(err, domain.ErrFactoryOffline):
 		return http.StatusServiceUnavailable
+	// 登录或匿名入口超频，回请求过多。
+	case errors.Is(err, domain.ErrTooManyAttempts), errors.Is(err, domain.ErrTooManyRequests):
+		return http.StatusTooManyRequests
 	// 参数或钥不合法，以及校验失败，一律坏请求。
 	case errors.Is(err, domain.ErrInvalidKey), errors.Is(err, domain.ErrUnbound),
 		errors.Is(err, domain.ErrInvalidName), errors.Is(err, domain.ErrDeviceSerialRequired),

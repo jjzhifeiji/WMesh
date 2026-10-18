@@ -18,7 +18,7 @@ func (h *Handler) mountNode(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/factories/{id}/clients", h.registerClient)
 	// 修改本厂设备的显示名。
 	mux.HandleFunc("PATCH /v1/factories/{id}/clients/{clientId}", h.renameClient)
-	// 把读到的机械臂号钉到已绑定设备。
+	// 本厂超管把读到的机械臂号钉到已绑定设备，已钉别的号拒绝。
 	mux.HandleFunc("POST /v1/factories/{id}/clients/{clientId}/device", h.registerDevice)
 	// 在已钉号的本机登录并领取解封钥。
 	mux.HandleFunc("POST /v1/factories/{id}/clients/{clientId}/login", h.loginOnClient)
@@ -165,7 +165,7 @@ func (h *Handler) registerClient(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// 把读到的机械臂号钉到已绑定 Client；空号拒绝。
+// 本厂超管把读到的机械臂号钉到已绑定设备，已钉别的号拒绝。
 func (h *Handler) registerDevice(w http.ResponseWriter, r *http.Request) {
 	// 把读到的机械臂号钉上，空号则拒绝。
 	h.withFactory(w, r, func(svc *service.Service) {
@@ -186,7 +186,7 @@ func (h *Handler) registerDevice(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// 把机械臂号钉到设备上，空号则拒绝。
-		row, err := svc.Node.RegisterDevice(r.Context(), clientID, req.DeviceSerial)
+		row, err := svc.Node.RegisterDevice(r.Context(), bearer(r), clientID, req.DeviceSerial)
 		// 上一步没通过则停止，不把失败写成成功。
 		if err != nil {
 			// 把失败译成状态回给调用方，不写成功。

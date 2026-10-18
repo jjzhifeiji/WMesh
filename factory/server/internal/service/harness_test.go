@@ -122,3 +122,22 @@ func mustAdoptPassword(t *testing.T, ctx context.Context, fac *service.Service, 
 	}
 	return tok
 }
+
+// mustClientShortCode 绑一台焊机并登记短码，示教器自带的 C 段号才会被认。
+func mustClientShortCode(t *testing.T, ctx context.Context, fac *service.Service, code string) uuid.UUID {
+	// 标成辅助步骤，失败时行号指向真正的用例。
+	t.Helper()
+	// 新取一个设备身份，免得和别的焊机撞上。
+	cid := id.New()
+	// 接下绑定失败就停，没有设备就没法登记短码。
+	if _, err := fac.AcceptBinding(ctx, cid, "焊机", nil, 1); err != nil {
+		// 把绑定的错误打出来并停住。
+		t.Fatalf("bind client: %v", err)
+	}
+	// 登记短码失败就停，后面的 C 段号会被拒。
+	if err := fac.Store().PutClientShortCode(ctx, cid, code); err != nil {
+		// 把登记短码的错误打出来并停住。
+		t.Fatalf("client short code: %v", err)
+	}
+	return cid
+}

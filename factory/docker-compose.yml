@@ -1,4 +1,5 @@
 # 厂内一键部署：app（API + 管理端静态页）+ db（每厂一个库，按工厂身份自动建）+ oss（RustFS，S3 兼容对象存储）+ alloy（采容器日志推 Loki）。
+# db、oss 只给编排内的 app 用，不在宿主机发布端口；查库用 docker compose exec db psql -U wmesh -d postgres。
 # 用法：cp .env.example .env && 改密码 && docker compose up -d --build --wait
 name: wmesh-factory
 
@@ -79,8 +80,6 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
     volumes:
       - pgdata:/var/lib/postgresql
-    ports:
-      - "${DB_PORT:-52433}:5432"
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U wmesh -d postgres"]
@@ -89,14 +88,14 @@ services:
       retries: 12
     logging: *logging
 
-  # RustFS（Apache-2.0，S3 兼容）：S3 端点 9000，管理台 9001（用同一对密钥登录）。
+  # RustFS（Apache-2.0，S3 兼容）：S3 端点 9000；管理台 9001 默认关闭，要用时临时改开关（用同一对密钥登录）。
   # 默认桶由 app 启动时按 WMESH_OSS_BUCKET 自动创建。MinIO 社区版已停更归档，不再使用。
   oss:
     image: rustfs/rustfs:1.0.0-rc.5
     environment:
       RUSTFS_VOLUMES: /data
       RUSTFS_ADDRESS: 0.0.0.0:9000
-      RUSTFS_CONSOLE_ENABLE: "true"
+      RUSTFS_CONSOLE_ENABLE: "false"
       RUSTFS_CONSOLE_ADDRESS: 0.0.0.0:9001
       RUSTFS_ACCESS_KEY: ${OSS_ACCESS_KEY:-wmesh}
       RUSTFS_SECRET_KEY: ${OSS_SECRET_KEY:?set OSS_SECRET_KEY in .env}
@@ -104,9 +103,6 @@ services:
     volumes:
       - ossdata:/data
       - osslogs:/logs
-    ports:
-      - "${OSS_PORT:-52902}:9000"
-      - "${OSS_CONSOLE_PORT:-52903}:9001"
     security_opt:
       - "no-new-privileges:true"
     restart: unless-stopped

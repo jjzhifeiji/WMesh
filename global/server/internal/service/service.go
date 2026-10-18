@@ -5,11 +5,19 @@ package service
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
+	"golang.org/x/time/rate"
 
 	"wmesh/global/internal/platform/audit"
 	"wmesh/global/internal/platform/blob"
+)
+
+// 唯一管理员的登录失败总闸：每三秒补一次，最多连错二十次。
+const (
+	loginFailEvery = 3 * time.Second // 失败名额每三秒补一个
+	loginFailBurst = 20              // 最多连着失败二十次
 )
 
 // kernel 是各域共用的 WAN 库、对象存根和审计。
@@ -66,7 +74,8 @@ func (k *kernel) SetBlobs(store blob.Store) {
 
 // Auth 管 WAN 管理员登录、会话和改密码。
 type Auth struct {
-	*kernel // 登录和会话共用的库与审计。
+	*kernel                  // 登录和会话共用的库与审计。
+	loginFails *rate.Limiter // 唯一管理员的登录失败总闸，只在失败时扣
 }
 
 // Factories 管工厂名录、建厂和明确拒绝的代管入口。
@@ -118,7 +127,7 @@ func NewService(st *Store) *Service {
 	k := &kernel{store: st, blobs: blob.NewMemory()}
 	return &Service{
 		kernel:    k,
-		Auth:      &Auth{k},
+		Auth:      &Auth{kernel: k, loginFails: rate.NewLimiter(rate.Every(loginFailEvery), loginFailBurst)},
 		Factories: &Factories{k},
 		Channel:   &Channel{k},
 		Clients:   &Clients{k},

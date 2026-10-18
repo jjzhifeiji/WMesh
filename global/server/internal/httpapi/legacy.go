@@ -31,10 +31,20 @@ type legacyImportReq struct {
 
 // WAN 管理员导入旧工艺/工程；缺路径的工程拒绝，已入工艺保留。
 func (h *Handler) importLegacy(w http.ResponseWriter, r *http.Request) {
+	// 先验管理员，匿名不按大正文去解码；被拒照留导入审计。
+	if _, err := h.svc.Assets.AuthorizeLegacyImport(r.Context(), bearer(r)); err != nil {
+		// 正文读完扔掉，浏览器才收得到干净的 401。
+		discardBody(r, maxBulkJSONBody)
+		// 按业务错误回写，内部细节不出网。
+		writeErr(w, err)
+		return
+	}
+	// 验过身份才放宽读时限，大批文件传得完。
+	extendRead(w, bulkReadWindow)
 	// 接住请求体，解析失败再拒绝。
 	var req legacyImportReq
-	// 未知字段或坏 JSON 按坏请求拒绝。
-	if err := decodeJSON(r, &req); err != nil {
+	// 按批量上限解码，未知字段或坏 JSON 按坏请求拒绝。
+	if err := decodeJSONLimit(r, &req, maxBulkJSONBody); err != nil {
 		// 把不合法的原因回给调用方。
 		writeBadRequest(w, err)
 		return

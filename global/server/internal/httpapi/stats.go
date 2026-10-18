@@ -41,10 +41,12 @@ func (h *Handler) putWeldSummaries(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
+	// 验过厂钥才放宽读时限，整表上送传得完。
+	extendRead(w, bulkReadWindow)
 	// 接住请求体，解析失败再拒绝。
 	var req weldSummariesBody
-	// 未知字段或坏 JSON 按坏请求拒绝。
-	if err := decodeJSON(r, &req); err != nil {
+	// 按焊汇总上限解码，未知字段或坏 JSON 按坏请求拒绝。
+	if err := decodeJSONLimit(r, &req, maxWeldSummaryBody); err != nil {
 		// 把不合法的原因回给调用方。
 		writeBadRequest(w, err)
 		return

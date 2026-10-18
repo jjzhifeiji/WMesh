@@ -2,6 +2,7 @@
 package secret_test
 
 import (
+	"sync"
 	"testing"
 	"unicode"
 
@@ -50,5 +51,49 @@ func TestActivationCodeIsEightDigits(t *testing.T) {
 	if len(seen) < 2 {
 		// 两次结果不该完全一样。
 		t.Fatalf("not random: %v", seen)
+	}
+}
+
+// 并发校验口令时排队派生，结果仍然各自正确。
+func TestVerifyPasswordConcurrent(t *testing.T) {
+	// 先算出一份可存储的哈希，后面都拿它比。
+	hash, err := secret.HashPassword("pass-1")
+	// 哈希算不出来就停住本用例。
+	if err != nil {
+		// 没有哈希就没法往下比。
+		t.Fatal(err)
+	}
+	// 收集各协程的结果，最后统一核对。
+	var wg sync.WaitGroup
+	// 每个协程一格，对错分开记。
+	got := make([]bool, 16)
+	// 起十六个协程，超出名额的要排队。
+	for i := range got {
+		// 记下又起了一个协程。
+		wg.Add(1)
+		// 单数用错口令，双数用对口令。
+		go func(i int) {
+			// 做完就报到，主协程才能收尾。
+			defer wg.Done()
+			// 按单双选口令，核对排队后结果不乱。
+			pass := "pass-1"
+			// 单数换成错口令。
+			if i%2 == 1 {
+				// 错口令应当比不上。
+				pass = "wrong"
+			}
+			// 校验口令，结果放进自己那一格。
+			got[i] = secret.VerifyPassword(hash, pass)
+		}(i)
+	}
+	// 等所有协程都比完。
+	wg.Wait()
+	// 逐格核对，对口令通过、错口令不通过。
+	for i, ok := range got {
+		// 结果和单双不符说明排队把结果弄乱了。
+		if ok != (i%2 == 0) {
+			// 结果和预期不符就停住。
+			t.Fatalf("slot %d got %v", i, ok)
+		}
 	}
 }

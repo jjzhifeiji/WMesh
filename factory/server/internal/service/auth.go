@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"golang.org/x/time/rate"
 
 	"wmesh/factory/internal/platform/audit"
 	"wmesh/factory/internal/platform/domain"
@@ -14,6 +15,12 @@ import (
 )
 
 const sessionTTL = 12 * time.Hour // 网页会话有效期；示教器另按登录时效
+
+// 激活码按账号限次：先给几次，之后每分钟补一次，重启清零。
+const (
+	activateBurst = 5           // 每个待启用账号先给的试码次数
+	activateEvery = time.Minute // 用完之后每隔多久补一次
+)
 
 // appTokenExpiry 示教器令牌跟登录时效走；0 表示直到退出，不按时钟作废。
 func appTokenExpiry(pol ClientPolicy, now time.Time) time.Time {
@@ -138,6 +145,12 @@ func (s *Auth) Activate(ctx context.Context, loginName, activationToken, passwor
 		_ = s.audit(ctx, &p.ID, &loginName, "activate", p.ID.String(), audit.Deny)
 		return domain.ErrAlreadyActivated
 	}
+	// 试码太勤就先挡住，不比对摘要，免得几小时猜完一亿种
+	if !s.activateAllow(p.ID) {
+		// 超出限次，记下激活被拒绝，写失败不改变结果
+		_ = s.audit(ctx, &p.ID, &loginName, "activate", p.ID.String(), audit.Deny)
+		return domain.ErrTooManyAttempts
+	}
 	// 激活码为空或不对，拒绝开通
 	if p.ActivationTokenHash == nil || !activationOK(*p.ActivationTokenHash, activationToken) {
 		// 激活码不对或已失效，记下激活被拒绝，写失败不改变结果
@@ -156,8 +169,39 @@ func (s *Auth) Activate(ctx context.Context, loginName, activationToken, passwor
 		_ = s.audit(ctx, &p.ID, &loginName, "activate", p.ID.String(), audit.Deny)
 		return err
 	}
+	// 已激活就不用再限次，删掉这个账号的条目
+	s.activateForget(p.ID)
 	// 激活成功后记审计，再把结果交回
 	return s.audit(ctx, &p.ID, &loginName, "activate", p.ID.String(), audit.Allow)
+}
+
+// activateAllow 按账号扣一次试码名额；表里只放已存在的待启用账号。
+func (s *Auth) activateAllow(id uuid.UUID) bool {
+	// 占住限次表，并发试码也不会各建一份
+	s.activateMu.Lock()
+	// 离开时放开，别的账号才能接着试
+	defer s.activateMu.Unlock()
+	// 先看这个账号是否已有限速器
+	lim, ok := s.activateGates[id]
+	// 第一次试码就建一个，先给几次再按分钟补
+	if !ok {
+		// 新建这个账号的限速器，起始名额是满的
+		lim = rate.NewLimiter(rate.Every(activateEvery), activateBurst)
+		// 记进表里，下次试码接着扣
+		s.activateGates[id] = lim
+	}
+	// 还有名额就扣一个放行，没有就挡住
+	return lim.Allow()
+}
+
+// activateForget 激活成功后删掉该账号的限次，表不会越积越多。
+func (s *Auth) activateForget(id uuid.UUID) {
+	// 占住限次表，避免和试码同时改
+	s.activateMu.Lock()
+	// 离开时放开，别的账号才能接着试
+	defer s.activateMu.Unlock()
+	// 删掉这个账号的条目，已激活不会再试码
+	delete(s.activateGates, id)
 }
 
 // activationOK 恒定时间比对激活码哈希，不给按位猜测的机会。

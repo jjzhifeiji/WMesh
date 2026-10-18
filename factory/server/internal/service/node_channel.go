@@ -105,7 +105,7 @@ func (s *Closure) ClientInbox(ctx context.Context, token string, clientID uuid.U
 	return out, s.audit(ctx, &acc.ID, nil, "client_inbox", clientID.String(), audit.Allow)
 }
 
-// PadClientInbox 厂网登录后拉与厂端列表同一份工艺/工程；不要求已绑设备。
+// PadClientInbox 厂网登录拉本人可用的工艺/工程清单，别人的个人级不给；不要求已绑设备。
 func (s *Closure) PadClientInbox(ctx context.Context, token string) (ClientInbox, error) {
 	// 先确认会话仍有效，过期或停用直接拒绝
 	acc, err := s.RequireActive(ctx, token)
@@ -127,7 +127,7 @@ func (s *Closure) PadClientInbox(ctx context.Context, token string) (ClientInbox
 	if err != nil {
 		return ClientInbox{}, err
 	}
-	// 与厂端工艺工程列表同一范围
+	// 按登录人裁过：别人的个人级不给，钉住的也不例外
 	refs, err := s.listPadAssetRefs(ctx, acc)
 	// 列表收不齐则厂网对账中止
 	if err != nil {
@@ -213,7 +213,7 @@ func (s *Closure) PadPullClientClosure(ctx context.Context, token string, assetI
 		_ = s.audit(ctx, actorOf(acc), nil, "pad_pull", target, audit.Deny)
 		return TransitClosure{}, err
 	}
-	// 不在可见列表则拒绝拉包
+	// 不在本人示教器清单里则拒绝拉包
 	if err := s.assertPadPullable(ctx, acc, assetID); err != nil {
 		// 记下厂网拉包被拒绝，写失败不改变结果
 		_ = s.audit(ctx, &acc.ID, nil, "pad_pull", target, audit.Deny)
@@ -361,10 +361,10 @@ func (s *Closure) assertPullable(ctx context.Context, acc Account, clientID, pro
 	return nil
 }
 
-// 厂网登录可拉厂端列表里同一份资产，不另走下发授权。
+// 厂网登录只能拉本人清单里的资产，与清单同一套裁剪；不另走下发授权。
 func (s *Closure) assertPadPullable(ctx context.Context, acc Account, assetID uuid.UUID) error {
-	// 只留下调用方能看的资产
-	rows, err := s.listVisibleAssets(ctx, acc, "")
+	// 按登录人裁过：别人的个人级不给
+	rows, err := s.padVisibleAssets(ctx, acc)
 	// 裁剪失败则不交越权行
 	if err != nil {
 		return err
@@ -379,10 +379,10 @@ func (s *Closure) assertPadPullable(ctx context.Context, acc Account, assetID uu
 	return domain.ErrNotFound
 }
 
-// listPadAssetRefs 与厂端工艺/工程列表同一范围。
+// listPadAssetRefs 示教器清单，按登录人裁过：别人的个人级不给。
 func (s *Closure) listPadAssetRefs(ctx context.Context, acc Account) ([]ClosureRef, error) {
-	// 只留下调用方能看的资产
-	rows, err := s.listVisibleAssets(ctx, acc, "")
+	// 按登录人裁过：别人的个人级不给
+	rows, err := s.padVisibleAssets(ctx, acc)
 	// 裁剪失败则不交越权行
 	if err != nil {
 		return nil, err
@@ -399,6 +399,28 @@ func (s *Closure) listPadAssetRefs(ctx context.Context, acc Account) ([]ClosureR
 		}
 		// 把这一条收进结果，漏了清单就不齐
 		out = append(out, ref)
+	}
+	return out, nil
+}
+
+// padVisibleAssets 示教器可拉范围：厂端列表去掉别人的个人级，钉住的也不给。
+func (s *Closure) padVisibleAssets(ctx context.Context, acc Account) ([]Asset, error) {
+	// 先取厂端列表那一份，再按登录人裁
+	rows, err := s.listVisibleAssets(ctx, acc, "")
+	// 列表读不出来则整份失败，不回半截
+	if err != nil {
+		return nil, err
+	}
+	// 按列表条数备好容量，顺序和厂端列表一致
+	out := make([]Asset, 0, len(rows))
+	// 逐条看归属，别人的个人级不进示教器
+	for _, a := range rows {
+		// 个人级只给创建人，管理员和被钉住的都不例外
+		if a.Level == AssetLevelPersonal && a.CreatorID != acc.ID {
+			continue
+		}
+		// 本人个人级、厂级和平台级照旧收进来
+		out = append(out, a)
 	}
 	return out, nil
 }

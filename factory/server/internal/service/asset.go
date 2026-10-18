@@ -354,6 +354,7 @@ func (s *Assets) CreatePadPersonal(ctx context.Context, token string, kind, name
 }
 
 // CreatePad 示教器新建：个人级谁都可以；厂级只给管理员；身份沿用调用方的 UUIDv7。
+// 身份必须是本厂没有的新身份；自带号只认本厂登记过的 C 段；本厂删过的身份只能沿用原号。
 func (s *Assets) CreatePad(ctx context.Context, token, level, kind, name string, content []byte, id uuid.UUID, code string, deps []AssetDep, weldKind ...string) (Asset, error) {
 	// 核对登录仍有效，后面的操作都靠这次会话。
 	acc, err := s.RequireActive(ctx, token)

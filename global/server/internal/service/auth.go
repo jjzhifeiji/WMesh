@@ -30,17 +30,28 @@ func (s *Auth) BootstrapAdmin(ctx context.Context, loginName, password string) e
 }
 
 // Login 校验 WAN 密码并开会话；失败只记被声明登录名，不记密码。
+// 失败总闸关着时不查账号、不比口令，存在与否回的都一样。
 func (s *Auth) Login(ctx context.Context, loginName, password string) (string, error) {
+	// 总闸没余量就先拒，挡住多来源慢慢爆破。
+	if s.loginFails.Tokens() < 1 {
+		// 被总闸挡下也记拒绝，留下被声明登录名。
+		_ = s.audit(ctx, nil, &loginName, nil, "login", "wan throttled", audit.Deny)
+		return "", domain.ErrTooManyAttempts
+	}
 	// 失败一律记拒绝；不存在也当口令错，不记密码。
 	admin, err := s.store.AdminByLogin(ctx, loginName)
 	// 会话或账号无效就拒绝。
 	if err != nil {
+		// 登录失败扣总闸一个名额，成功不扣。
+		s.loginFails.Allow()
 		// 登录失败记拒绝，不把口令写入审计。
 		_ = s.audit(ctx, nil, &loginName, nil, "login", "wan", audit.Deny)
 		return "", domain.ErrInvalidCredentials
 	}
 	// 口令不对则拒绝，并记登录失败。
 	if !secret.VerifyPassword(admin.PasswordHash, password) {
+		// 登录失败扣总闸一个名额，成功不扣。
+		s.loginFails.Allow()
 		// 登录失败记拒绝，不把口令写入审计。
 		_ = s.audit(ctx, &admin.ID, &loginName, nil, "login", "wan", audit.Deny)
 		return "", domain.ErrInvalidCredentials

@@ -206,3 +206,58 @@ func TestAuthCircle(t *testing.T) {
 		t.Fatalf("10.3 no logout audit")
 	}
 }
+
+// 同一待启用账号连错五次后，第六次即使码对也被挡住。
+func TestActivateThrottle(t *testing.T) {
+	// 准备无取消的上下文，后面每次调用都挂在上面。
+	ctx := context.Background()
+	// 拉起隔离厂库，起不来说明测试库还没就绪。
+	h := New(t)
+	// 建厂并签发超管激活码，失败则没有厂可测。
+	created, fac, err := h.Provision(ctx, "sa-t", "限次超管")
+	// 建厂失败就停，否则后面没有可靠结果。
+	if err != nil {
+		// 断言没通过就停，结果和这条用例的预期不一致。
+		t.Fatalf("bootstrap: %v", err)
+	}
+	// 连错五次，每次都应按激活码不对拒绝。
+	for i := 0; i < 5; i++ {
+		// 错码应被拒绝，放行说明比对坏了。
+		if err := fac.Activate(ctx, "sa-t", "wrong-code", "sa-pass"); !errors.Is(err, domain.ErrInvalidActivation) {
+			// 前五次就被挡，说明限次给得太少。
+			t.Fatalf("try %d: %v", i, err)
+		}
+	}
+	// 名额已用完，码对也应先被限次挡住。
+	if err := fac.Activate(ctx, "sa-t", created.ActivationToken, "sa-pass"); !errors.Is(err, domain.ErrTooManyAttempts) {
+		// 没挡住说明限次没生效，激活码能被一直猜。
+		t.Fatalf("throttled: %v", err)
+	}
+	// 被挡的那次不应激活，账号仍待启用。
+	if _, err := fac.Login(ctx, "sa-t", "sa-pass"); !errors.Is(err, domain.ErrAccountPending) {
+		// 能登录说明被挡的请求仍然改了口令。
+		t.Fatalf("still pending: %v", err)
+	}
+	// 拉出审计流水，失败则无法核对有没有记账。
+	rows, err := fac.ListAudit(ctx)
+	// 拉审计失败就停，否则后面没有可靠结果。
+	if err != nil {
+		// 把拉审计的错误打出来并停住，避免继续往下验。
+		t.Fatal(err)
+	}
+	// 数出激活拒绝的条数，被挡的那次也要记。
+	denies := 0
+	// 逐行看审计，只数激活拒绝。
+	for _, r := range rows {
+		// 激活且拒绝的才算进来。
+		if r.Action == "activate" && r.Result == audit.Deny {
+			// 再记一条激活拒绝。
+			denies++
+		}
+	}
+	// 五次错码加一次被挡，至少六条拒绝。
+	if denies < 6 {
+		// 少了说明被挡的那次没留审计。
+		t.Fatalf("activate deny rows %d", denies)
+	}
+}

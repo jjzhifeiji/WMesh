@@ -116,6 +116,11 @@ func TestFactoryHTTP(t *testing.T) {
 		// 与预期不符就停测，避免后面连环误判。
 		t.Fatalf("short code: %v", err)
 	}
+	// 匿名带两兆正文导入旧文件，应先验令牌回 401，而不是解码报错。
+	if c, b := do(t, srv, "POST", base+"/legacy-import", "", strings.Repeat("x", 2<<20)); c != http.StatusUnauthorized {
+		// 与预期不符就停测，避免后面连环误判。
+		t.Fatalf("anon big legacy %d %s", c, b)
+	}
 	// 取出激活码，启用账号时要用。
 	act := gjson(t, body, "activationToken")
 	// 激活码必须是固定位数，否则本测失败。

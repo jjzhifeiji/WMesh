@@ -2,6 +2,7 @@
 package secret
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -12,6 +13,7 @@ import (
 	"strings"
 
 	"golang.org/x/crypto/argon2"
+	"golang.org/x/sync/semaphore"
 )
 
 // Argon2id 参数取 OWASP 推荐下限（19 MiB、2 轮、单线程）；参数随哈希一起存，日后调高不影响旧密码校验。
@@ -24,7 +26,21 @@ const (
 	tokenLen                    = 32        // 会话令牌的随机字节数。
 	activationCodeLen           = 8         // 当面交付的激活码长度，数字好念（仅初始超管）
 	defaultPersonPasswordSuffix = "123456"  // 厂内普通账号默认密码后缀
+	argonSlots                  = 4         // 同时最多四个派生，内存封顶约 4×19MiB
 )
+
+// argonGate 限住同时派生的个数，并发登录排队而不报错。
+var argonGate = semaphore.NewWeighted(argonSlots)
+
+// deriveKey 排队拿到名额后再派生，免得并发把内存撑爆。
+func deriveKey(password, salt []byte, timeCost, memory uint32, threads uint8, keyLen uint32) []byte {
+	// 排队等名额；背景上下文不会取消，拿不到就一直等。
+	_ = argonGate.Acquire(context.Background(), 1)
+	// 派生完立刻还名额，后面的请求才能接上。
+	defer argonGate.Release(1)
+	// 按给定参数派生密钥。
+	return argon2.IDKey(password, salt, timeCost, memory, threads, keyLen)
+}
 
 // DefaultPersonPassword 厂内新建/重置用的默认日常密码：登录名+123456。只算出来给人用，不进库、不进审计。
 func DefaultPersonPassword(loginName string) string {
@@ -45,7 +61,7 @@ func HashPassword(password string) (string, error) {
 		return "", err
 	}
 	// 准备一份测试或签名用的字节。
-	key := argon2.IDKey([]byte(password), salt, argonTime, argonMemory, argonThreads, argonKeyLen)
+	key := deriveKey([]byte(password), salt, argonTime, argonMemory, argonThreads, argonKeyLen)
 	// 按模板拼好再交回给调用方。
 	return fmt.Sprintf("$argon2id$v=19$m=%d,t=%d,p=%d$%s$%s",
 		argonMemory, argonTime, argonThreads,
@@ -81,7 +97,7 @@ func VerifyPassword(encoded, password string) bool {
 		return false
 	}
 	// 准备一份测试或签名用的字节。
-	got := argon2.IDKey([]byte(password), salt, uint32(timeCost), uint32(mem), uint8(threads), uint32(len(want)))
+	got := deriveKey([]byte(password), salt, uint32(timeCost), uint32(mem), uint8(threads), uint32(len(want)))
 	// 交回恒定时间比较，避免看出前缀的结果。
 	return subtle.ConstantTimeCompare(want, got) == 1
 }
