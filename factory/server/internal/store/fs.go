@@ -747,7 +747,7 @@ func (s *Store) ApplyPlatformFS(ctx context.Context, assetKind string, assetID u
 	})
 }
 
-// ApplyPlatformFSLayout 按云端整棵平台树对齐本厂已到达的副本。
+// ApplyPlatformFSLayout 按云端整棵平台树对齐本厂已到达的副本，只留挂了副本的祖先夹。
 func (s *Store) ApplyPlatformFSLayout(ctx context.Context, layout PlatformFSLayout) error {
 	// 只认工艺和工程，别的种类拒绝。
 	if layout.Kind != KindProcess && layout.Kind != KindProject {
@@ -761,7 +761,7 @@ func (s *Store) ApplyPlatformFSLayout(ctx context.Context, layout PlatformFSLayo
 		if err != nil {
 			return err
 		}
-		// 准备去重或保留集合，避免重复和误删。
+		// 保留集只放根，只装草稿的夹交给剪枝清掉，免得来回闪。
 		keep := map[uuid.UUID]struct{}{root.ID: {}}
 		// 逐条处理，避免漏掉还要读或还要写的行。
 		for _, f := range orderFSFolders(layout.Folders) {
@@ -769,8 +769,6 @@ func (s *Store) ApplyPlatformFSLayout(ctx context.Context, layout PlatformFSLayo
 			if err := upsertPlatformFolderTx(tx, layout.Kind, f, root.ID); err != nil {
 				return err
 			}
-			// 记下已经放过或必须留下的身份。
-			keep[f.ID] = struct{}{}
 		}
 		// 逐条处理，避免漏掉还要读或还要写的行。
 		for _, f := range layout.Files {
@@ -809,6 +807,16 @@ func upsertPlatformFolderTx(tx *gorm.DB, assetKind string, hint FSFolderHint, ro
 	if hint.ParentID != nil {
 		// 先挂在根或指定父级下面。
 		parentID = *hint.ParentID
+		// 先读出指定的父级，下面要在它名下让名字。
+		parent, err := fsNodeTx(tx, parentID)
+		// 父级读不到就停，避免挂到不存在的夹下。
+		if err != nil {
+			return err
+		}
+		// 父级必须是同种类的平台夹，免得去动别的树里的节点。
+		if parent.NodeKind != FSNodeFolder || parent.TreeLevel != FSTreePlatform || parent.AssetKind != assetKind {
+			return domain.ErrForbidden
+		}
 	}
 	// 准备承接查到的目录节点。
 	var row fsNodeRow
@@ -822,6 +830,10 @@ func upsertPlatformFolderTx(tx *gorm.DB, assetKind string, hint FSFolderHint, ro
 		if row.NodeKind != FSNodeFolder || row.TreeLevel != FSTreePlatform || row.AssetKind != assetKind || row.ParentID == nil {
 			return domain.ErrForbidden
 		}
+		// 同级有别的节点占着目标名，先让它改名，互换名字才不撞。
+		if err := yieldPlatformNameTx(tx, parentID, hint.ID, name); err != nil {
+			return err
+		}
 		// 先把库错误译成业务错误再交回。
 		return mapFSErr(tx.Model(&fsNodeRow{}).Where("id = ?", hint.ID).Updates(map[string]any{
 			"name": name, "parent_id": parentID, "updated_at": now,
@@ -831,6 +843,10 @@ func upsertPlatformFolderTx(tx *gorm.DB, assetKind string, hint FSFolderHint, ro
 	if !errors.Is(err, gorm.ErrRecordNotFound) {
 		return err
 	}
+	// 同级有旧节点占着目标名，先让它改名，新夹才落得下。
+	if err := yieldPlatformNameTx(tx, parentID, hint.ID, name); err != nil {
+		return err
+	}
 	// 组装目录节点，根和文件按种类填。
 	row = fsNodeRow{
 		ID: hint.ID, Name: name, ParentID: &parentID, NodeKind: FSNodeFolder,
@@ -838,6 +854,30 @@ func upsertPlatformFolderTx(tx *gorm.DB, assetKind string, hint FSFolderHint, ro
 	}
 	// 先把库错误译成业务错误再交回。
 	return mapFSErr(tx.Create(&row).Error)
+}
+
+// yieldPlatformNameTx 同级已有别的节点占着这个名字，就给它换个带编号的名字让位。
+func yieldPlatformNameTx(tx *gorm.DB, parentID, selfID uuid.UUID, name string) error {
+	// 准备承接占着名字的节点。
+	var occupant fsNodeRow
+	// 找同级里除自己外占着这个名字的节点，没有行交给后面的分支。
+	err := tx.Where("parent_id = ? AND name = ? AND id <> ?", parentID, name, selfID).First(&occupant).Error
+	// 没人占着这个名字，就不用让位。
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil
+	}
+	// 不是缺行的库错误要原样交回。
+	if err != nil {
+		return err
+	}
+	// 先给占名节点挑个带编号的不重名，结果留给紧跟着的判断。
+	alt, err := uniqueChildName(tx, parentID, occupant.Name, "")
+	// 挑选不重名失败就停，避免带着错误继续。
+	if err != nil {
+		return err
+	}
+	// 只改占名节点的名字，挂点不动，把目标名字让出来。
+	return mapFSErr(tx.Model(&fsNodeRow{}).Where("id = ?", occupant.ID).Updates(map[string]any{"name": alt, "updated_at": time.Now().UTC()}).Error)
 }
 
 // placeOrMovePlatformFileTx 已有文件则搬家；还没有且副本已在则先挂上。
@@ -889,10 +929,41 @@ func placeOrMovePlatformFileTx(tx *gorm.DB, assetKind string, assetID, parentID 
 	if parent.NodeKind != FSNodeFolder || parent.TreeLevel != FSTreePlatform || parent.AssetKind != assetKind {
 		return domain.ErrForbidden
 	}
+	// 先拿现名当底，查到副本再换成云端的名字。
+	base := file.Name
+	// 编号先当空，查到副本编号再填上。
+	code := ""
+	// 准备承接这份副本最高修订的名字和编号。
+	var meta replicaRow
+	// 按条件去读，没有副本就沿用现名、不带编号。
+	qerr := tx.Select("name", "code").Where("id = ?", assetID).Order("revision DESC").First(&meta).Error
+	// 不是缺行的库错误要原样交回。
+	if qerr != nil && !errors.Is(qerr, gorm.ErrRecordNotFound) {
+		return qerr
+	}
+	// 查到了副本，就按它的名字和编号去挑。
+	if qerr == nil {
+		// 副本名不空才拿来当底，空的仍沿用现名。
+		if strings.TrimSpace(meta.Name) != "" {
+			// 底名换成副本名，之前带过的编号能借这次搬家去掉。
+			base = meta.Name
+		}
+		// 副本带着编号才拿来区分同名。
+		if meta.Code != nil {
+			// 把查到的编号填上，没有就留空。
+			code = *meta.Code
+		}
+	}
+	// 目标夹里已有同名就给自己带上编号，免得撞唯一索引整单回滚。
+	name, err := uniqueChildName(tx, parent.ID, base, code)
+	// 挑选不重名失败就停，避免带着错误继续。
+	if err != nil {
+		return err
+	}
 	// 取当前时刻，时间列和租约用同一个时钟。
 	now := time.Now().UTC()
 	// 先把库错误译成业务错误再交回。
-	return mapFSErr(tx.Model(&fsNodeRow{}).Where("id = ?", file.ID).Updates(map[string]any{"parent_id": parent.ID, "updated_at": now}).Error)
+	return mapFSErr(tx.Model(&fsNodeRow{}).Where("id = ?", file.ID).Updates(map[string]any{"parent_id": parent.ID, "name": name, "updated_at": now}).Error)
 }
 
 // pruneEmptyPlatformFoldersTx 清掉不在保留集、也没有孩子的平台文件夹。

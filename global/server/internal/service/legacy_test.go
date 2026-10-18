@@ -960,3 +960,68 @@ func assertLegacyBands(t *testing.T, body []byte, want []string) {
 		t.Fatalf("bands %v want %v", got, want)
 	}
 }
+
+// 同名工艺按很深的路径另起名时截到 64 字，序号也算在内；原样重导按内容沿用。
+func TestImportLegacyRenameLongPath(t *testing.T) {
+	// 准备本测上下文，没有它库和服务都开不了。
+	ctx := context.Background()
+	// 起云端库和服务，起不来整段验收作废。
+	h := New(t)
+	// 立云端超管失败就停，立不住后面没有人能登录。
+	if err := h.WAN.BootstrapAdmin(ctx, "w", "wan-secret"); err != nil {
+		// 不符即停：立云端超管失败。
+		t.Fatal(err)
+	}
+	// 登录拿会话，没有票后面接口都进不去。
+	tok, err := h.WAN.Login(ctx, "w", "wan-secret")
+	// 登录拿会话失败就停，没有票后面接口都进不去。
+	if err != nil {
+		// 不符即停：登录拿会话失败。
+		t.Fatal(err)
+	}
+	// 先导一份浅路径的「角焊」，占住这个名字。
+	first, err := h.WAN.ImportLegacy(ctx, tok, service.LegacyImport{
+		Processes: []service.LegacyFile{{Path: "1焊角.json", Content: []byte(`{"name":"角焊","current":1}`)}},
+	})
+	// 导入失败或条数不是 1 就停，不能当通过。
+	if err != nil || len(first.Processes) != 1 {
+		// 不符即停：首导没把工艺收进来。
+		t.Fatalf("first %+v %v", first, err)
+	}
+	// 七十个字的目录，去掉扩展名后的路径名远超 64 字。
+	deep := strings.Repeat("深", 70)
+	// 两份同名工艺放在很深的路径下，前 64 字相同。
+	ren := service.LegacyImport{Rename: true, Processes: []service.LegacyFile{
+		{Path: deep + "/1焊角.json", Content: []byte(`{"name":"角焊","current":2}`)},
+		{Path: deep + "/x/1焊角.json", Content: []byte(`{"name":"角焊","current":3}`)},
+	}}
+	// 按重命名导入，两份都应另起名建成。
+	got, err := h.WAN.ImportLegacy(ctx, tok, ren)
+	// 导入失败或有被拒的就停，超长名不该把它们挡掉。
+	if err != nil || len(got.Processes) != 2 || len(got.Rejected) != 0 {
+		// 不符即停：深路径同名工艺没有都导进来。
+		t.Fatalf("rename %+v %v", got, err)
+	}
+	// 第一份用截到 64 字的路径名。
+	if got.Processes[0].Name != strings.Repeat("深", 64) {
+		// 不符即停：路径名没有截到 64 字。
+		t.Fatalf("clip %q", got.Processes[0].Name)
+	}
+	// 第二份截短后再接序号，整名仍是 64 字。
+	if got.Processes[1].Name != strings.Repeat("深", 60)+" (2)" {
+		// 不符即停：序号前没有先截短原名。
+		t.Fatalf("serial %q", got.Processes[1].Name)
+	}
+	// 原样再导一次，截过名的两份都应按内容沿用。
+	again, err := h.WAN.ImportLegacy(ctx, tok, ren)
+	// 导入失败或又新建了就停，重导不该出副本。
+	if err != nil || len(again.Processes) != 0 || len(again.Skipped) != 2 {
+		// 不符即停：截过名的工艺重导没认出来。
+		t.Fatalf("again %+v %v", again, err)
+	}
+	// 第一份应按内容相同跳过。
+	if !legacySkipped(again.Skipped, deep+"/1焊角.json", "same content") {
+		// 不符即停：截短的路径名没进候选。
+		t.Fatalf("again reason %+v", again.Skipped)
+	}
+}

@@ -38,6 +38,8 @@ func (s *Closure) AcceptPlatformDelivery(ctx context.Context, snap ClosureSnapsh
 		_ = s.audit(ctx, nil, nil, "accept_closure", closureTarget(snap), audit.Deny)
 		return domain.ErrForbidden
 	}
+	// 留出目录错误位，有成员挂不上也接着收后面的副本
+	var fsErr error
 	// 只收平台级成员为只读副本。
 	for _, m := range snap.Members {
 		// 个人级只给创建人，平台级按副本规则
@@ -55,15 +57,26 @@ func (s *Closure) AcceptPlatformDelivery(ctx context.Context, snap ClosureSnapsh
 			_ = s.audit(ctx, nil, nil, "accept_closure", closureTarget(snap), audit.Deny)
 			return err
 		}
-		// 目录放不进去则送达不算完成
+		// 目录挂不上只记下错误，不挡后面成员的副本落库
 		if err := s.store.ApplyPlatformFS(ctx, m.Kind, m.ID, m.FSParentID, m.FSPath); err != nil {
-			// 记下收下闭包被拒绝，写失败不改变结果
-			_ = s.audit(ctx, nil, nil, "accept_closure", closureTarget(snap), audit.Deny)
-			return err
+			// 只留第一处挂不上的错误，收完全部成员再交回
+			if fsErr == nil {
+				// 记下这处目录错误，最后交回给调用方
+				fsErr = err
+			}
 		}
 	}
-	// 收下闭包成功后记审计，再把结果交回
-	return s.audit(ctx, nil, nil, "accept_closure", closureTarget(snap), audit.Allow)
+	// 副本都已落库，先记收下闭包成功，没记上则不算收完
+	if err := s.audit(ctx, nil, nil, "accept_closure", closureTarget(snap), audit.Allow); err != nil {
+		return err
+	}
+	// 有成员目录没挂上，补记一条目录对齐拒绝并交回这处错误
+	if fsErr != nil {
+		// 记下目录对齐被拒绝，写失败不改变结果
+		_ = s.audit(ctx, nil, nil, "apply_fs", closureTarget(snap), audit.Deny)
+		return fsErr
+	}
+	return nil
 }
 
 // RetractPlatformDelivery 云端删除后撤回展示；没有副本也算成功，已钉修订仍可读。

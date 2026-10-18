@@ -180,6 +180,88 @@ func testAssetPromote(t *testing.T, run func(string, func(*testing.T))) {
 		// 记下新的厂级修订，防止后面被带走。
 		promoted = got
 	})
+	// 再升要保留厂级的不可复制；厂级停用后再升必须被拒。
+	run("8.6", func(t *testing.T) {
+		// 另建一条个人工艺，不动后面还要用的那条。
+		src, err := facA.CreatePersonalProcess(ctx, pe.tok, direct, "再升守门", body)
+		// 建个人工艺没成功，后面的断言就没有依据。
+		if err != nil {
+			// 建个人工艺失败即停，不能把这一步的失败当成通过。
+			t.Fatal(err)
+		}
+		// 发布成可用，供后面步骤使用，失败则前提断了。
+		src, err = facA.PublishAsset(ctx, pe.tok, src.ID, src.Revision)
+		// 发布成可用没成功，后面的断言就没有依据。
+		if err != nil {
+			// 发布成可用失败即停，不能把这一步的失败当成通过。
+			t.Fatal(err)
+		}
+		// 先升出厂级目标，后面在它上面改可复制和停用。
+		target, err := facA.PromoteToFactory(ctx, pe.tok, src.ID)
+		// 升成厂级没成功，后面的断言就没有依据。
+		if err != nil {
+			// 升成厂级失败即停，不能把这一步的失败当成通过。
+			t.Fatal(err)
+		}
+		// 把厂级目标改成不可复制，看再升会不会被改回去。
+		target, err = facA.SetAssetCopyable(ctx, pe.tok, target.ID, target.Revision, false)
+		// 修改可否复制没成功，后面的断言就没有依据。
+		if err != nil {
+			// 修改可否复制失败即停，不能把这一步的失败当成通过。
+			t.Fatal(err)
+		}
+		// 改个人正文，让再升走覆盖分支。
+		src, err = facA.UpdateAssetContent(ctx, pe.tok, src.ID, src.Revision, []byte("guard-v2"))
+		// 改写资产正文没成功，后面的断言就没有依据。
+		if err != nil {
+			// 改写资产正文失败即停，不能把这一步的失败当成通过。
+			t.Fatal(err)
+		}
+		// 再升一次，正文变了应覆盖厂级目标。
+		got, err := facA.PromoteToFactory(ctx, pe.tok, src.ID)
+		// 覆盖升档没成功，后面的断言就没有依据。
+		if err != nil {
+			// 覆盖升档失败即停，不能把这一步的失败当成通过。
+			t.Fatal(err)
+		}
+		// 覆盖后修订加一、摘要跟上，可复制和状态保持原样。
+		if got.ID != target.ID || got.Revision != target.Revision+1 || !bytes.Equal(got.Digest, src.Digest) ||
+			got.Copyable || got.Status != factory.AssetAvailable {
+			// 被改回可复制或修订没加就停，覆盖改了不该改的。
+			t.Fatalf("overwrite %+v from %+v", got, src)
+		}
+		// 停用厂级目标，看再升会不会把它重新放开。
+		off, err := facA.DisableAsset(ctx, pe.tok, got.ID, got.Revision)
+		// 停用资产没成功，后面的断言就没有依据。
+		if err != nil {
+			// 停用资产失败即停，不能把这一步的失败当成通过。
+			t.Fatal(err)
+		}
+		// 摘要没变时再升，停用目标也必须被拒。
+		if _, err := facA.PromoteToFactory(ctx, pe.tok, src.ID); !errors.Is(err, domain.ErrAssetNotAvailable) {
+			// 停用目标被跳过放行就停，守门没有拦住。
+			t.Fatalf("same digest got %v", err)
+		}
+		// 再改个人正文，让再升本该走覆盖分支。
+		src, err = facA.UpdateAssetContent(ctx, pe.tok, src.ID, src.Revision, []byte("guard-v3"))
+		// 改写资产正文没成功，后面的断言就没有依据。
+		if err != nil {
+			// 改写资产正文失败即停，不能把这一步的失败当成通过。
+			t.Fatal(err)
+		}
+		// 正文变了再升，停用目标仍必须被拒。
+		if _, err := facA.PromoteToFactory(ctx, pe.tok, src.ID); !errors.Is(err, domain.ErrAssetNotAvailable) {
+			// 停用目标被覆盖就停，问题工艺会被悄悄放开。
+			t.Fatalf("changed digest got %v", err)
+		}
+		// 读回厂级目标，核对它没有被这两次升档改动。
+		after, err := facA.GetAsset(ctx, pe.tok, off.ID)
+		// 目标的修订、摘要和停用状态都必须原样不动。
+		if err != nil || after.Revision != off.Revision || !bytes.Equal(after.Digest, off.Digest) || after.Status != factory.AssetDisabled {
+			// 目标被改了就停，被拒的升档仍写进了库。
+			t.Fatalf("%+v want %+v %v", after, off, err)
+		}
+	})
 	// 别的车间的人也能把已发布个人工艺升成厂级。
 	run("8.2", func(t *testing.T) {
 		// 把人分进组织没成功，后面的断言就没有依据。

@@ -242,6 +242,31 @@ func (s *Closure) packForPad(ctx context.Context, assetID uuid.UUID) (ClosureSna
 	return snap, nil
 }
 
+// packPinnedForPad 列表外钉住的平台工艺按钉死修订单独成包；钉死修订读不到就拒，不退回最新版。
+func (s *Closure) packPinnedForPad(ctx context.Context, d AssetDep) (ClosureSnapshot, error) {
+	// 按钉死的修订取工艺，原件没有再看副本。
+	m, err := s.loadDepMember(ctx, d)
+	// 钉死修订读不到或对不上则整包拒绝。
+	if err != nil {
+		return ClosureSnapshot{}, err
+	}
+	// 只给平台副本，本厂原件不走这条口子。
+	if m.Level != AssetLevelPlatform {
+		return ClosureSnapshot{}, domain.ErrNotFound
+	}
+	// 标成停用：示教器工艺列表不显示，钉住它的工程照样能用。
+	m.Status = AssetDisabled
+	// 工艺单独成包，不带别的成员。
+	snap := sealClosure(KindProcess, m, nil, nil, nil)
+	// 闭包对不上则拒绝下发。
+	if err := validateClosure(snap); err != nil {
+		return ClosureSnapshot{}, err
+	}
+	// 把当前目录挂点写进闭包，不参与摘要。
+	s.attachFSPaths(ctx, &snap)
+	return snap, nil
+}
+
 // attachFSPaths 把当前目录挂点写进闭包，不进摘要。
 func (s *Closure) attachFSPaths(ctx context.Context, snap *ClosureSnapshot) {
 	// 逐个补目录挂点，读不到的跳过。

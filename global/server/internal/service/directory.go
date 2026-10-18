@@ -235,7 +235,7 @@ func (s *Factories) DeleteFactory(ctx context.Context, token string, factoryID u
 	return nil, nil
 }
 
-// setStatus 写入工厂治理状态并升高修订。
+// setStatus 写入工厂治理状态并升高修订；停用转有效时踢会话逼厂端全量重拉。
 func (s *Factories) setStatus(ctx context.Context, token string, factoryID uuid.UUID, status, action string) (Factory, error) {
 	// 只有 WAN 管理员能改工厂治理状态。
 	admin, err := s.RequireAdmin(ctx, token)
@@ -243,6 +243,14 @@ func (s *Factories) setStatus(ctx context.Context, token string, factoryID uuid.
 	if err != nil {
 		// 被拒绝时留审计，不写口令或正文。
 		_ = s.audit(ctx, nil, nil, &factoryID, action, factoryID.String(), audit.Deny)
+		return Factory{}, err
+	}
+	// 先读出原状态，只有停用转有效才要踢会话补发。
+	prev, err := s.store.FactoryByID(ctx, factoryID)
+	// 没有这家厂或库出错就拒绝，不往下改状态。
+	if err != nil {
+		// 被拒绝时留审计，不写口令或正文。
+		_ = s.audit(ctx, &admin.ID, nil, &factoryID, action, factoryID.String(), audit.Deny)
 		return Factory{}, err
 	}
 	// 写入治理状态并升高修订；厂端只接受更高修订。
@@ -259,6 +267,11 @@ func (s *Factories) setStatus(ctx context.Context, token string, factoryID uuid.
 	}
 	// 通知厂端治理状态变了。
 	s.notifyLifecycle(out)
+	// 停用期间的撤回没进会话，转回有效时要逼厂端重拉全量。
+	if prev.Status == FactoryDisabled && out.Status == FactoryActive {
+		// 踢掉会话，厂端重连后按全量索引补齐漏掉的变更。
+		s.dropFactory(factoryID)
+	}
 	return out, nil
 }
 

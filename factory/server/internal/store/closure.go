@@ -202,8 +202,22 @@ func (s *Store) InsertReplica(ctx context.Context, in AssetReplica) (AssetReplic
 		if err := tx.Create(&row).Error; err != nil {
 			return err
 		}
-		// 做完挂上文件节点后把结果交回。
-		return placeAssetFileTx(tx, row.Kind, FSTreePlatform, nil, row.ID, row.Name, in.Code, uuid.Nil)
+		// 挂上文件节点失败就停，避免带着错误继续。
+		if err := placeAssetFileTx(tx, row.Kind, FSTreePlatform, nil, row.ID, row.Name, in.Code, uuid.Nil); err != nil {
+			return err
+		}
+		// 先读这份副本已收到的最高修订，结果留给紧跟着的判断。
+		top, err := maxRevision(tx, &replicaRow{}, "id = ?", row.ID)
+		// 读最高修订失败就停，避免带着错误继续。
+		if err != nil {
+			return err
+		}
+		// 晚到的旧钉住修订不改名，免得把文件名改回去。
+		if row.Revision < top {
+			return nil
+		}
+		// 新修订是最高的，文件节点名跟上云端的新名字。
+		return syncFSFileNameTx(tx, row.ID, row.Name)
 	})
 	// 出错就停，避免把失败当成已经完成。
 	if err != nil {

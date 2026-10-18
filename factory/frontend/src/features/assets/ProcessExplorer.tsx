@@ -92,14 +92,15 @@ function canMoveInto(src: FSNode, dest: FSNode, byId: Map<string, FSNode>, canWr
 }
 
 function canCopyNode(n: FSNode) {
-  if (!n.parentId) return false;
+  // 工程树不支持复制，和服务端口径一致。
+  if (!n.parentId || n.assetKind !== "process") return false;
   if (n.nodeKind === "file" && n.asset && n.asset.kind === "process" && !n.asset.copyable) return false;
   return true;
 }
 
 function canCopyInto(src: FSNode, dest: FSNode, byId: Map<string, FSNode>) {
   if (dest.nodeKind !== "folder" || !src.parentId || src.id === dest.id) return false;
-  if (src.assetKind !== dest.assetKind) return false;
+  if (src.assetKind !== dest.assetKind || dest.assetKind !== "process") return false;
   if (sameTree(src, dest)) return src.nodeKind !== "folder" || !isAncestor(src.id, dest.id, byId);
   return src.treeLevel === "platform" && dest.treeLevel === "factory";
 }
@@ -354,7 +355,8 @@ export function ProcessExplorer({
 
   const pasteInto = (dest: FSNode) => {
     const clip = clipId ? byId.get(clipId) : undefined;
-    if (!clip || !writable(dest) || !canCopyInto(clip, dest, byId)) return;
+    // 副本建在本人名下，别人的个人树不能贴，和新建同一口径。
+    if (!clip || !writable(dest) || !allowFile(dest) || !canCopyInto(clip, dest, byId)) return;
     copy.mutate(
       { id: clip.id, parentId: dest.id },
       {
@@ -369,7 +371,7 @@ export function ProcessExplorer({
 
   const pasteItem = (dest: FSNode | null) => {
     const clip = clipId ? byId.get(clipId) : undefined;
-    const ok = Boolean(dest && writable(dest) && clip && canCopyInto(clip, dest, byId));
+    const ok = Boolean(dest && writable(dest) && allowFile(dest) && clip && canCopyInto(clip, dest, byId));
     return {
       key: "paste",
       label: "粘贴",
@@ -452,15 +454,18 @@ export function ProcessExplorer({
     );
   };
 
+  // 工程页不出现复制和粘贴。
+  const clipOk = kind === "process";
+
   const folderMenu = (n: FSNode): MenuProps["items"] => {
     const write = writable(n);
     const makeFile = allowFile(n);
     return [
       write ? { key: "new-folder", label: "新建文件夹", onClick: () => newFolder(n) } : null,
       makeFile ? { key: "new-file", label: `新建${noun}`, onClick: () => onNewProcess(n) } : null,
-      { type: "divider" },
-      n.parentId ? { key: "copy", label: "复制", disabled: !canCopyNode(n), onClick: () => copyNode(n) } : null,
-      pasteItem(n),
+      clipOk ? { type: "divider" } : null,
+      clipOk && n.parentId ? { key: "copy", label: "复制", disabled: !canCopyNode(n), onClick: () => copyNode(n) } : null,
+      clipOk ? pasteItem(n) : null,
       write && n.parentId ? { type: "divider" } : null,
       write && n.parentId ? { key: "rename", label: "重命名", onClick: () => renameFolder(n) } : null,
       write && n.parentId ? { key: "move", label: "移动到…", onClick: () => moveTo(n) } : null,
@@ -472,9 +477,9 @@ export function ProcessExplorer({
     const write = writable(n);
     return [
       { key: "open", label: "打开", onClick: () => pickFile(n) },
-      { type: "divider" },
-      { key: "copy", label: "复制", disabled: !canCopyNode(n), onClick: () => copyNode(n) },
-      pasteItem(current),
+      clipOk ? { type: "divider" } : null,
+      clipOk ? { key: "copy", label: "复制", disabled: !canCopyNode(n), onClick: () => copyNode(n) } : null,
+      clipOk ? pasteItem(current) : null,
       write ? { type: "divider" } : null,
       write ? { key: "move", label: "移动到…", onClick: () => moveTo(n) } : null,
       write ? { key: "delete", label: "删除", danger: true, onClick: () => deleteNode(n) } : null,

@@ -80,7 +80,7 @@ function useFSMutation<TData, TVars>(mutationFn: (vars: TVars) => Promise<TData>
   const qc = useQueryClient();
   return useMutation({
     mutationFn,
-    onSuccess: async () => {
+    onSettled: async () => {
       await qc.invalidateQueries({ queryKey: fsKeys.all });
       await qc.invalidateQueries({ queryKey: assetKeys.all });
       await qc.invalidateQueries({ queryKey: ["wan-asset-content"] });

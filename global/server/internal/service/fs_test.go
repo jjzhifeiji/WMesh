@@ -326,3 +326,286 @@ func TestPlatformFSPathInClosure(t *testing.T) {
 		t.Fatalf("layout %+v %v", layout, err)
 	}
 }
+
+// 验删文件夹先整体预检：后面的工艺仍被引用，前面的也不能先删先收回。
+func TestPlatformFSDeleteFolderAllOrNothing(t *testing.T) {
+	// 准备本测上下文，没有它库和服务都开不了。
+	ctx := context.Background()
+	// 起云端库和服务，起不来整段验收作废。
+	h := New(t)
+	// 立云端超管失败就停，立不住后面没有人能登录。
+	if err := h.WAN.BootstrapAdmin(ctx, "w", "wan-secret"); err != nil {
+		// 不符即停：立云端超管失败。
+		t.Fatal(err)
+	}
+	// 登录拿会话，没有票后面接口都进不去。
+	tok, err := h.WAN.Login(ctx, "w", "wan-secret")
+	// 登录拿会话失败就停，没有票后面接口都进不去。
+	if err != nil {
+		// 不符即停：登录拿会话失败。
+		t.Fatal(err)
+	}
+	// 名字排前面的工艺，不被任何工程引用。
+	free, err := h.WAN.CreatePlatformProcess(ctx, tok, "a-未引用", []byte("body"))
+	// 新建未引用工艺失败就停，没有它验不了先删。
+	if err != nil {
+		// 不符即停：新建未引用工艺失败。
+		t.Fatal(err)
+	}
+	// 名字排后面的工艺，稍后被工程钉住。
+	used, err := h.WAN.CreatePlatformProcess(ctx, tok, "b-被引用", []byte("body"))
+	// 新建被引用工艺失败就停，没有它造不出阻塞。
+	if err != nil {
+		// 不符即停：新建被引用工艺失败。
+		t.Fatal(err)
+	}
+	// 发布后才能被工程依赖。
+	pub, err := h.WAN.PublishPlatformAsset(ctx, tok, used.ID, used.Revision)
+	// 发布失败就停，发不出去工程钉不住它。
+	if err != nil {
+		// 不符即停：发布资产失败。
+		t.Fatal(err)
+	}
+	// 建一条钉住后一个工艺的工程，造出引用。
+	proj, err := h.WAN.CreatePlatformProject(ctx, tok, "钉工程", []byte(`[]`), []global.AssetDep{{ID: pub.ID, Revision: pub.Revision, Digest: pub.Digest}})
+	// 建工程失败就停，没有引用验不了拒绝。
+	if err != nil {
+		// 不符即停：新建平台工程失败。
+		t.Fatal(err)
+	}
+	// 取工艺目录根，文件夹要建在它下面。
+	root, err := h.WAN.Store().EnsureFSRoot(ctx, global.KindProcess)
+	// 取根失败就停，没有根建不了文件夹。
+	if err != nil {
+		// 不符即停：取工艺目录根失败。
+		t.Fatal(err)
+	}
+	// 建要删的文件夹，两个工艺都放进去。
+	folder, err := h.WAN.CreateFSFolder(ctx, tok, root.ID, "待删夹")
+	// 建文件夹失败就停，文件夹建不成验不了整删。
+	if err != nil {
+		// 不符即停：建文件夹失败。
+		t.Fatal(err)
+	}
+	// 逐个把两个工艺搬进文件夹。
+	for _, a := range []global.Asset{free, used} {
+		// 按资产找目录文件，找不到就搬不了家。
+		file, err := h.WAN.Store().FSFileByAsset(ctx, a.ID)
+		// 找目录文件失败就停，搬不进去就验不了。
+		if err != nil {
+			// 不符即停：按资产找目录文件失败。
+			t.Fatal(err)
+		}
+		// 搬进文件夹失败就停，两个工艺须同在一夹。
+		if _, err := h.WAN.MoveFSNode(ctx, tok, file.ID, folder.ID); err != nil {
+			// 不符即停：移动目录节点失败。
+			t.Fatal(err)
+		}
+	}
+	// 删文件夹应整体被拒为仍被引用，放行或错类都算没拦住。
+	if err := h.WAN.DeleteFSNode(ctx, tok, folder.ID); !errors.Is(err, domain.ErrReferenced) {
+		// 不符即停：删文件夹没被整体拒绝。
+		t.Fatalf("delete folder: %v", err)
+	}
+	// 逐个确认两个工艺都还在，并且仍挂在文件夹下。
+	for _, a := range []global.Asset{free, used} {
+		// 读取资产失败就说明已被删掉。
+		if _, err := h.WAN.GetPlatformAsset(ctx, tok, a.ID); err != nil {
+			// 不符即停：工艺不该被删。
+			t.Fatalf("asset %s gone: %v", a.Name, err)
+		}
+		// 按资产找目录文件，应仍在原文件夹。
+		file, err := h.WAN.Store().FSFileByAsset(ctx, a.ID)
+		// 找不到或不在文件夹下就停，目录被动过。
+		if err != nil || file.ParentID == nil || *file.ParentID != folder.ID {
+			// 不符即停：目录文件不在原文件夹。
+			t.Fatalf("file %s %+v %v", a.Name, file, err)
+		}
+	}
+	// 文件夹节点本身也应还在。
+	if _, err := h.WAN.Store().FSNodeByID(ctx, folder.ID); err != nil {
+		// 不符即停：文件夹节点不该被删。
+		t.Fatalf("folder gone: %v", err)
+	}
+	// 列出收回记录，前一个工艺不该在里面。
+	retracted, err := h.WAN.Store().ListRetractions(ctx)
+	// 列收回记录失败就停，验不了有没有收回。
+	if err != nil {
+		// 不符即停：列收回记录失败。
+		t.Fatal(err)
+	}
+	// 逐条看收回记录，有任一工艺就说明已从厂收回。
+	for _, id := range retracted {
+		// 任一工艺出现在收回里都算部分删除。
+		if id == free.ID || id == used.ID {
+			// 不符即停：工艺不该被收回。
+			t.Fatalf("retracted %s", id)
+		}
+	}
+	// 删掉钉住它的工程，解除阻塞。
+	if err := h.WAN.DeletePlatformAsset(ctx, tok, proj.ID); err != nil {
+		// 不符即停：删工程失败。
+		t.Fatal(err)
+	}
+	// 阻塞解除后再删文件夹应成功。
+	if err := h.WAN.DeleteFSNode(ctx, tok, folder.ID); err != nil {
+		// 不符即停：解除引用后删文件夹失败。
+		t.Fatalf("delete after unref: %v", err)
+	}
+	// 逐个确认两个工艺都已连带删掉。
+	for _, a := range []global.Asset{free, used} {
+		// 读取资产应被拒为找不到，还在就是没连带删。
+		if _, err := h.WAN.GetPlatformAsset(ctx, tok, a.ID); !errors.Is(err, domain.ErrNotFound) {
+			// 不符即停：工艺应已删掉。
+			t.Fatalf("asset %s should be gone: %v", a.Name, err)
+		}
+	}
+}
+
+// 验复制文件夹先整体预检：子树里有停用件就整夹拒绝，不留半截文件夹或副本。
+func TestPlatformCopyFSAllOrNothing(t *testing.T) {
+	// 准备本测上下文，没有它库和服务都开不了。
+	ctx := context.Background()
+	// 起云端库和服务，起不来整段验收作废。
+	h := New(t)
+	// 立云端超管失败就停，立不住后面没有人能登录。
+	if err := h.WAN.BootstrapAdmin(ctx, "w", "wan-secret"); err != nil {
+		// 不符即停：立云端超管失败。
+		t.Fatal(err)
+	}
+	// 登录拿会话，没有票后面接口都进不去。
+	tok, err := h.WAN.Login(ctx, "w", "wan-secret")
+	// 登录拿会话失败就停，没有票后面接口都进不去。
+	if err != nil {
+		// 不符即停：登录拿会话失败。
+		t.Fatal(err)
+	}
+	// 取工艺目录根，文件夹要建在它下面。
+	root, err := h.WAN.Store().EnsureFSRoot(ctx, global.KindProcess)
+	// 取根失败就停，没有根建不了文件夹。
+	if err != nil {
+		// 不符即停：取工艺目录根失败。
+		t.Fatal(err)
+	}
+	// 建复制源文件夹，装一好一坏两份工艺。
+	gamma, err := h.WAN.CreateFSFolder(ctx, tok, root.ID, "丙")
+	// 建文件夹失败就停，没有源夹验不了整夹复制。
+	if err != nil {
+		// 不符即停：建源文件夹失败。
+		t.Fatal(err)
+	}
+	// 源夹下再建子夹，停用件藏在里面考递归预检。
+	gammaSub, err := h.WAN.CreateFSFolder(ctx, tok, gamma.ID, "丙子")
+	// 建子夹失败就停，没有子夹验不了递归。
+	if err != nil {
+		// 不符即停：建子文件夹失败。
+		t.Fatal(err)
+	}
+	// 建粘贴目标文件夹，被拒后里面应仍为空。
+	dest, err := h.WAN.CreateFSFolder(ctx, tok, root.ID, "目标")
+	// 建目标夹失败就停，没有落脚处验不了复制。
+	if err != nil {
+		// 不符即停：建目标文件夹失败。
+		t.Fatal(err)
+	}
+	// 建一份正常工艺，旧逻辑会先把它复制出去。
+	good, err := h.WAN.CreatePlatformProcess(ctx, tok, "好工艺", []byte("good"))
+	// 建正常工艺失败就停，没有它验不了先复制。
+	if err != nil {
+		// 不符即停：新建正常工艺失败。
+		t.Fatal(err)
+	}
+	// 建一份稍后停用的工艺，整夹复制应被它挡住。
+	off, err := h.WAN.CreatePlatformProcess(ctx, tok, "停用工艺", []byte("off"))
+	// 建待停用工艺失败就停，没有它造不出阻塞。
+	if err != nil {
+		// 不符即停：新建待停用工艺失败。
+		t.Fatal(err)
+	}
+	// 先发布，只有可用才能停用。
+	off, err = h.WAN.PublishPlatformAsset(ctx, tok, off.ID, off.Revision)
+	// 发布失败就停，停用不了。
+	if err != nil {
+		// 不符即停：发布待停用工艺失败。
+		t.Fatal(err)
+	}
+	// 停用这份工艺，另存时应被拒为不可用。
+	off, err = h.WAN.DisablePlatformAsset(ctx, tok, off.ID, off.Revision)
+	// 停用失败就停，造不出阻塞。
+	if err != nil {
+		// 不符即停：停用工艺失败。
+		t.Fatal(err)
+	}
+	// 正常工艺挂进源夹，失败则前提断了。
+	if _, err := h.WAN.MoveAssetInto(ctx, tok, good.ID, gamma.ID); err != nil {
+		// 不符即停：正常工艺挂进源夹失败。
+		t.Fatal(err)
+	}
+	// 停用工艺挂进子夹，失败则前提断了。
+	if _, err := h.WAN.MoveAssetInto(ctx, tok, off.ID, gammaSub.ID); err != nil {
+		// 不符即停：停用工艺挂进子夹失败。
+		t.Fatal(err)
+	}
+	// 记下复制前的节点数和资产数，被拒后要原样不变。
+	nodesBefore, assetsBefore := platformFSTotals(t, ctx, h)
+	// 夹里有停用件，整夹复制必须被拒为不可用。
+	if _, err := h.WAN.CopyFSNode(ctx, tok, gamma.ID, dest.ID); !errors.Is(err, domain.ErrAssetNotAvailable) {
+		// 不符即停：带停用件的整夹复制没被拒。
+		t.Fatalf("copy folder with disabled: %v", err)
+	}
+	// 被拒之后再数一遍节点和资产。
+	nodesAfter, assetsAfter := platformFSTotals(t, ctx, h)
+	// 节点数或资产数变了，说明被拒前已经建了半截。
+	if nodesAfter != nodesBefore || assetsAfter != assetsBefore {
+		// 不符即停：被拒的复制留下了文件夹或副本。
+		t.Fatalf("disabled copy left nodes %d->%d assets %d->%d", nodesBefore, nodesAfter, assetsBefore, assetsAfter)
+	}
+	// 目标夹下应仍为空。
+	destKids, err := h.WAN.Store().ListFSChildren(ctx, dest.ID)
+	// 读不出或不空都说明复制留了痕迹。
+	if err != nil || len(destKids) != 0 {
+		// 不符即停：目标夹里多出了东西。
+		t.Fatalf("dest kids %d %v", len(destKids), err)
+	}
+	// 重新启用停用件，同一整夹复制应能放行。
+	if _, err := h.WAN.ReenablePlatformAsset(ctx, tok, off.ID, off.Revision); err != nil {
+		// 不符即停：重新启用工艺失败。
+		t.Fatal(err)
+	}
+	// 再复制一次，这回子树里都能另存。
+	copied, err := h.WAN.CopyFSNode(ctx, tok, gamma.ID, dest.ID)
+	// 复制失败或没落在目标夹下就停，预检拦得太宽了。
+	if err != nil || copied.ParentID == nil || *copied.ParentID != dest.ID {
+		// 不符即停：全部可另存时整夹复制失败。
+		t.Fatalf("copy folder after reenable %+v %v", copied, err)
+	}
+	// 复制成功后再数一遍节点和资产。
+	nodesOK, assetsOK := platformFSTotals(t, ctx, h)
+	// 应多出两层文件夹加两个文件，资产多出两份副本。
+	if nodesOK != nodesBefore+4 || assetsOK != assetsBefore+2 {
+		// 不符即停：整夹复制的数量不对。
+		t.Fatalf("copy totals nodes %d->%d assets %d->%d", nodesBefore, nodesOK, assetsBefore, assetsOK)
+	}
+}
+
+// 数出工艺目录的节点数和平台资产数，核对被拒的复制什么都没多。
+func platformFSTotals(t *testing.T, ctx context.Context, h *Harness) (int, int) {
+	// 标成辅助函数，失败栈落到调用方。
+	t.Helper()
+	// 读出工艺目录全部节点，读不到就没法比。
+	nodes, err := h.WAN.Store().ListFSNodes(ctx, global.KindProcess)
+	// 目录读失败就没法比数量。
+	if err != nil {
+		// 不符即停：读工艺目录失败。
+		t.Fatal(err)
+	}
+	// 读出全部平台资产，读不到就没法比。
+	assets, err := h.WAN.Store().ListAssets(ctx)
+	// 资产读失败就没法比数量。
+	if err != nil {
+		// 不符即停：读平台资产失败。
+		t.Fatal(err)
+	}
+	// 交回两个数量，由调用方比对复制前后。
+	return len(nodes), len(assets)
+}

@@ -215,10 +215,21 @@ func (s *Assets) CopyFSNode(ctx context.Context, token string, nodeID, destID uu
 		_ = s.audit(ctx, &admin.ID, nil, nil, "copy_fs", nodeID.String(), audit.Deny)
 		return FSNode{}, domain.ErrCycle
 	}
+	// 先只读走一遍整棵子树，有一件不能另存就整体拒绝，什么都不建。
+	if err := s.checkFSCopyable(ctx, src); err != nil {
+		// 复制目录被拒就留审计。
+		_ = s.audit(ctx, &admin.ID, nil, nil, "copy_fs", nodeID.String(), audit.Deny)
+		return FSNode{}, err
+	}
 	// 复制一份，原件保持不动。
 	row, err := s.copyFSInto(ctx, token, src, dest)
-	// 复制失败就停，避免两处缠在一起。
+	// 复制失败就回收本次新建的顶层文件夹，再记拒绝。
 	if err != nil {
+		// 已建出顶层文件夹才回收，尽量不留半截。
+		if row.ID != uuid.Nil {
+			// 回收失败也返回原来的错误，不盖住真因。
+			_ = s.deleteFSTree(ctx, token, admin.ID, row)
+		}
 		// 复制目录被拒就留审计。
 		_ = s.audit(ctx, &admin.ID, nil, nil, "copy_fs", nodeID.String(), audit.Deny)
 		return FSNode{}, err
@@ -232,7 +243,40 @@ func (s *Assets) CopyFSNode(ctx context.Context, token string, nodeID, destID uu
 	return row, nil
 }
 
-// copyFSInto 递归复制到目标文件夹。
+// checkFSCopyable 只读递归查子树里每个文件：缺资产、摘要不符、种类不对或已停用都算不过。
+func (s *Assets) checkFSCopyable(ctx context.Context, n FSNode) error {
+	// 文件夹本身不用查，逐个看下级。
+	if n.NodeKind == store.FSNodeFolder {
+		// 列出直接孩子，逐个往下查。
+		kids, err := s.store.ListFSChildren(ctx, n.ID)
+		// 列出失败就拒绝，查不全不能放行复制。
+		if err != nil {
+			return err
+		}
+		// 逐个子项预检，一个不过就整体拒绝。
+		for _, k := range kids {
+			// 这一支有不能另存的就停，什么都不建。
+			if err := s.checkFSCopyable(ctx, k); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	// 文件节点缺资产就算不过，和单件复制同一口径。
+	if n.AssetID == nil {
+		return domain.ErrNotFound
+	}
+	// 装入并核对摘要，对不上不能另存。
+	a, err := s.loadChecked(ctx, *n.AssetID)
+	// 读不到或摘要不符就整体拒绝。
+	if err != nil {
+		return err
+	}
+	// 和单件另存同一口径，免得两边松紧不一。
+	return canCopyPlatform(a)
+}
+
+// copyFSInto 递归复制到目标文件夹；出错时交回已建的文件夹，由调用方回收。
 func (s *Assets) copyFSInto(ctx context.Context, token string, src, dest FSNode) (FSNode, error) {
 	// 找一个还不冲突的名字。
 	name, err := s.uniqueFSName(ctx, dest.ID, src.Name)
@@ -250,15 +294,15 @@ func (s *Assets) copyFSInto(ctx context.Context, token string, src, dest FSNode)
 		}
 		// 列出这一批供后面筛选。
 		kids, err := s.store.ListFSChildren(ctx, src.ID)
-		// 列出失败就拒绝，避免交出不完整结果。
+		// 列出失败就交回已建的文件夹，好让调用方删掉。
 		if err != nil {
-			return FSNode{}, err
+			return folder, err
 		}
-		// 记下每个子项的名字，用来避开重名。
+		// 逐个子项往下复制，一个失败就停。
 		for _, k := range kids {
-			// 复制失败就停，避免两处缠在一起。
+			// 下级失败则交回这层文件夹，连同已复制的一起回收。
 			if _, err := s.copyFSInto(ctx, token, k, folder); err != nil {
-				return FSNode{}, err
+				return folder, err
 			}
 		}
 		return folder, nil
@@ -275,8 +319,10 @@ func (s *Assets) copyFSInto(ctx context.Context, token string, src, dest FSNode)
 	}
 	// 按目录节点处理。
 	file, err := s.store.FSFileByAsset(ctx, copied.ID)
-	// 没有这个节点或会成环就拒绝。
+	// 文件节点找不到就删掉刚建的副本，再停下。
 	if err != nil {
+		// 副本可能不在目标下，这里自己回收，失败不盖住真因。
+		_ = s.DeletePlatformAsset(ctx, token, copied.ID)
 		return FSNode{}, err
 	}
 	// 没有父节点或已经在目标下，就不用再挪。
@@ -284,7 +330,14 @@ func (s *Assets) copyFSInto(ctx context.Context, token string, src, dest FSNode)
 		return file, nil
 	}
 	// 挪到新位置，失败就不能继续。
-	return s.MoveAssetInto(ctx, token, copied.ID, dest.ID)
+	moved, err := s.MoveAssetInto(ctx, token, copied.ID, dest.ID)
+	// 挂不过去就删掉留在原件旁的副本，免得重试一次多一份。
+	if err != nil {
+		// 回收失败也返回原来的错误，不盖住真因。
+		_ = s.DeletePlatformAsset(ctx, token, copied.ID)
+		return FSNode{}, err
+	}
+	return moved, nil
 }
 
 // uniqueFSName 目标文件夹下不撞名；已占用则加「副本」。
@@ -360,7 +413,7 @@ func destInside(ctx context.Context, st *Store, srcID, destID uuid.UUID) bool {
 	return false
 }
 
-// DeleteFSNode 删文件夹（可递归）或文件（走删资产）。
+// DeleteFSNode 删文件夹（先整体预检再递归）或文件（走删资产）。
 func (s *Assets) DeleteFSNode(ctx context.Context, token string, nodeID uuid.UUID) error {
 	// 核对当前管理员会话。
 	admin, err := s.RequireAdmin(ctx, token)
@@ -384,6 +437,62 @@ func (s *Assets) DeleteFSNode(ctx context.Context, token string, nodeID uuid.UUI
 		_ = s.audit(ctx, &admin.ID, nil, nil, "delete_fs", nodeID.String(), audit.Deny)
 		return domain.ErrForbidden
 	}
+	// 删文件夹先整体预检，有一个删不了就一个都不删。
+	if n.NodeKind != store.FSNodeFile {
+		// 预检不过就拒绝，免得前面的工艺已删已收回。
+		if err := s.checkFSDeletable(ctx, nodeID); err != nil {
+			// 删目录被拒就留审计。
+			_ = s.audit(ctx, &admin.ID, nil, nil, "delete_fs", nodeID.String(), audit.Deny)
+			return err
+		}
+	}
+	// 预检已过，按原顺序递归删掉这一支。
+	return s.deleteFSTree(ctx, token, admin.ID, n)
+}
+
+// checkFSDeletable 递归查文件夹下每个文件：缺资产、摘要不符或仍被引用都算不过。
+func (s *Assets) checkFSDeletable(ctx context.Context, folderID uuid.UUID) error {
+	// 列出直接孩子，逐个往下查。
+	kids, err := s.store.ListFSChildren(ctx, folderID)
+	// 列出失败就拒绝，查不全不能放行删除。
+	if err != nil {
+		return err
+	}
+	// 逐个子项预检，一个不过就整体拒绝。
+	for _, k := range kids {
+		// 子文件夹往下递归，里面的文件同样要查。
+		if k.NodeKind != store.FSNodeFile {
+			// 下层有一个不过就停，整体都不删。
+			if err := s.checkFSDeletable(ctx, k.ID); err != nil {
+				return err
+			}
+			// 文件夹本身没有资产，查完下层就看下一个。
+			continue
+		}
+		// 文件节点缺资产就算不过，和单删文件同一口径。
+		if k.AssetID == nil {
+			return domain.ErrNotFound
+		}
+		// 装入并核对摘要，对不上不能删。
+		if _, err := s.loadChecked(ctx, *k.AssetID); err != nil {
+			return err
+		}
+		// 查是否仍被工程依赖。
+		used, err := s.store.AssetIsReferenced(ctx, *k.AssetID)
+		// 查不出来就拒绝，不能当没被引用。
+		if err != nil {
+			return err
+		}
+		// 仍被工程依赖就整体拒绝。
+		if used {
+			return domain.ErrReferenced
+		}
+	}
+	return nil
+}
+
+// deleteFSTree 递归删节点：文件走删资产，文件夹删空孩子后删自己并记审计。
+func (s *Assets) deleteFSTree(ctx context.Context, token string, adminID uuid.UUID, n FSNode) error {
 	// 不是文件夹就不能当父节点，文件要另走。
 	if n.NodeKind == store.FSNodeFile {
 		// 还没有准备好就停，避免空着往下用。
@@ -394,26 +503,26 @@ func (s *Assets) DeleteFSNode(ctx context.Context, token string, nodeID uuid.UUI
 		return s.DeletePlatformAsset(ctx, token, *n.AssetID)
 	}
 	// 列出这一批供后面筛选。
-	kids, err := s.store.ListFSChildren(ctx, nodeID)
+	kids, err := s.store.ListFSChildren(ctx, n.ID)
 	// 列出失败就拒绝，避免交出不完整结果。
 	if err != nil {
 		return err
 	}
-	// 记下每个子项的名字，用来避开重名。
+	// 逐个子项往下删，一个失败就停。
 	for _, k := range kids {
 		// 删除失败就停，避免库里留下残行。
-		if err := s.DeleteFSNode(ctx, token, k.ID); err != nil {
+		if err := s.deleteFSTree(ctx, token, adminID, k); err != nil {
 			return err
 		}
 	}
 	// 删除失败就停，避免库里留下残行。
-	if err := s.store.DeleteFSNode(ctx, nodeID); err != nil {
+	if err := s.store.DeleteFSNode(ctx, n.ID); err != nil {
 		// 删目录被拒就留审计。
-		_ = s.audit(ctx, &admin.ID, nil, nil, "delete_fs", nodeID.String(), audit.Deny)
+		_ = s.audit(ctx, &adminID, nil, nil, "delete_fs", n.ID.String(), audit.Deny)
 		return err
 	}
 	// 审计没记下则中止，不当这次已经成功。
-	if err := s.audit(ctx, &admin.ID, nil, nil, "delete_fs", nodeID.String(), audit.Allow); err != nil {
+	if err := s.audit(ctx, &adminID, nil, nil, "delete_fs", n.ID.String(), audit.Allow); err != nil {
 		return err
 	}
 	// 通知厂端对齐平台目录。

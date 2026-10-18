@@ -179,6 +179,8 @@ func (s *Assets) ImportLegacy(ctx context.Context, token string, in LegacyImport
 			// 按工程规则取名或核对。
 			name = projectDisplayName(rel)
 		}
+		// 查重前先按字截到资产名上限，免得新建时因超长被拒。
+		name = clipAssetName(name, "")
 		// 整理导入的名字或路径。
 		overwrite, rename := importFileFlags(in, f)
 		// 名字已被本批别的路径占用，按路径另起，不跳过也不覆盖。
@@ -302,8 +304,8 @@ func (p legacyProc) indexKind(row Asset) string {
 
 // importLegacyProcess 按一种作业类型收一份旧工艺，结果记进路径对照和本批结果。
 func (s *Assets) importLegacyProcess(ctx context.Context, token string, book *importBook, idx *pathIndex, out *LegacyImportResult, p legacyProc) {
-	// 原名接上后缀就是这一份的名字，撞名时再改。
-	name := p.base + p.suffix
+	// 原名截短后接上后缀就是这一份的名字，撞名时再改。
+	name := clipAssetName(p.base, p.suffix)
 	// 新建时用的作业类型，本批没人引用就按单层。
 	create := p.kind
 	// 没有工程引用的工艺新建时按单层。
@@ -673,8 +675,8 @@ func (b *importBook) batchFreeName(kind, name, rel, suffix string) string {
 	}
 	// 仍被本批占用就加序号，直到找出本批没用过的。
 	for i := 2; i < 1000; i++ {
-		// 加上序号再试一次。
-		n := name + " (" + strconv.Itoa(i) + ")"
+		// 原名先截短再加序号，整名不超过资产名上限。
+		n := clipAssetName(name, " ("+strconv.Itoa(i)+")")
 		// 本批没用过这个名字就用它。
 		if !b.takenByBatch(kind, n) {
 			return n
@@ -716,12 +718,14 @@ func (b *importBook) sameContent(name, rel, want string, sums [][]byte) (Asset, 
 
 // importCandidates 按路径名、原名、作业类型后缀排出候选名，去重。
 func importCandidates(name, rel, want string) []string {
-	// 路径名在前，同名不同路径时先认自己那条。
-	bases := []string{strings.TrimSpace(legacyPathLabel(rel)), name}
+	// 去掉扩展名的相对路径，拿来排第一个候选。
+	label := strings.TrimSpace(legacyPathLabel(rel))
+	// 路径名在前，同名不同路径时先认自己那条；都按入库时截短的写法比。
+	bases := []string{clipAssetName(label, ""), clipAssetName(name, "")}
 	// 非单层时再加带作业类型后缀的写法。
 	if suffix := weldKindSuffix(want); suffix != "" {
-		// 两个名字各加一份后缀。
-		bases = append(bases, bases[0]+suffix, name+suffix)
+		// 两个名字各截短后加一份后缀，和新建时写法一样。
+		bases = append(bases, clipAssetName(label, suffix), clipAssetName(name, suffix))
 	}
 	// 去掉空名和重复，排位保持原来的先后。
 	out := make([]string, 0, len(bases))
@@ -749,10 +753,15 @@ func candidateRank(cands []string, name string) int {
 	if m == nil {
 		return -1
 	}
+	// 末尾的「 (序号)」，候选按另起名的写法接上它再比。
+	tail := name[len(m[1]):]
 	// 带序号的变体排在所有原写法之后。
-	if i := slices.Index(cands, m[1]); i >= 0 {
-		// 排位加上原写法的个数。
-		return len(cands) + i
+	for i, c := range cands {
+		// 候选截短后加序号对上了，就算这个候选的变体。
+		if clipAssetName(c, tail) == name {
+			// 排位加上原写法的个数。
+			return len(cands) + i
+		}
 	}
 	return -1
 }
@@ -1431,8 +1440,9 @@ func uniqueImportName(names map[string]Asset, kind, name, rel, suffix string) st
 	}
 	// 从二开始加序号，直到这个名字还没占用。
 	for i := 2; i < 1000; i++ {
-		// 把序号收成文本。
-		n := name + " (" + strconv.Itoa(i) + ")"
+		// 原名先截短再加序号，整名不超过资产名上限。
+		n := clipAssetName(name, " ("+strconv.Itoa(i)+")")
+		// 库里和本批都没用过这个名字就用它。
 		if _, ok := names[importNameKey(kind, n)]; !ok {
 			return n
 		}
@@ -1448,7 +1458,8 @@ func importPathLabel(rel, suffix string) string {
 	if label == "" {
 		return ""
 	}
-	return label + suffix
+	// 路径名太长就截短，后缀完整保留，免得新建时因超长被拒。
+	return clipAssetName(label, suffix)
 }
 
 // legacyPathLabel 用去掉后缀的相对路径当新名；多层工程另标一层。

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"wmesh/global/internal/platform/domain"
@@ -215,5 +216,110 @@ func TestCreatePlatformProcessCopyable(t *testing.T) {
 	if err != nil || tight.Copyable || tight.Revision != 1 {
 		// 不符即停：新建平台工艺「密焊」失败或竟可复制。
 		t.Fatalf("%+v %v", tight, err)
+	}
+}
+
+// 新建、改名、另存的显示名先去首尾空白，空名和超过 64 字一律拒绝。
+func TestPlatformAssetNameRules(t *testing.T) {
+	// 准备本测上下文，没有它库和服务都开不了。
+	ctx := context.Background()
+	// 起云端库和服务，起不来整段验收作废。
+	h := New(t)
+	// 立云端超管失败就停，立不住后面没有人能登录。
+	if err := h.WAN.BootstrapAdmin(ctx, "w", "wan-secret"); err != nil {
+		// 不符即停：立云端超管失败。
+		t.Fatal(err)
+	}
+	// 登录拿会话，没有票后面接口都进不去。
+	tok, err := h.WAN.Login(ctx, "w", "wan-secret")
+	// 登录拿会话失败就停，没有票后面接口都进不去。
+	if err != nil {
+		// 不符即停：登录拿会话失败。
+		t.Fatal(err)
+	}
+	// 准备工艺正文样本，新建都用它。
+	body := []byte(`{"name":"p"}`)
+	// 准备工程正文样本，新建工程都用它。
+	projBody := []byte(`[{"name":"焊道"}]`)
+	// 新建工艺名字带首尾空白，入库应只留中间的字。
+	proc, err := h.WAN.CreatePlatformProcess(ctx, tok, "  焊A  ", body)
+	// 新建失败或名字没去空白就停，不能当通过。
+	if err != nil || proc.Name != "焊A" {
+		// 不符即停：名字应收成「焊A」。
+		t.Fatalf("trim %+v %v", proc, err)
+	}
+	// 正好 64 个字在上限上，应当能建成。
+	edge := strings.Repeat("焊", 64)
+	// 新建上限长度的工艺，建不成说明上限算错了。
+	long, err := h.WAN.CreatePlatformProcess(ctx, tok, edge, body)
+	// 新建失败或名字被改就停，不能当通过。
+	if err != nil || long.Name != edge {
+		// 不符即停：64 字的名字应原样建成。
+		t.Fatalf("edge %+v %v", long, err)
+	}
+	// 新建工程名字带首尾空白，入库应只留中间的字。
+	proj, err := h.WAN.CreatePlatformProject(ctx, tok, " 焊工程 ", projBody, nil)
+	// 新建失败或名字没去空白就停，不能当通过。
+	if err != nil || proj.Name != "焊工程" {
+		// 不符即停：名字应收成「焊工程」。
+		t.Fatalf("project trim %+v %v", proj, err)
+	}
+	// 全空格和 65 个字都是坏名字，四种操作都该拒绝。
+	for _, bad := range []string{"   ", strings.Repeat("焊", 65)} {
+		// 新建工艺用坏名字应被拒为名称不合法。
+		if _, err := h.WAN.CreatePlatformProcess(ctx, tok, bad, body); !errors.Is(err, domain.ErrInvalidName) {
+			// 不符即停：新建工艺没拦住坏名字。
+			t.Fatalf("create process %q: %v", bad, err)
+		}
+		// 新建工程用坏名字应被拒为名称不合法。
+		if _, err := h.WAN.CreatePlatformProject(ctx, tok, bad, projBody, nil); !errors.Is(err, domain.ErrInvalidName) {
+			// 不符即停：新建工程没拦住坏名字。
+			t.Fatalf("create project %q: %v", bad, err)
+		}
+		// 改名用坏名字应被拒为名称不合法。
+		if _, err := h.WAN.RenamePlatformAsset(ctx, tok, proc.ID, proc.Revision, bad); !errors.Is(err, domain.ErrInvalidName) {
+			// 不符即停：改名没拦住坏名字。
+			t.Fatalf("rename %q: %v", bad, err)
+		}
+		// 另存用坏名字应被拒为名称不合法。
+		if _, err := h.WAN.CopyPlatformProcess(ctx, tok, proc.ID, bad); !errors.Is(err, domain.ErrInvalidName) {
+			// 不符即停：另存没拦住坏名字。
+			t.Fatalf("copy %q: %v", bad, err)
+		}
+	}
+	// 改名被拒后重读资产，名字和修订都该原样。
+	still, err := h.WAN.GetPlatformAsset(ctx, tok, proc.ID)
+	// 读取失败或名字、修订变了就停，不能当通过。
+	if err != nil || still.Name != "焊A" || still.Revision != proc.Revision {
+		// 不符即停：被拒的改名不该动资产。
+		t.Fatalf("after reject %+v %v", still, err)
+	}
+	// 按资产找目录文件，看文件名有没有被改。
+	file, err := h.WAN.Store().FSFileByAsset(ctx, proc.ID)
+	// 找不到文件或文件名不是原名就停，不能当通过。
+	if err != nil || file.Name != "焊A" {
+		// 不符即停：被拒的改名不该动目录文件名。
+		t.Fatalf("file after reject %+v %v", file, err)
+	}
+	// 改名带首尾空白，应收成中间的字。
+	ren, err := h.WAN.RenamePlatformAsset(ctx, tok, proc.ID, proc.Revision, "  焊B  ")
+	// 改名失败或名字没去空白就停，不能当通过。
+	if err != nil || ren.Name != "焊B" {
+		// 不符即停：改名应收成「焊B」。
+		t.Fatalf("rename trim %+v %v", ren, err)
+	}
+	// 再找目录文件，文件名应跟着改成去空白后的名字。
+	file, err = h.WAN.Store().FSFileByAsset(ctx, proc.ID)
+	// 找不到文件或文件名没跟上就停，不能当通过。
+	if err != nil || file.Name != "焊B" {
+		// 不符即停：目录文件名应改成「焊B」。
+		t.Fatalf("file after rename %+v %v", file, err)
+	}
+	// 另存名字带首尾空白，副本应只留中间的字。
+	dup, err := h.WAN.CopyPlatformProcess(ctx, tok, proc.ID, " 焊C ")
+	// 另存失败或名字没去空白就停，不能当通过。
+	if err != nil || dup.Name != "焊C" {
+		// 不符即停：副本名应收成「焊C」。
+		t.Fatalf("copy trim %+v %v", dup, err)
 	}
 }

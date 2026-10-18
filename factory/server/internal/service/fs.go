@@ -295,7 +295,7 @@ func (s *Assets) CopyFSNode(ctx context.Context, token string, nodeID, destID uu
 		return FSNode{}, err
 	}
 	// 不能粘到这里则记拒绝，原件保持不动。
-	if err := canCopyFSInto(src, dest); err != nil {
+	if err := canCopyFSInto(acc.ID, src, dest); err != nil {
 		// 复制被拒时补记审计，原件保持不动。
 		_ = s.audit(ctx, &acc.ID, nil, "copy_fs", nodeID.String(), audit.Deny)
 		return FSNode{}, err
@@ -306,10 +306,21 @@ func (s *Assets) CopyFSNode(ctx context.Context, token string, nodeID, destID uu
 		_ = s.audit(ctx, &acc.ID, nil, "copy_fs", nodeID.String(), audit.Deny)
 		return FSNode{}, domain.ErrCycle
 	}
+	// 先只读走一遍整棵子树，有一件不能复制就整体拒绝。
+	if err := s.precheckFSCopy(ctx, acc, src); err != nil {
+		// 复制被拒时补记审计，原件保持不动。
+		_ = s.audit(ctx, &acc.ID, nil, "copy_fs", nodeID.String(), audit.Deny)
+		return FSNode{}, err
+	}
 	// 递归复制到目标文件夹，原件不动。
 	row, err := s.copyFSInto(ctx, token, src, dest)
-	// 复制失败则记拒绝。
+	// 复制失败则删掉本次新建的顶层节点，再记拒绝。
 	if err != nil {
+		// 已建出顶层文件夹才回收，尽量不留半截。
+		if row.ID != uuid.Nil {
+			// 回收失败也返回原来的错误，不盖住真因。
+			_ = s.DeleteFSNode(ctx, token, row.ID)
+		}
 		// 复制被拒时补记审计，原件保持不动。
 		_ = s.audit(ctx, &acc.ID, nil, "copy_fs", nodeID.String(), audit.Deny)
 		return FSNode{}, err
@@ -321,7 +332,40 @@ func (s *Assets) CopyFSNode(ctx context.Context, token string, nodeID, destID uu
 	return row, nil
 }
 
-// copyFSInto 递归复制到目标文件夹。
+// precheckFSCopy 只读走一遍子树，每个文件按另存工艺的口径核，不建任何东西。
+func (s *Assets) precheckFSCopy(ctx context.Context, acc Account, n FSNode) error {
+	// 文件夹本身不用核，逐个看下级。
+	if n.NodeKind == store.FSNodeFolder {
+		// 读出下级，准备逐个核对。
+		kids, err := s.store.ListFSChildren(ctx, n.ID)
+		// 下级读失败则不敢放行，整体拒绝。
+		if err != nil {
+			return err
+		}
+		// 下级逐个往下核，一个不过就整体拒绝。
+		for _, k := range kids {
+			// 这一支有不能复制的就停，什么都不建。
+			if err := s.precheckFSCopy(ctx, acc, k); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	// 文件节点没有资产则无法复制。
+	if n.AssetID == nil {
+		return domain.ErrNotFound
+	}
+	// 只读元数据核状态，正文留到真复制时再验摘要。
+	a, err := s.loadAnyMeta(ctx, *n.AssetID)
+	// 资产读不到则整体拒绝。
+	if err != nil {
+		return err
+	}
+	// 和单件另存同一口径，免得两边松紧不一。
+	return s.canCopyProcess(ctx, acc, a)
+}
+
+// copyFSInto 递归复制到目标文件夹；出错时返回已建出的文件夹，由调用方回收。
 func (s *Assets) copyFSInto(ctx context.Context, token string, src, dest FSNode) (FSNode, error) {
 	// 目标下不撞名，占用了就加副本字样。
 	name, err := s.uniqueFSName(ctx, dest.ID, src.Name)
@@ -339,15 +383,15 @@ func (s *Assets) copyFSInto(ctx context.Context, token string, src, dest FSNode)
 		}
 		// 读出下级，准备递归复制或删除。
 		kids, err := s.store.ListFSChildren(ctx, src.ID)
-		// 下级读失败则停在这里，不继续递归。
+		// 下级读失败则交回已建的文件夹，好让调用方删掉。
 		if err != nil {
-			return FSNode{}, err
+			return folder, err
 		}
 		// 文件夹的下级继续复制，一个失败就停下。
 		for _, k := range kids {
-			// 复制失败则记拒绝。
+			// 下级失败则交回这层文件夹，连同已复制的一起回收。
 			if _, err := s.copyFSInto(ctx, token, k, folder); err != nil {
-				return FSNode{}, err
+				return folder, err
 			}
 		}
 		return folder, nil
@@ -364,8 +408,10 @@ func (s *Assets) copyFSInto(ctx context.Context, token string, src, dest FSNode)
 	}
 	// 按资产找到它的文件节点。
 	file, err := s.store.FSFileByAsset(ctx, copied.ID)
-	// 文件节点找不到则不能摆放或移动。
+	// 文件节点找不到则删掉刚建的副本，再停下。
 	if err != nil {
+		// 副本可能不在目标下，这里自己回收，失败不盖住真因。
+		_ = s.DeleteAsset(ctx, token, copied.ID)
 		return FSNode{}, err
 	}
 	// 新文件已经在目标下就不用再搬。
@@ -373,7 +419,14 @@ func (s *Assets) copyFSInto(ctx context.Context, token string, src, dest FSNode)
 		return file, nil
 	}
 	// 新文件若没落在目标下，再挂过去。
-	return s.MoveAssetInto(ctx, token, copied.ID, dest.ID)
+	moved, err := s.MoveAssetInto(ctx, token, copied.ID, dest.ID)
+	// 挂不过去则删掉留在别处的副本，免得多出一份。
+	if err != nil {
+		// 回收失败也返回原来的错误，不盖住真因。
+		_ = s.DeleteAsset(ctx, token, copied.ID)
+		return FSNode{}, err
+	}
+	return moved, nil
 }
 
 // uniqueFSName 目标文件夹下不撞名；已占用则加「副本」。
@@ -419,14 +472,22 @@ func (s *Assets) uniqueFSName(ctx context.Context, parentID uuid.UUID, wanted st
 	return "", domain.ErrDuplicateName
 }
 
-// canCopyFSInto 同树可粘贴；平台副本可粘进本厂厂级。
-func canCopyFSInto(src, dest FSNode) error {
+// canCopyFSInto 只限工艺树、个人树只许主人贴：同树可粘贴；平台副本可粘进本厂厂级。
+func canCopyFSInto(personID uuid.UUID, src, dest FSNode) error {
 	// 只能粘进文件夹，根节点本身不能当源。
 	if dest.NodeKind != store.FSNodeFolder || src.ParentID == nil {
 		return domain.ErrForbidden
 	}
+	// 副本总建在当前人名下，别人的个人树贴不进去，先拒免得留草稿。
+	if dest.TreeLevel == store.FSTreePersonal && (dest.OwnerID == nil || *dest.OwnerID != personID) {
+		return domain.ErrForbidden
+	}
 	// 工艺和工程不能贴到对方的树上。
 	if dest.AssetKind != src.AssetKind {
+		return domain.ErrForbidden
+	}
+	// 工程树没有另存入口，复制一律拒绝，免得留下空文件夹。
+	if dest.AssetKind != KindProcess {
 		return domain.ErrForbidden
 	}
 	// 同一棵树可以直接粘贴。
@@ -489,7 +550,7 @@ func destInside(ctx context.Context, st *Store, srcID, destID uuid.UUID) bool {
 	return false
 }
 
-// DeleteFSNode 删文件夹（可递归）或本厂原件文件；平台级副本不能从目录删。
+// DeleteFSNode 删文件夹（先整体预检再递归）或本厂原件文件；平台级副本不能从目录删。
 func (s *Assets) DeleteFSNode(ctx context.Context, token string, nodeID uuid.UUID) error {
 	// 核对登录仍有效，后面的操作都靠这次会话。
 	acc, err := s.RequireActive(ctx, token)
@@ -523,6 +584,72 @@ func (s *Assets) DeleteFSNode(ctx context.Context, token string, nodeID uuid.UUI
 		_ = s.audit(ctx, &acc.ID, nil, "delete_fs", nodeID.String(), audit.Deny)
 		return err
 	}
+	// 删文件夹先只读预检整棵子树，有一件删不了就一个都不删。
+	if n.NodeKind != store.FSNodeFile {
+		// 预检不过就拒绝，免得前面的工艺已被物理删掉。
+		if err := s.checkFSDeletable(ctx, acc, nodeID); err != nil {
+			// 删除被拒时补记审计，节点先留着。
+			_ = s.audit(ctx, &acc.ID, nil, "delete_fs", nodeID.String(), audit.Deny)
+			return err
+		}
+	}
+	// 预检已过，按原顺序递归删掉这一支。
+	return s.deleteFSTree(ctx, token, acc, n)
+}
+
+// checkFSDeletable 只读递归查文件夹下每个文件：缺资产、读不到、无权或仍被引用都算不过。
+func (s *Assets) checkFSDeletable(ctx context.Context, acc Account, folderID uuid.UUID) error {
+	// 读出直接下级，逐个往下查。
+	kids, err := s.store.ListFSChildren(ctx, folderID)
+	// 下级读失败则不敢放行，整体拒绝。
+	if err != nil {
+		return err
+	}
+	// 逐个下级预检，一个不过就整体拒绝。
+	for _, k := range kids {
+		// 子文件夹往下递归，里面的文件同样要查。
+		if k.NodeKind != store.FSNodeFile {
+			// 下层有一个不过就停，整体都不删。
+			if err := s.checkFSDeletable(ctx, acc, k.ID); err != nil {
+				return err
+			}
+			// 文件夹本身没有资产，查完下层就看下一个。
+			continue
+		}
+		// 文件节点缺资产就算不过，和单删文件同一口径。
+		if k.AssetID == nil {
+			return domain.ErrNotFound
+		}
+		// 读本厂原件元数据，读不到就删不了。
+		cur, err := s.loadCheckedMeta(ctx, *k.AssetID)
+		// 元数据读不到则整体拒绝。
+		if err != nil {
+			return err
+		}
+		// 没有制作权则整体拒绝，和单删资产同一口径。
+		if err := s.canAuthorFactory(ctx, acc, cur.OrgUnitID); err != nil {
+			return err
+		}
+		// 个人级不是创建人也不是管理员则整体拒绝。
+		if err := s.canTouchPersonal(ctx, acc, cur); err != nil {
+			return err
+		}
+		// 查是否仍被工程钉着。
+		used, err := s.store.AssetIsReferenced(ctx, *k.AssetID)
+		// 引用关系查不清则先不删。
+		if err != nil {
+			return err
+		}
+		// 仍被工程钉着就整体拒绝。
+		if used {
+			return domain.ErrReferenced
+		}
+	}
+	return nil
+}
+
+// deleteFSTree 递归删节点：文件走删资产，文件夹删空下级后删自己并记审计。
+func (s *Assets) deleteFSTree(ctx context.Context, token string, acc Account, n FSNode) error {
 	// 文件改走资产删除，仍被引用则拒绝。
 	if n.NodeKind == store.FSNodeFile {
 		// 文件节点没有资产则无法删除。
@@ -532,8 +659,8 @@ func (s *Assets) DeleteFSNode(ctx context.Context, token string, nodeID uuid.UUI
 		// 文件节点改走资产删除，仍被引用则拒绝。
 		return s.DeleteAsset(ctx, token, *n.AssetID)
 	}
-	// 读出下级，准备递归复制或删除。
-	kids, err := s.store.ListFSChildren(ctx, nodeID)
+	// 读出下级，准备逐个递归删除。
+	kids, err := s.store.ListFSChildren(ctx, n.ID)
 	// 下级读失败则停在这里，不继续递归。
 	if err != nil {
 		return err
@@ -541,18 +668,18 @@ func (s *Assets) DeleteFSNode(ctx context.Context, token string, nodeID uuid.UUI
 	// 先递归删下级，一个失败就停。
 	for _, k := range kids {
 		// 下级删失败则停，避免留下半截树。
-		if err := s.DeleteFSNode(ctx, token, k.ID); err != nil {
+		if err := s.deleteFSTree(ctx, token, acc, k); err != nil {
 			return err
 		}
 	}
 	// 失败则记拒绝并停下，不继续往下改。
-	if err := s.store.DeleteFSNode(ctx, nodeID); err != nil {
+	if err := s.store.DeleteFSNode(ctx, n.ID); err != nil {
 		// 删除被拒时补记审计，节点先留着。
-		_ = s.audit(ctx, &acc.ID, nil, "delete_fs", nodeID.String(), audit.Deny)
+		_ = s.audit(ctx, &acc.ID, nil, "delete_fs", n.ID.String(), audit.Deny)
 		return err
 	}
 	// 删掉之后记成功；审计失败则调用方当没删成。
-	return s.audit(ctx, &acc.ID, nil, "delete_fs", nodeID.String(), audit.Allow)
+	return s.audit(ctx, &acc.ID, nil, "delete_fs", n.ID.String(), audit.Allow)
 }
 
 // isComputerAdmin 工厂超管或整厂组织管理员，可看见别人的个人树。

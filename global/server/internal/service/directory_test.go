@@ -185,3 +185,80 @@ func TestFactoryLifecycle(t *testing.T) {
 		t.Fatalf("key after delete: %v", err)
 	}
 }
+
+// 验只有停用转回有效才踢会话，逼厂端重拉全量补齐撤回。
+func TestEnableFactoryDropsSession(t *testing.T) {
+	// 准备本测上下文，没有它库和服务都开不了。
+	ctx := context.Background()
+	// 起云端库和服务，起不来整段验收作废。
+	h := New(t)
+	// 立云端超管失败就停，立不住后面没有人能登录。
+	if err := h.WAN.BootstrapAdmin(ctx, "w", "wan-secret"); err != nil {
+		// 不符即停：立云端超管失败。
+		t.Fatal(err)
+	}
+	// 登录拿会话，没有票后面接口都进不去。
+	tok, err := h.WAN.Login(ctx, "w", "wan-secret")
+	// 登录拿会话失败就停，没有票后面接口都进不去。
+	if err != nil {
+		// 不符即停：登录拿会话失败。
+		t.Fatal(err)
+	}
+	// 登记工厂「厂A」，建不成后面没有厂可停用。
+	a, err := h.WAN.CreateFactory(ctx, tok, "厂A", "sa-a", "超管A")
+	// 登记工厂「厂A」失败就停，建不成后面没有厂可停用。
+	if err != nil {
+		// 不符即停：登记工厂「厂A」失败。
+		t.Fatal(err)
+	}
+	// 准备记录总线，后面核对踢了哪一厂几次。
+	bus := &recordBus{}
+	// 换上记录总线，后面才能核对踢会话。
+	h.WAN.SetBus(bus)
+
+	// 对已经有效的厂再启用，状态没变不该踢。
+	if _, err := h.WAN.EnableFactory(ctx, tok, a.Factory.ID); err != nil {
+		// 不符即停：重复启用失败。
+		t.Fatal(err)
+	}
+	// 重复启用就踢了会话，说明没按原状态判断。
+	if len(bus.drops) != 0 {
+		// 不符即停：重复启用不该踢会话。
+		t.Fatalf("enable active dropped %+v", bus.drops)
+	}
+	// 停用工厂，停用失败后面没有可启用的厂。
+	if _, err := h.WAN.DisableFactory(ctx, tok, a.Factory.ID); err != nil {
+		// 不符即停：停用工厂失败。
+		t.Fatal(err)
+	}
+	// 再停用一次，重复停用同样不该踢。
+	if _, err := h.WAN.DisableFactory(ctx, tok, a.Factory.ID); err != nil {
+		// 不符即停：重复停用失败。
+		t.Fatal(err)
+	}
+	// 停用时踢了会话就停，停用只推状态不踢。
+	if len(bus.drops) != 0 {
+		// 不符即停：停用不该踢会话。
+		t.Fatalf("disable dropped %+v", bus.drops)
+	}
+	// 停用后启用，这一次要踢会话逼厂端重拉。
+	if _, err := h.WAN.EnableFactory(ctx, tok, a.Factory.ID); err != nil {
+		// 不符即停：启用工厂失败。
+		t.Fatal(err)
+	}
+	// 没踢或踢错厂就停，停用期间的撤回补不回来。
+	if len(bus.drops) != 1 || bus.drops[0] != a.Factory.ID {
+		// 不符即停：停用转有效应恰好踢该厂一次。
+		t.Fatalf("enable after disable dropped %+v", bus.drops)
+	}
+	// 启用后再启用一次，已经有效就不该再踢。
+	if _, err := h.WAN.EnableFactory(ctx, tok, a.Factory.ID); err != nil {
+		// 不符即停：重复启用失败。
+		t.Fatal(err)
+	}
+	// 多踢一次就停，重复启用不该再断厂端通道。
+	if len(bus.drops) != 1 {
+		// 不符即停：重复启用多踢了会话。
+		t.Fatalf("repeat enable dropped %+v", bus.drops)
+	}
+}

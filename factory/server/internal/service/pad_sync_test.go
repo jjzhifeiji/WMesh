@@ -11,7 +11,9 @@ import (
 
 	"wmesh/factory/internal/platform/audit"
 	"wmesh/factory/internal/platform/contentcrypt"
+	"wmesh/factory/internal/platform/digest"
 	"wmesh/factory/internal/platform/domain"
+	"wmesh/factory/internal/platform/id"
 	factory "wmesh/factory/internal/service"
 )
 
@@ -385,6 +387,191 @@ func TestPadPinnedPersonalProcess(t *testing.T) {
 	padSyncPullAll(t, ctx, fac, oaSess.Token, oaBox)
 	// 创建人清单里的每一条都应拉得到。
 	padSyncPullAll(t, ctx, fac, peSess.Token, peBox)
+}
+
+// 云端停用并撤回的平台工艺：厂级工程钉住的仍按钉死修订给示教器，没人钉的不给。
+func TestPadPinnedPlatformProcess(t *testing.T) {
+	// 准备无取消的上下文，后面每次调用都挂在上面。
+	ctx := context.Background()
+	// 拉起隔离厂库，起不来说明测试库还没就绪。
+	h := New(t)
+	// 建厂并签发超管激活码，失败则没有厂可测。
+	seed, fac, err := h.Provision(ctx, "sa", "超管")
+	// 建厂失败就停，否则后面没有可靠结果。
+	if err != nil {
+		// 把建厂的错误打出来并停住，避免继续往下验。
+		t.Fatal(err)
+	}
+	// 开通失败就停，否则后面没有可靠结果。
+	if err := fac.Activate(ctx, "sa", seed.ActivationToken, "sa-pass"); err != nil {
+		// 把开通的错误打出来并停住，避免继续往下验。
+		t.Fatal(err)
+	}
+	// 登录并取出令牌，失败说明账号没有开通成功。
+	sa := mustLogin(t, ctx, fac, "sa", "sa-pass")
+	// 整厂操作员，用来建厂级工程并在示教器上拉。
+	op := mustCreateRole(t, ctx, fac, sa, "op", "op-pass", factory.RoleOperator, factory.ScopeFactory, nil)
+	// 记下本厂标识，下发的快照要指到这家厂。
+	fid := seed.ID
+
+	// 平台工艺 P 第一修订的正文，钉死后拿它对照。
+	pBody := []byte(`{"current":150}`)
+	// 组一份可用的平台工艺 P，后面被工程钉住。
+	p := factory.ClosureMember{
+		ID: id.New(), Kind: factory.KindProcess, Level: factory.AssetLevelPlatform, Name: "平台工艺",
+		Status: factory.AssetAvailable, Revision: 1, Content: pBody, Digest: digest.Sum(pBody),
+	}
+	// 收平台稿失败就停，否则后面没有可靠结果。
+	if err := fac.AcceptPlatformDelivery(ctx, sealSnap(factory.KindProcess, p, nil, &fid, nil)); err != nil {
+		// 把收平台稿的错误打出来并停住，避免继续往下验。
+		t.Fatal(err)
+	}
+	// 平台工艺 Q 的正文，没有工程钉它。
+	qBody := []byte(`{"current":120}`)
+	// 组一份可用的平台工艺 Q，用来对照没人钉的情形。
+	q := factory.ClosureMember{
+		ID: id.New(), Kind: factory.KindProcess, Level: factory.AssetLevelPlatform, Name: "没人钉的平台工艺",
+		Status: factory.AssetAvailable, Revision: 1, Content: qBody, Digest: digest.Sum(qBody),
+	}
+	// 收平台稿失败就停，否则后面没有可靠结果。
+	if err := fac.AcceptPlatformDelivery(ctx, sealSnap(factory.KindProcess, q, nil, &fid, nil)); err != nil {
+		// 把收平台稿的错误打出来并停住，避免继续往下验。
+		t.Fatal(err)
+	}
+
+	// 标明直接作业上下文，后面新建资产都挂在这里。
+	direct := factory.WorkContext{Direct: true}
+	// 工程正文引用平台工艺 P，建工程时据此钉依赖。
+	body := []byte(`[{"name":"w","processId":"` + p.ID.String() + `"}]`)
+	// op 建一份厂级工程钉住 P，失败说明起草入口坏了。
+	proj, err := fac.CreateFactoryProject(ctx, op.tok, direct, "钉平台工艺的工程", body, nil)
+	// 建工程失败就停，否则后面没有可靠结果。
+	if err != nil {
+		// 把建工程的错误打出来并停住，避免继续往下验。
+		t.Fatal(err)
+	}
+	// 依赖应正好钉在 P 的第一修订，没钉上则后面断言不成立。
+	if len(proj.Deps) != 1 || proj.Deps[0].ID != p.ID || proj.Deps[0].Revision != 1 || !bytes.Equal(proj.Deps[0].Digest, p.Digest) {
+		// 依赖没钉上这份平台工艺，用例前提不成立。
+		t.Fatalf("deps %+v", proj.Deps)
+	}
+	// 记下钉死的那一条，后面拿来比对修订和摘要。
+	pinned := proj.Deps[0]
+	// 发布当前修订，失败说明状态不允许发布。
+	proj, err = fac.PublishAsset(ctx, op.tok, proj.ID, proj.Revision)
+	// 发布失败就停，否则后面没有可靠结果。
+	if err != nil {
+		// 把发布的错误打出来并停住，避免继续往下验。
+		t.Fatal(err)
+	}
+
+	// 复制 P 准备下发停用修订，正文也换掉。
+	pOff := p
+	// 停用修订号更高，列表就会按它剔掉 P。
+	pOff.Revision = 2
+	// 标成停用，厂端列表不再展示。
+	pOff.Status = factory.AssetDisabled
+	// 换一份正文，免得拉到停用版也能对上摘要。
+	pOff.Content = []byte(`{"current":999}`)
+	// 摘要跟着新正文重算。
+	pOff.Digest = digest.Sum(pOff.Content)
+	// 收平台稿失败就停，否则后面没有可靠结果。
+	if err := fac.AcceptPlatformDelivery(ctx, sealSnap(factory.KindProcess, pOff, nil, &fid, nil)); err != nil {
+		// 把收平台稿的错误打出来并停住，避免继续往下验。
+		t.Fatal(err)
+	}
+	// 复制 Q 准备下发停用修订。
+	qOff := q
+	// 停用修订号更高，列表就会按它剔掉 Q。
+	qOff.Revision = 2
+	// 标成停用，Q 也不再进列表。
+	qOff.Status = factory.AssetDisabled
+	// 收平台稿失败就停，否则后面没有可靠结果。
+	if err := fac.AcceptPlatformDelivery(ctx, sealSnap(factory.KindProcess, qOff, nil, &fid, nil)); err != nil {
+		// 把收平台稿的错误打出来并停住，避免继续往下验。
+		t.Fatal(err)
+	}
+
+	// op 用平板登录，领人钥和会话。
+	sess := padSyncLogin(t, ctx, fac, "op", "op-pass")
+	// 只停用未撤回时，清单里的 P 应是钉死修订。
+	ref, ok := padInboxRef(padSyncInbox(t, ctx, fac, sess.Token), p.ID)
+	// 清单缺了 P 或修订不是钉死那版，示教器就会删掉或拿错。
+	if !ok || ref.Revision != pinned.Revision {
+		// 停用后钉住的 P 没按钉死修订列出。
+		t.Fatalf("disabled pinned ref %+v %v", ref, ok)
+	}
+	// 撤回下发失败就停，否则后面没有可靠结果。
+	if err := fac.RetractPlatformDelivery(ctx, p.ID); err != nil {
+		// 把撤回下发的错误打出来并停住，避免继续往下验。
+		t.Fatal(err)
+	}
+
+	// 撤回后再拉清单，钉住的 P 仍应在。
+	box := padSyncInbox(t, ctx, fac, sess.Token)
+	// 取出清单里 P 的那一条。
+	ref, ok = padInboxRef(box, p.ID)
+	// 清单缺了 P 或修订不是钉死那版，工程在现场就没法焊。
+	if !ok || ref.Revision != pinned.Revision || ref.Level != factory.AssetLevelPlatform {
+		// 撤回后钉住的 P 没按钉死修订列出。
+		t.Fatalf("retracted pinned ref %+v %v", ref, ok)
+	}
+	// 钉住 P 的工程仍应在清单，没人钉的 Q 不应进来。
+	if !padInboxHas(box, proj.ID) || padInboxHas(box, q.ID) {
+		// 工程缺了或停用的 Q 漏进来，说明补列范围写偏了。
+		t.Fatalf("inbox %+v", box.Closures)
+	}
+
+	// 平板拉 P，应拿到钉死修订的过站包。
+	got, err := fac.PadPullClientClosure(ctx, sess.Token, p.ID)
+	// 拉不到、没封信封或种类不对，说明钉住的 P 没放行。
+	if err != nil || !contentcrypt.IsEnvelope(got.Wrap) || got.Snapshot.Kind != factory.KindProcess || got.Snapshot.AssetID != p.ID {
+		// 断言没通过就停，钉住的平台工艺没按预期下发。
+		t.Fatalf("pull pinned %+v %v", got, err)
+	}
+	// 清单里的整包摘要应和拉到的一致，示教器按它对账。
+	if !bytes.Equal(ref.Digest, got.Snapshot.Digest) {
+		// 清单和拉包的摘要对不上，示教器会反复重拉。
+		t.Fatalf("ref digest %x pull %x", ref.Digest, got.Snapshot.Digest)
+	}
+	// 用登录人钥打开过站包。
+	opened, err := factory.OpenTransit(fac.Store().FactoryID(), sess.Account.ID, sess.UnwrapKey, got)
+	// 解不开或成员不止一个，说明封包不对。
+	if err != nil || len(opened.Members) != 1 {
+		// 断言没通过就停，过站包解不开或形状不对。
+		t.Fatalf("open pinned %+v %v", opened, err)
+	}
+	// 取出唯一的工艺成员。
+	m := opened.Members[0]
+	// 身份、修订、摘要和正文都应是钉死的那一版，不是停用版。
+	if m.ID != p.ID || m.Revision != pinned.Revision || !bytes.Equal(m.Digest, pinned.Digest) || !bytes.Equal(m.Content, pBody) {
+		// 拿到的不是钉死修订，说明退回了最新版。
+		t.Fatalf("pinned member %s rev=%d digest=%x content=%s", m.ID, m.Revision, m.Digest, m.Content)
+	}
+	// 成员标成停用，示教器工艺列表才不显示它。
+	if m.Status != factory.AssetDisabled {
+		// 状态没标停用，示教器会把已下架的工艺列出来。
+		t.Fatalf("pinned status %s", m.Status)
+	}
+	// 没人钉的停用平台工艺应按找不到拒绝。
+	if _, err := fac.PadPullClientClosure(ctx, sess.Token, q.ID); !errors.Is(err, domain.ErrNotFound) {
+		// 拉到了或错因不对，说明停用工艺开了口子。
+		t.Fatalf("pull unpinned disabled %v", err)
+	}
+	// 清单里的每一条都应拉得到，免得同步卡在被拒。
+	padSyncPullAll(t, ctx, fac, sess.Token, box)
+}
+
+// 取收件箱里这份资产的那一条，没有就报没找到。
+func padInboxRef(box factory.ClientInbox, assetID uuid.UUID) (factory.ClosureRef, bool) {
+	// 逐条找这份资产，找到即停。
+	for _, r := range box.Closures {
+		// 身份对上就交回这一条。
+		if r.AssetID == assetID {
+			return r, true
+		}
+	}
+	return factory.ClosureRef{}, false
 }
 
 // 看收件箱里有没有这份资产，没有说明名单漏了。

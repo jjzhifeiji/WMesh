@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 
@@ -15,6 +16,35 @@ import (
 	"wmesh/global/internal/platform/domain"
 	"wmesh/global/internal/store"
 )
+
+const assetNameMax = 64 // 资产显示名字数上限，与目录名和前端提示一致
+
+// normalizeAssetName 去掉首尾空白后须 1～64 字，否则按名称不合法拒绝。
+func normalizeAssetName(name string) (string, error) {
+	// 去掉首尾空白，全空格的名字当空名。
+	name = strings.TrimSpace(name)
+	// 按字数看长度，一个汉字算一个字。
+	n := utf8.RuneCountInString(name)
+	// 字数不在允许范围就拒绝，避免空名或超长入库下发。
+	if n < 1 || n > assetNameMax {
+		return "", domain.ErrInvalidName
+	}
+	return name, nil
+}
+
+// clipAssetName 原名按字截短再接上尾巴，整体不超过资产名上限。
+func clipAssetName(name, tail string) string {
+	// 尾巴要完整保留，先算原名还能留几个字。
+	keep := assetNameMax - utf8.RuneCountInString(tail)
+	// 按字切开，免得把一个汉字切成半截。
+	r := []rune(name)
+	// 超出可留字数才截，没超就原样用。
+	if keep >= 0 && len(r) > keep {
+		// 截到可留字数，并去掉截口处的空白。
+		name = strings.TrimSpace(string(r[:keep]))
+	}
+	return name + tail
+}
 
 // 审计对象：身份加修订。
 func assetTarget(id uuid.UUID, rev int64) string {
@@ -69,6 +99,16 @@ func (s *Assets) CreatePlatformProcessWith(ctx context.Context, token, name stri
 		_ = s.audit(ctx, nil, nil, nil, "create_asset", name, audit.Deny)
 		return Asset{}, err
 	}
+	// 名字去掉首尾空白后须 1～64 字，空名或超长不入库。
+	clean, err := normalizeAssetName(name)
+	// 不合法就拒绝，免得空白名下发后和目录对不上。
+	if err != nil {
+		// 建资产被拒就留审计，不写正文。
+		_ = s.audit(ctx, &admin.ID, nil, nil, "create_asset", name, audit.Deny)
+		return Asset{}, err
+	}
+	// 后面入库和审计都用整理过的名字。
+	name = clean
 	// 收成合法值，空或太长不要。
 	content, err = s.normalizeContent(ctx, KindProcess, content)
 	// 不合法就拒绝，避免脏数据入库。
@@ -114,13 +154,13 @@ func (s *Assets) CopyPlatformProcess(ctx context.Context, token string, assetID 
 		_ = s.audit(ctx, nil, nil, nil, "create_asset", assetID.String(), audit.Deny)
 		return Asset{}, err
 	}
-	// 去掉多余空白或前后缀。
-	name = strings.TrimSpace(name)
-	// 空和有值走不同路，避免把空白写进名录。
-	if name == "" {
+	// 名字去掉首尾空白后须 1～64 字，和新建同一口径。
+	name, err = normalizeAssetName(name)
+	// 空名或超长就拒绝，避免把空白写进名录。
+	if err != nil {
 		// 建资产被拒就留审计，不写正文。
 		_ = s.audit(ctx, &admin.ID, nil, nil, "create_asset", assetID.String(), audit.Deny)
-		return Asset{}, domain.ErrInvalidName
+		return Asset{}, err
 	}
 	// 装入并核对摘要。
 	src, err := s.loadChecked(ctx, assetID)
@@ -130,17 +170,11 @@ func (s *Assets) CopyPlatformProcess(ctx context.Context, token string, assetID 
 		_ = s.audit(ctx, &admin.ID, nil, nil, "create_asset", assetID.String(), audit.Deny)
 		return Asset{}, err
 	}
-	// 不是工艺也不是工程就拒绝，别的种类不归这里。
-	if src.Kind != KindProcess && src.Kind != KindProject {
+	// 种类不对或已停用就拒绝，和整夹复制预检同一口径。
+	if err := canCopyPlatform(src); err != nil {
 		// 建资产被拒就留审计，不写正文。
 		_ = s.audit(ctx, &admin.ID, nil, nil, "create_asset", assetTarget(src.ID, src.Revision), audit.Deny)
-		return Asset{}, domain.ErrForbidden
-	}
-	// 停用件不能另存。
-	if src.Status == AssetDisabled {
-		// 建资产被拒就留审计，不写正文。
-		_ = s.audit(ctx, &admin.ID, nil, nil, "create_asset", assetTarget(src.ID, src.Revision), audit.Deny)
-		return Asset{}, domain.ErrAssetNotAvailable
+		return Asset{}, err
 	}
 	// 原件正文与依赖原样落新草稿，不套模版、不写升档来源。
 	row, err := s.store.InsertAsset(ctx, Asset{
@@ -163,6 +197,19 @@ func (s *Assets) CopyPlatformProcess(ctx context.Context, token string, assetID 
 	return stripContent(row), nil
 }
 
+// canCopyPlatform 另存的统一口径：只收工艺或工程，停用拒绝；单件另存和整夹预检共用。
+func canCopyPlatform(src Asset) error {
+	// 不是工艺也不是工程就拒绝，别的种类不归这里。
+	if src.Kind != KindProcess && src.Kind != KindProject {
+		return domain.ErrForbidden
+	}
+	// 停用件不能另存。
+	if src.Status == AssetDisabled {
+		return domain.ErrAssetNotAvailable
+	}
+	return nil
+}
+
 // RenamePlatformAsset 改显示名，身份不变。
 func (s *Assets) RenamePlatformAsset(ctx context.Context, token string, assetID uuid.UUID, expected int64, name string) (Asset, error) {
 	// 改显示名，身份不变；修订不符就拒绝。
@@ -171,7 +218,13 @@ func (s *Assets) RenamePlatformAsset(ctx context.Context, token string, assetID 
 		if cur.Status == AssetDisabled {
 			return store.AssetWrite{}, domain.ErrAssetNotAvailable
 		}
-		return store.AssetWrite{Name: name, Content: cur.Content, Digest: cur.Digest, Copyable: cur.Copyable, Status: cur.Status, Deps: cur.Deps}, nil
+		// 新名去掉首尾空白后须 1～64 字，和新建同一口径。
+		clean, err := normalizeAssetName(name)
+		// 不合法就拒绝，资产名和目录文件名都保持原样。
+		if err != nil {
+			return store.AssetWrite{}, err
+		}
+		return store.AssetWrite{Name: clean, Content: cur.Content, Digest: cur.Digest, Copyable: cur.Copyable, Status: cur.Status, Deps: cur.Deps}, nil
 	})
 }
 
@@ -453,7 +506,7 @@ func (s *Assets) ReadPlatformAssetContent(ctx context.Context, token string, ass
 	return a.Content, nil
 }
 
-// PromoteFromSnapshot 用厂级快照升平台级：第一次复制新身份为草稿；再升摘要和作业类型都相同才跳过，否则覆盖为草稿。原件不进 WAN。
+// PromoteFromSnapshot 用厂级快照升平台级：第一次复制新身份为草稿；再升时目标停用则拒，摘要和作业类型都相同才跳过，否则覆盖为草稿。原件不进 WAN。
 func (s *Assets) PromoteFromSnapshot(ctx context.Context, token string, snap AssetSnapshot) (Asset, error) {
 	// 只有 WAN 管理员能升档。失败一律记拒绝。
 	admin, err := s.RequireAdmin(ctx, token)
@@ -543,6 +596,12 @@ func (s *Assets) PromoteFromSnapshot(ctx context.Context, token string, snap Ass
 	existing, err := s.store.AssetBySourceID(ctx, snap.SourceID)
 	// 没有错误才继续，有错留在后面的分支。
 	if err == nil {
+		// 平台级已停用就拒绝，摘要相同也拒，停用件不得改内容或升档。
+		if existing.Status == AssetDisabled {
+			// 升档被拒就留审计。
+			_ = s.audit(ctx, &admin.ID, nil, &fid, "promote_asset", snap.SourceID.String(), audit.Deny)
+			return Asset{}, domain.ErrAssetNotAvailable
+		}
 		// 摘要和作业类型都相同才不覆盖，避免无谓升高修订。
 		if bytes.Equal(existing.Digest, sum) && existing.WeldKind == weld {
 			// 正文和作业类型未变则幂等返回已有平台级。
@@ -596,7 +655,7 @@ func (s *Assets) PromoteFromSnapshot(ctx context.Context, token string, snap Ass
 	return stripContent(row), nil
 }
 
-// rewritePromoteDeps 把厂级工艺依赖改写成已升档的平台级可用工艺。
+// rewritePromoteDeps 把工程依赖改写成平台级可用工艺：钉的平台工艺原身份重钉，厂级工艺换成已升档的平台级。
 func (s *Assets) rewritePromoteDeps(ctx context.Context, kind string, deps []AssetDep) ([]AssetDep, map[string]string, error) {
 	// 按是不是工程决定要不要核对焊道和依赖。
 	if kind != KindProject {
@@ -608,22 +667,28 @@ func (s *Assets) rewritePromoteDeps(ctx context.Context, kind string, deps []Ass
 	idMap := make(map[string]string, len(deps))
 	// 逐条核对依赖，缺了或类型不同就拒绝。
 	for _, d := range deps {
-		// 依赖须已升成平台级可用工艺。
-		plat, err := s.store.AssetBySourceID(ctx, d.ID)
-		// 摘要或状态不符就拒绝。
+		// 先按身份找：厂级工程可以直接钉已下发的平台工艺。
+		plat, err := s.loadChecked(ctx, d.ID)
+		// 不是平台身份，才当厂级工艺按源身份找升档后的平台级。
+		if errors.Is(err, domain.ErrNotFound) {
+			// 依赖须已升成平台级可用工艺。
+			plat, err = s.store.AssetBySourceID(ctx, d.ID)
+			// 找到了也要核对摘要，对不上当篡改。
+			if err == nil && !digest.Match(plat.Content, plat.Digest) {
+				// 记成损坏，交给下面统一返回。
+				err = domain.ErrIntegrity
+			}
+		}
+		// 两种都没找到或读取出错就停。
 		if err != nil {
-			// 没有这条就按不存在处理，不当成别的故障。
+			// 没有这条就按依赖错配处理，不当成别的故障。
 			if errors.Is(err, domain.ErrNotFound) {
 				return nil, nil, domain.ErrAssetDependency
 			}
 			return nil, nil, err
 		}
-		// 摘要对不上当篡改。
-		if !digest.Match(plat.Content, plat.Digest) {
-			return nil, nil, domain.ErrIntegrity
-		}
-		// 不是可用就拒绝，草稿和停用不能当发布。
-		if plat.Kind != KindProcess || plat.Status != AssetAvailable {
+		// 不是可用的平台工艺就拒绝，草稿和停用不能当发布。
+		if plat.Kind != KindProcess || plat.Level != AssetLevelPlatform || plat.Status != AssetAvailable {
 			return nil, nil, domain.ErrAssetDependency
 		}
 		// 把这一项接进结果。
@@ -644,6 +709,16 @@ func (s *Assets) CreatePlatformProject(ctx context.Context, token, name string, 
 		_ = s.audit(ctx, nil, nil, nil, "create_asset", name, audit.Deny)
 		return Asset{}, err
 	}
+	// 名字去掉首尾空白后须 1～64 字，空名或超长不入库。
+	clean, err := normalizeAssetName(name)
+	// 不合法就拒绝，免得空白名下发后和目录对不上。
+	if err != nil {
+		// 建资产被拒就留审计，不写正文。
+		_ = s.audit(ctx, &admin.ID, nil, nil, "create_asset", name, audit.Deny)
+		return Asset{}, err
+	}
+	// 后面入库和审计都用整理过的名字。
+	name = clean
 	// 收成单层、多层或 T 排。
 	kind, err := store.NormalizeWeldKind(firstWeldKind(weldKind))
 	// 别的写法一律拒绝。

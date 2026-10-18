@@ -489,6 +489,261 @@ func TestPromoteCustomTemplateRefs(t *testing.T) {
 	}
 }
 
+// 厂级工程钉已下发的平台工艺也能升档：平台身份原样保留并重钉当前修订，草稿和停用拒绝。
+func TestPromotePinnedPlatformProcess(t *testing.T) {
+	// 准备本测上下文，没有它库和服务都开不了。
+	ctx := context.Background()
+	// 起云端库和服务，起不来整段验收作废。
+	h := New(t)
+	// 立云端超管失败就停，立不住后面没有人能登录。
+	if err := h.WAN.BootstrapAdmin(ctx, "w", "wan-secret"); err != nil {
+		// 不符即停：立云端超管失败。
+		t.Fatal(err)
+	}
+	// 登录拿会话，没有票后面接口都进不去。
+	tok, err := h.WAN.Login(ctx, "w", "wan-secret")
+	// 登录拿会话失败就停，没有票后面接口都进不去。
+	if err != nil {
+		// 不符即停：登录拿会话失败。
+		t.Fatal(err)
+	}
+	// 登记工厂「厂A」，建不成后面没有厂可升档。
+	fac, err := h.WAN.CreateFactory(ctx, tok, "厂A", "sa-a", "超管A")
+	// 登记工厂「厂A」失败就停，建不成后面没有厂可升档。
+	if err != nil {
+		// 不符即停：登记工厂「厂A」失败。
+		t.Fatal(err)
+	}
+	// 新建平台工艺，厂级工程直接钉它的平台身份。
+	proc, err := h.WAN.CreatePlatformProcess(ctx, tok, "平台工艺", []byte(`{"name":"p","current":180}`))
+	// 新建平台工艺失败就停，没有它就复现不了。
+	if err != nil {
+		// 不符即停：新建平台工艺失败。
+		t.Fatal(err)
+	}
+	// 发布平台工艺，下发到厂的就是这一版。
+	proc, err = h.WAN.PublishPlatformAsset(ctx, tok, proc.ID, proc.Revision)
+	// 发布平台工艺失败就停，发不出去厂里拿不到。
+	if err != nil {
+		// 不符即停：发布平台工艺失败。
+		t.Fatal(err)
+	}
+	// 厂里钉的是下发时的修订和摘要。
+	pinned := global.AssetDep{ID: proc.ID, Revision: proc.Revision, Digest: proc.Digest}
+	// 云端随后改了正文，修订往前走一版。
+	cur, err := h.WAN.UpdatePlatformAssetContent(ctx, tok, proc.ID, proc.Revision, []byte(`{"name":"p","current":200}`))
+	// 改平台工艺正文失败就停，验不了重钉当前修订。
+	if err != nil {
+		// 不符即停：改平台工艺正文失败。
+		t.Fatal(err)
+	}
+	// 按工艺身份拼一条单层焊道正文。
+	weld := func(pid uuid.UUID) []byte {
+		// 焊道直接引用给定的工艺身份。
+		return []byte(`[{"templateId":"` + seedSingleID + `","name":"w","processId":"` + pid.String() + `"}]`)
+	}
+	// 按正文和依赖拼工程升档快照。
+	projSnap := func(name string, body []byte, deps ...global.AssetDep) global.AssetSnapshot {
+		// 源身份每次新造，避免撞上已升过的工程。
+		return global.AssetSnapshot{
+			SourceID: id.New(), SourceRevision: 1, SourceFactoryID: fac.Factory.ID,
+			Kind: global.KindProject, Name: name, Content: body, Digest: digest.Sum(body),
+			Copyable: true, Status: global.AssetAvailable, Deps: deps,
+		}
+	}
+	// 只钉平台工艺的工程正文。
+	body := weld(proc.ID)
+	// 升档工程，修复前这里报依赖错配。
+	got, err := h.WAN.PromoteFromSnapshot(ctx, tok, projSnap("钉平台", body, pinned))
+	// 升档失败就停，说明平台身份仍按源身份去找。
+	if err != nil {
+		// 不符即停：钉平台工艺的工程升档失败。
+		t.Fatal(err)
+	}
+	// 依赖须指向原平台身份和当前修订、摘要。
+	if len(got.Deps) != 1 || got.Deps[0].ID != proc.ID || got.Deps[0].Revision != cur.Revision || !bytes.Equal(got.Deps[0].Digest, cur.Digest) {
+		// 不符即停：依赖没有重钉到当前修订。
+		t.Fatalf("deps %+v want %s rev=%d", got.Deps, proc.ID, cur.Revision)
+	}
+	// 读平台正文，读不到就无法比对。
+	rewritten, err := h.WAN.ReadPlatformAssetContent(ctx, tok, got.ID)
+	// 读平台正文失败或正文变了就停，平台引用不该被改写。
+	if err != nil || !bytes.Equal(rewritten, body) {
+		// 不符即停：正文里的平台引用被改动。
+		t.Fatalf("body %s %v", rewritten, err)
+	}
+
+	// 新造厂级工艺身份，用来验两种依赖混钉。
+	srcProc := id.New()
+	// 准备厂级工艺正文样本，摘要按它算。
+	pbody := []byte(`{"name":"厂工艺","current":160}`)
+	// 先把厂级工艺升成平台级，工程依赖才找得到。
+	plat, err := h.WAN.PromoteFromSnapshot(ctx, tok, global.AssetSnapshot{
+		SourceID: srcProc, SourceRevision: 1, SourceFactoryID: fac.Factory.ID,
+		Kind: global.KindProcess, Name: "厂工艺", Content: pbody, Digest: digest.Sum(pbody),
+		Copyable: true, Status: global.AssetAvailable,
+	})
+	// 升档厂级工艺失败就停，混钉验不了。
+	if err != nil {
+		// 不符即停：升档厂级工艺失败。
+		t.Fatal(err)
+	}
+	// 发布升档出来的平台工艺，草稿不能当依赖。
+	plat, err = h.WAN.PublishPlatformAsset(ctx, tok, plat.ID, plat.Revision)
+	// 发布失败就停，混钉验不了。
+	if err != nil {
+		// 不符即停：发布升档工艺失败。
+		t.Fatal(err)
+	}
+	// 两条焊道，一条钉平台工艺，一条钉厂级工艺。
+	mixed := []byte(`[{"templateId":"` + seedSingleID + `","name":"a","processId":"` + proc.ID.String() + `"},{"templateId":"` + seedSingleID + `","name":"b","processId":"` + srcProc.String() + `"}]`)
+	// 厂级工艺依赖钉的是厂里的源身份。
+	factoryDep := global.AssetDep{ID: srcProc, Revision: 1, Digest: digest.Sum(pbody)}
+	// 升档混钉工程，两条路都要走通。
+	both, err := h.WAN.PromoteFromSnapshot(ctx, tok, projSnap("混钉", mixed, pinned, factoryDep))
+	// 升档失败就停，说明有一条路没走通。
+	if err != nil {
+		// 不符即停：混钉工程升档失败。
+		t.Fatal(err)
+	}
+	// 平台工艺原身份保留，厂级工艺换成升档后的平台身份。
+	if len(both.Deps) != 2 || both.Deps[0].ID != proc.ID || both.Deps[1].ID != plat.ID {
+		// 不符即停：混钉依赖改写不对。
+		t.Fatalf("mixed deps %+v", both.Deps)
+	}
+	// 读混钉工程正文，读不到就无法比对。
+	mixedBody, err := h.WAN.ReadPlatformAssetContent(ctx, tok, both.ID)
+	// 读平台正文失败就停，读不到就无法比对。
+	if err != nil {
+		// 不符即停：读混钉工程正文失败。
+		t.Fatal(err)
+	}
+	// 从焊道收集工艺身份，看引用改得对不对。
+	refs, err := contenttpl.CollectProcessIDsFromItems(contenttpl.SeedProjectItems(), mixedBody)
+	// 收集失败或引用不是平台身份就停。
+	if err != nil || len(refs) != 2 || refs[0] != proc.ID.String() || refs[1] != plat.ID.String() {
+		// 不符即停：混钉正文引用改写不对。
+		t.Fatalf("mixed refs %v %s", refs, mixedBody)
+	}
+
+	// 新建一份只留草稿的平台工艺。
+	draft, err := h.WAN.CreatePlatformProcess(ctx, tok, "草稿工艺", []byte(`{"name":"d","current":170}`))
+	// 新建草稿工艺失败就停，验不了草稿拒绝。
+	if err != nil {
+		// 不符即停：新建草稿工艺失败。
+		t.Fatal(err)
+	}
+	// 钉草稿工艺的工程升档应报依赖错配。
+	if _, err := h.WAN.PromoteFromSnapshot(ctx, tok, projSnap("钉草稿", weld(draft.ID), global.AssetDep{ID: draft.ID, Revision: draft.Revision, Digest: draft.Digest})); !errors.Is(err, domain.ErrAssetDependency) {
+		// 不符即停：钉草稿工艺的工程没被拒。
+		t.Fatalf("draft promote %v", err)
+	}
+	// 新建一份之后会停用的平台工艺。
+	off, err := h.WAN.CreatePlatformProcess(ctx, tok, "停用工艺", []byte(`{"name":"o","current":190}`))
+	// 新建失败就停，验不了停用拒绝。
+	if err != nil {
+		// 不符即停：新建待停用工艺失败。
+		t.Fatal(err)
+	}
+	// 先发布，只有可用才能停用。
+	off, err = h.WAN.PublishPlatformAsset(ctx, tok, off.ID, off.Revision)
+	// 发布失败就停，停用不了。
+	if err != nil {
+		// 不符即停：发布待停用工艺失败。
+		t.Fatal(err)
+	}
+	// 厂里钉的是停用前的可用版。
+	offDep := global.AssetDep{ID: off.ID, Revision: off.Revision, Digest: off.Digest}
+	// 停用平台工艺，之后不能再当依赖。
+	if _, err := h.WAN.DisablePlatformAsset(ctx, tok, off.ID, off.Revision); err != nil {
+		// 不符即停：停用平台工艺失败。
+		t.Fatal(err)
+	}
+	// 钉已停用工艺的工程升档应报依赖错配。
+	if _, err := h.WAN.PromoteFromSnapshot(ctx, tok, projSnap("钉停用", weld(off.ID), offDep)); !errors.Is(err, domain.ErrAssetDependency) {
+		// 不符即停：钉停用工艺的工程没被拒。
+		t.Fatalf("disabled promote %v", err)
+	}
+}
+
+// 平台级目标已停用时再升档必须被拒，不能被源悄悄改回草稿。
+func TestPromoteDisabledTargetRejected(t *testing.T) {
+	// 准备本测上下文，没有它库和服务都开不了。
+	ctx := context.Background()
+	// 起云端库和服务，起不来整段验收作废。
+	h := New(t)
+	// 立云端超管失败就停，立不住后面没有人能登录。
+	if err := h.WAN.BootstrapAdmin(ctx, "w", "wan-secret"); err != nil {
+		// 不符即停：立云端超管失败。
+		t.Fatal(err)
+	}
+	// 登录拿会话，没有票后面接口都进不去。
+	tok, err := h.WAN.Login(ctx, "w", "wan-secret")
+	// 登录拿会话失败就停，没有票后面接口都进不去。
+	if err != nil {
+		// 不符即停：登录拿会话失败。
+		t.Fatal(err)
+	}
+	// 登记工厂「厂A」，建不成后面没有厂可升档。
+	fac, err := h.WAN.CreateFactory(ctx, tok, "厂A", "sa-a", "超管A")
+	// 登记工厂「厂A」失败就停，建不成后面没有厂可升档。
+	if err != nil {
+		// 不符即停：登记工厂「厂A」失败。
+		t.Fatal(err)
+	}
+	// 厂级源身份固定，两次升档都指向同一条平台级。
+	srcID := id.New()
+	// 按正文和修订拼厂级工艺快照。
+	procSnap := func(rev int64, body []byte) global.AssetSnapshot {
+		// 源身份不变，只换修订和正文。
+		return global.AssetSnapshot{
+			SourceID: srcID, SourceRevision: rev, SourceFactoryID: fac.Factory.ID,
+			Kind: global.KindProcess, Name: "厂工艺", Content: body, Digest: digest.Sum(body),
+			Copyable: true, Status: global.AssetAvailable,
+		}
+	}
+	// 第一版正文，第一次升档用它。
+	first := []byte(`{"name":"厂工艺","current":150}`)
+	// 第一次升档落成平台级草稿。
+	plat, err := h.WAN.PromoteFromSnapshot(ctx, tok, procSnap(1, first))
+	// 第一次升档失败就停，没有目标验不了停用。
+	if err != nil {
+		// 不符即停：第一次升档失败。
+		t.Fatal(err)
+	}
+	// 先发布，只有可用才能停用。
+	plat, err = h.WAN.PublishPlatformAsset(ctx, tok, plat.ID, plat.Revision)
+	// 发布失败就停，停用不了。
+	if err != nil {
+		// 不符即停：发布平台工艺失败。
+		t.Fatal(err)
+	}
+	// 管理员停用这条平台级。
+	off, err := h.WAN.DisablePlatformAsset(ctx, tok, plat.ID, plat.Revision)
+	// 停用失败就停，验不了停用目标。
+	if err != nil {
+		// 不符即停：停用平台工艺失败。
+		t.Fatal(err)
+	}
+	// 源改了正文后再升，修复前会被覆盖成草稿。
+	if _, err := h.WAN.PromoteFromSnapshot(ctx, tok, procSnap(2, []byte(`{"name":"厂工艺","current":160}`))); !errors.Is(err, domain.ErrAssetNotAvailable) {
+		// 不符即停：停用目标被改过正文的快照覆盖。
+		t.Fatalf("changed promote onto disabled: %v", err)
+	}
+	// 正文没变再升也要拒，不能当幂等放行。
+	if _, err := h.WAN.PromoteFromSnapshot(ctx, tok, procSnap(1, first)); !errors.Is(err, domain.ErrAssetNotAvailable) {
+		// 不符即停：停用目标被同摘要快照放行。
+		t.Fatalf("same promote onto disabled: %v", err)
+	}
+	// 读回平台级，核对修订、摘要和状态都没动。
+	got, err := h.WAN.GetPlatformAsset(ctx, tok, plat.ID)
+	// 读取失败或任一项变了就停。
+	if err != nil || got.Status != global.AssetDisabled || got.Revision != off.Revision || !bytes.Equal(got.Digest, off.Digest) {
+		// 不符即停：停用目标被升档改动。
+		t.Fatalf("disabled target changed %+v %v", got, err)
+	}
+}
+
 // 删掉 T 排后不会自动补回，已有三份保持原样。
 func TestExistingProjectTemplatesKeepThree(t *testing.T) {
 	// 准备本测上下文，没有它库和服务都开不了。

@@ -372,6 +372,8 @@ type recordBus struct {
 	got []global.Cmd
 	// 原始报文，用来确认包体没有上总线。
 	raw [][]byte
+	// 被踢掉会话的工厂，顺序就是踢的顺序。
+	drops []uuid.UUID
 }
 
 // 记下总线投到哪一厂、什么指令，解不开就忽略。
@@ -396,8 +398,11 @@ func (b *recordBus) Call(context.Context, uuid.UUID, string, []byte) ([]byte, er
 	return nil, domain.ErrFactoryOffline
 }
 
-// 测试不拆通道，空实现只为凑齐总线接口。
-func (*recordBus) Drop(uuid.UUID) {}
+// 测试不拆通道，只记下踢了哪一厂供断言。
+func (b *recordBus) Drop(factoryID uuid.UUID) {
+	// 按顺序记下被踢的厂，漏记会把踢会话判丢。
+	b.drops = append(b.drops, factoryID)
+}
 
 // 验对象、磁盘和库占用，匿名会话不能看。
 func TestStorageUsage(t *testing.T) {

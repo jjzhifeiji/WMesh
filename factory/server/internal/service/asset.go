@@ -441,8 +441,17 @@ func (s *Assets) CreatePad(ctx context.Context, token, level, kind, name string,
 			_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny, unitID, path)
 			return Asset{}, err
 		}
+		// 依赖规则分级别，和网页新建保持同一口径。
+		if level == AssetLevelPersonal {
+			// 个人工程只能钉自己的工艺或厂级可用工艺。
+			err = s.assertPersonalProjectDeps(ctx, acc, deps)
+			// 厂级工程改按本厂可用和已收平台工艺来核。
+		} else {
+			// 厂级工程可钉同事的个人工艺和已收平台副本。
+			err = s.assertFactoryProcessDeps(ctx, deps)
+		}
 		// 依赖不合格则拒绝，并补记审计。
-		if err := s.assertPersonalProjectDeps(ctx, acc, deps); err != nil {
+		if err != nil {
 			// 创建被拒时补记审计，写失败仍维持拒绝。
 			_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny, unitID, path)
 			return Asset{}, err
@@ -492,26 +501,8 @@ func (s *Assets) CopyProcess(ctx context.Context, token string, assetID uuid.UUI
 		_ = s.audit(ctx, &acc.ID, nil, "create_asset", assetID.String(), audit.Deny)
 		return Asset{}, err
 	}
-	// 只有工艺能另存，工程不能走这条。
-	if src.Kind != KindProcess {
-		// 创建被拒时补记审计，写失败仍维持拒绝。
-		_ = s.audit(ctx, &acc.ID, nil, "create_asset", assetTarget(src.ID, src.Revision), audit.Deny)
-		return Asset{}, domain.ErrForbidden
-	}
-	// 停用的工艺不能另存。
-	if src.Status == AssetDisabled {
-		// 创建被拒时补记审计，写失败仍维持拒绝。
-		_ = s.audit(ctx, &acc.ID, nil, "create_asset", assetTarget(src.ID, src.Revision), audit.Deny)
-		return Asset{}, domain.ErrAssetNotAvailable
-	}
-	// 不可复制的工艺拒绝另存，避免参数外泄。
-	if !src.Copyable {
-		// 创建被拒时补记审计，写失败仍维持拒绝。
-		_ = s.audit(ctx, &acc.ID, nil, "create_asset", assetTarget(src.ID, src.Revision), audit.Deny)
-		return Asset{}, domain.ErrAssetNotCopyable
-	}
-	// 不是创建人也不是管理员则记拒绝。
-	if err := s.canTouchPersonal(ctx, acc, src); err != nil {
+	// 是工艺、未停用、可复制且有权看正文才能另存。
+	if err := s.canCopyProcess(ctx, acc, src); err != nil {
 		// 创建被拒时补记审计，写失败仍维持拒绝。
 		_ = s.audit(ctx, &acc.ID, nil, "create_asset", assetTarget(src.ID, src.Revision), audit.Deny)
 		return Asset{}, err
@@ -548,6 +539,24 @@ func (s *Assets) CopyProcess(ctx context.Context, token string, assetID uuid.UUI
 	// 副本尽量放到源文件旁边，失败不影响已建成的资产。
 	s.placeCopyBeside(ctx, src.ID, row.ID)
 	return row, nil
+}
+
+// canCopyProcess 另存工艺的统一口径，单件另存和整夹复制预检共用。
+func (s *kernel) canCopyProcess(ctx context.Context, acc Account, src Asset) error {
+	// 只有工艺能另存，工程不能走这条。
+	if src.Kind != KindProcess {
+		return domain.ErrForbidden
+	}
+	// 停用的工艺不能另存。
+	if src.Status == AssetDisabled {
+		return domain.ErrAssetNotAvailable
+	}
+	// 不可复制的工艺拒绝另存，避免参数外泄。
+	if !src.Copyable {
+		return domain.ErrAssetNotCopyable
+	}
+	// 个人级须是创建人或覆盖该处的管理员。
+	return s.canTouchPersonal(ctx, acc, src)
 }
 
 // CreateFactoryProcess 本厂有效账号创建厂级工艺，默认可复制，状态草稿。
@@ -1636,7 +1645,7 @@ func (s *Assets) ReadAssetContent(ctx context.Context, token string, assetID uui
 	return a.Content, nil
 }
 
-// PromoteToFactory 把可复制的未停用个人级升为厂级：草稿也可升；第一次复制新身份；再升摘要和作业类型都相同才跳过，否则覆盖。
+// PromoteToFactory 把可复制的未停用个人级升为厂级，草稿也可升；再升时目标停用则拒，摘要与作业类型同则跳过，否则覆盖并保留目标状态与可复制。
 func (s *Assets) PromoteToFactory(ctx context.Context, token string, assetID uuid.UUID) (Asset, error) {
 	// 核对登录仍有效，后面的操作都靠这次会话。
 	acc, err := s.RequireActive(ctx, token)
@@ -1688,6 +1697,12 @@ func (s *Assets) PromoteToFactory(ctx context.Context, token string, assetID uui
 	existing, err := s.store.GovernedAssetBySourceID(ctx, src.ID)
 	// 已经升过则按摘要和作业类型决定跳过还是覆盖。
 	if err == nil {
+		// 厂级已停用则拒绝，摘要相同也不放开，免得被源重新放出来。
+		if existing.Status == AssetDisabled {
+			// 升档被拒时补记审计，写失败仍维持拒绝。
+			_ = s.audit(ctx, &acc.ID, nil, "promote_asset", assetTarget(src.ID, src.Revision), audit.Deny)
+			return Asset{}, domain.ErrAssetNotAvailable
+		}
 		// 正文和作业类型都没变才直接用已升的那条。
 		if bytes.Equal(existing.Digest, src.Digest) && existing.WeldKind == src.WeldKind {
 			// 成功必须记上审计，没记上则本次不算做成。
@@ -1697,9 +1712,9 @@ func (s *Assets) PromoteToFactory(ctx context.Context, token string, assetID uui
 			// 去掉正文再返回，避免工艺参数外泄。
 			return stripContent(existing), nil
 		}
-		// 正文或作业类型变了就覆盖厂级，作业类型跟源走。
+		// 正文或作业类型变了就覆盖厂级；状态和可复制沿用厂级自己的。
 		row, err := s.store.UpdateGovernedAsset(ctx, existing.ID, existing.Revision, store.AssetWrite{
-			Name: src.Name, Content: src.Content, Digest: src.Digest, Copyable: true, Status: AssetAvailable, WeldKind: src.WeldKind, Deps: src.Deps, SourceRevision: &rev,
+			Name: src.Name, Content: src.Content, Digest: src.Digest, Copyable: existing.Copyable, Status: existing.Status, WeldKind: src.WeldKind, Deps: src.Deps, SourceRevision: &rev,
 		})
 		// 失败则记拒绝并停下，不继续往下改。
 		if err != nil {

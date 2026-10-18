@@ -696,7 +696,7 @@ func TestChannelClientRebind(t *testing.T) {
 	})
 }
 
-// 重新启用会推给当时在线的厂。
+// 重新启用会踢掉在线厂，厂重连后按全量索引拿到有效状态。
 func TestChannelLifecycleEnable(t *testing.T) {
 	// 准备已认领厂和管理员会话。
 	svc, tok, fid, priv := enrolledFactory(t)
@@ -722,10 +722,27 @@ func TestChannelLifecycleEnable(t *testing.T) {
 		// 结果和预期不一致，带上现场停测。
 		t.Fatalf("enable %d %s", code, body)
 	}
-	// 只认这一条下行，其余继续等。
-	waitMQTT(t, cmds, func(c service.Cmd) bool {
-		return c.Typ == service.CmdFactoryState && c.Status == "active" && c.Revision == 2
-	})
+	// 停用转有效要踢掉会话，逼厂端重连补齐漏掉的撤回。
+	assertOnline(t, srv, tok, false)
+	// 用同一厂钥重连，被踢之后必须还能接回通道。
+	subscribeDown(t, mqttAddr, fid, priv)
+	// 重连后名录应回到在线，否则厂端补不了全量。
+	assertOnline(t, srv, tok, true)
+	// 先当没找到，清单里命中启用状态再改成真。
+	found := false
+	// 重连后拉全量索引，启用状态和修订要在里面。
+	for _, c := range pullIndex(t, srv, fid, priv, "") {
+		// 状态是启用且修订是 2 才算拿到了这次启用。
+		if c.Typ == service.CmdFactoryState && c.Status == "active" && c.Revision == 2 {
+			// 标成已命中，最后仍为假说明没拿到启用状态。
+			found = true
+		}
+	}
+	// 全量索引里没有启用状态就停测，厂端会一直当成停用。
+	if !found {
+		// 启用状态没进全量索引，带上现场停测。
+		t.Fatal("index missing active factory_state")
+	}
 }
 
 // 工程发布后厂能拉到带依赖的闭包。

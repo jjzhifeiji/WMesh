@@ -161,3 +161,108 @@ func TestPadSaveLandsAvailable(t *testing.T) {
 		t.Fatalf("kind: %v", err)
 	}
 }
+
+// 示教器建厂级工程可钉已收平台副本和同事个人工艺，个人级仍按本人规则拒绝。
+func TestPadCreateProjectDepsByLevel(t *testing.T) {
+	// 准备无取消的上下文，后面每次调用都挂在上面。
+	ctx := context.Background()
+	// 拉起隔离厂库，起不来说明测试库还没就绪。
+	h := New(t)
+	// 建厂并签发超管激活码，失败则没有厂可测。
+	seed, fac, err := h.Provision(ctx, "sa-d", "超管D")
+	// 建厂失败就停，否则后面没有可靠结果。
+	if err != nil {
+		// 把建厂的错误打出来并停住，避免继续往下验。
+		t.Fatal(err)
+	}
+	// 开通失败就停，否则后面没有可靠结果。
+	if err := fac.Activate(ctx, "sa-d", seed.ActivationToken, "sa-pass"); err != nil {
+		// 把开通的错误打出来并停住，避免继续往下验。
+		t.Fatal(err)
+	}
+	// 登录并取出超管令牌，建厂级工程要用管理员。
+	sa := mustLogin(t, ctx, fac, "sa-d", "sa-pass")
+	// 建工艺的同事，他的个人工艺给别人的工程去钉。
+	op := mustCreateRole(t, ctx, fac, sa, "op-d", "op-pass", factory.RoleOperator, factory.ScopeFactory, nil)
+	// 另一名操作员，用来试个人级工程钉别人的工艺。
+	pe := mustCreateRole(t, ctx, fac, sa, "pe-d", "pe-pass", factory.RoleOperator, factory.ScopeFactory, nil)
+	// 留出本厂身份，收平台下发时要指明目标厂。
+	fid := seed.ID
+
+	// 准备一条平台工艺的正文。
+	platBody := []byte("plat-body")
+	// 组装平台工艺，号是云端 W 段。
+	plat := factory.ClosureMember{
+		ID: id.New(), Kind: factory.KindProcess, Level: factory.AssetLevelPlatform, Name: "平台焊",
+		Code: "GY-W-000001", Status: factory.AssetAvailable, Copyable: true, Revision: 1,
+		Content: platBody, Digest: digest.Sum(platBody),
+	}
+	// 收下平台工艺失败就停，后面没有平台副本可钉。
+	if err := fac.AcceptPlatformDelivery(ctx, sealSnap(factory.KindProcess, plat, nil, &fid, nil)); err != nil {
+		// 把收平台稿的错误打出来并停住。
+		t.Fatal(err)
+	}
+	// 同事在示教器上建一条个人工艺，建成即可用。
+	mine, err := fac.CreatePadPersonal(ctx, op.tok, factory.KindProcess, "同事工艺", []byte(`{"name":"op","current":170}`), id.New(), "", nil)
+	// 建个人工艺失败就停，后面没有同事工艺可钉。
+	if err != nil {
+		// 把建个人工艺的错误打出来并停住。
+		t.Fatal(err)
+	}
+	// 平台副本的依赖，修订和摘要钉到收下的那版。
+	platDep := factory.AssetDep{ID: plat.ID, Revision: plat.Revision, Digest: plat.Digest}
+	// 同事个人工艺的依赖，钉到建成时的修订。
+	mineDep := factory.AssetDep{ID: mine.ID, Revision: mine.Revision, Digest: mine.Digest}
+
+	// 管理员在示教器上建厂级工程，同时钉两条依赖。
+	proj, err := fac.CreatePad(ctx, sa, factory.AssetLevelFactory, factory.KindProject, "厂级工程", []byte(`[]`), id.New(), "", []factory.AssetDep{platDep, mineDep})
+	// 被拒说明厂级工程仍按个人级规则核依赖。
+	if err != nil {
+		// 把建厂级工程的错误打出来并停住。
+		t.Fatalf("factory project: %v", err)
+	}
+	// 读回工程元数据，核对级别、状态和依赖。
+	got, err := fac.GetAsset(ctx, sa, proj.ID)
+	// 读不回或级别状态不对，说明没按厂级建成。
+	if err != nil || got.Level != factory.AssetLevelFactory || got.Status != factory.AssetAvailable || len(got.Deps) != 2 {
+		// 把读回的工程打出来并停住。
+		t.Fatalf("factory project meta %+v %v", got, err)
+	}
+	// 按身份收好期望的依赖，逐条比对修订和摘要。
+	want := map[uuid.UUID]factory.AssetDep{platDep.ID: platDep, mineDep.ID: mineDep}
+	// 逐条核对读回的依赖，钉错修订或摘要都算失败。
+	for _, d := range got.Deps {
+		// 按身份找期望依赖，找不到说明钉进了别的工艺。
+		w, ok := want[d.ID]
+		// 身份、修订或摘要不对，说明依赖没钉准。
+		if !ok || d.Revision != w.Revision || !bytes.Equal(d.Digest, w.Digest) {
+			// 把对不上的依赖打出来并停住。
+			t.Fatalf("factory project dep %+v want %+v", d, w)
+		}
+	}
+
+	// 个人级只钉同事的个人工艺，留出身份好核没建成。
+	colleagueID := id.New()
+	// 个人工程不能钉别人的个人工艺，应按依赖不合格拒绝。
+	if _, err := fac.CreatePad(ctx, pe.tok, factory.AssetLevelPersonal, factory.KindProject, "钉同事", []byte(`[]`), colleagueID, "", []factory.AssetDep{mineDep}); !errors.Is(err, domain.ErrAssetDependency) {
+		// 放行或错误不对，说明个人级规则被放宽了。
+		t.Fatalf("personal project with colleague dep: %v", err)
+	}
+	// 被拒的工程不应落库，读回应当找不到。
+	if _, err := fac.GetAsset(ctx, sa, colleagueID); !errors.Is(err, domain.ErrNotFound) {
+		// 找到了说明被拒的工程仍被写进库。
+		t.Fatalf("rejected colleague project exists: %v", err)
+	}
+	// 个人级钉平台副本，留出身份好核没建成。
+	platOnlyID := id.New()
+	// 个人工程不能钉平台副本，只要求被拒。
+	if _, err := fac.CreatePad(ctx, pe.tok, factory.AssetLevelPersonal, factory.KindProject, "钉平台", []byte(`[]`), platOnlyID, "", []factory.AssetDep{platDep}); err == nil {
+		// 放行说明个人工程能钉平台副本了。
+		t.Fatal("personal project with platform dep accepted")
+	}
+	// 被拒的工程不应落库，读回应当找不到。
+	if _, err := fac.GetAsset(ctx, sa, platOnlyID); !errors.Is(err, domain.ErrNotFound) {
+		// 找到了说明被拒的工程仍被写进库。
+		t.Fatalf("rejected platform project exists: %v", err)
+	}
+}
