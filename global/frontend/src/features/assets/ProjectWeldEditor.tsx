@@ -13,7 +13,6 @@ import {
   WELD_SINGLE,
   WELD_TBAR,
   itemFields,
-  projectTemplatesForWeld,
   weldKindLabel,
 } from "@/features/templates/projectKinds";
 import { newId } from "@/shared/id";
@@ -132,15 +131,15 @@ function seedKind(weldKind: string) {
   return ITEM_SINGLE;
 }
 
+// tplFields 固定取本作业类型的种子模版字段；没收到种子就用内置字段，自定义模版不参与。
 function tplFields(weldKind: string, templates: ProjectTpl[]): TemplateField[] {
-  const tpl = projectTemplatesForWeld(templates, weldKind)[0];
+  const tpl = templates.find((t) => t.id === seedId(weldKind));
   return tpl?.schema?.fields ?? itemFields(seedKind(weldKind), weldKind === WELD_SINGLE);
 }
 
-// emptyWeld 按 App 新建焊道：名称 + 占位点，工艺空着。
+// emptyWeld 按 App 新建焊道：名称 + 占位点，工艺空着；固定挂本作业类型的种子模版。
 export function emptyWeld(weldKind: string, templates: ProjectTpl[], index: number, arc = false): Weld {
-  const tpl = projectTemplatesForWeld(templates, weldKind)[0];
-  const item = defaultItemFromFields(tplFields(weldKind, templates), tpl?.id ?? seedId(weldKind));
+  const item = defaultItemFromFields(tplFields(weldKind, templates), seedId(weldKind));
   item.id = newId();
   if (weldKind === WELD_MULTI) {
     item.name = `${arc ? "多层圆弧" : "多层直线"} ${index + 1}`;

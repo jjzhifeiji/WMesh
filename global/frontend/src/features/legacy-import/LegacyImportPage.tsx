@@ -2,6 +2,7 @@ import { InboxOutlined } from "@ant-design/icons";
 import { App, Button, Card, Table, Typography, type TableColumnsType } from "antd";
 import { useMemo, useRef, useState } from "react";
 import { useAssets } from "@/features/assets/api";
+import { weldKindLabel } from "@/features/templates/projectKinds";
 import { errorMessage } from "@/shared/api/client";
 import { PageHeader } from "@/shared/ui/PageHeader";
 import { useImportLegacy, type LegacyFile, type LegacyImportResult, type LegacyReject } from "./api";
@@ -12,9 +13,24 @@ function normalizeResult(data: LegacyImportResult): LegacyImportResult {
   return {
     processes: data.processes ?? [],
     projects: data.projects ?? [],
-    rejected: data.rejected ?? [],
-    skipped: data.skipped ?? [],
+    rejected: uniqueRows(data.rejected ?? []),
+    skipped: uniqueRows(data.skipped ?? []),
   };
+}
+
+// copyKey 同一路径的工艺按作业类型拆成几份时，靠类型和后缀分开。
+function copyKey(r: LegacyReject) {
+  return `${r.path}\n${r.weldKind ?? ""}\n${r.suffix ?? ""}`;
+}
+
+// rowKey 表格行键：哪一份加原因，同一份同原因只算一行。
+function rowKey(r: LegacyReject) {
+  return `${copyKey(r)}\n${r.reason}`;
+}
+
+// uniqueRows 同一行键只留最后一条，表格行键不重复。
+function uniqueRows(rows: LegacyReject[]) {
+  return [...new Map(rows.map((r) => [rowKey(r), r])).values()];
 }
 
 // 选示教器旧目录：工艺先入库，工程把路径换成身份；缺文件的那份工程拒绝。
@@ -26,7 +42,7 @@ export function LegacyImportPage() {
   const inputRef = useRef<HTMLInputElement>(null);
   const [picked, setPicked] = useState<Picked | null>(null);
   const [result, setResult] = useState<LegacyImportResult | null>(null);
-  const [acting, setActing] = useState<{ path: string; mode: "overwrite" | "rename" } | null>(null);
+  const [acting, setActing] = useState<{ key: string; mode: "overwrite" | "rename" } | null>(null);
   const existing = useMemo(() => {
     const set = new Set<string>();
     for (const a of [...(procs.data ?? []), ...(projs.data ?? [])]) {
@@ -48,7 +64,7 @@ export function LegacyImportPage() {
     const collisions = sameNames(picked, existing);
     let overwrite = false;
     let rename = false;
-    if (collisions.length > 0) {
+    if (collisions.existing.length > 0 || collisions.batch.length > 0) {
       const choice = await askSameName(modal, collisions);
       if (choice === "cancel") return;
       overwrite = choice === "overwrite";
@@ -74,16 +90,16 @@ export function LegacyImportPage() {
       message.error("请重新选择文件夹");
       return;
     }
-    const payload = retryPayload(picked, row.path, mode);
+    const payload = retryPayload(picked, row, mode);
     if (!payload) {
       message.error("找不到该文件");
       return;
     }
-    setActing({ path: row.path, mode });
+    setActing({ key: rowKey(row), mode });
     imp.mutate(payload, {
       onSettled: () => setActing(null),
       onSuccess: (data) => {
-        const merged = mergeRetry(result, row.path, normalizeResult(data));
+        const merged = mergeRetry(result, row, normalizeResult(data));
         setResult(merged);
         message.success(
           `已入工艺 ${merged.processes.length}，工程 ${merged.projects.length}，跳过 ${merged.skipped.length}，拒绝 ${merged.rejected.length}`,
@@ -145,41 +161,50 @@ function ResultTables({
   onRetry,
 }: {
   result: LegacyImportResult;
-  acting: { path: string; mode: "overwrite" | "rename" } | null;
+  acting: { key: string; mode: "overwrite" | "rename" } | null;
   busy: boolean;
   onRetry: (row: LegacyReject, mode: "overwrite" | "rename") => void;
 }) {
+  const pathCol: TableColumnsType<LegacyReject>[number] = {
+    title: "路径",
+    dataIndex: "path",
+    ellipsis: true,
+    // 拆成几份的工艺带上作业类型，同一路径的几行才分得清。
+    render: (_, row) => (row.weldKind ? `${row.path}（${weldKindLabel(row.weldKind)}）` : row.path),
+  };
   const rejectCols: TableColumnsType<LegacyReject> = [
-    { title: "路径", dataIndex: "path", ellipsis: true },
+    pathCol,
     { title: "原因", dataIndex: "reason", width: 120 },
     {
       title: "操作",
       key: "act",
       width: 168,
-      render: (_, row) => (
-        <>
-          <Button
-            size="small"
-            disabled={busy}
-            loading={acting?.path === row.path && acting.mode === "overwrite"}
-            onClick={() => onRetry(row, "overwrite")}
-          >
-            覆盖
-          </Button>{" "}
-          <Button
-            size="small"
-            disabled={busy}
-            loading={acting?.path === row.path && acting.mode === "rename"}
-            onClick={() => onRetry(row, "rename")}
-          >
-            重命名
-          </Button>
-        </>
-      ),
+      // 内容相同的已沿用原条目，覆盖或重命名都没有意义。
+      render: (_, row) =>
+        row.reason === "same content" ? null : (
+          <>
+            <Button
+              size="small"
+              disabled={busy}
+              loading={acting?.key === rowKey(row) && acting.mode === "overwrite"}
+              onClick={() => onRetry(row, "overwrite")}
+            >
+              覆盖
+            </Button>{" "}
+            <Button
+              size="small"
+              disabled={busy}
+              loading={acting?.key === rowKey(row) && acting.mode === "rename"}
+              onClick={() => onRetry(row, "rename")}
+            >
+              重命名
+            </Button>
+          </>
+        ),
     },
   ];
   const rejectOnlyCols: TableColumnsType<LegacyReject> = [
-    { title: "路径", dataIndex: "path", ellipsis: true },
+    pathCol,
     { title: "原因", dataIndex: "reason" },
   ];
   return (
@@ -192,7 +217,7 @@ function ResultTables({
         <Table
           style={{ marginTop: 12 }}
           size="small"
-          rowKey="path"
+          rowKey={rowKey}
           pagination={false}
           columns={rejectCols}
           dataSource={result.skipped}
@@ -202,7 +227,7 @@ function ResultTables({
         <Table
           style={{ marginTop: 12 }}
           size="small"
-          rowKey="path"
+          rowKey={rowKey}
           pagination={false}
           columns={rejectOnlyCols}
           dataSource={result.rejected}
@@ -246,11 +271,13 @@ function stripRootPrefix(rel: string) {
   return parts.join("/");
 }
 
-function retryPayload(picked: Picked, path: string, mode: "overwrite" | "rename") {
+// retryPayload 工艺只重发这一份并带回作业类型和后缀，拆出的那份才盖得到；工程连同全部工艺重发。
+function retryPayload(picked: Picked, row: LegacyReject, mode: "overwrite" | "rename") {
+  const path = row.path;
   const proc = picked.processes.find((f) => f.path === path);
   if (proc) {
     return {
-      processes: [{ ...proc, overwrite: mode === "overwrite", rename: mode === "rename" }],
+      processes: [{ ...proc, overwrite: mode === "overwrite", rename: mode === "rename", weldKind: row.weldKind, suffix: row.suffix }],
       projects: [] as LegacyFile[],
       overwrite: false,
       rename: false,
@@ -266,14 +293,15 @@ function retryPayload(picked: Picked, path: string, mode: "overwrite" | "rename"
   };
 }
 
-function mergeRetry(prev: LegacyImportResult | null, path: string, next: LegacyImportResult): LegacyImportResult {
+// mergeRetry 只去掉重试的那一份和新拒绝的那几份，同一路径别的作业类型那行留着。
+function mergeRetry(prev: LegacyImportResult | null, row: LegacyReject, next: LegacyImportResult): LegacyImportResult {
   const base = prev ?? { processes: [], projects: [], rejected: [], skipped: [] };
-  const gone = new Set([path, ...next.rejected.map((r) => r.path)]);
+  const gone = new Set([copyKey(row), ...next.rejected.map(copyKey)]);
   return {
     processes: [...base.processes, ...next.processes],
     projects: [...base.projects, ...next.projects],
-    rejected: [...base.rejected, ...next.rejected],
-    skipped: base.skipped.filter((s) => !gone.has(s.path)),
+    rejected: uniqueRows([...base.rejected, ...next.rejected]),
+    skipped: base.skipped.filter((s) => !gone.has(copyKey(s))),
   };
 }
 
@@ -298,12 +326,22 @@ function projectName(f: LegacyFile) {
   return "imported-project";
 }
 
-function sameNames(picked: Picked, existing: Set<string>) {
+type SameNames = { existing: string[]; batch: string[] };
+
+// 库里已有的同名，另记本批内同名不同路径的（服务端按路径另起名，不互相覆盖）。
+function sameNames(picked: Picked, existing: Set<string>): SameNames {
   const out: string[] = [];
   const seen = new Set<string>();
+  const paths = new Map<string, { label: string; paths: Set<string> }>();
+  const note = (k: string, label: string, path: string) => {
+    const hit = paths.get(k) ?? { label, paths: new Set<string>() };
+    hit.paths.add(path);
+    paths.set(k, hit);
+  };
   for (const f of picked.processes) {
     const n = processName(f);
     const k = `process:${n}`;
+    note(k, `工艺 ${n}`, f.path);
     if (existing.has(k) && !seen.has(k)) {
       seen.add(k);
       out.push(`工艺 ${n}`);
@@ -312,24 +350,44 @@ function sameNames(picked: Picked, existing: Set<string>) {
   for (const f of picked.projects) {
     const n = projectName(f);
     const k = `project:${n}`;
+    note(k, `工程 ${n}`, f.path);
     if (existing.has(k) && !seen.has(k)) {
       seen.add(k);
       out.push(`工程 ${n}`);
     }
   }
-  return out;
+  const batch = [...paths.values()].filter((v) => v.paths.size > 1).map((v) => v.label);
+  return { existing: out, batch };
+}
+
+function previewNames(list: string[]) {
+  return list.slice(0, 8).join("、") + (list.length > 8 ? ` 等 ${list.length} 个` : "");
 }
 
 function askSameName(
   modal: ReturnType<typeof App.useApp>["modal"],
-  names: string[],
+  names: SameNames,
 ): Promise<"overwrite" | "rename" | "skip" | "cancel"> {
-  const preview = names.slice(0, 8).join("、") + (names.length > 8 ? ` 等 ${names.length} 个` : "");
+  const lines: string[] = [];
+  if (names.existing.length > 0) {
+    lines.push(`覆盖会改已有正文并保留身份；重命名按路径另起一份；跳过同名则沿用已有、只导入其余。同名：${previewNames(names.existing)}`);
+  }
+  if (names.batch.length > 0) {
+    lines.push(`本批内同名不同路径的会按路径另起名，互不覆盖：${previewNames(names.batch)}`);
+  }
   return new Promise((resolve) => {
     let decided = false;
     const inst = modal.confirm({
-      title: "已有同名工艺或工程",
-      content: `覆盖会改已有正文并保留身份；重命名按路径另起一份；跳过同名则沿用已有、只导入其余。同名：${preview}`,
+      title: names.existing.length > 0 ? "已有同名工艺或工程" : "本批有同名工艺或工程",
+      content: (
+        <>
+          {lines.map((line) => (
+            <Typography.Paragraph key={line} style={{ marginBottom: 8 }}>
+              {line}
+            </Typography.Paragraph>
+          ))}
+        </>
+      ),
       okText: "覆盖",
       cancelText: "取消",
       onOk: () => {

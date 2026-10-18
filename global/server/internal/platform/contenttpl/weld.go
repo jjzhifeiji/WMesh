@@ -46,6 +46,15 @@ func weldKindOfItemKind(kind string) (string, bool) {
 	}
 }
 
+// WeldKindOfItem 焊缝种类对应的作业类型；认不出的当单层，旧文件导入按它分份。
+func WeldKindOfItem(kind string) string {
+	// 认得出的种类就用对应的作业类型。
+	if k, ok := weldKindOfItemKind(kind); ok {
+		return k
+	}
+	return WeldSingle
+}
+
 // InferWeldKind 按工程正文第一条能认的模版/种类推断作业类型；认不出当单层。
 func InferWeldKind(content []byte) string {
 	// 准备接工程正文里的各份。

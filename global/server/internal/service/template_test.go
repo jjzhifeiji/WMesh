@@ -140,6 +140,20 @@ func TestContentTemplate(t *testing.T) {
 		// 不符即停：改内容模版应被拒为未登录。
 		t.Fatalf("anon: %v", err)
 	}
+	// 误导入的数组根字段表，工艺不该收。
+	arrayRoot := []byte(`{"root":"array","templates":[]}`)
+	// 数组根应被拒为模版不合法，放行就会下发到各厂。
+	if _, err := h.WAN.UpdateTemplate(ctx, tok, global.KindProcess, next.Revision, arrayRoot); !errors.Is(err, domain.ErrTemplateInvalid) {
+		// 不符即停：数组根没被拒为模版不合法。
+		t.Fatalf("array root: %v", err)
+	}
+	// 再读内容模版，被拒后修订应停在原处。
+	kept, err := h.WAN.GetTemplate(ctx, tok, global.KindProcess)
+	// 读内容模版失败或修订变了就停，说明拒绝前已写库。
+	if err != nil || kept.Revision != next.Revision || !bytes.Equal(kept.Schema, next.Schema) {
+		// 不符即停：被拒后模版仍被改动。
+		t.Fatalf("after array root %+v %v", kept, err)
+	}
 
 	// 登记工厂「厂A」，建不成后面没有厂可授权。
 	fac, err := h.WAN.CreateFactory(ctx, tok, "厂A", "sa-a", "超管A")

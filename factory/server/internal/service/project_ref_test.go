@@ -235,3 +235,88 @@ func TestProjectProcessRefs(t *testing.T) {
 		t.Fatalf("personal pin %+v", pinnedPersonal.Deps)
 	}
 }
+
+// 收下不带工艺槽的自定义模版后，多层标准槽上的工艺仍算引用，漏进依赖就拒。
+func TestProjectCustomTemplateRefs(t *testing.T) {
+	// 准备无取消的上下文，后面每次调用都挂在上面。
+	ctx := context.Background()
+	// 拉起隔离厂库，起不来说明测试库还没就绪。
+	h := New(t)
+	// 建厂并签发超管激活码，失败则没有厂可测。
+	seed, fac, err := h.Provision(ctx, "sa", "超管")
+	// 建厂失败就停，否则后面没有可靠结果。
+	if err != nil {
+		// 把建厂的错误打出来并停住，避免继续往下验。
+		t.Fatal(err)
+	}
+	// 开通失败就停，否则后面没有可靠结果。
+	if err := fac.Activate(ctx, "sa", seed.ActivationToken, "sa-pass"); err != nil {
+		// 把开通的错误打出来并停住，避免继续往下验。
+		t.Fatal(err)
+	}
+	// 登录并取出令牌，失败说明账号没有开通成功。
+	sa := mustLogin(t, ctx, fac, "sa", "sa-pass")
+	// 建人并授好角色，失败说明后面没有账号可用。
+	pe := mustCreateRole(t, ctx, fac, sa, "pe", "pe-pass", factory.RoleOperator, factory.ScopeFactory, nil)
+	// 标明直接作业上下文，后面新建资产都挂在这里。
+	direct := factory.WorkContext{Direct: true}
+	// 新建一份多层厂级工艺，作业类型要和工程一致。
+	proc, err := fac.CreateFactoryProcess(ctx, pe.tok, direct, "多层工艺", []byte(`{"name":"p","current":180}`), contenttpl.WeldMultilayer)
+	// 建工艺失败就停，否则后面没有可靠结果。
+	if err != nil {
+		// 把建工艺的错误打出来并停住，避免继续往下验。
+		t.Fatal(err)
+	}
+	// 发布当前修订，失败说明状态不允许发布。
+	proc, err = fac.PublishAsset(ctx, pe.tok, proc.ID, proc.Revision)
+	// 发布失败就停，否则后面没有可靠结果。
+	if err != nil {
+		// 把发布的错误打出来并停住，避免继续往下验。
+		t.Fatal(err)
+	}
+	// 新取自定义模版身份，排序会落在三份种子前面。
+	customID := id.New()
+	// 自定义模版只声明名称，不带任何工艺槽。
+	raw := []byte(`{"root":"object","fields":[{"key":"name","label":"名称","type":"string","default":""}]}`)
+	// 留下工厂编号，收模版要对准本厂。
+	fid := seed.ID
+	// 收模版失败就停，否则后面没有可靠结果。
+	if err := fac.AcceptTemplateDelivery(ctx, factory.TemplateSnapshot{
+		// 记下身份、类型和修订，摘要按字段表算。
+		ID: customID, Kind: factory.KindProject, Name: "自定义", Revision: 1, Schema: raw, Digest: digest.Sum(raw),
+		TargetFactoryID: &fid,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// 装上这条依赖，修订或摘要错了工程会对不上。
+	dep := factory.AssetDep{ID: proc.ID, Revision: proc.Revision, Digest: proc.Digest}
+	// 空正文建多层工程，依赖先钉上这份工艺。
+	proj, err := fac.CreateFactoryProject(ctx, pe.tok, direct, "自定义多层", []byte(`[]`), []factory.AssetDep{dep}, contenttpl.WeldMultilayer)
+	// 建工程失败就停，否则后面没有可靠结果。
+	if err != nil {
+		// 把建工程的错误打出来并停住，避免继续往下验。
+		t.Fatal(err)
+	}
+	// 按工艺身份拼一条挂自定义模版的多层焊道。
+	body := func(pid string) []byte {
+		// 工艺填在基准层和填充层，模版里都没有声明。
+		return []byte(`[{"templateId":"` + customID.String() + `","kind":"multi","name":"w","basePath":{"processId":"` + pid + `"},"passes":[{"processId":"` + pid + `"}]}]`)
+	}
+	// 改正文引用不在依赖里的工艺应被拒，放行说明标准槽没收。
+	if _, err := fac.UpdateAssetContent(ctx, pe.tok, proj.ID, proj.Revision, body(id.New().String())); !errors.Is(err, domain.ErrAssetDependency) {
+		// 断言没通过就停，结果和这条用例的预期不一致。
+		t.Fatalf("update mismatch %v", err)
+	}
+	// 引用落在依赖里就能保存。
+	proj, err = fac.UpdateAssetContent(ctx, pe.tok, proj.ID, proj.Revision, body(proc.ID.String()))
+	// 改正文失败就停，否则后面没有可靠结果。
+	if err != nil {
+		// 把改正文的错误打出来并停住，避免继续往下验。
+		t.Fatal(err)
+	}
+	// 改依赖时漏掉正文在用的工艺应被拒，放行说明删除保护失效。
+	if _, err := fac.SetProjectDeps(ctx, pe.tok, proj.ID, proj.Revision, nil); !errors.Is(err, domain.ErrAssetDependency) {
+		// 断言没通过就停，结果和这条用例的预期不一致。
+		t.Fatalf("drop dep %v", err)
+	}
+}

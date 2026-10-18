@@ -303,7 +303,7 @@ func walkProjectItems(s Schema, v any, fn func(string) (string, error)) error {
 	return nil
 }
 
-// walkProjectItemList 有 templateId 走那一份；没有则按各份字段并集走（旧正文升档）。
+// walkProjectItemList 有 templateId 走那一份，没有则按并集走；都并上本种类的标准工艺槽。
 func walkProjectItemList(items []ProjectItemSchema, v any, fn func(string) (string, error)) error {
 	// 不是数组就没有元素可走。
 	arr, ok := v.([]any)
@@ -350,12 +350,70 @@ func walkProjectItemList(items []ProjectItemSchema, v any, fn func(string) (stri
 			// 对不上就用并集，兼容旧正文。
 			fields = union
 		}
+		// 并上认得出的种类的标准工艺槽，单层带附加槽，模版漏声明也照收。
+		fields = mergeFields(fields, ItemFields(InferItemKind(obj), true))
 		// 这一份走失败就停。
 		if err := walkObject(fields, el, fn); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// mergeFields 两份字段表按键逐层合并；同一个键只留一处，每个槽只走一遍。
+func mergeFields(a, b []Field) []Field {
+	// 按两边总数准备缓冲，合并后不会更多。
+	out := make([]Field, 0, len(a)+len(b))
+	// 记下每个键在结果里的位置，同键并到那一处。
+	at := map[string]int{}
+	// 先放模版自己的字段，再并标准槽。
+	for _, list := range [][]Field{a, b} {
+		// 逐个字段并进结果。
+		for _, f := range list {
+			// 键已经在了就并到原处，不另加一份。
+			if i, ok := at[f.Key]; ok {
+				// 同键两份声明并成一份，工艺槽优先。
+				out[i] = mergeField(out[i], f)
+				continue
+			}
+			// 记下新键的位置，后面同键并到这里。
+			at[f.Key] = len(out)
+			// 新键按先后接到结果末尾。
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// mergeField 同键两份声明并成一份：有一边是工艺槽就算工艺槽，对象和数组再往下并。
+func mergeField(a, b Field) Field {
+	// 前一份是工艺槽就按它收引用。
+	if isProcessRef(a) {
+		return a
+	}
+	// 后一份是工艺槽也按工艺槽算。
+	if isProcessRef(b) {
+		return b
+	}
+	// 两边都是对象就按子键接着并。
+	if a.Type == TypeObject && b.Type == TypeObject {
+		// 子字段另起一份结果，不改原来的表。
+		a.Fields = mergeFields(a.Fields, b.Fields)
+		return a
+	}
+	// 两边都是带元素模版的数组就并元素模版。
+	if a.Type == TypeArray && b.Type == TypeArray && a.Items != nil && b.Items != nil {
+		// 元素模版并成新的一份，不改原来的表。
+		item := mergeField(*a.Items, *b.Items)
+		// 指向新并好的元素模版。
+		a.Items = &item
+		return a
+	}
+	// 后一份能往下走就用它，免得被标量挡住引用。
+	if b.Type == TypeObject || (b.Type == TypeArray && b.Items != nil) {
+		return b
+	}
+	return a
 }
 
 // walkObjectList 数组里每个对象按同一份字段表走。

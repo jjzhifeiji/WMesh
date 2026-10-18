@@ -76,7 +76,7 @@ func (s *kernel) ensureTemplate(ctx context.Context, kind string) (ContentTempla
 	return openTemplate(row)
 }
 
-// ensureProjectItems 工程模版多份独立行；旧登记簿拆开，空库落下三份明细，三份字段随代码补齐。
+// ensureProjectItems 工程模版多份独立行；旧登记簿拆开，空库首次落三份种子，之后只读不改。
 func (s *kernel) ensureProjectItems(ctx context.Context) ([]ContentTemplate, error) {
 	// 按字段模版处理。
 	rows, err := s.store.TemplatesByKind(ctx, KindProject)
@@ -161,44 +161,49 @@ func (s *kernel) ensureProjectItems(ctx context.Context) ([]ContentTemplate, err
 			return nil, err
 		}
 	}
-	// 有内容才继续解析，空字节不当坏包。
+	// 库里已有份就照原样交回，读路径不按代码改写种子。
 	if len(current) > 0 {
-		// 用种子补缺的，已经合法的不改。
-		return s.refreshSeedProjectItems(ctx, current)
+		return current, nil
 	}
-	// 按数量先准备容器。
-	out := make([]ContentTemplate, 0, len(contenttpl.SeedProjectItems()))
-	// 按种子项补齐，缺的就建，已有的留着。
+	// 一份都没有才走一次性种子；删光过的库读到仍是空。
+	return s.seedProjectItemsOnce(ctx)
+}
+
+// seedProjectItemsOnce 空库首次落下三份种子；已落过则只读当前各份，不补回。
+func (s *kernel) seedProjectItemsOnce(ctx context.Context) ([]ContentTemplate, error) {
+	// 按种子份数先准备容器。
+	seeds := make([]ContentTemplate, 0, len(contenttpl.SeedProjectItems()))
+	// 逐份把代码里的种子收成待写模版。
 	for _, it := range contenttpl.SeedProjectItems() {
-		// 解析这段文本，失败就不能继续。
+		// 解析种子身份，失败就不能继续。
 		id, idErr := uuid.Parse(it.ID)
 		// 格式不对就拒绝，不接收坏数据。
 		if idErr != nil {
 			return nil, domain.ErrTemplateInvalid
 		}
-		// 编成字节再送出。
+		// 编成规范字段表再落库。
 		canon, mErr := contenttpl.Marshal(contenttpl.ObjectSchema(it.Fields))
-		// 编不出就拒绝，不发送半截。
+		// 编不出就拒绝，不写半截种子。
 		if mErr != nil {
 			return nil, domain.ErrTemplateInvalid
 		}
-		// 写入这一条，失败就不能继续。
-		inserted, insErr := s.store.InsertTemplate(ctx, ContentTemplate{
+		// 把这一份种子接进待写批次。
+		seeds = append(seeds, ContentTemplate{
 			ID: id, Kind: KindProject, Name: it.Name, Schema: canon, Digest: digest.Sum(canon),
 		})
-		// 这一步失败就停，避免留下半截。
-		if insErr != nil {
-			// 按字段模版处理。
-			got, getErr := s.store.TemplateByID(ctx, id)
-			// 没有或不合法就拒绝。
-			if getErr != nil {
-				return nil, insErr
-			}
-			// 库里已有同份就用那一条，不再插第二遍。
-			inserted = got
-		}
+	}
+	// 抢到标记才写种子，没抢到就读别人刚落的或空表。
+	rows, err := s.store.SeedProjectTemplatesOnce(ctx, seeds)
+	// 落种子或再读失败就停，不能当成空表。
+	if err != nil {
+		return nil, err
+	}
+	// 按行数先准备容器。
+	out := make([]ContentTemplate, 0, len(rows))
+	// 逐行解开核对，坏的一行就整批拒绝。
+	for _, row := range rows {
 		// 解开模版正文，失败就不能继续。
-		opened, openErr := openTemplate(inserted)
+		opened, openErr := openTemplate(row)
 		// 坏的按损坏拒绝，不能下发。
 		if openErr != nil {
 			return nil, openErr
@@ -206,52 +211,8 @@ func (s *kernel) ensureProjectItems(ctx context.Context) ([]ContentTemplate, err
 		// 把这一项接进结果。
 		out = append(out, opened)
 	}
-	// 找一个还不冲突的名字。
+	// 同一身份只留一份再交回。
 	return uniqueTemplates(out), nil
-}
-
-// refreshSeedProjectItems 空库三份字段表随代码补齐；自定义份不动。
-func (s *kernel) refreshSeedProjectItems(ctx context.Context, current []ContentTemplate) ([]ContentTemplate, error) {
-	// 按数量先准备容器。
-	out := make([]ContentTemplate, len(current))
-	// 复制一份，原件保持不动。
-	copy(out, current)
-	// 逐行收成视图，不把人员或正文带出去。
-	for i, row := range out {
-		// 用内置种子，失败就不能继续。
-		seed, ok := contenttpl.SeedProjectItem(row.ID.String())
-		// 对不上就跳过或拒绝，避免用错那一条。
-		if !ok {
-			continue
-		}
-		// 编成字节再送出。
-		canon, err := contenttpl.Marshal(contenttpl.ObjectSchema(seed.Fields))
-		// 编不出就拒绝，不发送半截。
-		if err != nil {
-			return nil, domain.ErrTemplateInvalid
-		}
-		// 摘要对不上则按损坏拒绝，不能入库或下发。
-		if digest.Match(canon, row.Digest) {
-			continue
-		}
-		// 更新这一条，修订不符则不行。
-		updated, err := s.store.UpdateTemplateByID(ctx, row.ID, row.Revision, row.Name, canon, digest.Sum(canon))
-		// 更新失败就停，避免写成半新半旧。
-		if err != nil {
-			return nil, err
-		}
-		// 解开模版正文，失败就不能继续。
-		opened, err := openTemplate(updated)
-		// 坏的按损坏拒绝，不能下发。
-		if err != nil {
-			return nil, err
-		}
-		// 解开后放回原位，调用方拿到明文模版。
-		out[i] = opened
-		// 通知厂端去拉模版。
-		s.notifyTemplate(ctx, opened.ID, opened.Kind, opened.Revision)
-	}
-	return out, nil
 }
 
 // uniqueTemplates 同一身份只留一份。
@@ -276,7 +237,7 @@ func uniqueTemplates(rows []ContentTemplate) []ContentTemplate {
 
 // projectItemSchemas 当前各份对象字段表。
 func (s *kernel) projectItemSchemas(ctx context.Context) ([]contenttpl.ProjectItemSchema, error) {
-	// 工程项不齐就按种子补。
+	// 读当前工程各份，空库首次才落种子。
 	rows, err := s.ensureProjectItems(ctx)
 	// 补失败就拒绝，模版不能缺层。
 	if err != nil {
@@ -311,6 +272,10 @@ func (s *kernel) normalizeContent(ctx context.Context, kind string, content []by
 		// 不合法就拒绝，失败就不能继续。
 		if err != nil {
 			return nil, err
+		}
+		// 模版删到零份就原样留正文，免得焊道全被丢掉。
+		if len(items) == 0 {
+			return content, nil
 		}
 		// 套进当前内容，失败就不能继续。
 		out, err := contenttpl.ApplyProjectItems(items, content)
@@ -446,7 +411,7 @@ func (s *Templates) ListProjectTemplates(ctx context.Context, token string) ([]C
 		_ = s.audit(ctx, nil, nil, nil, "get_template", KindProject, audit.Deny)
 		return nil, err
 	}
-	// 工程项不齐就按种子补。
+	// 读当前工程各份，空库首次才落种子。
 	rows, err := s.ensureProjectItems(ctx)
 	// 补失败就拒绝，模版不能缺层。
 	if err != nil {
@@ -528,7 +493,7 @@ func (s *Templates) CreateProjectTemplate(ctx context.Context, token string, id 
 		_ = s.audit(ctx, &admin.ID, nil, nil, "update_template", name, audit.Deny)
 		return ContentTemplate{}, err
 	}
-	// 工程项不齐就按种子补。
+	// 读当前工程各份，空库首次才落种子。
 	cur, err := s.ensureProjectItems(ctx)
 	// 补失败就拒绝，模版不能缺层。
 	if err != nil {
@@ -712,8 +677,8 @@ func (s *Templates) UpdateTemplate(ctx context.Context, token, kind string, expe
 		return ContentTemplate{}, domain.ErrNotFound
 	}
 	sch, err := contenttpl.Parse(schemaJSON) // 收成规范字段表。
-	// 格式不对就拒绝，不接收坏数据。
-	if err != nil {
+	// 格式不对或根不是对象就拒绝，免得新建工艺被套成数组。
+	if err != nil || sch.Root != contenttpl.RootObject {
 		// 改模版被拒就留审计。
 		_ = s.audit(ctx, &admin.ID, nil, nil, "update_template", kind, audit.Deny)
 		return ContentTemplate{}, domain.ErrTemplateInvalid
@@ -783,7 +748,7 @@ func (s *Templates) SnapshotsForFactory(ctx context.Context, factoryID uuid.UUID
 	if err != nil {
 		return nil, err
 	}
-	// 工程项不齐就按种子补。
+	// 读当前工程各份，空库首次才落种子。
 	projects, err := s.ensureProjectItems(ctx)
 	// 补失败就拒绝，模版不能缺层。
 	if err != nil {

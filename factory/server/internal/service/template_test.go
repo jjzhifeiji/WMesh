@@ -127,6 +127,47 @@ func TestAcceptTemplateDelivery(t *testing.T) {
 		// 断言没通过就停，结果和这条用例的预期不一致。
 		t.Fatalf("new %s want %s err %v", applied, want, err)
 	}
+
+	// 数组根字段表，误导入时工艺会被套成数组。
+	arrayRoot := []byte(`{"root":"array","templates":[]}`)
+	// 摘要对得上的数组根工艺快照，只靠根类型拦下。
+	arraySnap := factory.TemplateSnapshot{
+		ID: snap.ID, Kind: factory.KindProcess, Revision: 2,
+		Schema: json.RawMessage(arrayRoot), Digest: digest.Sum(arrayRoot), TargetFactoryID: &fid,
+	}
+	// 数组根工艺应被拒为模版不合法，放行说明没拦住。
+	if err := fac.AcceptTemplateDelivery(ctx, arraySnap); !errors.Is(err, domain.ErrTemplateInvalid) {
+		// 断言没通过就停，数组根工艺被收下了。
+		t.Fatalf("array root process: %v", err)
+	}
+	// 再取工艺模版，被拒后应仍是第一版。
+	tpl, err = fac.GetTemplate(ctx, pe.tok, factory.KindProcess)
+	// 取模版失败或修订变了就停，说明拒收前已写副本。
+	if err != nil || tpl.Revision != 1 {
+		// 断言没通过就停，被拒的快照仍落了库。
+		t.Fatalf("tpl after array root %+v %v", tpl, err)
+	}
+	// 拒收后再新建一份厂级工艺，看正文仍按旧模版套。
+	later, err := fac.CreateFactoryProcess(ctx, pe.tok, direct, "拒收后工艺", body)
+	// 建工艺失败就停，否则后面没有可靠结果。
+	if err != nil {
+		// 把建工艺的错误打出来并停住，避免继续往下验。
+		t.Fatal(err)
+	}
+	// 读回新建正文，看有没有被套成数组。
+	laterBody, err := fac.ReadAssetContent(ctx, pe.tok, later.ID)
+	// 读正文失败或不是旧模版套出的正文就停。
+	if err != nil || !bytes.Equal(laterBody, want) {
+		// 断言没通过就停，新建正文没按旧模版套。
+		t.Fatalf("after array root %s want %s err %v", laterBody, want, err)
+	}
+	// 同样的数组根当工程送来，旧登记簿仍照收。
+	arraySnap.ID, arraySnap.Kind, arraySnap.Revision = id.New(), factory.KindProject, 1
+	// 工程数组根被拒就停，说明根类型检查误伤了工程。
+	if err := fac.AcceptTemplateDelivery(ctx, arraySnap); err != nil {
+		// 把收工程模版的错误打出来并停住。
+		t.Fatalf("array root project: %v", err)
+	}
 }
 
 // 列出已接收模版，缺了说明下发没有收进厂里。

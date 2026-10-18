@@ -251,8 +251,10 @@ func (s *Closure) AcceptTemplateDelivery(ctx context.Context, snap TemplateSnaps
 		_ = s.audit(ctx, nil, nil, "accept_template", snap.Kind, audit.Deny)
 		return domain.ErrIntegrity
 	}
-	// 解析失败就不把现场钉到设备
-	if _, err := contenttpl.Parse(snap.Schema); err != nil {
+	// 先解开字段表，后面按类型核对根
+	sch, err := contenttpl.Parse(snap.Schema)
+	// 解不开或工艺根不是对象就拒收，免得新建工艺被套成数组
+	if err != nil || (snap.Kind == KindProcess && sch.Root != contenttpl.RootObject) {
 		// 记下收下模版被拒绝，写失败不改变结果
 		_ = s.audit(ctx, nil, nil, "accept_template", snap.Kind, audit.Deny)
 		return domain.ErrTemplateInvalid

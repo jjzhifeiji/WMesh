@@ -1,4 +1,4 @@
-import { inferProjectKinds, isRootItem, itemFields, selectedFields, DEFAULT_TEMPLATES, itemExtra, lookupTemplate, templatesFromKinds, type ProjectItemTemplate } from "./projectKinds";
+import { inferItemKind, inferProjectKinds, isRootItem, itemFields, selectedFields, DEFAULT_TEMPLATES, itemExtra, lookupTemplate, templatesFromKinds, type ProjectItemTemplate } from "./projectKinds";
 import { newId } from "@/shared/id";
 
 export type FieldType = "string" | "number" | "bool" | "object" | "array" | "process";
@@ -190,6 +190,8 @@ export function collectProcessIds(value: unknown, schema?: ContentSchema | null)
           value.forEach((el) => {
             const id = el && typeof el === "object" && !Array.isArray(el) ? String((el as Record<string, unknown>).templateId ?? "") : "";
             walkObject(byId.get(id) ?? union, el);
+            // 模版漏声明也照收：再按推断的种类走一遍标准工艺槽，单层带附加槽，重复的由 seen 去掉。
+            walkObject(itemFields(inferItemKind(el), true), el);
           });
         }
       } else if (Array.isArray(schema.templates)) {

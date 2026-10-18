@@ -19,6 +19,8 @@ type legacyFileReq struct {
 	Content   string `json:"content"`   // UTF-8 JSON
 	Overwrite bool   `json:"overwrite"` // 本份同名改正文
 	Rename    bool   `json:"rename"`    // 本份同名按路径另起
+	WeldKind  string `json:"weldKind"`  // 重试工艺时带回的作业类型，可空
+	Suffix    string `json:"suffix"`    // 重试工艺时带回的名字后缀，可空
 }
 
 // 一批旧工艺和工程，缺路径的工程拒绝。
@@ -59,7 +61,7 @@ func (h *Handler) importLegacy(w http.ResponseWriter, r *http.Request) {
 	// 逐份收成工艺文件，缺路径由服务拒绝。
 	for _, f := range req.Processes {
 		// 收成一份旧文件，正文按字节保存。
-		in.Processes = append(in.Processes, service.LegacyFile{Path: f.Path, Name: f.Name, Content: []byte(f.Content), Overwrite: f.Overwrite, Rename: f.Rename})
+		in.Processes = append(in.Processes, service.LegacyFile{Path: f.Path, Name: f.Name, Content: []byte(f.Content), Overwrite: f.Overwrite, Rename: f.Rename, WeldKind: f.WeldKind, Suffix: f.Suffix})
 	}
 	// 逐份收成工程文件，缺路径则整批拒绝。
 	for _, f := range req.Projects {

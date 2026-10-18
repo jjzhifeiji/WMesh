@@ -330,17 +330,78 @@ func (s *Assets) SetPlatformWeldKind(ctx context.Context, token string, assetID 
 		}
 		// 只保留和作业类型相符的依赖。
 		write.Deps = kept
-		// 对不上就拒绝，避免焊道和模式错配。
-		if err := assertProjectWeldKind(kind, cur.Content); err != nil {
+		// 正文里认得出的焊道类型对不上，就要换成空焊道。
+		wipe := assertProjectWeldKind(kind, cur.Content) != nil
+		// 类型核对放过时，再看正文是否还引用被筛掉的工艺。
+		if !wipe {
+			// 自定义模版认不出类型，按引用和筛掉的依赖再核一次。
+			wipe, err = s.refsDroppedDeps(ctx, cur.Content, cur.Deps, kept)
+			// 收集引用失败就整次拒绝，不清正文。
+			if err != nil {
+				return store.AssetWrite{}, err
+			}
+		}
+		// 类型不符或引用了被筛掉的工艺，正文换成空焊道。
+		if wipe {
 			// 收成字节，失败就不能继续。
 			empty := []byte("[]")
-			// 类型对不上就改成空焊道。
+			// 改成空焊道，免得留下对不上依赖的引用。
 			write.Content = empty
 			// 按内容算摘要，失败就不能继续。
 			write.Digest = digest.Sum(empty)
 		}
 		return write, nil
 	})
+}
+
+// refsDroppedDeps 正文是否引用了改类型时被筛掉的依赖；没有筛掉就不看正文。
+func (s *kernel) refsDroppedDeps(ctx context.Context, content []byte, all, kept []AssetDep) (bool, error) {
+	// 记下留下来的依赖身份，剩下的就是被筛掉的。
+	keep := make(map[uuid.UUID]struct{}, len(kept))
+	// 逐条登记留下的依赖。
+	for _, d := range kept {
+		// 用身份当键，同一工艺只记一次。
+		keep[d.ID] = struct{}{}
+	}
+	// 按数量先准备被筛掉的身份集合。
+	dropped := make(map[string]struct{}, len(all))
+	// 逐条看原依赖，不在留下集合里的就是被筛掉的。
+	for _, d := range all {
+		// 留下来的跳过，只收被筛掉的。
+		if _, ok := keep[d.ID]; ok {
+			continue
+		}
+		// 收成文本，和正文里的引用对得上。
+		dropped[d.ID.String()] = struct{}{}
+	}
+	// 一条都没筛掉，正文引用不会悬空。
+	if len(dropped) == 0 {
+		return false, nil
+	}
+	// 按当前各份模版取字段表。
+	items, err := s.projectItemSchemas(ctx)
+	// 模版读不出就整次拒绝，不猜正文。
+	if err != nil {
+		return false, err
+	}
+	// 按当前模版收集引用；路径键直接拒绝。
+	ids, err := contenttpl.CollectProcessIDsFromItems(items, content)
+	// 收集失败就整次拒绝，不清正文。
+	if err != nil {
+		// 正文里出现路径键则拒绝，必须改用身份。
+		if errors.Is(err, contenttpl.ErrProcessPath) {
+			return false, domain.ErrForbidden
+		}
+		return false, domain.ErrAssetDependency
+	}
+	// 逐个引用看是否落在被筛掉的部分。
+	for _, id := range ids {
+		// 命中一条就得清正文，免得下发缺工艺。
+		if _, ok := dropped[id]; ok {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // GetPlatformAsset 读平台级元数据；摘要不符则拒绝。
@@ -392,7 +453,7 @@ func (s *Assets) ReadPlatformAssetContent(ctx context.Context, token string, ass
 	return a.Content, nil
 }
 
-// PromoteFromSnapshot 用厂级快照升平台级：第一次复制新身份为草稿；再升按正文摘要跳过或覆盖为草稿。原件不进 WAN。
+// PromoteFromSnapshot 用厂级快照升平台级：第一次复制新身份为草稿；再升摘要和作业类型都相同才跳过，否则覆盖为草稿。原件不进 WAN。
 func (s *Assets) PromoteFromSnapshot(ctx context.Context, token string, snap AssetSnapshot) (Asset, error) {
 	// 只有 WAN 管理员能升档。失败一律记拒绝。
 	admin, err := s.RequireAdmin(ctx, token)
@@ -482,18 +543,18 @@ func (s *Assets) PromoteFromSnapshot(ctx context.Context, token string, snap Ass
 	existing, err := s.store.AssetBySourceID(ctx, snap.SourceID)
 	// 没有错误才继续，有错留在后面的分支。
 	if err == nil {
-		// 摘要相同就不必覆盖，避免无谓升高修订。
-		if bytes.Equal(existing.Digest, sum) {
-			// 正文未变则幂等返回已有平台级。
+		// 摘要和作业类型都相同才不覆盖，避免无谓升高修订。
+		if bytes.Equal(existing.Digest, sum) && existing.WeldKind == weld {
+			// 正文和作业类型未变则幂等返回已有平台级。
 			if err := s.audit(ctx, &admin.ID, nil, &fid, "promote_asset", assetTarget(existing.ID, existing.Revision)+" from "+assetTarget(snap.SourceID, snap.SourceRevision), audit.Allow); err != nil {
 				return Asset{}, err
 			}
 			// 去掉正文再返回。
 			return stripContent(existing), nil
 		}
-		// 正文变了则覆盖为草稿，身份不变。
+		// 正文或作业类型变了则覆盖为草稿，身份不变，作业类型跟快照走。
 		row, err := s.store.UpdateAsset(ctx, existing.ID, existing.Revision, store.AssetWrite{
-			Name: snap.Name, Content: body, Digest: sum, Copyable: existing.Copyable, Status: AssetDraft, Deps: deps, SourceRevision: &rev,
+			Name: snap.Name, Content: body, Digest: sum, Copyable: existing.Copyable, Status: AssetDraft, WeldKind: weld, Deps: deps, SourceRevision: &rev,
 		})
 		// 这一步失败就停，避免留下半截。
 		if err != nil {

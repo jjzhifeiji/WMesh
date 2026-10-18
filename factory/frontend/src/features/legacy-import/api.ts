@@ -9,11 +9,15 @@ export type LegacyFile = {
   content: string; // UTF-8 JSON
   overwrite?: boolean; // 本份覆盖
   rename?: boolean; // 本份按路径重命名
+  weldKind?: string; // 重试工艺时带回的作业类型，只处理这一份
+  suffix?: string; // 和作业类型一起带回的名字后缀
 };
 
 export type LegacyReject = {
   path: string; // 相对路径
   reason: string; // 英文原因
+  weldKind?: string; // 工艺按哪种作业类型那份；工程或不限类型时没有
+  suffix?: string; // 那份工艺名字后接的作业类型后缀
 };
 
 export type LegacyImportResult = {

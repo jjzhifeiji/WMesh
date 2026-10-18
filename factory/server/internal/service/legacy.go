@@ -1,10 +1,12 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"path"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -20,6 +22,8 @@ import (
 
 var gapFolderRe = regexp.MustCompile(`^(\d+)H-(\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)`) // 目录名：层H-最小-最大
 
+var importSerialRe = regexp.MustCompile(`^(.+) \(\d+\)$`) // 另起名时加在末尾的「 (序号)」
+
 // LegacyFile 是一次导入里的一份旧 JSON，路径相对工艺/工程根。
 type LegacyFile struct {
 	Path      string // 相对路径，如 Standard/1T1.2/1K.json 或 tbar/x/project_data.json
@@ -27,6 +31,8 @@ type LegacyFile struct {
 	Content   []byte // UTF-8 JSON
 	Overwrite bool   // 本份同名改正文；可盖过整批
 	Rename    bool   // 本份同名按路径另起；可盖过整批
+	WeldKind  string // 重试工艺时带回的作业类型，只处理这一份；空则按本批预扫
+	Suffix    string // 和作业类型一起带回的名字后缀，首种那份为空
 }
 
 // LegacyImport 厂端一次性导入：先工艺后工程。
@@ -39,8 +45,10 @@ type LegacyImport struct {
 
 // LegacyReject 是未入库的一份工程或坏工艺，已入工艺仍保留。
 type LegacyReject struct {
-	Path   string `json:"path"`   // 相对路径
-	Reason string `json:"reason"` // 英文原因，无正文
+	Path     string `json:"path"`               // 相对路径
+	Reason   string `json:"reason"`             // 英文原因，无正文
+	WeldKind string `json:"weldKind,omitempty"` // 工艺按哪种作业类型那份；工程或不限类型时为空
+	Suffix   string `json:"suffix,omitempty"`   // 那份工艺名字后接的作业类型后缀，首种为空
 }
 
 // LegacyImportResult 是本批导入结果；部分工程拒绝时其它份仍可成功。
@@ -48,7 +56,7 @@ type LegacyImportResult struct {
 	Processes []Asset        `json:"processes"` // 新建或覆盖后的本厂工艺
 	Projects  []Asset        `json:"projects"`  // 新建或覆盖后的本厂工程
 	Rejected  []LegacyReject `json:"rejected"`  // 未入的工程或坏文件
-	Skipped   []LegacyReject `json:"skipped"`   // 同名跳过，沿用已有身份
+	Skipped   []LegacyReject `json:"skipped"`   // 内容相同或同名跳过，沿用已有身份
 }
 
 // ImportLegacy 由工厂超管或整厂管理员把旧文件收成厂级资产。
@@ -72,8 +80,8 @@ func (s *Assets) ImportLegacy(ctx context.Context, token string, in LegacyImport
 		Rejected:  []LegacyReject{},
 		Skipped:   []LegacyReject{},
 	}
-	// 取出未停用厂级的同名对照，个人级不参与。
-	names, err := s.factoryImportNames(ctx)
+	// 取出未停用厂级的同名对照和工艺，个人级不参与。
+	book, err := s.factoryImportBook(ctx)
 	// 对照表读失败则整批导入停下。
 	if err != nil {
 		return LegacyImportResult{}, err
@@ -84,8 +92,10 @@ func (s *Assets) ImportLegacy(ctx context.Context, token string, in LegacyImport
 	wc := WorkContext{Direct: true}
 	// 同一相对路径只收一次，重复的丢掉。
 	seen := map[string]struct{}{}
-	// 先收工艺，后面工程才能把路径换成身份。
-	for _, f := range in.Processes {
+	// 先预扫本批工程，记下每份工艺被哪些作业类型引用。
+	uses := scanLegacyUses(in.Processes, in.Projects)
+	// 按相对路径排好再收，同名时谁留原名每次都一样。
+	for _, f := range sortLegacyFiles(in.Processes) {
 		// 统一斜杠并去掉无意义前缀，空路径算无效。
 		rel := normalizeLegacyPath(f.Path)
 		// 路径空则这一份不入库，其它份继续。
@@ -115,66 +125,49 @@ func (s *Assets) ImportLegacy(ctx context.Context, token string, in LegacyImport
 		}
 		// 单份的覆盖或另起名可以盖过整批开关。
 		overwrite, rename := importFileFlags(in, f)
-		// 已有同名未停用工艺，再看覆盖还是另起名。
-		if cur, ok := names[importNameKey(KindProcess, name)]; ok {
-			// 不覆盖则改看是否按路径另起新名。
-			if !overwrite {
-				// 不另起名就跳过同名，沿用已有那一条。
-				if !rename {
-					// 记下原始路径和别名，后面工程才能对上。
-					idx.add(rel, cur.ID)
-					// 同名且不覆盖就跳过，沿用已有身份。
-					out.Skipped = append(out.Skipped, LegacyReject{Path: rel, Reason: "name exists"})
-					continue
-				}
-				// 同名按路径另起，仍撞就加序号。
-				name = uniqueImportName(names, KindProcess, name, rel)
-				// 允许覆盖时改正文，身份保持不变。
-			} else {
-				// 同名且允许覆盖时改正文，身份保持不变。
-				row, err := s.overwriteImported(ctx, acc, token, cur, f.Content)
-				// 这一份失败就记入未入清单，其它份继续。
-				if err != nil {
-					// 这一份没入库，记入未入清单，其它份继续。
-					out.Rejected = append(out.Rejected, LegacyReject{Path: rel, Reason: err.Error()})
-					continue
-				}
-				// 本批刚入库的名字立刻参与后面的同名判断。
-				rememberImportName(names, row)
-				// 记下原始路径和别名，后面工程才能对上。
-				idx.add(rel, row.ID)
-				// 这份工艺已经入库，放进本批成功结果。
-				out.Processes = append(out.Processes, row)
+		// 先备好这份工艺的公共部分，各作业类型那份共用。
+		p := legacyProc{rel: rel, base: name, content: f.Content, sums: s.importDigests(ctx, f.Content), overwrite: overwrite, rename: rename}
+		// 重试带回了作业类型，只处理那一份，不看本批预扫。
+		if f.WeldKind != "" || f.Suffix != "" {
+			// 作业类型不合法或后缀对不上就拒绝这一份。
+			kind, ok := legacyRetryKind(f)
+			// 带回的类型或后缀不对，记入未入清单。
+			if !ok {
+				// 这一份没入库，记入未入清单，其它份继续。
+				out.Rejected = append(out.Rejected, LegacyReject{Path: rel, Reason: "invalid weld kind", WeldKind: f.WeldKind, Suffix: f.Suffix})
 				continue
 			}
-		}
-		// 把这份旧工艺收成厂级草稿。
-		row, err := s.CreateFactoryProcess(ctx, token, wc, name, f.Content)
-		// 这一份失败就记入未入清单，其它份继续。
-		if err != nil {
-			// 这一份没入库，记入未入清单，其它份继续。
-			out.Rejected = append(out.Rejected, LegacyReject{Path: rel, Reason: err.Error()})
+			// 按带回的类型和后缀定位首导时那一份。
+			p.kind, p.suffix = kind, f.Suffix
+			// 只按这种作业类型重试这一份。
+			s.importLegacyProcess(ctx, acc, token, wc, book, idx, &out, p)
 			continue
 		}
-		// 导入的草稿立刻发布成可用。
-		row, err = s.PublishAsset(ctx, token, row.ID, row.Revision)
-		// 这一份失败就记入未入清单，其它份继续。
-		if err != nil {
-			// 这一份没入库，记入未入清单，其它份继续。
-			out.Rejected = append(out.Rejected, LegacyReject{Path: rel, Reason: err.Error()})
+		// 本批没有工程引用就只入一份，不限类型沿用。
+		if len(uses[rel]) == 0 {
+			// 不限类型找能沿用的，找不到按单层新建。
+			s.importLegacyProcess(ctx, acc, token, wc, book, idx, &out, p)
 			continue
 		}
-		// 本批刚入库的名字立刻参与后面的同名判断。
-		rememberImportName(names, row)
-		// 记下原始路径和别名，后面工程才能对上。
-		idx.add(rel, row.ID)
-		// 这份工艺已经入库，放进本批成功结果。
-		out.Processes = append(out.Processes, row)
+		// 被几种作业类型引用就按类型各入一份。
+		for i, kind := range uses[rel] {
+			// 这一份按这种作业类型比对和新建。
+			p.kind = kind
+			// 第一种用原名，不加后缀。
+			p.suffix = ""
+			// 不是第一种就加后缀，免得和前一份撞名。
+			if i > 0 {
+				// 原名后面要接的作业类型后缀。
+				p.suffix = weldKindSuffix(kind)
+			}
+			// 按这种作业类型入一份并记进路径对照。
+			s.importLegacyProcess(ctx, acc, token, wc, book, idx, &out, p)
+		}
 	}
-	// 按缝隙目录收打底和盖面，缺文件的带也可以留。
+	// 按缝隙目录收 T 排那份打底和盖面，缺文件的带也可以留。
 	bands := idx.gapBands()
-	// 工艺入库后再收工程，失败只拒这一份。
-	for _, f := range in.Projects {
+	// 工艺入库后再收工程，同样按相对路径排好。
+	for _, f := range sortLegacyFiles(in.Projects) {
 		// 统一斜杠并去掉无意义前缀，空路径算无效。
 		rel := normalizeLegacyPath(f.Path)
 		// 先取文件里的名字，空的再从路径推断。
@@ -186,16 +179,23 @@ func (s *Assets) ImportLegacy(ctx context.Context, token string, in LegacyImport
 		}
 		// 单份的覆盖或另起名可以盖过整批开关。
 		overwrite, rename := importFileFlags(in, f)
+		// 名字已被本批别的路径占用，按路径另起，不跳过也不覆盖。
+		if book.takenByBatch(KindProject, name) {
+			// 先改用路径名，路径名也被本批占用才加序号。
+			name = book.batchFreeName(KindProject, name, rel, "")
+		}
 		// 已有同名工程且不覆盖，再看是否另起名。
-		if _, ok := names[importNameKey(KindProject, name)]; ok && !overwrite {
+		if cur, ok := book.names[importNameKey(KindProject, name)]; ok && !overwrite {
 			// 不另起名就跳过同名，沿用已有那一条。
 			if !rename {
+				// 沿用的身份算本批占用，后面同名另起。
+				book.claim(cur)
 				// 同名且不覆盖就跳过，沿用已有身份。
 				out.Skipped = append(out.Skipped, LegacyReject{Path: rel, Reason: "name exists"})
 				continue
 			}
 			// 同名按路径另起，仍撞就加序号。
-			name = uniqueImportName(names, KindProject, name, rel)
+			name = uniqueImportName(book.names, KindProject, name, rel, "")
 		}
 		// 把旧路径换成身份并打上模版，失败则整份不入。
 		body, err := rewriteLegacyProject(f.Content, rel, idx, bands)
@@ -206,7 +206,7 @@ func (s *Assets) ImportLegacy(ctx context.Context, token string, in LegacyImport
 			continue
 		}
 		// 覆盖时改正文，工程身份保持不变。
-		if cur, ok := names[importNameKey(KindProject, name)]; ok {
+		if cur, ok := book.names[importNameKey(KindProject, name)]; ok {
 			// 同名且允许覆盖时改正文，身份保持不变。
 			row, err := s.overwriteImported(ctx, acc, token, cur, body)
 			// 这一份失败就记入未入清单，其它份继续。
@@ -215,8 +215,8 @@ func (s *Assets) ImportLegacy(ctx context.Context, token string, in LegacyImport
 				out.Rejected = append(out.Rejected, LegacyReject{Path: rel, Reason: err.Error()})
 				continue
 			}
-			// 本批刚入库的名字立刻参与后面的同名判断。
-			rememberImportName(names, row)
+			// 覆盖过的身份算本批占用，后面同名另起。
+			book.claim(row)
 			// 这份工程已经入库，放进本批成功结果。
 			out.Projects = append(out.Projects, row)
 			continue
@@ -237,8 +237,8 @@ func (s *Assets) ImportLegacy(ctx context.Context, token string, in LegacyImport
 			out.Rejected = append(out.Rejected, LegacyReject{Path: rel, Reason: err.Error()})
 			continue
 		}
-		// 本批刚入库的名字立刻参与后面的同名判断。
-		rememberImportName(names, row)
+		// 本批新建的身份立刻参与后面的同名判断。
+		book.claim(row)
 		// 这份工程已经入库，放进本批成功结果。
 		out.Projects = append(out.Projects, row)
 	}
@@ -251,6 +251,143 @@ func (s *Assets) ImportLegacy(ctx context.Context, token string, in LegacyImport
 	return out, nil
 }
 
+// legacyProc 一份旧工艺按一种作业类型入库时要用的内容。
+type legacyProc struct {
+	rel       string   // 规范化后的相对路径
+	base      string   // 原名，按摘要找沿用时用它排候选
+	suffix    string   // 非首种作业类型那份加的后缀，首种为空
+	kind      string   // 作业类型；空表示本批没有工程引用，不限类型
+	content   []byte   // 旧工艺正文
+	sums      [][]byte // 原文和套模版后的两份摘要
+	overwrite bool     // 同名时改正文，身份不变
+	rename    bool     // 同名时按路径另起名新建
+}
+
+// reject 这一份工艺的未入或跳过条目，带上作业类型和后缀，重试时原样带回。
+func (p legacyProc) reject(reason string) LegacyReject {
+	// 同一路径拆成几份时靠类型和后缀分开。
+	return LegacyReject{Path: p.rel, Reason: reason, WeldKind: p.kind, Suffix: p.suffix}
+}
+
+// legacyRetryKind 收下重试带回的作业类型；类型须合法，后缀只能为空或该类型的后缀。
+func legacyRetryKind(f LegacyFile) (string, bool) {
+	// 没带作业类型只带后缀，对不上任何一份。
+	if strings.TrimSpace(f.WeldKind) == "" {
+		return "", false
+	}
+	// 收成单层、多层或 T 排。
+	kind, err := store.NormalizeWeldKind(f.WeldKind)
+	// 别的写法一律不认。
+	if err != nil {
+		return "", false
+	}
+	// 后缀只能是空或这种类型自己的后缀。
+	if f.Suffix != "" && f.Suffix != weldKindSuffix(kind) {
+		return "", false
+	}
+	return kind, true
+}
+
+// indexKind 记进路径对照的作业类型：本批引用的类型，没人引用就用条目自己的。
+func (p legacyProc) indexKind(row Asset) string {
+	// 本批有工程引用时，按引用的类型记。
+	if p.kind != "" {
+		return p.kind
+	}
+	// 没人引用就按条目自己的作业类型记。
+	return normWeldKind(row.WeldKind)
+}
+
+// importLegacyProcess 按一种作业类型收一份旧工艺，结果记进路径对照和本批结果。
+func (s *Assets) importLegacyProcess(ctx context.Context, acc Account, token string, wc WorkContext, book *importBook, idx *pathIndex, out *LegacyImportResult, p legacyProc) {
+	// 原名接上后缀就是这一份的名字，撞名时再改。
+	name := p.base + p.suffix
+	// 新建时用的作业类型，本批没人引用就按单层。
+	create := p.kind
+	// 没有工程引用的工艺新建时按单层。
+	if create == "" {
+		// 旧工艺不带作业类型，没人引用就当单层。
+		create = store.WeldKindSingle
+	}
+	// 候选名里有摘要相同的工艺就沿用，重导不出副本。
+	if hit, ok := book.sameContent(p.base, p.rel, p.kind, p.sums); ok {
+		// 沿用的身份算本批占用，别的路径不再认它。
+		book.claim(hit)
+		// 按路径和作业类型记下，后面工程才能对上。
+		idx.add(p.rel, p.indexKind(hit), hit.ID)
+		// 内容相同就跳过，沿用已有身份。
+		out.Skipped = append(out.Skipped, p.reject("same content"))
+		return
+	}
+	// 名字已被本批别的路径占用，按路径另起，不跳过也不覆盖。
+	if book.takenByBatch(KindProcess, name) {
+		// 先改用路径名，路径名也被本批占用才加序号。
+		name = book.batchFreeName(KindProcess, name, p.rel, p.suffix)
+	}
+	// 库里已有同名未停用工艺，再看作业类型和覆盖开关。
+	if cur, ok := book.names[importNameKey(KindProcess, name)]; ok {
+		// 按作业类型、覆盖、另起名、跳过依次处理。
+		switch {
+		// 作业类型不同则不沿用不覆盖，另起名新建；没人引用的不限类型。
+		case p.kind != "" && !sameWeldKind(cur.WeldKind, p.kind):
+			// 同名按路径另起，仍撞就加序号。
+			name = uniqueImportName(book.names, KindProcess, name, p.rel, p.suffix)
+		// 允许覆盖时改正文，身份保持不变。
+		case p.overwrite:
+			// 同名且允许覆盖时改正文，身份保持不变。
+			row, err := s.overwriteImported(ctx, acc, token, cur, p.content)
+			// 这一份失败就记入未入清单，其它份继续。
+			if err != nil {
+				// 这一份没入库，记入未入清单，其它份继续。
+				out.Rejected = append(out.Rejected, p.reject(err.Error()))
+				return
+			}
+			// 覆盖过的身份算本批占用，后面同名另起。
+			book.claim(row)
+			// 按路径和作业类型记下，后面工程才能对上。
+			idx.add(p.rel, p.indexKind(cur), row.ID)
+			// 这份工艺已经入库，放进本批成功结果。
+			out.Processes = append(out.Processes, row)
+			return
+		// 允许另起名时按路径另起新名新建。
+		case p.rename:
+			// 同名按路径另起，仍撞就加序号。
+			name = uniqueImportName(book.names, KindProcess, name, p.rel, p.suffix)
+		// 既不覆盖也不另起名，就沿用库里那一条。
+		default:
+			// 沿用的身份算本批占用，后面同名另起。
+			book.claim(cur)
+			// 按路径和作业类型记下，后面工程才能对上。
+			idx.add(p.rel, p.indexKind(cur), cur.ID)
+			// 同名且内容不同，按选择跳过并沿用已有身份。
+			out.Skipped = append(out.Skipped, p.reject("name exists, content differs"))
+			return
+		}
+	}
+	// 把这份旧工艺按作业类型收成厂级草稿。
+	row, err := s.CreateFactoryProcess(ctx, token, wc, name, p.content, create)
+	// 这一份失败就记入未入清单，其它份继续。
+	if err != nil {
+		// 这一份没入库，记入未入清单，其它份继续。
+		out.Rejected = append(out.Rejected, p.reject(err.Error()))
+		return
+	}
+	// 导入的草稿立刻发布成可用。
+	row, err = s.PublishAsset(ctx, token, row.ID, row.Revision)
+	// 这一份失败就记入未入清单，其它份继续。
+	if err != nil {
+		// 这一份没入库，记入未入清单，其它份继续。
+		out.Rejected = append(out.Rejected, p.reject(err.Error()))
+		return
+	}
+	// 本批新建的身份立刻参与后面的同名判断。
+	book.claim(row)
+	// 按路径和作业类型记下，后面工程才能对上。
+	idx.add(p.rel, create, row.ID)
+	// 这份工艺已经入库，放进本批成功结果。
+	out.Processes = append(out.Processes, row)
+}
+
 // insertImportedProject 按改写后正文落厂级工程，不套已收模版，免把 T 排元素丢掉。
 func (s *Assets) insertImportedProject(ctx context.Context, acc Account, wc WorkContext, name string, content []byte) (Asset, error) {
 	// 定下制作时的工作位置，并准备冻结路径。
@@ -261,26 +398,32 @@ func (s *Assets) insertImportedProject(ctx context.Context, acc Account, wc Work
 		_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny, unitID, path)
 		return Asset{}, err
 	}
-	// 按改写后的正文钉当前可用工艺。
-	deps, err := s.importedProjectDeps(ctx, content)
+	// 作业类型按改写后正文里的模版推断。
+	weld := contenttpl.InferWeldKind(content)
+	// 按改写后的正文钉当前可用工艺，并核作业类型。
+	deps, err := s.importedProjectDeps(ctx, weld, content)
 	// 失败则记拒绝并停下，不继续往下改。
 	if err != nil {
 		// 创建被拒时补记审计，写失败仍维持拒绝。
 		_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny, unitID, path)
 		return Asset{}, err
 	}
-	// 校验都过了才落成一条资产。
-	return s.insertGoverned(ctx, acc, unitID, path, KindProject, AssetLevelFactory, name, content, deps, true)
+	// 校验都过了才按推断的作业类型落成一条资产。
+	return s.insertGoverned(ctx, acc, unitID, path, KindProject, AssetLevelFactory, name, content, deps, true, weld)
 }
 
-// overwriteImported 改正文（工程同时改依赖），身份不变；草稿顺带发布。
+// overwriteImported 改正文（工程同时改依赖和作业类型），身份不变；草稿顺带发布。
 func (s *Assets) overwriteImported(ctx context.Context, acc Account, token string, cur Asset, content []byte) (Asset, error) {
 	// 工艺覆盖不改依赖；工程在下面重钉。
 	deps := []AssetDep{}
+	// 工艺覆盖不改作业类型，空着表示保持原样。
+	weld := ""
 	// 工程覆盖时同时改依赖，工艺只改正文。
 	if cur.Kind == KindProject {
-		// 按改写后的正文钉当前可用工艺。
-		d, err := s.importedProjectDeps(ctx, content)
+		// 工程作业类型按新正文推断，一起写回。
+		weld = contenttpl.InferWeldKind(content)
+		// 按改写后的正文钉当前可用工艺，并核作业类型。
+		d, err := s.importedProjectDeps(ctx, weld, content)
 		// 依赖钉不住则这份工程不能覆盖或新建。
 		if err != nil {
 			return Asset{}, err
@@ -302,7 +445,7 @@ func (s *Assets) overwriteImported(ctx context.Context, acc Account, token strin
 			}
 		}
 		// 拼出本次要写入的内容，没通过的字段不改。
-		return store.AssetWrite{Name: live.Name, Content: content, Digest: digest.Sum(content), Copyable: live.Copyable, Status: live.Status, Deps: deps}, nil
+		return store.AssetWrite{Name: live.Name, Content: content, Digest: digest.Sum(content), Copyable: live.Copyable, Status: live.Status, Deps: deps, WeldKind: weld}, nil
 	})
 	// 这一步失败则停下，避免带着残缺结果继续。
 	if err != nil {
@@ -316,8 +459,12 @@ func (s *Assets) overwriteImported(ctx context.Context, acc Account, token strin
 	return row, nil
 }
 
-// importedProjectDeps 按改写后正文钉当前可用工艺，不套模版。
-func (s *Assets) importedProjectDeps(ctx context.Context, content []byte) ([]AssetDep, error) {
+// importedProjectDeps 按改写后正文钉当前可用工艺，不套模版；焊缝和依赖都要和作业类型一致。
+func (s *Assets) importedProjectDeps(ctx context.Context, weld string, content []byte) ([]AssetDep, error) {
+	// 正文里混了几种焊缝就整份拒绝。
+	if err := assertProjectWeldKind(weld, content); err != nil {
+		return nil, err
+	}
 	// 从改写后的正文收集工艺引用。
 	ids, err := contenttpl.CollectProcessIDsFromItems(contenttpl.SeedProjectItems(), content)
 	// 引用收集失败则整份依赖不成立。
@@ -337,6 +484,10 @@ func (s *Assets) importedProjectDeps(ctx context.Context, content []byte) ([]Ass
 	if err := s.assertFactoryProcessDeps(ctx, deps); err != nil {
 		return nil, err
 	}
+	// 依赖钉到别的作业类型的工艺则整份拒绝。
+	if err := s.assertDepsWeldKind(ctx, weld, deps); err != nil {
+		return nil, err
+	}
 	// 把已钉上的身份收成集合，用来核正文引用。
 	allowed := map[string]struct{}{}
 	// 已钉上的身份收成允许集合。
@@ -354,8 +505,8 @@ func (s *Assets) importedProjectDeps(ctx context.Context, content []byte) ([]Ass
 	return deps, nil
 }
 
-// factoryImportNames 未停用厂级按种类+显示名取最新一条，个人级不参与。
-func (s *Assets) factoryImportNames(ctx context.Context) (map[string]Asset, error) {
+// factoryImportBook 未停用厂级按种类+显示名取最新一条，工艺另全留下按摘要沿用。
+func (s *Assets) factoryImportBook(ctx context.Context) (*importBook, error) {
 	// 读出本厂全部原件，后面再按人筛选。
 	rows, err := s.store.ListGovernedAssets(ctx)
 	// 列表读不出来则整份失败，不回半截。
@@ -363,23 +514,42 @@ func (s *Assets) factoryImportNames(ctx context.Context) (map[string]Asset, erro
 		return nil, err
 	}
 	// 同名只留先见到的未停用厂级。
-	out := map[string]Asset{}
+	book := newImportBook()
 	// 只收未停用厂级，个人级不参与同名对照。
 	for _, a := range rows {
 		// 个人级和停用的不参与同名对照。
 		if a.Level != AssetLevelFactory || a.Status == AssetDisabled {
 			continue
 		}
+		// 工艺全留下，同名多条时按摘要挑能沿用的。
+		if a.Kind == KindProcess {
+			// 记进工艺清单，按摘要沿用时要逐条比。
+			book.procs = append(book.procs, a)
+		}
 		// 用种类加显示名当同名对照，避免工艺和工程混在一起。
 		k := importNameKey(a.Kind, a.Name)
 		// 同种类同名只留先见到的那一条。
-		if _, ok := out[k]; ok {
+		if _, ok := book.names[k]; ok {
 			continue
 		}
 		// 这个种类加名字还没有对照，就留下。
-		out[k] = a
+		book.names[k] = a
 	}
-	return out, nil
+	return book, nil
+}
+
+// importDigests 原文和按模版规范化后的正文各算一份摘要。
+func (s *Assets) importDigests(ctx context.Context, content []byte) [][]byte {
+	// 覆盖时存的是原文，先按原文算一份。
+	sums := [][]byte{digest.Sum(content)}
+	// 新建时会按已收模版套正文，再按套后的算一份。
+	norm, err := s.normalizeContent(ctx, KindProcess, content)
+	// 套得上且和原文不同，才多比一份摘要。
+	if err == nil && !bytes.Equal(norm, content) {
+		// 套后正文的摘要也拿来比对。
+		sums = append(sums, digest.Sum(norm))
+	}
+	return sums
 }
 
 // importNameKey 同级同名对照键。
@@ -393,15 +563,473 @@ func rememberImportName(names map[string]Asset, row Asset) {
 	names[importNameKey(row.Kind, row.Name)] = row
 }
 
-// 导入路径到已入库工艺的对照，含去掉前缀的别名。
+// importBook 本批同名对照：库里已有的条目，加上本批占用过的身份。
+type importBook struct {
+	names   map[string]Asset       // 种类+显示名对到最新一条未停用条目
+	procs   []Asset                // 库里未停用工艺，按摘要找能沿用的
+	claimed map[uuid.UUID]struct{} // 本批新建、覆盖或沿用过的身份
+}
+
+// newImportBook 空对照表。
+func newImportBook() *importBook {
+	return &importBook{names: map[string]Asset{}, claimed: map[uuid.UUID]struct{}{}}
+}
+
+// claim 记下本批占用的身份，名字立刻参与后面的同名判断。
+func (b *importBook) claim(row Asset) {
+	// 名字对到这一条，后面同名能命中。
+	rememberImportName(b.names, row)
+	// 身份记成本批占用，别的路径不再沿用或覆盖。
+	b.claimed[row.ID] = struct{}{}
+}
+
+// takenByBatch 这个名字对到的身份已被本批别的路径占用。
+func (b *importBook) takenByBatch(kind, name string) bool {
+	// 先看名字有没有对到条目。
+	cur, ok := b.names[importNameKey(kind, name)]
+	// 名字没有条目就不算占用。
+	if !ok {
+		return false
+	}
+	// 再看这条身份是不是本批占用的。
+	_, ok = b.claimed[cur.ID]
+	return ok
+}
+
+// batchFreeName 避开本批已占用的名字：先用路径名（带作业类型后缀），仍撞再加序号。
+func (b *importBook) batchFreeName(kind, name, rel, suffix string) string {
+	// 用去掉扩展名的相对路径当候选新名，拆份的再接后缀。
+	label := importPathLabel(rel, suffix)
+	// 路径名和原名不同，才考虑拿路径另起。
+	if label != "" && label != name {
+		// 路径名没被本批占用就用它，撞库里的后面照常处理。
+		if !b.takenByBatch(kind, label) {
+			return label
+		}
+		// 路径名也被本批占用了，后面在它上面加序号。
+		name = label
+	}
+	// 仍被本批占用就加序号，直到找出本批没用过的。
+	for i := 2; i < 1000; i++ {
+		// 加上序号再试一次。
+		n := name + " (" + strconv.Itoa(i) + ")"
+		// 本批没用过这个名字就用它。
+		if !b.takenByBatch(kind, n) {
+			return n
+		}
+	}
+	return name
+}
+
+// sameContent 在候选名里找摘要和作业类型都相同的可用工艺，本批占用过的不算；want 空不限类型。
+func (b *importBook) sameContent(name, rel, want string, sums [][]byte) (Asset, bool) {
+	// 候选名：路径名、原名和带作业类型后缀的写法。
+	cands := importCandidates(name, rel, want)
+	// 记下目前最合适的一条和它的排位。
+	best, bestRank := Asset{}, -1
+	// 逐条比库里的工艺，挑排位最前的那条。
+	for _, p := range b.procs {
+		// 本批已经占用的身份不再给别的路径。
+		if _, ok := b.claimed[p.ID]; ok {
+			continue
+		}
+		// 草稿或作业类型不同的不沿用，免得钉不上；没人引用的不限类型。
+		if p.Status != AssetAvailable || (want != "" && !sameWeldKind(p.WeldKind, want)) {
+			continue
+		}
+		// 名字不在候选里就不比内容。
+		r := candidateRank(cands, p.Name)
+		// 名字对不上候选，或排位不比已选的靠前，就跳过。
+		if r < 0 || (bestRank >= 0 && r >= bestRank) {
+			continue
+		}
+		// 摘要对上任一份，才算内容相同。
+		if digestIn(p.Digest, sums) {
+			// 记下这条，后面排位更前的才能顶替。
+			best, bestRank = p, r
+		}
+	}
+	return best, bestRank >= 0
+}
+
+// importCandidates 按路径名、原名、作业类型后缀排出候选名，去重。
+func importCandidates(name, rel, want string) []string {
+	// 路径名在前，同名不同路径时先认自己那条。
+	bases := []string{strings.TrimSpace(legacyPathLabel(rel)), name}
+	// 非单层时再加带作业类型后缀的写法。
+	if suffix := weldKindSuffix(want); suffix != "" {
+		// 两个名字各加一份后缀。
+		bases = append(bases, bases[0]+suffix, name+suffix)
+	}
+	// 去掉空名和重复，排位保持原来的先后。
+	out := make([]string, 0, len(bases))
+	// 逐个候选去重，空的丢掉。
+	for _, n := range bases {
+		// 空名或只剩后缀的不当候选。
+		if n == "" || n == weldKindSuffix(want) || slices.Contains(out, n) {
+			continue
+		}
+		// 这个候选名还没收过，就留下。
+		out = append(out, n)
+	}
+	return out
+}
+
+// candidateRank 名字在候选里的排位，带序号的排在原写法之后；不在候选里回 -1。
+func candidateRank(cands []string, name string) int {
+	// 原写法直接命中，排位就是下标。
+	if i := slices.Index(cands, name); i >= 0 {
+		return i
+	}
+	// 去掉末尾序号后再对一次。
+	m := importSerialRe.FindStringSubmatch(name)
+	// 末尾没有序号就算不在候选里。
+	if m == nil {
+		return -1
+	}
+	// 带序号的变体排在所有原写法之后。
+	if i := slices.Index(cands, m[1]); i >= 0 {
+		// 排位加上原写法的个数。
+		return len(cands) + i
+	}
+	return -1
+}
+
+// digestIn 摘要是否等于其中任一份。
+func digestIn(sum []byte, sums [][]byte) bool {
+	// 逐份比摘要，对上一份就算相同。
+	for _, s := range sums {
+		// 摘要相同就算内容相同。
+		if bytes.Equal(sum, s) {
+			return true
+		}
+	}
+	return false
+}
+
+// weldKindSuffix 作业类型拆份时加在名字后的后缀；单层不加。
+func weldKindSuffix(kind string) string {
+	// 按作业类型给后缀。
+	switch kind {
+	// 多层那份加多层后缀。
+	case store.WeldKindMultilayer:
+		return "-多层"
+	// T 排那份加 T 排后缀。
+	case store.WeldKindTBar:
+		return "-T排"
+	}
+	return ""
+}
+
+// sameWeldKind 两个作业类型规范化后是否相同，空的当单层。
+func sameWeldKind(a, b string) bool {
+	// 先把左边收成规范写法。
+	na, errA := store.NormalizeWeldKind(a)
+	// 再把右边收成规范写法。
+	nb, errB := store.NormalizeWeldKind(b)
+	// 有一边不合法就按原样比。
+	if errA != nil || errB != nil {
+		return a == b
+	}
+	return na == nb
+}
+
+// sortLegacyFiles 按规范化后的相对路径排好，原切片不动。
+func sortLegacyFiles(files []LegacyFile) []LegacyFile {
+	// 拷一份再排，不改调用方的切片。
+	out := slices.Clone(files)
+	// 稳定排序，同一路径仍按上传先后。
+	sort.SliceStable(out, func(i, j int) bool {
+		// 按规范化后的相对路径比先后。
+		return normalizeLegacyPath(out[i].Path) < normalizeLegacyPath(out[j].Path)
+	})
+	return out
+}
+
+// normWeldKind 作业类型收成规范写法，空的当单层，不合法的原样留。
+func normWeldKind(kind string) string {
+	// 收成单层、多层或 T 排。
+	n, err := store.NormalizeWeldKind(kind)
+	// 不合法就原样留，后面比对自然对不上。
+	if err != nil {
+		return kind
+	}
+	return n
+}
+
+// legacyWeldOrder 共用工艺拆份时的先后：单层、多层、T 排，第一种留原名。
+var legacyWeldOrder = []string{store.WeldKindSingle, store.WeldKindMultilayer, store.WeldKindTBar}
+
+// scanLegacyUses 预扫本批工程，按相对路径记下每份工艺被哪些作业类型引用，按拆份先后排好。
+func scanLegacyUses(procs, projects []LegacyFile) map[string][]string {
+	// 工艺别名对到相对路径，规则和路径对照相同。
+	alias := map[string]string{}
+	// 本批会收的工艺相对路径，按排好的顺序。
+	var rels []string
+	// 同一路径只算一次，和正式收工艺时一致。
+	seen := map[string]struct{}{}
+	// 按收工艺时的顺序和筛法走一遍，别名后者为准。
+	for _, f := range sortLegacyFiles(procs) {
+		// 统一斜杠并去掉无意义前缀，空路径不收。
+		rel := normalizeLegacyPath(f.Path)
+		// 空路径或已见过的路径，正式收时也不会入。
+		if _, ok := seen[rel]; rel == "" || ok {
+			continue
+		}
+		// 记下这份路径，后面同路径的不再算。
+		seen[rel] = struct{}{}
+		// 坏正文正式收时会拒绝，不当引用目标。
+		if !json.Valid(f.Content) {
+			continue
+		}
+		// 记下这份工艺的路径，后面认缝隙带要用。
+		rels = append(rels, rel)
+		// 这份工艺的各种写法都对到它的路径。
+		for _, a := range legacyAliases(rel) {
+			// 同一写法后收的为准，和路径对照一致。
+			alias[a] = rel
+		}
+	}
+	// 每份工艺被引用的作业类型集合。
+	used := map[string]map[string]struct{}{}
+	// 有 T 排元素没带缝隙带，导入时会按目录补上。
+	needBands := false
+	// 逐份工程按改写时同样的规则认种类和引用。
+	for _, f := range projects {
+		// 先解成数组，解不开的整份会被拒绝，不算引用。
+		var arr []any
+		// 正文不是数组就跳过，改写时同样会拒。
+		if json.Unmarshal(f.Content, &arr) != nil {
+			continue
+		}
+		// 按路径判断整份种类，判断不了再逐条推断。
+		fileKind := projectFileKind(normalizeLegacyPath(f.Path))
+		// 逐条元素认作业类型和引用的工艺。
+		for _, el := range arr {
+			// 种类和改写时一样：先看路径，再看内容。
+			kind := legacyItemKind(fileKind, el)
+			// 收出这条元素里的旧路径，和改写时走法相同。
+			for _, p := range legacyProcessPaths(el, nil) {
+				// 对上本批工艺就记下这种作业类型。
+				if target, ok := resolveLegacyAlias(alias, p); ok {
+					// 记下这份工艺被这种作业类型引用。
+					markLegacyUse(used, target, contenttpl.WeldKindOfItem(kind))
+				}
+			}
+			// T 排元素没带缝隙带时，导入会按目录补带。
+			if obj, _ := el.(map[string]any); kind == contenttpl.ItemTBar && obj != nil {
+				// 正文里没有缝隙带才会补目录里的。
+				if _, ok := obj["gapBands"]; !ok {
+					// 记下要补带，收进带里的工艺算 T 排。
+					needBands = true
+				}
+			}
+		}
+	}
+	// 真有 T 排元素要补带时，收进带里的打底、盖面算 T 排。
+	if needBands {
+		// 逐份记下会收进带里的工艺。
+		for _, rel := range legacyBandFiles(rels) {
+			// 收进带里的打底、盖面按 T 排引用。
+			markLegacyUse(used, rel, store.WeldKindTBar)
+		}
+	}
+	// 按单层、多层、T 排的先后排成列表。
+	out := make(map[string][]string, len(used))
+	// 逐份工艺排好它用到的作业类型。
+	for rel, set := range used {
+		// 按固定先后挑出用到的类型。
+		for _, k := range legacyWeldOrder {
+			// 用到这种类型才排进去。
+			if _, ok := set[k]; ok {
+				// 按先后接上这种作业类型。
+				out[rel] = append(out[rel], k)
+			}
+		}
+	}
+	return out
+}
+
+// markLegacyUse 记下一份工艺被某种作业类型引用。
+func markLegacyUse(used map[string]map[string]struct{}, rel, kind string) {
+	// 这份工艺还没有记录就先建集合。
+	if used[rel] == nil {
+		// 新建这份工艺的作业类型集合。
+		used[rel] = map[string]struct{}{}
+	}
+	// 记下这种作业类型。
+	used[rel][kind] = struct{}{}
+}
+
+// legacyItemKind 工程元素的种类：整份路径能判断就用它，否则按内容推断。
+func legacyItemKind(fileKind string, el any) string {
+	// 整份路径判断出了种类就全用它。
+	if fileKind != "" {
+		return fileKind
+	}
+	// 路径判断不了，就按这一条的内容推断。
+	return contenttpl.InferItemKind(el)
+}
+
+// legacyProcessPaths 按改写时的走法收出非空的 processPath，内嵌工艺对象里的不算。
+func legacyProcessPaths(v any, out []string) []string {
+	// 数组逐个往下，对象里才有旧路径。
+	switch x := v.(type) {
+	// 数组里每一层都要看。
+	case []any:
+		// 逐个元素往下收旧路径。
+		for _, el := range x {
+			// 收这一层的旧路径，接在已有的后面。
+			out = legacyProcessPaths(el, out)
+		}
+	// 对象里才有旧路径。
+	case map[string]any:
+		// 非空的旧路径收下，空的算没选工艺。
+		if s, _ := x["processPath"].(string); s != "" {
+			// 记下这条旧路径。
+			out = append(out, s)
+		}
+		// 逐个字段往下，和改写时跳过的一致。
+		for k, child := range x {
+			// 旧路径和身份字段不再往下。
+			if k == "processPath" || k == "processId" {
+				continue
+			}
+			// 内嵌工艺对象改写时会删掉，里面的路径不算。
+			if _, isObj := child.(map[string]any); k == "process" && isObj {
+				continue
+			}
+			// 收这一层的旧路径，接在已有的后面。
+			out = legacyProcessPaths(child, out)
+		}
+	}
+	return out
+}
+
+// resolveLegacyAlias 按路径对照同样的写法顺序，把旧路径对到本批工艺。
+func resolveLegacyAlias(alias map[string]string, p string) (string, bool) {
+	// 依次试原样、去掉和补上工艺前缀的写法。
+	for _, k := range legacyLookupKeys(p) {
+		// 对上了就是这份工艺。
+		if rel, ok := alias[k]; ok {
+			return rel, true
+		}
+	}
+	return "", false
+}
+
+// legacyAliases 一份工艺在对照里的写法：原路径、去掉工艺前缀的、无子目录时的文件名。
+func legacyAliases(rel string) []string {
+	// 去掉工艺前缀的写法也能对上。
+	trimmed := strings.TrimPrefix(rel, "processes/")
+	// 原路径和去前缀的写法都收。
+	out := []string{rel, trimmed}
+	// 没有子目录时，文件名也能对上旧路径。
+	if !strings.Contains(trimmed, "/") {
+		// 补上文件名这种写法。
+		out = append(out, path.Base(rel))
+	}
+	return out
+}
+
+// legacyLookupKeys 一条旧路径依次去对照的写法：原样、去掉和补上工艺前缀；空路径没有。
+func legacyLookupKeys(p string) []string {
+	// 统一斜杠并去掉无意义前缀，空路径算没选。
+	p = normalizeLegacyPath(p)
+	// 空路径表示没选工艺，不去对照。
+	if p == "" {
+		return nil
+	}
+	// 原样在前，再试去掉和补上工艺前缀的写法。
+	return []string{p, strings.TrimPrefix(p, "processes/"), "processes/" + p}
+}
+
+// legacyGap 缝隙目录里的一份工艺，带上目录给出的层号和间隙。
+type legacyGap struct {
+	dir      string  // 缝隙目录的相对路径，同目录归一条带
+	name     string  // 缝隙目录名
+	layer    int     // 从目录名取出的层号
+	min, max float64 // 这条带的间隙下限和上限
+	role     string  // 打底 root、盖面 cap，别的文件为空
+}
+
+// legacyGapFile 认出缝隙目录里的文件；预扫和收带共用，6T1.2 样例目录也算。
+func legacyGapFile(rel string) (legacyGap, bool) {
+	// 拆出目录和文件，缝隙带按目录归。
+	dir, file := path.Split(strings.TrimSuffix(rel, "/"))
+	// 去掉尾部斜杠，目录名才能对上缝隙格式。
+	dir = strings.TrimSuffix(dir, "/")
+	// 只看最后一层目录名是不是层号加间隙。
+	base := path.Base(dir)
+	// 看目录名是不是层号加间隙，不是就跳过。
+	m := gapFolderRe.FindStringSubmatch(base)
+	// 目录名不是层号加间隙的格式就不算缝隙目录。
+	if m == nil {
+		return legacyGap{}, false
+	}
+	// 不是 T 排目录时，只留那个固定间隙样例。
+	if !strings.Contains(dir, "T排立对接") && !strings.Contains(strings.ToLower(dir), "tbar") && !strings.Contains(dir, "6T1.2") {
+		return legacyGap{}, false
+	}
+	// 从目录名取出层号，排缝隙带要用。
+	layer, _ := strconv.Atoi(m[1])
+	// 从目录名取出这条带的间隙下限。
+	min, _ := strconv.ParseFloat(m[2], 64)
+	// 从目录名取出这条带的间隙上限。
+	max, _ := strconv.ParseFloat(m[3], 64)
+	// 先按目录记下这份文件，打底盖面下面再认。
+	g := legacyGap{dir: dir, name: base, layer: layer, min: min, max: max}
+	// 去掉扩展名后看是打底还是盖面。
+	stem := strings.TrimSuffix(file, path.Ext(file))
+	// 按文件名把工艺归到打底或盖面。
+	switch {
+	// 名字里有打底，就当成这条带的打底工艺。
+	case strings.Contains(stem, "打底"):
+		// 记成打底。
+		g.role = "root"
+	// 名字里有盖面，就当成这条带的盖面工艺。
+	case strings.Contains(stem, "盖面"):
+		// 记成盖面。
+		g.role = "cap"
+	}
+	return g, true
+}
+
+// legacyBandFiles 挑出会收进缝隙带的打底和盖面；同目录同角色以后收的为准。
+func legacyBandFiles(rels []string) []string {
+	// 目录加角色对到最后一份文件。
+	picked := map[string]string{}
+	// 按收工艺的顺序走，后收的顶替前面的。
+	for _, rel := range rels {
+		// 认缝隙目录里的打底或盖面。
+		g, ok := legacyGapFile(rel)
+		// 不在缝隙目录或不是打底盖面就跳过。
+		if !ok || g.role == "" {
+			continue
+		}
+		// 同目录同角色只留后收的那份。
+		picked[g.dir+"\n"+g.role] = rel
+	}
+	// 收成列表交回。
+	out := make([]string, 0, len(picked))
+	// 逐条收下挑中的文件。
+	for _, rel := range picked {
+		// 这份会收进缝隙带。
+		out = append(out, rel)
+	}
+	return out
+}
+
+// 导入路径加作业类型到已入库工艺的对照，含去掉前缀的别名。
 type pathIndex struct {
-	byPath map[string]uuid.UUID // 相对路径对应的工艺身份
+	byPath map[string]uuid.UUID // 作业类型加相对路径对应的工艺身份
 	files  []legacyMapped       // 原始相对路径，用来收间隙带，不含别名
 }
 
-// 一份已入库旧工艺的原始路径和身份。
+// 一份已入库旧工艺的原始路径、作业类型和身份。
 type legacyMapped struct {
 	Path string    // 导入时的相对路径
+	Kind string    // 这一份的作业类型
 	ID   uuid.UUID // 入库后的工艺身份
 }
 
@@ -410,47 +1038,42 @@ func newPathIndex() *pathIndex {
 	return &pathIndex{byPath: map[string]uuid.UUID{}}
 }
 
-// add 记下相对路径及其不含 processes/ 前缀的别名。
-func (idx *pathIndex) add(rel string, id uuid.UUID) {
+// pathKey 对照键：作业类型加路径写法，同一路径各类型各一份。
+func pathKey(kind, p string) string {
+	// 作业类型收成规范写法再接路径，空的当单层。
+	return normWeldKind(kind) + "\n" + p
+}
+
+// add 按作业类型记下相对路径及其不含 processes/ 前缀的别名。
+func (idx *pathIndex) add(rel, kind string, id uuid.UUID) {
 	// 留下原始路径，后面收缝隙带时不用别名。
-	idx.files = append(idx.files, legacyMapped{Path: rel, ID: id})
-	// 原始相对路径对到入库后的身份。
-	idx.byPath[rel] = id
-	// 再记一份去掉工艺前缀的别名，方便对旧路径。
-	trimmed := strings.TrimPrefix(rel, "processes/")
-	// 去掉前缀的路径同样能对上。
-	idx.byPath[trimmed] = id
-	// 没有子目录时，文件名也能对上旧路径。
-	if !strings.Contains(trimmed, "/") {
-		// 没有子目录时，文件名也能对上。
-		idx.byPath[path.Base(rel)] = id
+	idx.files = append(idx.files, legacyMapped{Path: rel, Kind: normWeldKind(kind), ID: id})
+	// 各种写法都对到这一份身份。
+	for _, a := range legacyAliases(rel) {
+		// 这种写法加作业类型对到入库后的身份。
+		idx.byPath[pathKey(kind, a)] = id
 	}
 }
 
-// lookup 空路径算未选；对不上则失败。
-func (idx *pathIndex) lookup(p string) (uuid.UUID, bool) {
-	// 统一斜杠并去掉无意义前缀，空路径算无效。
-	p = normalizeLegacyPath(p)
+// lookup 按作业类型取对应那份；空路径算未选，对不上则失败。
+func (idx *pathIndex) lookup(p, kind string) (uuid.UUID, bool) {
+	// 依次试原样、去掉和补上工艺前缀的写法。
+	keys := legacyLookupKeys(p)
 	// 空路径表示没选工艺，不算失败。
-	if p == "" {
+	if len(keys) == 0 {
 		return uuid.Nil, true
 	}
-	// 原始路径对上了已入库工艺。
-	if id, ok := idx.byPath[p]; ok {
-		return id, true
-	}
-	// 去掉工艺前缀后再试一次。
-	if id, ok := idx.byPath[strings.TrimPrefix(p, "processes/")]; ok {
-		return id, true
-	}
-	// 补上工艺前缀后再试一次。
-	if id, ok := idx.byPath["processes/"+p]; ok {
-		return id, true
+	// 逐个写法去对照，对上就用。
+	for _, k := range keys {
+		// 这种写法在这种作业类型下对上了已入库工艺。
+		if id, ok := idx.byPath[pathKey(kind, k)]; ok {
+			return id, true
+		}
 	}
 	return uuid.Nil, false
 }
 
-// gapBands 按缝隙目录收打底/盖面引用；缺文件的带仍可留下空引用。
+// gapBands 按缝隙目录收 T 排那份打底/盖面引用；缺文件的带仍可留下空引用。
 func (idx *pathIndex) gapBands() []any {
 	// 一条缝隙带记下目录、层号、间隙和两份工艺。
 	type folder struct {
@@ -461,58 +1084,37 @@ func (idx *pathIndex) gapBands() []any {
 	}
 	// 按缝隙目录归打底和盖面。
 	folders := map[string]*folder{}
-	// 只处理缝隙目录里的打底和盖面。
+	// 只处理缝隙目录里 T 排那份打底和盖面。
 	for _, item := range idx.files {
-		// 用原始相对路径认缝隙目录，不用别名。
-		p := item.Path
-		// 这条工艺入库后的身份，打底或盖面要用。
-		id := item.ID
-		// 拆出目录和文件，缝隙带按目录归。
-		dir, file := path.Split(strings.TrimSuffix(p, "/"))
-		// 去掉尾部斜杠，目录名才能对上缝隙格式。
-		dir = strings.TrimSuffix(dir, "/")
-		// 只看最后一层目录名是不是层号加间隙。
-		base := path.Base(dir)
-		// 看目录名是不是层号加间隙，不是就跳过。
-		m := gapFolderRe.FindStringSubmatch(base)
-		// 目录名不是层号加间隙的格式就跳过。
-		if m == nil {
+		// 别的作业类型那份不进缝隙带。
+		if item.Kind != store.WeldKindTBar {
 			continue
 		}
-		// 不是 T 排目录时，只留那个固定间隙样例。
-		if !strings.Contains(dir, "T排立对接") && !strings.Contains(strings.ToLower(dir), "tbar") {
-			// 样例目录也对不上就跳过，不收成带。
-			if !strings.Contains(dir, "6T1.2") {
-				continue
-			}
+		// 用原始相对路径认缝隙目录，不用别名。
+		g, ok := legacyGapFile(item.Path)
+		// 不在缝隙目录里就跳过，不收成带。
+		if !ok {
+			continue
 		}
-		// 从目录名取出层号，排缝隙带要用。
-		layer, _ := strconv.Atoi(m[1])
-		// 从目录名取出这条带的间隙下限。
-		min, _ := strconv.ParseFloat(m[2], 64)
-		// 从目录名取出这条带的间隙上限。
-		max, _ := strconv.ParseFloat(m[3], 64)
 		// 同一缝隙目录收成一条带。
-		f := folders[dir]
+		f := folders[g.dir]
 		// 这条目录还没有带，下面按层号和间隙新建。
 		if f == nil {
 			// 这条目录还没有带，按层号和间隙新建。
-			f = &folder{name: base, layer: layer, min: min, max: max}
+			f = &folder{name: g.name, layer: g.layer, min: g.min, max: g.max}
 			// 按目录记下这条缝隙带。
-			folders[dir] = f
+			folders[g.dir] = f
 		}
-		// 去掉后缀后看是打底还是盖面。
-		name := strings.TrimSuffix(file, path.Ext(file))
 		// 按文件名把工艺归到打底或盖面。
-		switch {
-		// 名字里有打底，就当成这条带的打底工艺。
-		case strings.Contains(name, "打底"):
+		switch g.role {
+		// 打底文件就当成这条带的打底工艺。
+		case "root":
 			// 文件名里有打底，就把这份工艺当成打底。
-			f.root = id
-		// 名字里有盖面，就当成这条带的盖面工艺。
-		case strings.Contains(name, "盖面"):
+			f.root = item.ID
+		// 盖面文件就当成这条带的盖面工艺。
+		case "cap":
 			// 文件名里有盖面，就把这份工艺当成盖面。
-			f.cap = id
+			f.cap = item.ID
 		}
 	}
 	// 只把有打底或盖面的带拿去排序。
@@ -556,7 +1158,7 @@ func (idx *pathIndex) gapBands() []any {
 	return out
 }
 
-// rewriteLegacyProject 把 processPath 换成身份，删掉内嵌工艺对象，并打上模版身份。
+// rewriteLegacyProject 逐条按作业类型把 processPath 换成身份，删掉内嵌工艺对象，并打上模版身份。
 func rewriteLegacyProject(raw []byte, filePath string, idx *pathIndex, bands []any) ([]byte, error) {
 	// 先解成通用结构，再判断是不是工程数组。
 	var v any
@@ -572,24 +1174,19 @@ func rewriteLegacyProject(raw []byte, filePath string, idx *pathIndex, bands []a
 	}
 	// 按路径判断整份是多层、T 排还是留给逐条推断。
 	fileKind := projectFileKind(filePath)
-	// 这一步失败则停下，避免带着残缺结果继续。
-	if err := rewriteRefs(arr, idx); err != nil {
-		return nil, err
-	}
-	// 逐条打上模版身份，种类从路径或内容来。
+	// 逐条认种类、换引用并打上模版身份。
 	for _, el := range arr {
+		// 种类先看整份路径，判断不了再按这一条的内容推断。
+		kind := legacyItemKind(fileKind, el)
+		// 按这一条的作业类型取对应那份工艺，对不上整份拒绝。
+		if err := rewriteRefs(el, idx, contenttpl.WeldKindOfItem(kind)); err != nil {
+			return nil, err
+		}
 		// 不是对象的元素跳过，不拿来打模版。
 		obj, _ := el.(map[string]any)
 		// 不是对象的元素跳过，不拿来打模版。
 		if obj == nil {
 			continue
-		}
-		// 整份路径能判断种类就全用它。
-		kind := fileKind
-		// 整份路径判断不了种类，就按这一条自己推断。
-		if kind == "" {
-			// 路径判断不了，就按这一条的内容推断。
-			kind = contenttpl.InferItemKind(obj)
 		}
 		// 按种类钉上模版身份，T 排再补间隙带。
 		stampTemplate(obj, kind, bands)
@@ -633,8 +1230,8 @@ func stampTemplate(obj map[string]any, kind string, bands []any) {
 	}
 }
 
-// rewriteRefs 非空 processPath 必须能对上已入工艺，否则整份工程拒绝。
-func rewriteRefs(v any, idx *pathIndex) error {
+// rewriteRefs 非空 processPath 必须能对上这种作业类型那份已入工艺，否则整份工程拒绝。
+func rewriteRefs(v any, idx *pathIndex, kind string) error {
 	// 数组继续往下，对象里才改工艺路径。
 	switch x := v.(type) {
 	// 数组里每一层都要改写，一处失败整份拒绝。
@@ -642,7 +1239,7 @@ func rewriteRefs(v any, idx *pathIndex) error {
 		// 数组里的每一层都要改写，一处失败整份拒绝。
 		for _, el := range x {
 			// 这一步失败则停下，避免带着残缺结果继续。
-			if err := rewriteRefs(el, idx); err != nil {
+			if err := rewriteRefs(el, idx, kind); err != nil {
 				return err
 			}
 		}
@@ -652,8 +1249,8 @@ func rewriteRefs(v any, idx *pathIndex) error {
 		if raw, ok := x["processPath"]; ok {
 			// 路径不是字符串就当没选工艺。
 			s, _ := raw.(string)
-			// 把正文里的引用钉到已入库工艺。
-			id, found := idx.lookup(s)
+			// 把正文里的引用钉到这种作业类型那份已入库工艺。
+			id, found := idx.lookup(s, kind)
 			// 路径对不上已入库工艺则整份工程拒绝。
 			if !found {
 				return domain.ErrAssetDependency
@@ -684,7 +1281,7 @@ func rewriteRefs(v any, idx *pathIndex) error {
 				continue
 			}
 			// 这一步失败则停下，避免带着残缺结果继续。
-			if err := rewriteRefs(child, idx); err != nil {
+			if err := rewriteRefs(child, idx, kind); err != nil {
 				return err
 			}
 		}
@@ -757,10 +1354,10 @@ func importFileFlags(in LegacyImport, f LegacyFile) (overwrite, rename bool) {
 	return in.Overwrite || f.Overwrite, in.Rename || f.Rename
 }
 
-// uniqueImportName 同名按相对路径另起；仍撞则加序号。
-func uniqueImportName(names map[string]Asset, kind, name, rel string) string {
-	// 用去掉后缀的相对路径当候选新名。
-	label := strings.TrimSpace(legacyPathLabel(rel))
+// uniqueImportName 同名按相对路径（带作业类型后缀）另起；仍撞则加序号。
+func uniqueImportName(names map[string]Asset, kind, name, rel, suffix string) string {
+	// 用去掉扩展名的相对路径当候选新名，拆份的再接后缀。
+	label := importPathLabel(rel, suffix)
 	// 路径名和原名不同，才考虑拿路径另起。
 	if label != "" && label != name {
 		// 这个路径名还没被占用，就用它另起。
@@ -779,6 +1376,17 @@ func uniqueImportName(names map[string]Asset, kind, name, rel string) string {
 		}
 	}
 	return name
+}
+
+// importPathLabel 按路径另起的名字；非首种作业类型那份再接后缀。
+func importPathLabel(rel, suffix string) string {
+	// 用去掉扩展名的相对路径当名字。
+	label := strings.TrimSpace(legacyPathLabel(rel))
+	// 没有路径名就不起，也不单留一个后缀。
+	if label == "" {
+		return ""
+	}
+	return label + suffix
 }
 
 // legacyPathLabel 用去掉后缀的相对路径当新名；多层工程另标一层。

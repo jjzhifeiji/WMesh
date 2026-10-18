@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"wmesh/global/internal/platform/domain"
 )
@@ -49,6 +50,15 @@ type contentTemplateRow struct {
 
 // 字段模版落这张表，修订升高时覆盖。
 func (contentTemplateRow) TableName() string { return "content_templates" }
+
+// 一次性种子标记的库行，每类模版至多一行。
+type templateSeedRow struct {
+	Kind     string    `gorm:"primaryKey"` // 已落过种子的模版类型
+	SeededAt time.Time `gorm:"not null"`   // 首次落种子时刻
+}
+
+// 种子标记落这张表，有行就不再按代码补种子。
+func (templateSeedRow) TableName() string { return "content_template_seeds" }
 
 // 库行收成当前模版视图。
 func templateFromRow(row contentTemplateRow) ContentTemplate {
@@ -165,6 +175,62 @@ func (s *Store) InsertTemplate(ctx context.Context, in ContentTemplate) (Content
 	}
 	// 库行收成当前模版再交回。
 	return templateFromRow(row), nil
+}
+
+// SeedProjectTemplatesOnce 工程从未落过种子才写入这批；没抢到标记只读当前各份。
+func (s *Store) SeedProjectTemplatesOnce(ctx context.Context, seeds []ContentTemplate) ([]ContentTemplate, error) {
+	// 逐份先核摘要，坏一份就整批不写。
+	for _, in := range seeds {
+		// 摘要不是完整的三十二字节就停。
+		if err := assertAssetDigest(in.Digest); err != nil {
+			return nil, err
+		}
+	}
+	// 准备接住事务里最后读到的各份。
+	var rows []contentTemplateRow
+	// 抢标记、插种子、再读一次必须在同一事务里。
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// 记下当前时刻，这一笔里的时间都用它。
+		now := time.Now().UTC()
+		// 抢一次性标记；并发时后来者等前者提交后落空。
+		res := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&templateSeedRow{Kind: KindProject, SeededAt: now})
+		// 写库报错就停，不能当成已经抢到。
+		if res.Error != nil {
+			return res.Error
+		}
+		// 抢到标记才落种子，删光过的库不会再补回。
+		if res.RowsAffected == 1 && len(seeds) > 0 {
+			// 按份数预留种子行。
+			batch := make([]contentTemplateRow, 0, len(seeds))
+			// 逐份组成库行，修订都从一开始。
+			for _, in := range seeds {
+				// 这一份收成工程库行放进批次。
+				batch = append(batch, contentTemplateRow{
+					ID: valueOrNew(in.ID), Kind: KindProject, Name: in.Name, Revision: 1,
+					Schema: json.RawMessage(nonempty(in.Schema)), Digest: in.Digest,
+					CreatedAt: now, UpdatedAt: now,
+				})
+			}
+			// 已有同身份或同名的不覆盖，其余照插。
+			if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&batch).Error; err != nil {
+				return err
+			}
+		}
+		// 同一事务再读一次，能看到另一事务刚提交的种子。
+		return tx.Where("kind = ?", KindProject).Order("name, created_at").Find(&rows).Error
+	})
+	// 事务没成就停，不能把半截当成当前各份。
+	if err != nil {
+		return nil, err
+	}
+	// 按行数预留结果，查空也是空表不是空指针。
+	out := make([]ContentTemplate, 0, len(rows))
+	// 逐行收成对外结果，顺序保持查询原来的样子。
+	for _, row := range rows {
+		// 这一行收成模版视图，放进结果。
+		out = append(out, templateFromRow(row))
+	}
+	return out, nil
 }
 
 // UpdateTemplate 按类型和期望修订改工艺字段表。

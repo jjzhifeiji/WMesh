@@ -2,15 +2,138 @@
 package service_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"strconv"
+	"strings"
 	"testing"
 
+	"github.com/google/uuid"
+
+	"wmesh/factory/internal/platform/audit"
 	"wmesh/factory/internal/platform/contenttpl"
+	"wmesh/factory/internal/platform/digest"
 	"wmesh/factory/internal/platform/domain"
+	"wmesh/factory/internal/platform/id"
 	factory "wmesh/factory/internal/service"
 	"wmesh/factory/internal/store"
 )
+
+// 个人级改了作业类型再升厂级，厂级条目的作业类型要跟上。
+func TestFactoryPromoteWeldKind(t *testing.T) {
+	// 准备无取消的上下文，后面每次调用都挂在上面。
+	ctx := context.Background()
+	// 拉起隔离厂库，起不来说明测试库还没就绪。
+	h := New(t)
+	// 建厂并签发超管激活码，失败则没有厂可测。
+	seed, fac, err := h.Provision(ctx, "sa-a", "超管A")
+	// 建厂失败就停，否则后面没有可靠结果。
+	if err != nil {
+		// 把建厂的错误打出来并停住，避免继续往下验。
+		t.Fatal(err)
+	}
+	// 开通失败就停，否则后面没有可靠结果。
+	if err := fac.Activate(ctx, "sa-a", seed.ActivationToken, "sa-pass"); err != nil {
+		// 把开通的错误打出来并停住，避免继续往下验。
+		t.Fatal(err)
+	}
+	// 登录并取出令牌，失败说明账号没有开通成功。
+	sa := mustLogin(t, ctx, fac, "sa-a", "sa-pass")
+	// 建人并授好角色，失败说明后面没有账号可用。
+	pe := mustCreateRole(t, ctx, fac, sa, "pe-a", "pe-pass", factory.RoleOperator, factory.ScopeFactory, nil)
+	// 标明直接作业上下文，后面新建资产都挂在这里。
+	direct := factory.WorkContext{Direct: true}
+	// 准备单层正文，个人工程先按单层建。
+	singleBody := []byte(`[{"templateId":"` + contenttpl.SeedTplSingle + `","name":"单"}]`)
+	// 准备多层正文，改类型后按多层重写。
+	multiBody := []byte(`[{"templateId":"` + contenttpl.SeedTplMulti + `","name":"多层"}]`)
+
+	// 新建一份个人级单层工艺，先升一次厂级。
+	proc, err := fac.CreatePersonalProcess(ctx, pe.tok, direct, "个人工艺", []byte(`{"name":"p"}`))
+	// 建工艺失败就停，否则后面没有可靠结果。
+	if err != nil {
+		// 把建工艺的错误打出来并停住，避免继续往下验。
+		t.Fatal(err)
+	}
+	// 第一次升厂级，复制出新身份。
+	first, err := fac.PromoteToFactory(ctx, pe.tok, proc.ID)
+	// 升档失败或作业类型不是单层就停。
+	if err != nil || first.WeldKind != store.WeldKindSingle {
+		// 第一次升档就没带上作业类型。
+		t.Fatalf("first promote %+v %v", first, err)
+	}
+	// 源只改作业类型，正文摘要保持不变。
+	proc, err = fac.SetAssetWeldKind(ctx, pe.tok, proc.ID, proc.Revision, store.WeldKindMultilayer)
+	// 改焊类失败就停，否则后面没有可靠结果。
+	if err != nil {
+		// 把改焊类的错误打出来并停住，避免继续往下验。
+		t.Fatal(err)
+	}
+	// 再升应覆盖已有厂级，而不是按摘要跳过。
+	second, err := fac.PromoteToFactory(ctx, pe.tok, proc.ID)
+	// 身份变了、修订没加或作业类型没跟上就停。
+	if err != nil || second.ID != first.ID || second.Revision != first.Revision+1 || second.WeldKind != store.WeldKindMultilayer {
+		// 只改作业类型的再升被当成没变跳过了。
+		t.Fatalf("kind only promote %+v from %+v %v", second, first, err)
+	}
+	// 摘要和作业类型都没变时再升，应跳过不升修订。
+	third, err := fac.PromoteToFactory(ctx, pe.tok, proc.ID)
+	// 身份或修订变了就停，说明没变也覆盖了。
+	if err != nil || third.ID != second.ID || third.Revision != second.Revision {
+		// 没变的再升也升了修订。
+		t.Fatalf("skip promote %+v want %+v %v", third, second, err)
+	}
+	// 厂级工艺按新类型应能钉进多层工程。
+	if _, err := fac.CreateFactoryProject(ctx, pe.tok, direct, "钉升档工艺", multiBody, []factory.AssetDep{{ID: second.ID, Revision: second.Revision, Digest: second.Digest}}, store.WeldKindMultilayer); err != nil {
+		// 厂级工艺还留着旧类型，钉不进新类型工程。
+		t.Fatalf("pin promoted: %v", err)
+	}
+
+	// 新建一份个人级单层工程，先升一次厂级。
+	proj, err := fac.CreatePersonalProject(ctx, pe.tok, direct, "个人工程", singleBody, nil, store.WeldKindSingle)
+	// 建工程失败就停，否则后面没有可靠结果。
+	if err != nil {
+		// 把建工程的错误打出来并停住，避免继续往下验。
+		t.Fatal(err)
+	}
+	// 第一次升厂级，复制出新身份。
+	pFirst, err := fac.PromoteToFactory(ctx, pe.tok, proj.ID)
+	// 升档失败或作业类型不是单层就停。
+	if err != nil || pFirst.WeldKind != store.WeldKindSingle {
+		// 第一次升档就没带上作业类型。
+		t.Fatalf("first project promote %+v %v", pFirst, err)
+	}
+	// 源改成多层，旧单层正文会被清成空焊道。
+	proj, err = fac.SetAssetWeldKind(ctx, pe.tok, proj.ID, proj.Revision, store.WeldKindMultilayer)
+	// 改焊类失败就停，否则后面没有可靠结果。
+	if err != nil {
+		// 把改焊类的错误打出来并停住，避免继续往下验。
+		t.Fatal(err)
+	}
+	// 再按多层写正文，模拟改类型后重新编辑。
+	proj, err = fac.UpdateAssetContent(ctx, pe.tok, proj.ID, proj.Revision, multiBody)
+	// 改正文失败就停，否则后面没有可靠结果。
+	if err != nil {
+		// 把改正文的错误打出来并停住，避免继续往下验。
+		t.Fatal(err)
+	}
+	// 再升应覆盖厂级，正文和作业类型一起跟上。
+	pSecond, err := fac.PromoteToFactory(ctx, pe.tok, proj.ID)
+	// 身份、修订、作业类型或摘要有一项不对就停。
+	if err != nil || pSecond.ID != pFirst.ID || pSecond.Revision != pFirst.Revision+1 ||
+		pSecond.WeldKind != store.WeldKindMultilayer || !bytes.Equal(pSecond.Digest, proj.Digest) {
+		// 正文换了作业类型却没跟上。
+		t.Fatalf("project promote %+v from %+v %v", pSecond, proj, err)
+	}
+	// 准备一份改过的多层正文，验厂级能按新类型改。
+	edited := []byte(`[{"templateId":"` + contenttpl.SeedTplMulti + `","name":"多层改"}]`)
+	// 厂级工程按新类型改正文应能保存。
+	if _, err := fac.UpdateAssetContent(ctx, pe.tok, pSecond.ID, pSecond.Revision, edited); err != nil {
+		// 厂级还是旧类型，按新类型改正文被拒。
+		t.Fatalf("edit promoted project: %v", err)
+	}
+}
 
 // 作业类型要合法，工程和工艺类型不一致则拒绝。
 func TestFactoryWeldKind(t *testing.T) {
@@ -132,5 +255,269 @@ func TestFactoryWeldKind(t *testing.T) {
 	if _, err := fac.SetAssetWeldKind(ctx, pe.tok, changed.ID, changed.Revision, "nope"); !errors.Is(err, domain.ErrInvalidWeldKind) {
 		// 断言没通过就停，结果和这条用例的预期不一致。
 		t.Fatalf("bad kind: %v", err)
+	}
+
+	// 新建一份单层厂级工艺，给多层工程误引用用。
+	singleP, err := fac.CreateFactoryProcess(ctx, pe.tok, direct, "单层工艺", []byte(`{"name":"s"}`))
+	// 建工艺失败就停，否则后面没有可靠结果。
+	if err != nil {
+		// 把建工艺的错误打出来并停住，避免继续往下验。
+		t.Fatal(err)
+	}
+	// 发布单层工艺，可用后才钉得进工程。
+	singleP, err = fac.PublishAsset(ctx, pe.tok, singleP.ID, singleP.Revision)
+	// 发布失败就停，否则后面没有可靠结果。
+	if err != nil {
+		// 把发布的错误打出来并停住，避免继续往下验。
+		t.Fatal(err)
+	}
+	// 新建一份不带引用的多层工程，给示教器盖回用。
+	padProj, err := fac.CreateFactoryProject(ctx, pe.tok, direct, "示教器多层工程", multiBody, nil, store.WeldKindMultilayer)
+	// 建工程失败就停，否则后面没有可靠结果。
+	if err != nil {
+		// 把建工程的错误打出来并停住，避免继续往下验。
+		t.Fatal(err)
+	}
+	// 记下盖回前的正文，拒绝后要比对没被改。
+	before, err := fac.ReadAssetContent(ctx, pe.tok, padProj.ID)
+	// 读正文失败就停，否则后面没有可靠结果。
+	if err != nil {
+		// 把读正文的错误打出来并停住，避免继续往下验。
+		t.Fatal(err)
+	}
+	// 按多层模版拼一份焊道引用指定工艺的正文。
+	refBody := func(processID string, x int) []byte {
+		// 焊道里写工艺身份和横坐标，便于区分两次盖回。
+		return []byte(`[{"templateId":"` + contenttpl.SeedTplMulti + `","name":"多层","passes":[{"processId":"` + processID + `","valX":` + strconv.Itoa(x) + `}]}]`)
+	}
+	// 示教器新引用单层工艺应被拒，放行说明没核作业类型。
+	if _, err := fac.ApplyAppContent(ctx, sa, padProj.ID, refBody(singleP.ID.String(), 1)); !errors.Is(err, domain.ErrWeldKindMismatch) {
+		// 单层参数会下发到多层焊缝上，必须拦住。
+		t.Fatalf("pad single ref: %v", err)
+	}
+	// 读回台账，拒绝后修订和依赖都不该变。
+	kept, err := fac.GetAsset(ctx, sa, padProj.ID)
+	// 读台账失败或修订、依赖变了就停。
+	if err != nil || kept.Revision != padProj.Revision || len(kept.Deps) != 0 {
+		// 被拒的盖回改到了台账，说明拒绝前就落库了。
+		t.Fatalf("pad reject meta %+v %v", kept, err)
+	}
+	// 读回正文，拒绝后应和盖回前一样。
+	after, err := fac.ReadAssetContent(ctx, pe.tok, padProj.ID)
+	// 读正文失败或正文变了就停。
+	if err != nil || !bytes.Equal(after, before) {
+		// 被拒的正文落了库，说明拒绝没挡住写入。
+		t.Fatalf("pad reject body %s %v", after, err)
+	}
+	// 先当没有拒绝审计，找到再改成有。
+	denied := false
+	// 逐条看审计，找这份工程的盖回拒绝。
+	for _, r := range mustRows(t, ctx, fac) {
+		// 动作、结果和对象都对上才算这次的拒绝。
+		if r.Action == "apply_app" && r.Result == audit.Deny && strings.HasPrefix(r.Target, padProj.ID.String()) {
+			// 记下已见到拒绝审计。
+			denied = true
+		}
+	}
+	// 没见到拒绝审计就停，拒绝原因查不到。
+	if !denied {
+		// 拒绝没留审计，事后查不出谁盖过。
+		t.Fatal("missing apply_app deny audit")
+	}
+	// 改成引用多层工艺再盖，应能盖上并钉进依赖。
+	applied, err := fac.ApplyAppContent(ctx, sa, padProj.ID, refBody(pub.ID.String(), 1))
+	// 盖回失败或依赖不对就停，说明同类型工艺被误拦。
+	if err != nil || applied.Revision != padProj.Revision+1 || len(applied.Deps) != 1 || applied.Deps[0].ID != pub.ID {
+		// 同类型的新引用被拒，说明核对写偏了。
+		t.Fatalf("pad multi ref %+v %v", applied, err)
+	}
+
+	// 把已钉的多层工艺改成单层，模拟工艺类型事后被改。
+	if _, err := fac.SetAssetWeldKind(ctx, pe.tok, pub.ID, pub.Revision, store.WeldKindSingle); err != nil {
+		// 把改焊类的错误打出来并停住，避免继续往下验。
+		t.Fatal(err)
+	}
+	// 只改点坐标再盖回，旧依赖不在这里拦，应能盖上。
+	moved, err := fac.ApplyAppContent(ctx, sa, padProj.ID, refBody(pub.ID.String(), 2))
+	// 盖回失败或依赖变了就停，说明旧依赖被误核。
+	if err != nil || moved.Revision != applied.Revision+1 || len(moved.Deps) != 1 || moved.Deps[0].ID != pub.ID {
+		// 示教器没碰的旧依赖挡住了盖回。
+		t.Fatalf("pad old dep %+v %v", moved, err)
+	}
+}
+
+// weldRefTemplateSchema 自定义工程模版：带一个工艺槽，正文认不出作业类型。
+const weldRefTemplateSchema = `{"root":"object","fields":[{"key":"name","label":"名称","type":"string","default":""},{"key":"proc","label":"工艺","type":"process"}]}`
+
+// weldRefBody 拼一条挂自定义模版、工艺槽填指定工艺的工程正文。
+func weldRefBody(tplID, processID uuid.UUID) []byte {
+	// 不写焊缝种类，作业类型核对只能放过。
+	return []byte(`[{"templateId":"` + tplID.String() + `","name":"w","proc":"` + processID.String() + `"}]`)
+}
+
+// weldRefFactory 开厂、建人并收下自定义模版，交回厂服务、人员和模版身份。
+func weldRefFactory(t *testing.T, ctx context.Context) (*factory.Service, namedAcc, uuid.UUID) {
+	// 标成辅助函数，失败栈落到调用方。
+	t.Helper()
+	// 拉起隔离厂库，起不来说明测试库还没就绪。
+	h := New(t)
+	// 建厂并签发超管激活码，失败则没有厂可测。
+	seed, fac, err := h.Provision(ctx, "sa", "超管")
+	// 建厂失败就停，否则后面没有可靠结果。
+	if err != nil {
+		// 把建厂的错误打出来并停住，避免继续往下验。
+		t.Fatal(err)
+	}
+	// 开通失败就停，否则后面没有可靠结果。
+	if err := fac.Activate(ctx, "sa", seed.ActivationToken, "sa-pass"); err != nil {
+		// 把开通的错误打出来并停住，避免继续往下验。
+		t.Fatal(err)
+	}
+	// 登录并取出令牌，失败说明账号没有开通成功。
+	sa := mustLogin(t, ctx, fac, "sa", "sa-pass")
+	// 建人并授好角色，失败说明后面没有账号可用。
+	pe := mustCreateRole(t, ctx, fac, sa, "pe", "pe-pass", factory.RoleOperator, factory.ScopeFactory, nil)
+	// 新取自定义模版身份，和三份种子区分开。
+	tplID := id.New()
+	// 留下工厂编号，收模版要对准本厂。
+	fid := seed.ID
+	// 收自定义模版失败就停，没有它就复现不了。
+	if err := fac.AcceptTemplateDelivery(ctx, factory.TemplateSnapshot{
+		// 记下身份、类型和修订，摘要按字段表算。
+		ID: tplID, Kind: factory.KindProject, Name: "自定义", Revision: 1,
+		Schema: []byte(weldRefTemplateSchema), Digest: digest.Sum([]byte(weldRefTemplateSchema)),
+		TargetFactoryID: &fid,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return fac, pe, tplID
+}
+
+// weldRefProcess 建一条厂级工艺并发布，交回可用修订。
+func weldRefProcess(t *testing.T, ctx context.Context, fac *factory.Service, tok, name, weld string) factory.Asset {
+	// 标成辅助函数，失败栈落到调用方。
+	t.Helper()
+	// 按指定作业类型建厂级工艺。
+	p, err := fac.CreateFactoryProcess(ctx, tok, factory.WorkContext{Direct: true}, name, []byte(`{"name":"p"}`), weld)
+	// 建工艺失败就停，后面没有工艺可钉。
+	if err != nil {
+		// 把建工艺的错误打出来并停住，避免继续往下验。
+		t.Fatal(err)
+	}
+	// 发布当前修订，草稿不能当依赖。
+	p, err = fac.PublishAsset(ctx, tok, p.ID, p.Revision)
+	// 发布失败就停，否则后面没有可靠结果。
+	if err != nil {
+		// 把发布的错误打出来并停住，避免继续往下验。
+		t.Fatal(err)
+	}
+	return p
+}
+
+// 自定义模版的多层工程改成单层：正文引用被筛掉的工艺就清空，之后改正文不再被拒。
+func TestFactoryWeldKindDropsCustomRefs(t *testing.T) {
+	// 准备无取消的上下文，后面每次调用都挂在上面。
+	ctx := context.Background()
+	// 开厂建人并收下自定义模版。
+	fac, pe, tplID := weldRefFactory(t, ctx)
+	// 建一条可用的多层工艺，给工程正文引用。
+	multi := weldRefProcess(t, ctx, fac, pe.tok, "多层工艺", store.WeldKindMultilayer)
+	// 建多层工程，正文引用会自动钉进依赖。
+	proj, err := fac.CreateFactoryProject(ctx, pe.tok, factory.WorkContext{Direct: true}, "自定义多层", weldRefBody(tplID, multi.ID), nil, store.WeldKindMultilayer)
+	// 建工程失败或依赖没钉上就停。
+	if err != nil || len(proj.Deps) != 1 || proj.Deps[0].ID != multi.ID {
+		// 自定义模版的多层工程没建好。
+		t.Fatalf("create %+v %v", proj, err)
+	}
+	// 改成单层，多层工艺会被筛掉。
+	switched, err := fac.SetAssetWeldKind(ctx, pe.tok, proj.ID, proj.Revision, store.WeldKindSingle)
+	// 改作业类型失败、依赖没清空或类型不对就停。
+	if err != nil || len(switched.Deps) != 0 || switched.WeldKind != store.WeldKindSingle {
+		// 被筛掉的依赖还留着。
+		t.Fatalf("switch %+v %v", switched, err)
+	}
+	// 读回资产正文，看是否换成空焊道。
+	body, err := fac.ReadAssetContent(ctx, pe.tok, switched.ID)
+	// 正文没换成空焊道就停，说明还引用被筛掉的工艺。
+	if err != nil || string(body) != "[]" {
+		// 正文残留被筛掉的工艺引用。
+		t.Fatalf("body %s %v", body, err)
+	}
+	// 按自定义模版重写一份不带工艺的正文。
+	edited := []byte(`[{"templateId":"` + tplID.String() + `","name":"新"}]`)
+	// 之后改正文应能保存，被拒说明还卡着旧引用。
+	if _, err := fac.UpdateAssetContent(ctx, pe.tok, switched.ID, switched.Revision, edited); err != nil {
+		// 改类型后改正文被拒。
+		t.Fatalf("edit after switch: %v", err)
+	}
+}
+
+// 改工程作业类型时，引用的工艺没被筛掉，正文原样保留。
+func TestFactoryWeldKindKeepsCustomRefs(t *testing.T) {
+	// 准备无取消的上下文，后面每次调用都挂在上面。
+	ctx := context.Background()
+	// 开厂建人并收下自定义模版。
+	fac, pe, tplID := weldRefFactory(t, ctx)
+	// 正文引用的多层工艺，后面会改类型跟着工程走。
+	used := weldRefProcess(t, ctx, fac, pe.tok, "在用工艺", store.WeldKindMultilayer)
+	// 只挂依赖、正文不引用的多层工艺，改单层时会被筛掉。
+	spare := weldRefProcess(t, ctx, fac, pe.tok, "备用工艺", store.WeldKindMultilayer)
+	// 备用工艺按当前修订钉进依赖。
+	deps := []factory.AssetDep{{ID: spare.ID, Revision: spare.Revision, Digest: spare.Digest}}
+	// 建多层工程，正文只引用在用工艺。
+	proj, err := fac.CreateFactoryProject(ctx, pe.tok, factory.WorkContext{Direct: true}, "自定义多层", weldRefBody(tplID, used.ID), deps, store.WeldKindMultilayer)
+	// 建工程失败或依赖不是两条就停。
+	if err != nil || len(proj.Deps) != 2 {
+		// 两条工艺没都钉上。
+		t.Fatalf("create %+v %v", proj, err)
+	}
+	// 记下改类型前的正文，后面逐字比对。
+	before, err := fac.ReadAssetContent(ctx, pe.tok, proj.ID)
+	// 读正文失败就停，读不到就无法比对。
+	if err != nil {
+		// 把读正文的错误打出来并停住，避免继续往下验。
+		t.Fatal(err)
+	}
+	// 在用工艺先改成单层，工程改单层时它能留下。
+	used, err = fac.SetAssetWeldKind(ctx, pe.tok, used.ID, used.Revision, store.WeldKindSingle)
+	// 改工艺作业类型失败就停。
+	if err != nil {
+		// 把改焊类的错误打出来并停住，避免继续往下验。
+		t.Fatal(err)
+	}
+	// 工程改单层，只有备用工艺被筛掉。
+	proj, err = fac.SetAssetWeldKind(ctx, pe.tok, proj.ID, proj.Revision, store.WeldKindSingle)
+	// 改作业类型失败或依赖不是只剩在用工艺就停。
+	if err != nil || len(proj.Deps) != 1 || proj.Deps[0].ID != used.ID {
+		// 筛依赖结果不对。
+		t.Fatalf("to single %+v %v", proj, err)
+	}
+	// 读回正文，引用不在被筛部分应原样留下。
+	kept, err := fac.ReadAssetContent(ctx, pe.tok, proj.ID)
+	// 正文被改动就停，说明误清了没悬空的引用。
+	if err != nil || !bytes.Equal(kept, before) {
+		// 引用未被筛掉却清了正文。
+		t.Fatalf("partial drop body %s %v", kept, err)
+	}
+	// 在用工艺再改成 T 排，工程跟着改时一条都不筛。
+	used, err = fac.SetAssetWeldKind(ctx, pe.tok, used.ID, used.Revision, store.WeldKindTBar)
+	// 改工艺作业类型失败就停。
+	if err != nil {
+		// 把改焊类的错误打出来并停住，避免继续往下验。
+		t.Fatal(err)
+	}
+	// 工程改 T 排，依赖全部留下。
+	proj, err = fac.SetAssetWeldKind(ctx, pe.tok, proj.ID, proj.Revision, store.WeldKindTBar)
+	// 改作业类型失败或依赖变了就停。
+	if err != nil || len(proj.Deps) != 1 || proj.Deps[0].ID != used.ID {
+		// 没有该筛的依赖却变了。
+		t.Fatalf("to tbar %+v %v", proj, err)
+	}
+	// 读回正文，没有依赖被筛掉应原样留下。
+	same, err := fac.ReadAssetContent(ctx, pe.tok, proj.ID)
+	// 正文被改动就停，说明没筛依赖也清了正文。
+	if err != nil || !bytes.Equal(same, before) {
+		// 没有依赖被筛掉却清了正文。
+		t.Fatalf("no drop body %s %v", same, err)
 	}
 }

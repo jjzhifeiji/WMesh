@@ -254,7 +254,7 @@ func Apply(schemaJSON, content []byte) ([]byte, error) {
 	return json.Marshal(out)
 }
 
-// ApplyProjectItems 工程正文是数组；按 templateId 套那一份对象字段。
+// ApplyProjectItems 工程正文是数组；按 templateId 套那一份对象字段，种子身份缺份时用内置字段。
 func ApplyProjectItems(items []ProjectItemSchema, content []byte) ([]byte, error) {
 	// 定下身份，再交给后面。
 	byID := map[string][]Field{}
@@ -296,6 +296,11 @@ func ApplyProjectItems(items []ProjectItemSchema, content []byte) ([]byte, error
 		id, _ := obj["templateId"].(string)
 		// 先当还没找到，找到再改成命中。
 		fields, ok := byID[id]
+		// 库里没这份但身份是空库种子，就按内置字段套，免得网页新建的焊道被吞。
+		if seed, isSeed := SeedProjectItem(id); !ok && isSeed {
+			// 改用种子自带的字段表，删掉种子后照样能新建。
+			fields, ok = seed.Fields, true
+		}
 		// 没有命中就走另一路，不用零值冒充有值。
 		if !ok {
 			continue

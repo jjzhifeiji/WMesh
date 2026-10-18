@@ -711,3 +711,35 @@ func countProcessType(f *Field) int {
 	}
 	return n
 }
+
+// 库里删了单层种子，带单层种子身份的元素仍按内置字段套上，挂已删自定义模版的丢掉。
+func TestApplyProjectItemsSeedFallback(t *testing.T) {
+	// 库里只剩多层那份，单层种子已被删掉。
+	items := []ProjectItemSchema{{ID: SeedTplMulti, Name: "多层焊缝", Fields: itemMulti()}}
+	// 一条单层种子身份的焊道带模版外的键，另一条挂已删的自定义模版。
+	body := []byte(`[{"templateId":"` + SeedTplSingle + `","name":"焊道 1","junk":1},{"templateId":"00000000-0000-4000-8000-000000000009","name":"x"}]`)
+	// 按当前各份套正文。
+	out, err := ApplyProjectItems(items, body)
+	// 套用失败则后面无从核对。
+	if err != nil {
+		// 失败就中止本用例。
+		t.Fatal(err)
+	}
+	// 准备接套完的各个元素。
+	var got []map[string]any
+	// 拆不开就不是套用后的正文。
+	if err := json.Unmarshal(out, &got); err != nil {
+		// 失败就中止本用例。
+		t.Fatal(err)
+	}
+	// 只该留下单层种子那条，自定义那条丢掉。
+	if len(got) != 1 || got[0]["templateId"] != SeedTplSingle || got[0]["name"] != "焊道 1" {
+		// 种子身份的焊道被吞就中止。
+		t.Fatalf("seed item dropped: %s", out)
+	}
+	// 模版外的键要删掉，缺的启用要按内置字段补上。
+	if _, ok := got[0]["junk"]; ok || got[0]["isEnabled"] != true {
+		// 没按内置字段套就中止。
+		t.Fatalf("seed fields not applied: %s", out)
+	}
+}

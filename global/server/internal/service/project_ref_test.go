@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sync"
 	"testing"
 
 	"wmesh/global/internal/platform/contenttpl"
@@ -378,6 +379,116 @@ func TestProjectProcessRefs(t *testing.T) {
 	}
 }
 
+// 挂不带工艺槽的自定义模版的多层工程，升档后正文里不留厂级工艺身份。
+func TestPromoteCustomTemplateRefs(t *testing.T) {
+	// 准备本测上下文，没有它库和服务都开不了。
+	ctx := context.Background()
+	// 起云端库和服务，起不来整段验收作废。
+	h := New(t)
+	// 立云端超管失败就停，立不住后面没有人能登录。
+	if err := h.WAN.BootstrapAdmin(ctx, "w", "wan-secret"); err != nil {
+		// 不符即停：立云端超管失败。
+		t.Fatal(err)
+	}
+	// 登录拿会话，没有票后面接口都进不去。
+	tok, err := h.WAN.Login(ctx, "w", "wan-secret")
+	// 登录拿会话失败就停，没有票后面接口都进不去。
+	if err != nil {
+		// 不符即停：登录拿会话失败。
+		t.Fatal(err)
+	}
+	// 建一份空字段的自定义工程模版，不声明任何工艺槽。
+	custom, err := h.WAN.CreateProjectTemplate(ctx, tok, uuid.Nil, "自定义", nil)
+	// 建自定义模版失败就停，没有它就复现不了。
+	if err != nil {
+		// 不符即停：建自定义模版失败。
+		t.Fatal(err)
+	}
+	// 登记工厂「厂A」，建不成后面没有厂可升档。
+	fac, err := h.WAN.CreateFactory(ctx, tok, "厂A", "sa-a", "超管A")
+	// 登记工厂「厂A」失败就停，建不成后面没有厂可升档。
+	if err != nil {
+		// 不符即停：登记工厂「厂A」失败。
+		t.Fatal(err)
+	}
+	// 新造厂级工艺身份，升档后正文里不该再出现它。
+	srcProc := id.New()
+	// 准备工艺正文样本，摘要按它算。
+	pbody := []byte(`{"name":"厂工艺","current":180}`)
+	// 拼多层工艺的升档快照，作业类型要和工程一致。
+	psnap := global.AssetSnapshot{
+		SourceID: srcProc, SourceRevision: 1, SourceFactoryID: fac.Factory.ID,
+		Kind: global.KindProcess, Name: "多层工艺", Content: pbody, Digest: digest.Sum(pbody),
+		Copyable: true, Status: global.AssetAvailable, WeldKind: contenttpl.WeldMultilayer,
+	}
+	// 升档工艺，升不上去工程依赖就对不上。
+	plat, err := h.WAN.PromoteFromSnapshot(ctx, tok, psnap)
+	// 升档工艺失败就停，升不上去工程依赖就对不上。
+	if err != nil {
+		// 不符即停：升档工艺失败。
+		t.Fatal(err)
+	}
+	// 发布资产，发不出去后面不能当可用。
+	plat, err = h.WAN.PublishPlatformAsset(ctx, tok, plat.ID, plat.Revision)
+	// 发布资产失败就停，发不出去后面不能当可用。
+	if err != nil {
+		// 不符即停：发布资产失败。
+		t.Fatal(err)
+	}
+	// 按工艺身份拼一条挂自定义模版的多层焊道正文。
+	body := func(pid string) []byte {
+		// 工艺填在基准层和填充层，模版里都没有声明。
+		return []byte(`[{"templateId":"` + custom.ID.String() + `","kind":"multi","name":"w","basePath":{"processId":"` + srcProc.String() + `"},"passes":[{"processId":"` + pid + `"}]}]`)
+	}
+	// 依赖只带这一份厂级工艺。
+	deps := []global.AssetDep{{ID: srcProc, Revision: 1, Digest: digest.Sum(pbody)}}
+	// 两处都引用依赖里的工艺，正文样本。
+	okBody := body(srcProc.String())
+	// 拼工程升档快照，作业类型跟源走多层。
+	jsnap := global.AssetSnapshot{
+		SourceID: id.New(), SourceRevision: 1, SourceFactoryID: fac.Factory.ID,
+		Kind: global.KindProject, Name: "自定义多层", Content: okBody, Digest: digest.Sum(okBody),
+		Copyable: true, Status: global.AssetAvailable, WeldKind: contenttpl.WeldMultilayer, Deps: deps,
+	}
+	// 升档工程，升不上去说明标准槽没改写或依赖错配。
+	got, err := h.WAN.PromoteFromSnapshot(ctx, tok, jsnap)
+	// 升档工程失败就停，不能当通过。
+	if err != nil {
+		// 不符即停：升档工程失败。
+		t.Fatal(err)
+	}
+	// 读平台正文，读不到就无法比对。
+	rewritten, err := h.WAN.ReadPlatformAssetContent(ctx, tok, got.ID)
+	// 读平台正文失败就停，读不到就无法比对。
+	if err != nil {
+		// 不符即停：读平台正文失败。
+		t.Fatal(err)
+	}
+	// 正文里还留着厂级工艺身份就停，说明有槽没改写。
+	if bytes.Contains(rewritten, []byte(srcProc.String())) {
+		// 不符即停：升档后残留厂级身份。
+		t.Fatalf("factory id left %s", rewritten)
+	}
+	// 两处引用都该换成平台身份，少一处就停。
+	if bytes.Count(rewritten, []byte(plat.ID.String())) != 2 {
+		// 不符即停：平台身份没有换满两处。
+		t.Fatalf("platform id %s", rewritten)
+	}
+	// 填充层引用一份不在依赖里的工艺，正文样本。
+	leak := body(id.New().String())
+	// 拼漏依赖的工程升档快照。
+	lsnap := global.AssetSnapshot{
+		SourceID: id.New(), SourceRevision: 1, SourceFactoryID: fac.Factory.ID,
+		Kind: global.KindProject, Name: "漏依赖", Content: leak, Digest: digest.Sum(leak),
+		Copyable: true, Status: global.AssetAvailable, WeldKind: contenttpl.WeldMultilayer, Deps: deps,
+	}
+	// 升档应被拒为依赖不符，放行说明厂级身份会残留。
+	if _, err := h.WAN.PromoteFromSnapshot(ctx, tok, lsnap); !errors.Is(err, domain.ErrAssetDependency) {
+		// 不符即停：漏依赖的工程升档没被拒。
+		t.Fatalf("leak promote %v", err)
+	}
+}
+
 // 删掉 T 排后不会自动补回，已有三份保持原样。
 func TestExistingProjectTemplatesKeepThree(t *testing.T) {
 	// 准备本测上下文，没有它库和服务都开不了。
@@ -465,5 +576,280 @@ func TestExistingProjectTemplatesKeepThree(t *testing.T) {
 	if _, err := h.WAN.CreateProjectTemplate(ctx, tok, seedID, "T排对接", nil); !errors.Is(err, domain.ErrTemplateInvalid) {
 		// 不符即停：建工程模版「T排对接」应被拒为模版不合法。
 		t.Fatalf("dup seed %v", err)
+	}
+}
+
+// 起云端服务并登录超管，交回夹具和会话票。
+func projectTplAdmin(t *testing.T, ctx context.Context) (*Harness, string) {
+	// 失败栈指到用例，避免停在夹具里面。
+	t.Helper()
+	// 起云端库和服务，起不来整段验收作废。
+	h := New(t)
+	// 立云端超管失败就停，立不住后面没有人能登录。
+	if err := h.WAN.BootstrapAdmin(ctx, "w", "wan-secret"); err != nil {
+		// 不符即停：立云端超管失败。
+		t.Fatal(err)
+	}
+	// 登录拿会话，没有票后面接口都进不去。
+	tok, err := h.WAN.Login(ctx, "w", "wan-secret")
+	// 登录拿会话失败就停，没有票后面接口都进不去。
+	if err != nil {
+		// 不符即停：登录拿会话失败。
+		t.Fatal(err)
+	}
+	return h, tok
+}
+
+// 改掉单层种子的字段后再列表，字段和修订都不被代码改回。
+func TestSeedTemplateEditKept(t *testing.T) {
+	// 准备本测上下文，没有它库和服务都开不了。
+	ctx := context.Background()
+	// 起服务并登录，拿到夹具和会话票。
+	h, tok := projectTplAdmin(t, ctx)
+	// 列工程模版，空库首次应落下三份种子。
+	list, err := h.WAN.ListProjectTemplates(ctx, tok)
+	// 列工程模版失败或条数不是3就停，不能当通过。
+	if err != nil || len(list) != 3 {
+		// 不符即停：列工程模版失败或条数不是3。
+		t.Fatalf("seed %d %v", len(list), err)
+	}
+	// 先当没找到，循环里命中再填上单层那份。
+	var single global.ContentTemplate
+	// 逐条查看结果，找出单层种子。
+	for _, row := range list {
+		// 身份对上单层种子才取这一份。
+		if row.ID.String() == seedSingleID {
+			// 记下单层种子，后面拿它来改。
+			single = row
+		}
+	}
+	// 单层种子没出现就停，空库种子不全。
+	if single.ID == uuid.Nil {
+		// 不符即停：单层种子没出现。
+		t.Fatal("empty db missing single")
+	}
+	// 把单层字段改成空对象，和代码种子明显不同。
+	edited, err := h.WAN.UpdateProjectTemplate(ctx, tok, single.ID, single.Revision, single.Name, []byte(`{"root":"object"}`))
+	// 改工程模版失败或修订没有加一就停，不能当通过。
+	if err != nil || edited.Revision != single.Revision+1 || bytes.Equal(edited.Schema, single.Schema) {
+		// 不符即停：改工程模版失败或修订不对。
+		t.Fatalf("edit %+v %v", edited, err)
+	}
+	// 连列两次，确认读路径不会把字段改回去。
+	for i := 0; i < 2; i++ {
+		// 再列工程模版，读路径不该写库。
+		again, err := h.WAN.ListProjectTemplates(ctx, tok)
+		// 列工程模版失败或条数不是3就停，不能当通过。
+		if err != nil || len(again) != 3 {
+			// 不符即停：再列工程模版失败或条数不对。
+			t.Fatalf("relist %d %v", len(again), err)
+		}
+		// 逐条找回单层那份核对字段和修订。
+		for _, row := range again {
+			// 不是单层这份就跳过，别的种子不受影响。
+			if row.ID != single.ID {
+				continue
+			}
+			// 修订或字段被改回就停，说明读路径还在覆盖种子。
+			if row.Revision != edited.Revision || !bytes.Equal(row.Schema, edited.Schema) {
+				// 不符即停：管理员的修改被读路径撤销。
+				t.Fatalf("seed reverted rev=%d schema=%s", row.Revision, row.Schema)
+			}
+		}
+	}
+}
+
+// 三份种子删光后列表为空，下发只剩工艺，带种子身份仍能手动补建。
+func TestSeedTemplatesStayDeleted(t *testing.T) {
+	// 准备本测上下文，没有它库和服务都开不了。
+	ctx := context.Background()
+	// 起服务并登录，拿到夹具和会话票。
+	h, tok := projectTplAdmin(t, ctx)
+	// 列工程模版，空库首次应落下三份种子。
+	list, err := h.WAN.ListProjectTemplates(ctx, tok)
+	// 列工程模版失败或条数不是3就停，不能当通过。
+	if err != nil || len(list) != 3 {
+		// 不符即停：列工程模版失败或条数不是3。
+		t.Fatalf("seed %d %v", len(list), err)
+	}
+	// 逐份删掉三份种子，删到零份。
+	for _, row := range list {
+		// 删工程模版失败就停，删不掉就验不了会不会补回。
+		if err := h.WAN.DeleteProjectTemplate(ctx, tok, row.ID); err != nil {
+			// 不符即停：删工程模版失败。
+			t.Fatal(err)
+		}
+	}
+	// 删光后再列，应仍是空表。
+	empty, err := h.WAN.ListProjectTemplates(ctx, tok)
+	// 列失败或又冒出模版就停，说明种子被补回了。
+	if err != nil || len(empty) != 0 {
+		// 不符即停：删光后种子被自动补回。
+		t.Fatalf("after delete all %d %v", len(empty), err)
+	}
+	// 组给厂的模版快照，删光后只该剩工艺一份。
+	snaps, err := h.WAN.SnapshotsForFactory(ctx, id.New())
+	// 组快照失败或不是只剩工艺就停，不能当通过。
+	if err != nil || len(snaps) != 1 || snaps[0].Kind != global.KindProcess {
+		// 不符即停：下发快照里又带上了工程种子。
+		t.Fatalf("snapshots %+v %v", snaps, err)
+	}
+	// 解析单层种子身份，手动补建要用它。
+	seedID, err := uuid.Parse(seedSingleID)
+	// 解析身份失败就停，解析失败就对不上种子。
+	if err != nil {
+		// 不符即停：解析身份失败。
+		t.Fatal(err)
+	}
+	// 带种子身份手动补建单层，空名空字段按种子填。
+	rebuilt, err := h.WAN.CreateProjectTemplate(ctx, tok, seedID, "", nil)
+	// 补建失败或身份变了就停，不能当通过。
+	if err != nil || rebuilt.ID != seedID || rebuilt.Revision != 1 {
+		// 不符即停：带种子身份补建失败。
+		t.Fatalf("rebuild %+v %v", rebuilt, err)
+	}
+	// 补建后再列，只该有手动补的这一份。
+	after, err := h.WAN.ListProjectTemplates(ctx, tok)
+	// 列失败或条数不是1就停，说明另外两份被顺带补回。
+	if err != nil || len(after) != 1 || after[0].ID != seedID {
+		// 不符即停：补建一份却冒出了别的种子。
+		t.Fatalf("after rebuild %+v %v", after, err)
+	}
+}
+
+// 只删单层种子或三份删光后，网页按种子身份新建的焊道仍落进正文。
+func TestCreateProjectAfterSeedsDeleted(t *testing.T) {
+	// 准备本测上下文，没有它库和服务都开不了。
+	ctx := context.Background()
+	// 起服务并登录，拿到夹具和会话票。
+	h, tok := projectTplAdmin(t, ctx)
+	// 列工程模版，空库首次应落下三份种子。
+	list, err := h.WAN.ListProjectTemplates(ctx, tok)
+	// 列工程模版失败或条数不是3就停，不能当通过。
+	if err != nil || len(list) != 3 {
+		// 不符即停：列工程模版失败或条数不是3。
+		t.Fatalf("seed %d %v", len(list), err)
+	}
+	// 网页新建单层工程时 emptyWeld 落下的那条焊道，固定挂单层种子。
+	weld := []byte(`[{"id":"w1","templateId":"` + seedSingleID + `","kind":"single","name":"焊道 1","points":[],"processId":"","isEnabled":true}]`)
+	// 新建一份单层工程并读回正文；raw 为真时正文应原样留下，否则按种子字段补齐。
+	check := func(name string, raw bool) {
+		// 失败栈指到用例，避免停在闭包里面。
+		t.Helper()
+		// 按单层新建平台工程，正文就是那一条焊道。
+		proj, err := h.WAN.CreatePlatformProject(ctx, tok, name, weld, nil)
+		// 新建失败就停，删了种子也该能建。
+		if err != nil {
+			// 不符即停：新建平台工程失败。
+			t.Fatalf("%s create %v", name, err)
+		}
+		// 读回平台正文，核对焊道还在。
+		body, err := h.WAN.ReadPlatformAssetContent(ctx, tok, proj.ID)
+		// 读正文失败就停，读不到就无法比对。
+		if err != nil {
+			// 不符即停：读平台正文失败。
+			t.Fatalf("%s read %v", name, err)
+		}
+		// 准备接读回的各条焊道。
+		var items []map[string]any
+		// 解不开、条数不是一或身份变了就停，说明焊道被吞。
+		if err := json.Unmarshal(body, &items); err != nil || len(items) != 1 || items[0]["templateId"] != seedSingleID || items[0]["name"] != "焊道 1" {
+			// 不符即停：新建正文丢了焊道。
+			t.Fatalf("%s body %s %v", name, body, err)
+		}
+		// 零份时应原样留下，不该再按模版改写。
+		if raw && !bytes.Equal(body, weld) {
+			// 不符即停：零份时正文被改写。
+			t.Fatalf("%s not raw %s", name, body)
+		}
+		// 缺份时应按种子内置字段补上缺的选中点。
+		if _, ok := items[0]["selectedPointIndex"]; !raw && !ok {
+			// 不符即停：没按种子字段套正文。
+			t.Fatalf("%s seed fields %s", name, body)
+		}
+	}
+	// 先只删单层种子，多层和 T 排还在。
+	if err := h.WAN.DeleteProjectTemplate(ctx, tok, uuid.MustParse(seedSingleID)); err != nil {
+		// 不符即停：删单层种子失败。
+		t.Fatal(err)
+	}
+	// 缺了单层那份，按内置字段套也要留下焊道。
+	check("缺单层", false)
+	// 再删掉其余两份，删到零份。
+	for _, row := range list {
+		// 单层那份已经删过，跳过。
+		if row.ID.String() == seedSingleID {
+			continue
+		}
+		// 删工程模版失败就停，删不掉就验不了零份。
+		if err := h.WAN.DeleteProjectTemplate(ctx, tok, row.ID); err != nil {
+			// 不符即停：删工程模版失败。
+			t.Fatal(err)
+		}
+	}
+	// 零份时正文原样留下，不被套成空数组。
+	check("零份", true)
+}
+
+// 空库并发列表：库里只落三份，每个请求都拿到三份且不报错。
+func TestSeedTemplatesConcurrentList(t *testing.T) {
+	// 准备本测上下文，没有它库和服务都开不了。
+	ctx := context.Background()
+	// 起服务并登录，拿到夹具和会话票。
+	h, tok := projectTplAdmin(t, ctx)
+	// 同时发起的列表请求数，够让抢标记撞上。
+	const workers = 8
+	// 等全部请求回来再核对。
+	var wg sync.WaitGroup
+	// 每个请求拿到的份数，按序号各占一格。
+	counts := make([]int, workers)
+	// 每个请求的错误，按序号各占一格。
+	errs := make([]error, workers)
+	// 先拦住全部请求，放闸后一起冲。
+	start := make(chan struct{})
+	// 逐个起列表请求，尽量同时打到空库。
+	for i := 0; i < workers; i++ {
+		// 登记一个待回来的请求。
+		wg.Add(1)
+		// 起一个并发列表请求，结果落到自己的格子。
+		go func(i int) {
+			// 请求回来就销账，主线才能往下核。
+			defer wg.Done()
+			// 等放闸再列，让请求尽量撞在一起。
+			<-start
+			// 列工程模版，结果记进自己那一格。
+			rows, err := h.WAN.ListProjectTemplates(ctx, tok)
+			// 记下份数，后面逐个核对是不是三份。
+			counts[i] = len(rows)
+			// 记下错误，后面不能有修订冲突或撞键。
+			errs[i] = err
+		}(i)
+	}
+	// 放闸，全部请求一起去列。
+	close(start)
+	// 等全部请求回来。
+	wg.Wait()
+	// 逐个核对每个请求的结果。
+	for i := 0; i < workers; i++ {
+		// 报错或不是三份就停，并发种子没收住。
+		if errs[i] != nil || counts[i] != 3 {
+			// 不符即停：并发列表报错或份数不对。
+			t.Fatalf("worker %d got %d %v", i, counts[i], errs[i])
+		}
+	}
+	// 直接读库里的工程模版行，核对没有多插。
+	rows, err := h.WAN.Store().TemplatesByKind(ctx, global.KindProject)
+	// 读库失败或不是三份就停，说明种子落了多遍。
+	if err != nil || len(rows) != 3 {
+		// 不符即停：库里工程模版份数不对。
+		t.Fatalf("stored %d %v", len(rows), err)
+	}
+	// 逐份核对修订，并发读不该把种子升修订。
+	for _, row := range rows {
+		// 修订不是一就停，说明读路径还在改写种子。
+		if row.Revision != 1 {
+			// 不符即停：种子修订被读路径抬高。
+			t.Fatalf("seed revision %s %d", row.Name, row.Revision)
+		}
 	}
 }

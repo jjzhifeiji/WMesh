@@ -233,3 +233,140 @@ func TestRewriteProcessIDs(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 }
+
+// 测试用的自定义模版身份，不是空库三份之一。
+const customTplID = "0199aaaa-0000-7000-8000-000000000001"
+
+// 测试用的第二份自定义模版身份，工艺键写成枚举。
+const customEnumID = "0199aaaa-0000-7000-8000-000000000002"
+
+// customItem 不带工艺槽的自定义模版，只声明名称。
+func customItem() ProjectItemSchema {
+	// 交回只有名称字段的一份模版。
+	return ProjectItemSchema{ID: customTplID, Name: "自定义", Fields: []Field{str("name", "名称", "")}}
+}
+
+// 收集、改写、对照表缺项三件事一起核对。
+func assertStandardSlots(t *testing.T, items []ProjectItemSchema, raw []byte) {
+	// 标成辅助函数，失败算到调用方。
+	t.Helper()
+	// 按各份字段表收集工艺身份。
+	ids, err := CollectProcessIDsFromItems(items, raw)
+	// 没能收集工艺身份就停住本用例。
+	if err != nil {
+		// 没能收集工艺身份就停住本用例。
+		t.Fatal(err)
+	}
+	// 拷一份再排序，免得改到原结果。
+	got := append([]string(nil), ids...)
+	// 排好序再和预期比。
+	slices.Sort(got)
+	// 标准槽上的六处引用少一处就失败。
+	if !slices.Equal(got, []string{"A", "B", "C", "D", "E", "F"}) {
+		// 和预期不符就停住本用例。
+		t.Fatalf("collect %v", ids)
+	}
+	// 准备每个旧身份对应的新身份。
+	idMap := map[string]string{"A": "A2", "B": "B2", "C": "C2", "D": "D2", "E": "E2", "F": "F2"}
+	// 按对照表改写工艺身份。
+	out, err := RewriteProcessIDsFromItems(items, raw, idMap)
+	// 没能按对照表改写工艺身份就停住本用例。
+	if err != nil {
+		// 没能按对照表改写工艺身份就停住本用例。
+		t.Fatal(err)
+	}
+	// 改写后的正文再收一遍，看旧身份是否还在。
+	next, err := CollectProcessIDsFromItems(items, out)
+	// 没能收集改写后的引用就停住本用例。
+	if err != nil {
+		// 没能收集改写后的引用就停住本用例。
+		t.Fatal(err)
+	}
+	// 排好序再和预期比。
+	slices.Sort(next)
+	// 有一处没换成新身份就失败。
+	if !slices.Equal(next, []string{"A2", "B2", "C2", "D2", "E2", "F2"}) {
+		// 和预期不符就停住本用例。
+		t.Fatalf("rewrite %s", out)
+	}
+	// 去掉附加槽那一条，对照表就缺项了。
+	delete(idMap, "D")
+	// 对照表缺项时改写要报找不到。
+	if _, err := RewriteProcessIDsFromItems(items, raw, idMap); !errors.Is(err, errUnknownProcessID) {
+		// 和预期不符就停住本用例。
+		t.Fatalf("missing map %v", err)
+	}
+}
+
+// 自定义模版没声明工艺槽，三种焊缝标准槽上的引用照样能收能改。
+func TestCustomTemplateStandardSlots(t *testing.T) {
+	// 空库三份加一份不带工艺槽的自定义模版。
+	items := append(SeedProjectItems(), customItem())
+	// 三种焊缝都挂在自定义模版下，工艺填在各自标准槽。
+	raw := []byte(`[
+		{"templateId":"` + customTplID + `","kind":"multi","basePath":{"processId":"A"},"passes":[{"processId":"B"}]},
+		{"templateId":"` + customTplID + `","kind":"single","processId":"C","extraProcesses":[{"id":"x","processId":"D"}]},
+		{"templateId":"` + customTplID + `","kind":"tbar","gapBands":[{"rootProcessId":"E","capProcessId":"F"}]}
+	]`)
+	// 收集、改写、缺项报错一起核对。
+	assertStandardSlots(t, items, raw)
+}
+
+// 模版身份对不上时退回并集，并集没有工艺槽也按种类照收。
+func TestUnknownTemplateStandardSlots(t *testing.T) {
+	// 只有一份不带工艺槽的自定义模版，并集里也没有工艺槽。
+	items := []ProjectItemSchema{customItem()}
+	// 身份对不上或没写，种类靠形状推断。
+	raw := []byte(`[
+		{"templateId":"nope","basePath":{"processId":"A"},"passes":[{"processId":"B"}]},
+		{"processId":"C","extraProcesses":[{"processId":"D"}]},
+		{"templateId":"nope","gapBands":[{"rootProcessId":"E","capProcessId":"F"}]}
+	]`)
+	// 收集、改写、缺项报错一起核对。
+	assertStandardSlots(t, items, raw)
+}
+
+// 自定义字段和标准槽同键时只走一遍，改写出的新身份不再查表。
+func TestMergedSlotRewrittenOnce(t *testing.T) {
+	// 第一份自己也声明了同键的工艺槽、对象和数组。
+	custom := ProjectItemSchema{ID: customTplID, Name: "自定义", Fields: []Field{
+		procRef("processId", "工艺"),
+		{Key: "basePath", Label: "基准层", Type: TypeObject, Fields: []Field{procRef("processId", "工艺"), str("name", "名", "")}},
+		{Key: "passes", Label: "填充层", Type: TypeArray, Items: &Field{Type: TypeObject, Label: "层", Fields: []Field{procRef("processId", "工艺")}}},
+	}}
+	// 第二份把工艺键写成枚举，标准槽仍按工艺算。
+	enum := ProjectItemSchema{ID: customEnumID, Name: "枚举", Fields: []Field{
+		{Key: "processId", Label: "工艺", Type: TypeString, Options: []string{"甲", "乙"}},
+	}}
+	// 两份自定义模版，种子不在。
+	items := []ProjectItemSchema{custom, enum}
+	// 多层和单层各挂一份，同键槽上都填了工艺。
+	raw := []byte(`[
+		{"templateId":"` + customTplID + `","kind":"multi","basePath":{"processId":"A"},"passes":[{"processId":"B"}]},
+		{"templateId":"` + customTplID + `","kind":"single","processId":"C"},
+		{"templateId":"` + customEnumID + `","kind":"single","processId":"D"}
+	]`)
+	// 对照表不含新身份，走两遍就会报找不到。
+	idMap := map[string]string{"A": "A2", "B": "B2", "C": "C2", "D": "D2"}
+	// 按对照表改写工艺身份。
+	out, err := RewriteProcessIDsFromItems(items, raw, idMap)
+	// 没能按对照表改写工艺身份就停住本用例。
+	if err != nil {
+		// 同键被走了两遍或枚举没算工艺都会停在这里。
+		t.Fatal(err)
+	}
+	// 改写后的正文再收一遍，看是否都换成了新身份。
+	ids, err := CollectProcessIDsFromItems(items, out)
+	// 没能收集改写后的引用就停住本用例。
+	if err != nil {
+		// 没能收集改写后的引用就停住本用例。
+		t.Fatal(err)
+	}
+	// 排好序再和预期比。
+	slices.Sort(ids)
+	// 有一处没换或换错就失败。
+	if !slices.Equal(ids, []string{"A2", "B2", "C2", "D2"}) {
+		// 和预期不符就停住本用例。
+		t.Fatalf("rewrite once %v %s", ids, out)
+	}
+}

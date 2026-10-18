@@ -1045,6 +1045,12 @@ func (s *Assets) applyAppOnce(ctx context.Context, acc Account, assetID uuid.UUI
 			_ = s.audit(ctx, &acc.ID, nil, "apply_app", assetTarget(cur.ID, cur.Revision), audit.Deny)
 			return Asset{}, cur.Revision, err
 		}
+		// 只核这次新钉的工艺类型；旧依赖不拦，免得改过类型的工程盖不回。
+		if err := s.assertDepsWeldKind(ctx, cur.WeldKind, newlyPinnedDeps(cur.Deps, deps)); err != nil {
+			// 盖写被拒时补记审计，写失败仍维持拒绝。
+			_ = s.audit(ctx, &acc.ID, nil, "apply_app", assetTarget(cur.ID, cur.Revision), audit.Deny)
+			return Asset{}, cur.Revision, err
+		}
 		// 有引用对不上依赖则拒绝，并补记审计。
 		if err := s.assertProjectProcessIDs(ctx, content, deps); err != nil {
 			// 盖写被拒时补记审计，写失败仍维持拒绝。
@@ -1072,6 +1078,29 @@ func (s *Assets) applyAppOnce(ctx context.Context, acc Account, assetID uuid.UUI
 	}
 	// 去掉正文再返回，避免工艺参数外泄。
 	return stripContent(row), row.Revision, nil
+}
+
+// newlyPinnedDeps 挑出合并后身份不在原依赖里的条目，即这次新钉的工艺。
+func newlyPinnedDeps(old, merged []AssetDep) []AssetDep {
+	// 记下原依赖的身份，后面据此分出哪些是新补的。
+	have := make(map[uuid.UUID]struct{}, len(old))
+	// 逐条收下原依赖的身份，修订不同也算旧依赖。
+	for _, d := range old {
+		// 用身份当键，同一工艺只算一次。
+		have[d.ID] = struct{}{}
+	}
+	// 只装这次新补进来的依赖。
+	var out []AssetDep
+	// 逐条看合并后的依赖，挑出原来没有的身份。
+	for _, d := range merged {
+		// 原来就钉着的跳过，不在这里核作业类型。
+		if _, ok := have[d.ID]; ok {
+			continue
+		}
+		// 新钉的这条留下，交给作业类型核对。
+		out = append(out, d)
+	}
+	return out
 }
 
 // canApplyApp 平台级拒绝；厂级只给管理员；个人级只给创建人。
@@ -1193,8 +1222,19 @@ func (s *Assets) SetAssetWeldKind(ctx context.Context, token string, assetID uui
 			// 补上全文后再核焊道，避免空正文误判。
 			body = full.Content
 		}
-		// 焊道对不上则拒绝保存。
-		if err := assertProjectWeldKind(kind, body); err != nil {
+		// 正文里认得出的焊道类型对不上，就要换成空焊道。
+		wipe := assertProjectWeldKind(kind, body) != nil
+		// 类型核对放过时，再看正文是否还引用被筛掉的工艺。
+		if !wipe {
+			// 自定义模版认不出类型，按引用和筛掉的依赖再核一次。
+			wipe, err = s.refsDroppedDeps(ctx, body, cur.Deps, kept)
+			// 收集引用失败就整次拒绝，不清正文。
+			if err != nil {
+				return store.AssetWrite{}, err
+			}
+		}
+		// 类型不符或引用了被筛掉的工艺，正文换成空焊道。
+		if wipe {
 			// 焊道对不上时用空列表替换正文。
 			empty := []byte("[]")
 			// 焊道对不上就改成空焊道，不再沿用旧正文。
@@ -1206,6 +1246,46 @@ func (s *Assets) SetAssetWeldKind(ctx context.Context, token string, assetID uui
 		}
 		return write, nil
 	})
+}
+
+// refsDroppedDeps 正文是否引用了改类型时被筛掉的依赖；没有筛掉就不看正文。
+func (s *kernel) refsDroppedDeps(ctx context.Context, content []byte, all, kept []AssetDep) (bool, error) {
+	// 记下留下来的依赖身份，剩下的就是被筛掉的。
+	keep := make(map[uuid.UUID]struct{}, len(kept))
+	// 逐条登记留下的依赖。
+	for _, d := range kept {
+		// 用身份当键，同一工艺只记一次。
+		keep[d.ID] = struct{}{}
+	}
+	// 按数量先准备被筛掉的身份集合。
+	dropped := make(map[string]struct{}, len(all))
+	// 逐条看原依赖，不在留下集合里的就是被筛掉的。
+	for _, d := range all {
+		// 留下来的跳过，只收被筛掉的。
+		if _, ok := keep[d.ID]; ok {
+			continue
+		}
+		// 收成文本，和正文里的引用对得上。
+		dropped[d.ID.String()] = struct{}{}
+	}
+	// 一条都没筛掉，正文引用不会悬空。
+	if len(dropped) == 0 {
+		return false, nil
+	}
+	// 按已收模版收集引用；读模版失败或路径键都整次拒绝。
+	ids, err := s.collectProjectProcessIDs(ctx, content)
+	// 收集失败就原样交回，不当成命中去清正文。
+	if err != nil {
+		return false, err
+	}
+	// 逐个引用看是否落在被筛掉的部分。
+	for _, id := range ids {
+		// 命中一条就得清正文，免得下发缺工艺。
+		if _, ok := dropped[id]; ok {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // PublishAsset 草稿改为可用。
@@ -1556,7 +1636,7 @@ func (s *Assets) ReadAssetContent(ctx context.Context, token string, assetID uui
 	return a.Content, nil
 }
 
-// PromoteToFactory 把可复制的未停用个人级升为厂级：草稿也可升；第一次复制新身份；再升按正文摘要跳过或覆盖。
+// PromoteToFactory 把可复制的未停用个人级升为厂级：草稿也可升；第一次复制新身份；再升摘要和作业类型都相同才跳过，否则覆盖。
 func (s *Assets) PromoteToFactory(ctx context.Context, token string, assetID uuid.UUID) (Asset, error) {
 	// 核对登录仍有效，后面的操作都靠这次会话。
 	acc, err := s.RequireActive(ctx, token)
@@ -1604,12 +1684,12 @@ func (s *Assets) PromoteToFactory(ctx context.Context, token string, assetID uui
 	}
 	// 记下源修订，覆盖或新建时带到厂级。
 	rev := src.Revision
-	// 已升过则按摘要跳过或覆盖。
+	// 已升过则按摘要和作业类型跳过或覆盖。
 	existing, err := s.store.GovernedAssetBySourceID(ctx, src.ID)
-	// 已经升过则按摘要决定跳过还是覆盖。
+	// 已经升过则按摘要和作业类型决定跳过还是覆盖。
 	if err == nil {
-		// 正文没变就直接用已升的那条，不再覆盖。
-		if bytes.Equal(existing.Digest, src.Digest) {
+		// 正文和作业类型都没变才直接用已升的那条。
+		if bytes.Equal(existing.Digest, src.Digest) && existing.WeldKind == src.WeldKind {
 			// 成功必须记上审计，没记上则本次不算做成。
 			if err := s.audit(ctx, &acc.ID, nil, "promote_asset", assetTarget(existing.ID, existing.Revision)+" from "+assetTarget(src.ID, src.Revision), audit.Allow); err != nil {
 				return Asset{}, err
@@ -1617,9 +1697,9 @@ func (s *Assets) PromoteToFactory(ctx context.Context, token string, assetID uui
 			// 去掉正文再返回，避免工艺参数外泄。
 			return stripContent(existing), nil
 		}
-		// 正文变了才覆盖厂级。
+		// 正文或作业类型变了就覆盖厂级，作业类型跟源走。
 		row, err := s.store.UpdateGovernedAsset(ctx, existing.ID, existing.Revision, store.AssetWrite{
-			Name: src.Name, Content: src.Content, Digest: src.Digest, Copyable: true, Status: AssetAvailable, Deps: src.Deps, SourceRevision: &rev,
+			Name: src.Name, Content: src.Content, Digest: src.Digest, Copyable: true, Status: AssetAvailable, WeldKind: src.WeldKind, Deps: src.Deps, SourceRevision: &rev,
 		})
 		// 失败则记拒绝并停下，不继续往下改。
 		if err != nil {
