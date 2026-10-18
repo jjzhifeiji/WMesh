@@ -152,7 +152,7 @@ func statusOf(err error) int {
 	// 修订过期或参数不合法时回非法请求。
 	case errors.Is(err, domain.ErrStaleRevision), errors.Is(err, domain.ErrBindingVoid),
 		errors.Is(err, domain.ErrInvalidKey), errors.Is(err, domain.ErrClientKeyMismatch),
-		errors.Is(err, domain.ErrInvalidName),
+		errors.Is(err, domain.ErrInvalidName), errors.Is(err, domain.ErrInvalidGrantDays),
 		errors.Is(err, domain.ErrDeviceSerialRequired), errors.Is(err, domain.ErrDeviceSerialMismatch),
 		isDomain(err), errors.Is(err, errInvalidID):
 		return http.StatusBadRequest

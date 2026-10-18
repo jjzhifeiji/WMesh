@@ -11,6 +11,7 @@ import {
   formatLengthM,
   groupWeldRows,
   useWeldReports,
+  utcDayRange,
   weldKindLabel,
   type WeldGroup,
   type WeldSummaryRow,
@@ -40,8 +41,7 @@ export function ReportsPage() {
   const [range, setRange] = useState<[Dayjs, Dayjs]>(defaultRange);
   const [tab, setTab] = useState<WeldGroup>("factory");
   const [factoryId, setFactoryId] = useState<string>();
-  const from = range[0].startOf("day").toISOString();
-  const to = range[1].add(1, "day").startOf("day").toISOString();
+  const { from, to } = utcDayRange(range[0], range[1]);
   const listed = useWeldReports(from, to, factoryId ?? "");
   const grains = listed.data;
   const reportRows = useMemo(() => groupWeldRows(grains ?? [], tab), [grains, tab]);

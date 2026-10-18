@@ -310,16 +310,37 @@ func TestFactoryHTTP(t *testing.T) {
 		// 与预期不符就停测，避免后面连环误判。
 		t.Fatalf("list clients %d %s", code, body)
 	}
-	// 收成同一时区，避免窗口因时区错位。
+	// 旧格式的生效时间，用来验服务端不再收浏览器起止。
 	nb := time.Now().UTC().Add(-time.Hour).Format(time.RFC3339)
-	// 收成同一时区，避免窗口因时区错位。
+	// 旧格式的失效时间，用来验服务端不再收浏览器起止。
 	na := time.Now().UTC().Add(24 * time.Hour).Format(time.RFC3339)
-	// 签发或查看运行许可。
+	// 还按旧格式自带起止，服务端不再采信浏览器时钟。
 	code, body = do(t, srv, "POST", base+"/clients/"+cid+"/runtime", tok, `{"notBefore":"`+nb+`","notAfter":"`+na+`"}`)
+	// 旧字段属于未知字段，不是非法请求则失败。
+	if code != http.StatusBadRequest {
+		// 与预期不符就停测，避免后面连环误判。
+		t.Fatalf("legacy runtime window %d %s", code, body)
+	}
+	// 天数为零的签发，应当按天数越界拒绝。
+	code, body = do(t, srv, "POST", base+"/clients/"+cid+"/runtime", tok, `{"days":0}`)
+	// 不是非法请求，或错误不是天数越界则失败。
+	if code != http.StatusBadRequest || gjson(t, body, "error") != "runtime grant days out of range" {
+		// 与预期不符就停测，避免后面连环误判。
+		t.Fatalf("runtime days 0 %d %s", code, body)
+	}
+	// 只传天数签发运行许可，起止由服务器算。
+	code, body = do(t, srv, "POST", base+"/clients/"+cid+"/runtime", tok, `{"days":1}`)
 	// 不是已创建，或正文与预期不符则失败。
 	if code != http.StatusCreated || !strings.Contains(body, `"canRun":true`) || strings.Contains(body, "payload") {
 		// 与预期不符就停测，避免后面连环误判。
 		t.Fatalf("issue runtime %d %s", code, body)
+	}
+	// 从回包取出失效时间，核对是否按服务器时钟加一天。
+	notAfter, err := time.Parse(time.RFC3339, gjson(t, body, "notAfter"))
+	// 解析失败或离服务器现在加一天太远则失败。
+	if err != nil || notAfter.Sub(time.Now().UTC().Add(24*time.Hour)).Abs() > time.Minute {
+		// 与预期不符就停测，避免后面连环误判。
+		t.Fatalf("runtime notAfter %v %v %s", notAfter, err, body)
 	}
 	// 读取当前登录人，未登录应当被拒绝。
 	code, body = do(t, srv, "GET", base+"/me", tok, "")

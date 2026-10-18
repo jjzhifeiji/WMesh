@@ -15,7 +15,7 @@ export type WeldReportRow = {
   displayName?: string; // 显示名
   orgUnitId?: string | null; // 发生节点
   orgPath?: PathNode[]; // 发生时路径
-  day?: string; // UTC 日期
+  day?: string; // 按浏览器时区切的日期
   projectId?: string | null; // 工程身份
   projectName?: string; // 工程名
   lengthMm: number; // 该组焊长毫米
@@ -44,15 +44,30 @@ export type WeldDemoResult = {
 };
 
 export const weldReportKeys = {
-  group: (group: WeldGroup, from: string, to: string) => ["weld-reports", group, from, to] as const,
+  group: (group: WeldGroup, from: string, to: string, tz: string) => ["weld-reports", group, from, to, tz] as const,
   runs: (from: string, to: string) => ["weld-runs", from, to] as const,
 };
 
+// 浏览器时区的 IANA 名，后端按它切日；取不到就不带，后端按 UTC。
+function browserTimeZone(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || "";
+  } catch {
+    return "";
+  }
+}
+
 export function useWeldReports(group: WeldGroup, from: string, to: string, enabled = true) {
+  const tz = browserTimeZone();
   return useQuery({
-    queryKey: weldReportKeys.group(group, from, to),
+    queryKey: weldReportKeys.group(group, from, to, tz),
     queryFn: ({ signal }) =>
-      http.get<WeldReportRow[]>(fpath(`/weld-reports?group=${encodeURIComponent(group)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`), signal),
+      http.get<WeldReportRow[]>(
+        fpath(
+          `/weld-reports?group=${encodeURIComponent(group)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}${tz ? `&tz=${encodeURIComponent(tz)}` : ""}`,
+        ),
+        signal,
+      ),
     enabled,
   });
 }

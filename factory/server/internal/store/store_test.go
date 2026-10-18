@@ -1109,3 +1109,40 @@ func TestChannelFlapKeepsLease(t *testing.T) {
 		t.Fatalf("after flap %q %v", got.Content, err)
 	}
 }
+
+// 按日汇总要按报表时区切日，东八区早上八点前的焊不能记到前一天。
+func TestAggregateWeldFactsDayTZ(t *testing.T) {
+	// 加载东八区，取不到时区库就停测。
+	sh, err := time.LoadLocation("Asia/Shanghai")
+	// 时区加载失败则停测，后面断言没有意义。
+	if err != nil {
+		// 与预期不符就停测，避免后面连环误判。
+		t.Fatalf("load tz: %v", err)
+	}
+	// 同一个焊工，两条焊共用这个身份。
+	who := id.New()
+	// UTC 前一天深夜和次日上午，东八区都落在 10-18。
+	facts := []store.WeldFactView{
+		{WeldFact: store.WeldFact{ID: id.New(), CreatorID: who, LengthMM: 100, DurationSec: 10, OccurredAt: time.Date(2026, 10, 17, 23, 30, 0, 0, time.UTC)}},
+		{WeldFact: store.WeldFact{ID: id.New(), CreatorID: who, LengthMM: 200, DurationSec: 20, OccurredAt: time.Date(2026, 10, 18, 10, 0, 0, 0, time.UTC)}},
+	}
+	// 按东八区切日汇总，两条应并成一行。
+	local := store.AggregateWeldFacts(facts, store.WeldGroupDay, sh)
+	// 不是 10-18 一行两次，或零点不在东八区，则失败。
+	if len(local) != 1 || local[0].RunCount != 2 || !local[0].Day.Equal(time.Date(2026, 10, 18, 0, 0, 0, 0, sh)) || local[0].Day.Format("2006-01-02") != "2026-10-18" {
+		// 与预期不符就停测，避免后面连环误判。
+		t.Fatalf("shanghai day rows: %+v", local)
+	}
+	// 按 UTC 切日汇总，两条应分到两天。
+	utc := store.AggregateWeldFacts(facts, store.WeldGroupDay, time.UTC)
+	// 不是 10-17 和 10-18 各一行，则失败。
+	if len(utc) != 2 || utc[0].Day.Format("2006-01-02") != "2026-10-17" || utc[1].Day.Format("2006-01-02") != "2026-10-18" {
+		// 与预期不符就停测，避免后面连环误判。
+		t.Fatalf("utc day rows: %+v", utc)
+	}
+	// 不给时区时退回 UTC，结果应和按 UTC 一样分两行。
+	if got := store.AggregateWeldFacts(facts, store.WeldGroupDay, nil); len(got) != 2 {
+		// 与预期不符就停测，避免后面连环误判。
+		t.Fatalf("nil tz rows: %+v", got)
+	}
+}

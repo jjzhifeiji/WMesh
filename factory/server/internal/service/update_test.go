@@ -154,8 +154,6 @@ func TestMatrixSoftware(t *testing.T) {
 	now := time.Now().UTC()
 	// 服务器和本机同一时刻，避免时钟本身造成拒绝
 	clocks := factory.Clocks{Server: now, Local: now}
-	// 把时刻往后推，没成功则本步验收失败
-	nb, na := now.Add(-time.Hour), now.Add(24*time.Hour)
 
 	// 用内存源代替云端，没有报价就当没发布
 	src := &memSource{}
@@ -204,7 +202,7 @@ func TestMatrixSoftware(t *testing.T) {
 	// 验收超管确认后厂服务换成新版本，没换即失败
 	run("U4", func(t *testing.T) {
 		// 装好带凭证的本机袋，失败则不能确认更新
-		cid, bag := boundBag(t, ctx, facA, saA, seedA.ID, op.acc.ID, nb, na)
+		cid, bag := boundBag(t, ctx, facA, saA, seedA.ID, op.acc.ID)
 		// 焊机号这里不拿来断言，绑定失败则前面已停
 		_ = cid
 		// 标成正在焊接，这时切换或安装应当被拒
@@ -252,9 +250,9 @@ func TestMatrixSoftware(t *testing.T) {
 		}
 	})
 	// 装好带凭证的本机袋，失败则不能确认更新
-	cid1, bag1 := boundBag(t, ctx, facA, saA, seedA.ID, op.acc.ID, nb, na)
+	cid1, bag1 := boundBag(t, ctx, facA, saA, seedA.ID, op.acc.ID)
 	// 装好带凭证的本机袋，失败则不能确认更新
-	_, bag2 := boundBag(t, ctx, facA, saA, seedA.ID, pe.acc.ID, nb, na)
+	_, bag2 := boundBag(t, ctx, facA, saA, seedA.ID, pe.acc.ID)
 	// 焊机号这里不拿来断言，绑定失败则前面已停
 	_ = cid1
 	// 验收空闲且已登录可以确认安装，确认失败即不过
@@ -617,7 +615,7 @@ func TestMatrixSoftware(t *testing.T) {
 }
 
 // 绑定焊机并装上运行袋，失败则不能确认更新
-func boundBag(t *testing.T, ctx context.Context, fac *factory.Service, sa string, factoryID, personID uuid.UUID, nb, na time.Time) (uuid.UUID, factory.Bag) {
+func boundBag(t *testing.T, ctx context.Context, fac *factory.Service, sa string, factoryID, personID uuid.UUID) (uuid.UUID, factory.Bag) {
 	// 标成辅助函数，失败栈落到调用方
 	t.Helper()
 	// 新开一个身份，避免和别的绑定撞号
@@ -642,7 +640,7 @@ func boundBag(t *testing.T, ctx context.Context, fac *factory.Service, sa string
 		t.Fatal(err)
 	}
 	// 签发运行凭证，失败则本步验收不能继续
-	rt, err := fac.IssueRuntimeGrant(ctx, sa, cid, nb, na)
+	rt, err := fac.IssueRuntimeGrant(ctx, sa, cid, 1)
 	// 签发运行凭证失败就停，避免带着错误继续验
 	if err != nil {
 		// 签发运行凭证失败就把原因打出并停掉本例

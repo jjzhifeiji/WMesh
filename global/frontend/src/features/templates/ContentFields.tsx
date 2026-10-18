@@ -1,4 +1,5 @@
 import { Button, Collapse, Input, Segmented, Select, Space, Typography } from "antd";
+import type { InputProps } from "antd";
 import { useState } from "react";
 import type { ContentSchema, ProjectItemSchema, TemplateField } from "./schema";
 import { defaultField, defaultItemFromFields, defaultValue, encodeContent, enumOptions, enumValue, isProcessRef, kindOf, parseContent, parseText, textOf } from "./schema";
@@ -415,15 +416,7 @@ function FieldInput({
         );
       }
       case "string":
-        return (
-          <Input
-            size="small"
-            className="content-ctrl-text"
-            value={textOf(value)}
-            onChange={(e) => onChange(parseText(e.target.value))}
-            disabled={disabled}
-          />
-        );
+        return <DraftInput size="small" className="content-ctrl-text" value={value} onChange={onChange} disabled={disabled} />;
       case "object":
         return (
           <div className="content-field-group">
@@ -457,6 +450,35 @@ function FieldInput({
       </span>
       {control}
     </div>
+  );
+}
+
+type DraftInputProps = Omit<InputProps, "value" | "onChange"> & {
+  value: unknown; // 存下的值
+  onChange: (v: string | number) => void; // 收 parseText 后的值
+};
+
+// DraftInput 敲字时框里留原样文字（1.0、-0 不被规整），值照旧按 parseText 上交，回车保存不丢；
+// 失焦或外部改了值就回显存下的值。
+export function DraftInput({ value, onChange, onBlur, ...rest }: DraftInputProps) {
+  const [draft, setDraft] = useState<{ raw: string; sent: string | number } | null>(null);
+  // 存下的值已不是草稿交上去的那个（重置、换了条目、JSON 改过），草稿作废。
+  const shown = draft && draft.sent === value ? draft.raw : textOf(value);
+  return (
+    <Input
+      {...rest}
+      value={shown}
+      onChange={(e) => {
+        const raw = e.target.value;
+        const sent = parseText(raw);
+        setDraft({ raw, sent });
+        onChange(sent);
+      }}
+      onBlur={(e) => {
+        setDraft(null);
+        onBlur?.(e);
+      }}
+    />
   );
 }
 

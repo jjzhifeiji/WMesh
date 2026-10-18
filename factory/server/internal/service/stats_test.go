@@ -179,14 +179,14 @@ func TestWeldStatsSeparatePeople(t *testing.T) {
 	}
 
 	// 拉取焊接统计，失败说明无权或范围是空的。
-	all, err := fac.ListWeldReport(ctx, saTok, "", nil, nil)
+	all, err := fac.ListWeldReport(ctx, saTok, "", nil, nil, time.UTC)
 	// 拉焊统计失败或条数不对就停，说明没达预期。
 	if err != nil || len(all) != 2 {
 		// 断言没通过就停，结果和这条用例的预期不一致。
 		t.Fatalf("sa report %d %v", len(all), err)
 	}
 	// 拉取焊接统计，失败说明无权或范围是空的。
-	byProj, err := fac.ListWeldReport(ctx, saTok, "project", nil, nil)
+	byProj, err := fac.ListWeldReport(ctx, saTok, "project", nil, nil, time.UTC)
 	// 拉焊统计失败或条数不对就停，说明没达预期。
 	if err != nil || len(byProj) != 2 {
 		// 断言没通过就停，结果和这条用例的预期不一致。
@@ -200,7 +200,7 @@ func TestWeldStatsSeparatePeople(t *testing.T) {
 		t.Fatalf("runs: %+v %v", runs, err)
 	}
 	// 拉取焊接统计，失败说明无权或范围是空的。
-	own, err := fac.ListWeldReport(ctx, aTok, "", nil, nil)
+	own, err := fac.ListWeldReport(ctx, aTok, "", nil, nil, time.UTC)
 	// 拉焊统计失败或条数不对就停，说明没达预期。
 	if err != nil || len(own) != 1 || own[0].PersonID == nil || *own[0].PersonID != pa.ID || own[0].LengthMM != 1200 {
 		// 断言没通过就停，结果和这条用例的预期不一致。
@@ -221,7 +221,7 @@ func TestWeldStatsSeparatePeople(t *testing.T) {
 	// 把默认口令改成测试口令，失败说明改密被拒。
 	leadTok := mustAdoptPassword(t, ctx, fac, "lead-a", "lead-pass")
 	// 拉取焊接统计，失败说明无权或范围是空的。
-	scoped, err := fac.ListWeldReport(ctx, leadTok, "", nil, nil)
+	scoped, err := fac.ListWeldReport(ctx, leadTok, "", nil, nil, time.UTC)
 	// 拉焊统计失败或条数不对就停，说明没达预期。
 	if err != nil || len(scoped) != 1 || scoped[0].PersonID == nil || *scoped[0].PersonID != pa.ID {
 		// 断言没通过就停，结果和这条用例的预期不一致。
@@ -300,7 +300,7 @@ func TestWeldDemoSeed(t *testing.T) {
 		t.Fatalf("idempotent seed: %+v %v", again, err)
 	}
 	// 拉取焊接统计，失败说明无权或范围是空的。
-	byProj, err := fac.ListWeldReport(ctx, saTok, "project", nil, nil)
+	byProj, err := fac.ListWeldReport(ctx, saTok, "project", nil, nil, time.UTC)
 	// 拉焊统计失败或条数不对就停，说明没达预期。
 	if err != nil || len(byProj) != 3 {
 		// 断言没通过就停，结果和这条用例的预期不一致。

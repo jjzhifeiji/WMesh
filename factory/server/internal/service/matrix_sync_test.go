@@ -140,7 +140,7 @@ func testSyncMatrix(t *testing.T, run func(string, func(*testing.T))) {
 			t.Fatal(err)
 		}
 		// 签发运行凭证，供后面步骤使用，失败则前提断了。
-		rt, err := e.facB.IssueRuntimeGrant(e.ctx, e.saB, cidB, e.nb, e.na)
+		rt, err := e.facB.IssueRuntimeGrant(e.ctx, e.saB, cidB, 1)
 		// 签发运行凭证没成功，后面的断言就没有依据。
 		if err != nil {
 			// 签发运行凭证失败即停，不能把这一步的失败当成通过。

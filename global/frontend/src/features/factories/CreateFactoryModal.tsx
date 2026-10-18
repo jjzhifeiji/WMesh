@@ -13,6 +13,8 @@ export function CreateFactoryModal({ open, onClose }: Props) {
   const [form] = Form.useForm<CreateFactoryInput>();
   const create = useCreateFactory();
   const created = create.data;
+  // 请求未返回前不许关：关了会 reset 掉 mutation，服务端已建的厂和一次性建厂码就丢了。
+  const busy = create.isPending;
 
   const close = () => {
     form.resetFields();
@@ -24,8 +26,9 @@ export function CreateFactoryModal({ open, onClose }: Props) {
     <Modal
       title={created ? "工厂已创建" : "创建工厂"}
       open={open}
-      onCancel={created ? undefined : close}
-      closable={!created}
+      onCancel={created || busy ? undefined : close}
+      closable={!created && !busy}
+      keyboard={!busy}
       maskClosable={false}
       destroyOnHidden
       footer={
@@ -35,8 +38,10 @@ export function CreateFactoryModal({ open, onClose }: Props) {
           </Button>
         ) : (
           <>
-            <Button onClick={close}>取消</Button>
-            <Button type="primary" loading={create.isPending} onClick={() => form.submit()}>
+            <Button onClick={close} disabled={busy}>
+              取消
+            </Button>
+            <Button type="primary" loading={busy} onClick={() => form.submit()}>
               创建并下发建厂码
             </Button>
           </>

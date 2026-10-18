@@ -158,20 +158,26 @@ func (s *Node) InstallSigningKey(ctx context.Context, publicKey, privateKey []by
 	return err
 }
 
-// IssueRuntimeGrant 由本厂有效超管给已绑定 Client 签发可运行凭证。
-func (s *Node) IssueRuntimeGrant(ctx context.Context, token string, clientID uuid.UUID, notBefore, notAfter time.Time) (RuntimeCred, error) {
+// 运行凭证窗口：天数上限与界面一致，生效提前一小时容下时钟误差。
+const (
+	maxRuntimeGrantDays = 365       // 一次最多签一年，挡住直调接口签超长窗口
+	runtimeGrantSkew    = time.Hour // 生效时间往前放一小时，示教器钟稍慢也能用
+)
+
+// IssueRuntimeGrant 由本厂有效超管给已绑定 Client 签发可运行凭证，窗口按服务器时钟算。
+func (s *Node) IssueRuntimeGrant(ctx context.Context, token string, clientID uuid.UUID, days int) (RuntimeCred, error) {
 	// 签发更高修订，不能运行表示撤销，再交回调用方
-	return s.issueRuntime(ctx, token, clientID, notBefore, notAfter, true, "issue_runtime")
+	return s.issueRuntime(ctx, token, clientID, days, true, "issue_runtime")
 }
 
-// RevokeRuntimeGrant 签发更高修订且 can_run=false，表示撤销或缩权。
-func (s *Node) RevokeRuntimeGrant(ctx context.Context, token string, clientID uuid.UUID, notBefore, notAfter time.Time) (RuntimeCred, error) {
+// RevokeRuntimeGrant 签发更高修订且 can_run=false，表示撤销或缩权；窗口同样按服务器时钟算。
+func (s *Node) RevokeRuntimeGrant(ctx context.Context, token string, clientID uuid.UUID, days int) (RuntimeCred, error) {
 	// 签发更高修订，不能运行表示撤销，再交回调用方
-	return s.issueRuntime(ctx, token, clientID, notBefore, notAfter, false, "revoke_runtime")
+	return s.issueRuntime(ctx, token, clientID, days, false, "revoke_runtime")
 }
 
 // issueRuntime 签发更高修订的运行凭证；can_run=false 表示撤销。
-func (s *Node) issueRuntime(ctx context.Context, token string, clientID uuid.UUID, notBefore, notAfter time.Time, canRun bool, action string) (RuntimeCred, error) {
+func (s *Node) issueRuntime(ctx context.Context, token string, clientID uuid.UUID, days int, canRun bool, action string) (RuntimeCred, error) {
 	// 先确认会话仍有效，过期或停用直接拒绝
 	acc, err := s.RequireActive(ctx, token)
 	// 会话无效或账号已停用，拒绝继续
@@ -183,6 +189,12 @@ func (s *Node) issueRuntime(ctx context.Context, token string, clientID uuid.UUI
 		// 不是工厂超管，记下签发或撤销运行凭证被拒绝，写失败不改变结果
 		_ = s.audit(ctx, &acc.ID, nil, action, clientID.String(), audit.Deny)
 		return RuntimeCred{}, err
+	}
+	// 天数只认一到三百六十五，挡住零窗口和超长窗口
+	if days < 1 || days > maxRuntimeGrantDays {
+		// 天数越界，记下签发或撤销运行凭证被拒绝，写失败不改变结果
+		_ = s.audit(ctx, &acc.ID, nil, action, clientID.String(), audit.Deny)
+		return RuntimeCred{}, domain.ErrInvalidGrantDays
 	}
 	// 按身份读本厂这台设备
 	cl, err := s.store.ClientByID(ctx, clientID)
@@ -220,14 +232,16 @@ func (s *Node) issueRuntime(ctx context.Context, token string, clientID uuid.UUI
 	} else if !errors.Is(err, domain.ErrNotFound) {
 		return RuntimeCred{}, err
 	}
+	// 窗口取服务器当前时刻，不信调用方浏览器的钟
+	now := time.Now().UTC()
 	// 组装待签发的运行凭证，修订只向前
 	cred := RuntimeCred{
 		FactoryID:    s.store.FactoryID(),
 		ClientID:     clientID,
 		ClientPublic: cl.PublicKey,
 		CanRun:       canRun,
-		NotBefore:    notBefore.UTC(),
-		NotAfter:     notAfter.UTC(),
+		NotBefore:    now.Add(-runtimeGrantSkew),
+		NotAfter:     now.AddDate(0, 0, days),
 		Revision:     rev,
 	}
 	// 把声明收成稳定正文再签名

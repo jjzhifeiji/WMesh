@@ -86,7 +86,9 @@ export function PeoplePage() {
   }, [people, grantTarget]);
   const rolesOf = (personId: string) => (c?.roleGrants ?? []).filter((g) => g.personId === personId);
 
+  // 表单实例是页面级的，旧值会盖过 initialValues；每次打开都显式填回当前人员和默认角色，免得授给上一个人。
   const openGrant = (person?: Account) => {
+    grantForm.setFieldsValue({ personId: person?.id, role: "operator", scopeKind: "factory", orgUnitId: null });
     setGrantTarget(person ?? null);
     setGrantOpen(true);
   };

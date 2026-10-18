@@ -1,6 +1,6 @@
 import { FolderOutlined, PlusOutlined } from "@ant-design/icons";
 import { App, Button, Card, Descriptions, Empty, Form, Input, Modal, Radio, Select, Space, Switch, Tag, Tooltip, Typography } from "antd";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { personName, useCatalog, coversOrg, type Catalog } from "@/features/catalog/api";
 import { errorMessage, ApiError } from "@/shared/api/client";
@@ -9,7 +9,7 @@ import { statusColor, statusLabel } from "@/shared/labels";
 import { IdText } from "@/shared/ui/IdText";
 import { PageHeader } from "@/shared/ui/PageHeader";
 import { ContentEditor } from "@/features/templates/ContentFields";
-import { collectProcessIds, defaultValue, projectContentSchema } from "@/features/templates/schema";
+import { badContentJSON, collectProcessIds, defaultValue, projectContentSchema } from "@/features/templates/schema";
 import { useProjectTemplates, useTemplate, syncTemplates, templateKeys } from "@/features/templates/api";
 import { projectTemplatesForWeld, sameWeldKind, weldKindLabel, WELD_KINDS, WELD_SINGLE } from "@/features/templates/projectKinds";
 import type { ContentSchema } from "@/features/templates/schema";
@@ -51,6 +51,44 @@ type CreateForm = {
   parentId?: string;
 };
 type MkdirForm = { parentId: string; name: string };
+
+// EditBase 编辑弹窗的基准：打开时记下这一行，正文首次新取成功后并入；保存与比较都以它为准，每成功一步就推进。
+type EditBase = {
+  id: string; // 资产身份
+  revision: number; // 下一步提交用的期望修订
+  name: string; // 已生效的名称
+  weldKind: string; // 已生效的类型
+  deps: AssetDep[]; // 已生效的依赖
+  content: string | null; // 已生效的正文；null 为还没新取到
+};
+
+function baseOf(row: Asset, content: string | null): EditBase {
+  return { id: row.id, revision: row.revision, name: row.name, weldKind: row.weldKind || WELD_SINGLE, deps: row.deps ?? [], content };
+}
+
+// editErrText 修订对不上多半是示教器或别人在弹窗打开后写过，提示关掉重开。
+function editErrText(e: unknown) {
+  if (isRevisionConflict(e)) return "这条在弹窗打开后已被改过，请关掉重开再改";
+  return errorMessage(e);
+}
+
+function isRevisionConflict(e: unknown) {
+  return e instanceof ApiError && e.code === "revision does not match";
+}
+
+// editFailText 分步保存中途失败：写明哪几步已生效、哪一步没成。
+function editFailText(done: string[], step: string, e: unknown) {
+  if (!done.length) return editErrText(e);
+  return `${done.join("、")}已生效；${step}保存失败：${editErrText(e)}`;
+}
+
+// jsonRule 有字段表时挡住语法错的 JSON；和原正文相同的旧正文不拦。
+function jsonRule(schema: ContentSchema | null, original: string) {
+  return {
+    validator: (_: unknown, v: string | undefined) =>
+      badContentJSON(v, schema) && v !== original ? Promise.reject(new Error("JSON 格式不对，不能保存")) : Promise.resolve(),
+  };
+}
 
 function levelLabel(level: string) {
   if (level === "factory") return "厂级";
@@ -148,6 +186,7 @@ function AssetsBody({ kind }: { kind: AssetKind }) {
   const [copyFor, setCopyFor] = useState<Asset | null>(null);
   const [detailFor, setDetailFor] = useState<Asset | null>(null);
   const [editFor, setEditFor] = useState<Asset | null>(null);
+  const [editBase, setEditBase] = useState<EditBase | null>(null);
   const [mkdirOpen, setMkdirOpen] = useState(false);
   const [form] = Form.useForm<CreateForm>();
   const [mkdirForm] = Form.useForm<MkdirForm>();
@@ -215,11 +254,44 @@ function AssetsBody({ kind }: { kind: AssetKind }) {
     setMkdirOpen(true);
   };
   const onErr = (e: unknown) => message.error(errorMessage(e));
+  // 打开编辑先记下这一行当基准；修订号取在读正文之前，只会比正文旧。
+  const openEdit = (row: Asset) => {
+    setEditFor(row);
+    setEditBase(baseOf(row, null));
+  };
+  const closeEdit = () => {
+    setEditFor(null);
+    setEditBase(null);
+  };
+  // advanceBase 某一步写成功后把基准推进到服务端返回的新行。
+  const advanceBase = (next: Asset, content?: string) =>
+    setEditBase((b) => (b && b.id === next.id ? baseOf(next, content ?? b.content) : b));
+  // fillBaseContent 正文首次新取成功才并入基准，之后的重取不再改它。
+  const fillBaseContent = (id: string, content: string) =>
+    setEditBase((b) => (b && b.id === id && b.content === null ? { ...b, content } : b));
+  const finishEdit = (done: string[]) => {
+    if (done.length) message.success("已保存");
+    else message.info("没有改动");
+    closeEdit();
+  };
+  // editFail 报编辑失败；修订冲突时顺手刷新列表，关掉重开就能拿到新修订。
+  const editFail = (e: unknown, done: string[] = [], step = "") => {
+    if (isRevisionConflict(e)) void qc.invalidateQueries({ queryKey: assetKeys.all });
+    message.error(editFailText(done, step, e));
+  };
+  // 只在编辑弹窗里切；用基准修订号提交，成功后推进基准。
   const toggleCopyable = (row: Asset, copyable: boolean) => {
     if (row.copyable === copyable) return;
+    const expected = editBase?.id === row.id ? editBase.revision : row.revision;
     setCopyable.mutate(
-      { id: row.id, expected: row.revision, copyable },
-      { onSuccess: () => message.success(copyable ? "已设为可复制" : "已设为不可复制"), onError: onErr },
+      { id: row.id, expected, copyable },
+      {
+        onSuccess: (next) => {
+          advanceBase(next);
+          message.success(copyable ? "已设为可复制" : "已设为不可复制");
+        },
+        onError: (e) => editFail(e),
+      },
     );
   };
   const promotedOf = (row: Asset) => (assets.data ?? []).find((a) => a.sourceId === row.id);
@@ -336,7 +408,7 @@ function AssetsBody({ kind }: { kind: AssetKind }) {
                       </Button>
                     ) : null}
                     {covers(detailing) ? (
-                      <Button size="small" type="primary" onClick={() => setEditFor(detailing)}>
+                      <Button size="small" type="primary" onClick={() => openEdit(detailing)}>
                         编辑
                       </Button>
                     ) : null}
@@ -449,7 +521,7 @@ function AssetsBody({ kind }: { kind: AssetKind }) {
                 <FileDetail row={detailing} catalog={catalog.data} canRead={canRead(detailing)} schema={detailSchema} processes={processes.data ?? []} templates={projectTpls.data ?? []}>
                   <Space wrap>
                     {covers(detailing) ? (
-                      <Button size="small" type="primary" onClick={() => setEditFor(detailing)}>
+                      <Button size="small" type="primary" onClick={() => openEdit(detailing)}>
                         编辑
                       </Button>
                     ) : null}
@@ -572,7 +644,7 @@ function AssetsBody({ kind }: { kind: AssetKind }) {
                 message.success("已创建草稿");
                 form.resetFields();
                 setOpen(false);
-                if (!isProcess) setEditFor(row);
+                if (!isProcess) openEdit(row);
               },
               onError: onErr,
             });
@@ -611,7 +683,7 @@ function AssetsBody({ kind }: { kind: AssetKind }) {
             ) : null}
           </div>
           {isProcess ? (
-            <Form.Item name="content" label="参数">
+            <Form.Item name="content" label="参数" rules={[jsonRule(createSchema, "")]}>
               <ContentEditor schema={createSchema} weldKind={createWeld} />
             </Form.Item>
           ) : (
@@ -689,30 +761,43 @@ function AssetsBody({ kind }: { kind: AssetKind }) {
       </Modal>
       <EditModal
         row={editing?.kind === "process" ? editing : null}
+        base={editing?.kind === "process" ? editBase : null}
         canRead={editing?.kind === "process" ? canRead(editing) : false}
         schema={schema}
         saving={rename.isPending || updateContent.isPending || setWeldKind.isPending}
         locked={editing ? !canMutate(editing) : true}
-        onClose={() => setEditFor(null)}
-        onSave={async (name, content, originalContent, weldKind) => {
-          if (!editing || editing.kind !== "process") return;
+        onBaseContent={fillBaseContent}
+        onClose={closeEdit}
+        onSave={async (name, content, weldKind) => {
+          // 一律和基准比、用基准修订号提交；content 为 null 表示正文没读到，只改名。
+          const base = editBase;
+          if (!base || editing?.id !== base.id) return;
+          const done: string[] = [];
+          let step = "改名";
           try {
-            let expected = editing.revision;
-            if (name !== editing.name) {
-              const next = await rename.mutateAsync({ id: editing.id, expected, name });
+            let expected = base.revision;
+            if (name !== base.name) {
+              const next = await rename.mutateAsync({ id: base.id, expected, name });
               expected = next.revision;
+              advanceBase(next);
+              done.push("改名");
             }
-            if (weldKind && weldKind !== (editing.weldKind || WELD_SINGLE)) {
-              const next = await setWeldKind.mutateAsync({ id: editing.id, expected, weldKind });
+            if (content !== null && weldKind && weldKind !== base.weldKind) {
+              step = "类型";
+              const next = await setWeldKind.mutateAsync({ id: base.id, expected, weldKind });
               expected = next.revision;
+              advanceBase(next);
+              done.push("类型");
             }
-            if (content !== originalContent) {
-              await updateContent.mutateAsync({ id: editing.id, expected, content });
+            if (content !== null && content !== base.content) {
+              step = "参数";
+              const next = await updateContent.mutateAsync({ id: base.id, expected, content });
+              advanceBase(next, content);
+              done.push("参数");
             }
-            message.success("已保存");
-            setEditFor(null);
+            finishEdit(done);
           } catch (e) {
-            onErr(e);
+            editFail(e, done, step);
           }
         }}
         extra={
@@ -737,27 +822,42 @@ function AssetsBody({ kind }: { kind: AssetKind }) {
       />
       <ProjectEditModal
         row={editing?.kind === "project" ? editing : null}
+        base={editing?.kind === "project" ? editBase : null}
         canRead={editing?.kind === "project" ? canRead(editing) : false}
         templates={projectTpls.data ?? []}
         processes={processes.data ?? []}
         meId={meId}
         saving={rename.isPending || updateContent.isPending || setAssetDeps.isPending || setWeldKind.isPending}
         locked={editing ? !canMutate(editing) : true}
-        onClose={() => setEditFor(null)}
-        onSave={async (name, content, originalContent, weldKind) => {
-          if (!editing || editing.kind !== "project") return;
+        onBaseContent={fillBaseContent}
+        onClose={closeEdit}
+        onSave={async (name, content, weldKind) => {
+          // 一律和基准比、用基准修订号提交；content 为 null 表示正文没读到，只改名，不碰类型、依赖和焊道。
+          const base = editBase;
+          if (!base || editing?.id !== base.id) return;
+          const done: string[] = [];
+          let step = "改名";
           try {
-            let expected = editing.revision;
-            if (name !== editing.name) {
-              const next = await rename.mutateAsync({ id: editing.id, expected, name });
+            let expected = base.revision;
+            if (name !== base.name) {
+              const next = await rename.mutateAsync({ id: base.id, expected, name });
               expected = next.revision;
+              advanceBase(next);
+              done.push("改名");
             }
-            const nextKind = weldKind || editing.weldKind || WELD_SINGLE;
-            let depIds = (editing.deps ?? []).map((d) => d.id);
-            if (nextKind !== (editing.weldKind || WELD_SINGLE)) {
-              const next = await setWeldKind.mutateAsync({ id: editing.id, expected, weldKind: nextKind });
+            if (content === null) {
+              finishEdit(done);
+              return;
+            }
+            const nextKind = weldKind || base.weldKind;
+            let depIds = base.deps.map((d) => d.id);
+            if (nextKind !== base.weldKind) {
+              step = "类型";
+              const next = await setWeldKind.mutateAsync({ id: base.id, expected, weldKind: nextKind });
               expected = next.revision;
               depIds = (next.deps ?? []).map((d) => d.id);
+              advanceBase(next);
+              done.push("类型");
             }
             const kindSchema = (() => {
               const rows = projectTemplatesForWeld(projectTpls.data, nextKind);
@@ -769,29 +869,37 @@ function AssetsBody({ kind }: { kind: AssetKind }) {
             const toDep = (id: string): AssetDep => {
               const p = catalog.find((x) => x.id === id && x.status === "available");
               if (p) return { id: p.id, revision: p.revision, digest: p.digest };
-              const pinned = (editing.deps ?? []).find((d) => d.id === id);
+              const pinned = base.deps.find((d) => d.id === id);
               if (pinned) return pinned;
               return { id, revision: 0, digest: "" };
             };
             if (added.length) {
+              step = "依赖";
               const next = await setAssetDeps.mutateAsync({
-                id: editing.id,
+                id: base.id,
                 expected,
                 deps: [...depIds, ...added].map(toDep),
               });
               expected = next.revision;
+              advanceBase(next);
+              done.push("依赖");
             }
-            if (content !== originalContent) {
-              const next = await updateContent.mutateAsync({ id: editing.id, expected, content });
+            if (content !== base.content) {
+              step = "焊道";
+              const next = await updateContent.mutateAsync({ id: base.id, expected, content });
               expected = next.revision;
+              advanceBase(next, content);
+              done.push("焊道");
             }
             if (nextIds.join("\0") !== depIds.join("\0") || added.length) {
-              await setAssetDeps.mutateAsync({ id: editing.id, expected, deps: nextIds.map(toDep) });
+              step = "依赖";
+              const next = await setAssetDeps.mutateAsync({ id: base.id, expected, deps: nextIds.map(toDep) });
+              advanceBase(next);
+              if (!done.includes("依赖")) done.push("依赖");
             }
-            message.success("已保存");
-            setEditFor(null);
+            finishEdit(done);
           } catch (e) {
-            onErr(e);
+            editFail(e, done, step);
           }
         }}
       />
@@ -982,57 +1090,113 @@ function processSelectOptions(selected: string[] | undefined, pickable: Asset[],
   return opts;
 }
 
+type EditForm = { name: string; content: string; weldKind: string };
+
+// useEditBody 两个编辑弹窗共用：打开时清掉上一条只填名称和类型；正文首次新取成功才写进表单并入基准，之后的列表刷新和失效重取都不再改表单。
+function useEditBody(row: Asset | null, base: EditBase | null, canRead: boolean, onBaseContent: (id: string, content: string) => void) {
+  const q = useAssetContent(canRead && row ? row.id : null, { fresh: true });
+  const [form] = Form.useForm<EditForm>();
+  const initFor = useRef<string | null>(null);
+  const rowId = row?.id ?? null;
+  useEffect(() => {
+    if (!base) {
+      initFor.current = null;
+      return;
+    }
+    if (initFor.current === base.id) return;
+    initFor.current = base.id;
+    form.resetFields();
+    form.setFieldsValue({ name: base.name, weldKind: base.weldKind });
+  }, [base, form]);
+  const fresh = q.isFetchedAfterMount && q.isSuccess ? q.data : undefined;
+  useEffect(() => {
+    if (!base || base.content !== null || rowId !== base.id || !fresh) return;
+    form.setFieldsValue({ content: fresh.content });
+    onBaseContent(base.id, fresh.content);
+  }, [base, rowId, fresh, form, onBaseContent]);
+  const ready = base !== null && rowId === base.id && base.content !== null;
+  // 打开后新取失败或无权读正文：只能改名，不提交正文、类型和依赖。
+  const failed = !ready && base !== null && (!canRead || (q.isFetchedAfterMount && q.isError));
+  return { q, form, ready, failed };
+}
+
+// ContentPending 正文区还没就绪：要么读取中，要么没读到只能改名、可点重读。
+function ContentPending({
+  failed,
+  canRead,
+  error,
+  retrying,
+  onRetry,
+}: {
+  failed: boolean;
+  canRead: boolean;
+  error: unknown;
+  retrying: boolean;
+  onRetry: () => void;
+}) {
+  if (!failed) return <Typography.Text type="secondary">读取中…</Typography.Text>;
+  if (!canRead) return <Typography.Text type="secondary">无权查看正文，只能改名。</Typography.Text>;
+  return (
+    <Space wrap>
+      <Typography.Text type="warning">正文没读到，只能改名。</Typography.Text>
+      <Typography.Text type="secondary">{isLeaseError(error) ? "租约未就绪" : errorMessage(error)}</Typography.Text>
+      <Button size="small" loading={retrying} onClick={onRetry}>
+        重读
+      </Button>
+    </Space>
+  );
+}
+
 function EditModal({
   row,
+  base,
   canRead,
   schema,
   saving,
   locked,
   extra,
+  onBaseContent,
   onClose,
   onSave,
 }: {
   row: Asset | null;
+  base: EditBase | null;
   canRead: boolean;
   schema: ContentSchema | null;
   saving: boolean;
   locked: boolean;
   extra?: ReactNode;
+  onBaseContent: (id: string, content: string) => void;
   onClose: () => void;
-  onSave: (name: string, content: string, originalContent: string, weldKind: string) => Promise<void>;
+  onSave: (name: string, content: string | null, weldKind: string) => Promise<void>;
 }) {
-  const q = useAssetContent(canRead && row ? row.id : null);
-  const [form] = Form.useForm<{ name: string; content: string; weldKind: string }>();
-  const editWeld = Form.useWatch("weldKind", form) ?? row?.weldKind ?? WELD_SINGLE;
-  useEffect(() => {
-    if (!row) return;
-    form.setFieldsValue({ name: row.name, weldKind: row.weldKind || WELD_SINGLE });
-    if (!q.isFetching) form.setFieldsValue({ content: q.data?.content ?? "" });
-  }, [row, q.data, q.isFetching, form]);
+  const { q, form, ready, failed } = useEditBody(row, base, canRead, onBaseContent);
+  const editWeld = Form.useWatch("weldKind", form) ?? base?.weldKind ?? WELD_SINGLE;
+  const pending = row !== null && !ready;
   return (
     <Modal
       title="编辑"
       open={row !== null}
       onCancel={onClose}
       okText="保存"
-      okButtonProps={{ disabled: locked }}
-      confirmLoading={saving || q.isLoading}
+      okButtonProps={{ disabled: locked || (pending && !failed) }}
+      confirmLoading={saving}
+      destroyOnHidden
       width={1100}
       styles={{ body: { maxHeight: "82vh", overflow: "auto" } }}
       onOk={() => form.submit()}
     >
-      {q.isError && isLeaseError(q.error) ? (
-        <Typography.Text type="secondary">租约未就绪，暂时不能改正文。</Typography.Text>
-      ) : q.isError ? (
-        <Typography.Text type="danger">{errorMessage(q.error)}</Typography.Text>
-      ) : null}
-      <Form<{ name: string; content: string; weldKind: string }>
+      <Form<EditForm>
         className="project-edit-form"
         form={form}
         layout="vertical"
         size="small"
         requiredMark={false}
-        onFinish={(values) => onSave(values.name, values.content, q.data?.content ?? "", values.weldKind || row?.weldKind || WELD_SINGLE).catch(() => undefined)}
+        onFinish={(values) => {
+          // 基准没建好也没确认读失败时不提交，挡住回车。
+          if (!base || (!ready && !failed)) return;
+          onSave(values.name, ready ? (values.content ?? "") : null, values.weldKind || base.weldKind).catch(() => undefined);
+        }}
       >
         <div className="project-edit-meta">
           <Form.Item
@@ -1044,7 +1208,7 @@ function EditModal({
           </Form.Item>
           {row?.kind === "process" ? (
             <Form.Item name="weldKind" label="类型" rules={[{ required: true, message: "请选择类型" }]}>
-              <Select disabled={locked} options={WELD_KINDS.map((k) => ({ value: k.value, label: k.label }))} />
+              <Select disabled={locked || !ready} options={WELD_KINDS.map((k) => ({ value: k.value, label: k.label }))} />
             </Form.Item>
           ) : (
             <Form.Item label="类型">{weldKindLabel(row?.weldKind || WELD_SINGLE)}</Form.Item>
@@ -1057,13 +1221,15 @@ function EditModal({
           </div>
         ) : null}
         {extra ? <div className="process-edit-extra">{extra}</div> : null}
-        <Form.Item name="content" label="参数">
-          <ContentEditor
-            schema={schema}
-            disabled={locked}
-            weldKind={editWeld}
-          />
-        </Form.Item>
+        {pending ? (
+          <Form.Item label="参数">
+            <ContentPending failed={failed} canRead={canRead} error={q.error} retrying={q.isFetching} onRetry={() => void q.refetch()} />
+          </Form.Item>
+        ) : (
+          <Form.Item name="content" label="参数" rules={[jsonRule(schema, base?.content ?? "")]}>
+            <ContentEditor key={row?.id} schema={schema} disabled={locked} weldKind={editWeld} />
+          </Form.Item>
+        )}
       </Form>
     </Modal>
   );
@@ -1071,51 +1237,46 @@ function EditModal({
 
 function ProjectEditModal({
   row,
+  base,
   canRead,
   templates,
   processes,
   meId,
   saving,
   locked,
+  onBaseContent,
   onClose,
   onSave,
 }: {
   row: Asset | null;
+  base: EditBase | null;
   canRead: boolean;
   templates: { id: string; name?: string; schema?: ContentSchema }[];
   processes: Asset[];
   meId?: string;
   saving: boolean;
   locked: boolean;
+  onBaseContent: (id: string, content: string) => void;
   onClose: () => void;
-  onSave: (name: string, content: string, originalContent: string, weldKind: string) => Promise<void>;
+  onSave: (name: string, content: string | null, weldKind: string) => Promise<void>;
 }) {
-  const q = useAssetContent(canRead && row ? row.id : null);
-  const [form] = Form.useForm<{ name: string; content: string; weldKind: string }>();
-  const editWeld = Form.useWatch("weldKind", form) ?? row?.weldKind ?? WELD_SINGLE;
-  useEffect(() => {
-    if (!row) return;
-    form.setFieldsValue({ name: row.name, weldKind: row.weldKind || WELD_SINGLE });
-    if (!q.isFetching) form.setFieldsValue({ content: q.data?.content ?? "[]" });
-  }, [row, q.data, q.isFetching, form]);
+  const { q, form, ready, failed } = useEditBody(row, base, canRead, onBaseContent);
+  const editWeld = Form.useWatch("weldKind", form) ?? base?.weldKind ?? WELD_SINGLE;
+  const pending = row !== null && !ready;
   return (
     <Modal
       title="编辑工程"
       open={row !== null}
       onCancel={onClose}
       okText="保存"
-      okButtonProps={{ disabled: locked }}
-      confirmLoading={saving || q.isLoading}
+      okButtonProps={{ disabled: locked || (pending && !failed) }}
+      confirmLoading={saving}
+      destroyOnHidden
       width={1100}
       styles={{ body: { maxHeight: "82vh", overflow: "auto" } }}
       onOk={() => form.submit()}
     >
-      {q.isError && isLeaseError(q.error) ? (
-        <Typography.Text type="secondary">租约未就绪，暂时不能改正文。</Typography.Text>
-      ) : q.isError ? (
-        <Typography.Text type="danger">{errorMessage(q.error)}</Typography.Text>
-      ) : null}
-      <Form<{ name: string; content: string; weldKind: string }>
+      <Form<EditForm>
         className="project-edit-form"
         form={form}
         layout="vertical"
@@ -1125,8 +1286,10 @@ function ProjectEditModal({
           if (changed.weldKind) form.setFieldValue("content", JSON.stringify([emptyWeld(changed.weldKind, templates, 0)]));
         }}
         onFinish={(values) => {
-          const weld = values.weldKind || row?.weldKind || WELD_SINGLE;
-          onSave(values.name, values.content ?? "", q.data?.content ?? "", weld).catch(() => undefined);
+          // 基准没建好也没确认读失败时不提交，挡住回车。
+          if (!base || (!ready && !failed)) return;
+          const weld = values.weldKind || base.weldKind;
+          onSave(values.name, ready ? (values.content ?? "") : null, weld).catch(() => undefined);
         }}
       >
         <div className="project-edit-meta">
@@ -1142,17 +1305,24 @@ function ProjectEditModal({
             label={<Tooltip title="焊道换成该类型空焊道。">类型</Tooltip>}
             rules={[{ required: true, message: "请选择类型" }]}
           >
-            <Select disabled={locked} options={WELD_KINDS.map((k) => ({ value: k.value, label: k.label }))} />
+            <Select disabled={locked || !ready} options={WELD_KINDS.map((k) => ({ value: k.value, label: k.label }))} />
           </Form.Item>
         </div>
-        <Form.Item name="content" label="焊道">
-          <ProjectWeldEditor
-            disabled={locked}
-            weldKind={editWeld}
-            templates={templates}
-            processOptions={row ? processPickerOptions(processes, (p) => canPinForProject(row.level, p, meId) && sameWeldKind(p.weldKind, editWeld), (row.deps ?? []).map((d) => d.id)) : undefined}
-          />
-        </Form.Item>
+        {pending ? (
+          <Form.Item label="焊道">
+            <ContentPending failed={failed} canRead={canRead} error={q.error} retrying={q.isFetching} onRetry={() => void q.refetch()} />
+          </Form.Item>
+        ) : (
+          <Form.Item name="content" label="焊道">
+            <ProjectWeldEditor
+              key={row?.id}
+              disabled={locked}
+              weldKind={editWeld}
+              templates={templates}
+              processOptions={row ? processPickerOptions(processes, (p) => canPinForProject(row.level, p, meId) && sameWeldKind(p.weldKind, editWeld), (row.deps ?? []).map((d) => d.id)) : undefined}
+            />
+          </Form.Item>
+        )}
       </Form>
     </Modal>
   );

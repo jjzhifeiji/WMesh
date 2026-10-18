@@ -239,6 +239,17 @@ export function parseContent(raw: string | undefined, schema: ContentSchema | nu
   }
 }
 
+// badContentJSON 有字段表时正文须是合法 JSON；空串与无字段表的不透明正文不算坏。
+export function badContentJSON(raw: string | undefined, schema: ContentSchema | null): boolean {
+  if (!schema || !raw) return false;
+  try {
+    JSON.parse(raw);
+    return false;
+  } catch {
+    return true;
+  }
+}
+
 export function encodeContent(value: unknown, schema: ContentSchema | null, fallback: string): string {
   if (!schema) return typeof value === "string" ? value : fallback;
   return JSON.stringify(dropProcessPath(value ?? defaultValue(schema)));

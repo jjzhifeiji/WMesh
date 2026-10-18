@@ -274,7 +274,7 @@ func (e *env04) bound(t *testing.T, personID uuid.UUID) (uuid.UUID, factory.Bag)
 		t.Fatal(err)
 	}
 	// 签发运行凭证，失败则本步验收不能继续
-	rt, err := e.fac.IssueRuntimeGrant(e.ctx, e.sa, cid, e.nb, e.na)
+	rt, err := e.fac.IssueRuntimeGrant(e.ctx, e.sa, cid, 1)
 	// 签发运行凭证失败就停，避免带着错误继续验
 	if err != nil {
 		// 签发运行凭证失败就把原因打出并停掉本例

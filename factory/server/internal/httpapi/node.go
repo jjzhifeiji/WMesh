@@ -3,7 +3,6 @@ package httpapi
 import (
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/google/uuid"
 
@@ -51,10 +50,9 @@ type renameClientReq struct {
 	Name string `json:"name"` // 给人看的新名字
 }
 
-// 运行许可从何时起到何时止。
+// 运行许可签多少天；起止由服务器按自己的钟算。
 type issueWindowReq struct {
-	NotBefore string `json:"notBefore"` // RFC3339
-	NotAfter  string `json:"notAfter"`  // RFC3339
+	Days int `json:"days"` // 有效天数，1～365
 }
 
 // 要钉到这台设备上的机械臂号。
@@ -349,13 +347,13 @@ func (h *Handler) voidClient(w http.ResponseWriter, r *http.Request) {
 
 // 签发运行许可窗口。
 func (h *Handler) issueRuntime(w http.ResponseWriter, r *http.Request) {
-	// 按签发去办，时间不合法会在里面拒绝。
+	// 按签发去办，天数不合法会在里面拒绝。
 	h.writeRuntime(w, r, true)
 }
 
 // 收回运行许可窗口。
 func (h *Handler) revokeRuntime(w http.ResponseWriter, r *http.Request) {
-	// 按收回去办，时间不合法会在里面拒绝。
+	// 按收回去办，天数不合法会在里面拒绝。
 	h.writeRuntime(w, r, false)
 }
 
@@ -371,18 +369,10 @@ func (h *Handler) writeRuntime(w http.ResponseWriter, r *http.Request, canRun bo
 			writeBadRequest(w, errInvalidID)
 			return
 		}
-		// 承接许可窗口的起止时间。
+		// 承接许可天数；带旧的起止字段会被当未知字段拒绝。
 		var req issueWindowReq
 		// 正文无法解析则拒绝，不进入业务。
 		if err := decodeJSON(r, &req); err != nil {
-			// 请求不合法，回非法请求并不进入业务。
-			writeBadRequest(w, err)
-			return
-		}
-		// 把许可起止收成同一时区，格式不对则拒绝。
-		nb, na, err := parseWindow(req.NotBefore, req.NotAfter)
-		// 解析失败则拒绝，不用这个残缺的值继续。
-		if err != nil {
 			// 请求不合法，回非法请求并不进入业务。
 			writeBadRequest(w, err)
 			return
@@ -391,12 +381,12 @@ func (h *Handler) writeRuntime(w http.ResponseWriter, r *http.Request, canRun bo
 		var cred service.RuntimeCred
 		// 允许运行才签发窗口，否则改为收回。
 		if canRun {
-			// 签发允许运行的一段时间。
-			cred, err = svc.Node.IssueRuntimeGrant(r.Context(), bearer(r), clientID, nb, na)
+			// 签发允许运行的天数，起止由服务器定。
+			cred, err = svc.Node.IssueRuntimeGrant(r.Context(), bearer(r), clientID, req.Days)
 			// 不签发时改为收回，同一窗口不能两可。
 		} else {
-			// 收回运行许可，这段时间不能作业。
-			cred, err = svc.Node.RevokeRuntimeGrant(r.Context(), bearer(r), clientID, nb, na)
+			// 收回运行许可，起止同样由服务器定。
+			cred, err = svc.Node.RevokeRuntimeGrant(r.Context(), bearer(r), clientID, req.Days)
 		}
 		// 失败则停止，不把这一步当成成功。
 		if err != nil {
@@ -450,23 +440,6 @@ func (h *Handler) signingPublicKey(w http.ResponseWriter, r *http.Request) {
 		// 通过之后把结果回给调用方。
 		writeJSON(w, http.StatusOK, signingKeyResp{PublicKey: pub})
 	})
-}
-
-// 把许可窗口收成 UTC。
-func parseWindow(notBefore, notAfter string) (time.Time, time.Time, error) {
-	// 解析许可开始时刻，格式不对则拒绝。
-	nb, err := parseTime(notBefore)
-	// 解析失败则拒绝，不用这个残缺的值继续。
-	if err != nil {
-		return time.Time{}, time.Time{}, err
-	}
-	// 解析许可结束时刻，格式不对则拒绝。
-	na, err := parseTime(notAfter)
-	// 解析失败则拒绝，不用这个残缺的值继续。
-	if err != nil {
-		return time.Time{}, time.Time{}, err
-	}
-	return nb, na, nil
 }
 
 // loginSnap 把示教器自报收成现场；非法 clientId 丢掉，不挡登录。

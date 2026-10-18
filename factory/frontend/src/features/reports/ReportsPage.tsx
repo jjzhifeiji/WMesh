@@ -104,7 +104,7 @@ export function ReportsPage() {
       if (tab === "project") return (row.projectId && r.projectId === row.projectId) || r.projectName === row.projectName;
       if (tab === "person") return r.personId === row.personId;
       if (tab === "org") return (r.orgUnitId ?? "direct") === (row.orgUnitId ?? "direct");
-      if (tab === "day") return r.occurredAt.slice(0, 10) === row.day;
+      if (tab === "day") return dayjs(r.occurredAt).format("YYYY-MM-DD") === row.day;
       return true;
     });
 

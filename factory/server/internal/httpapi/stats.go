@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"errors"
 	"net/http"
 	"time"
 
@@ -8,6 +9,8 @@ import (
 
 	"wmesh/factory/internal/service"
 )
+
+var errInvalidTZ = errors.New("invalid tz") // 报表时区名不认识，回 400
 
 // mountStats 挂焊长时长汇聚、厂端报表和下钻。
 func (h *Handler) mountStats(mux *http.ServeMux) {
@@ -134,10 +137,18 @@ func (h *Handler) listWeldReports(w http.ResponseWriter, r *http.Request) {
 			writeBadRequest(w, err)
 			return
 		}
+		// 读取切日时区，不带按 UTC，名字不认识则拒绝。
+		loc, err := parseTZQuery(r.URL.Query().Get("tz"))
+		// 解析失败则拒绝，不用这个残缺的值继续。
+		if err != nil {
+			// 请求不合法，回非法请求并不进入业务。
+			writeBadRequest(w, err)
+			return
+		}
 		// 读取归集维度，不认识的由业务拒绝。
 		group := r.URL.Query().Get("group")
 		// 按选定维度归集厂端焊长，越权则拒绝。
-		rows, err := svc.Stats.ListWeldReport(r.Context(), bearer(r), group, from, to)
+		rows, err := svc.Stats.ListWeldReport(r.Context(), bearer(r), group, from, to, loc)
 		// 上一步没通过则停止，不把失败写成成功。
 		if err != nil {
 			// 把失败译成状态回给调用方，不写成功。
@@ -354,6 +365,25 @@ func parseOptUUIDQuery(raw string) (*uuid.UUID, error) {
 		return nil, errInvalidID
 	}
 	return &id, nil
+}
+
+// parseTZQuery 读报表切日时区；空按 UTC，不认的 IANA 名拒绝。
+func parseTZQuery(raw string) (*time.Location, error) {
+	// 没带时区就按 UTC 切日，和旧口径一致。
+	if raw == "" {
+		return time.UTC, nil
+	}
+	// Local 随服务器配置变，不让前端借它切日。
+	if raw == "Local" {
+		return nil, errInvalidTZ
+	}
+	// 按 IANA 名加载时区，镜像里装了时区库。
+	loc, err := time.LoadLocation(raw)
+	// 名字不认识则拒绝，不悄悄退回 UTC。
+	if err != nil {
+		return nil, errInvalidTZ
+	}
+	return loc, nil
 }
 
 // parseTimeQuery 空表示不裁时间窗。

@@ -32,12 +32,6 @@ export const clientKeys = {
   runtime: ["runtime-grants"] as const,
 };
 
-export function grantWindow(days: number) {
-  const notBefore = new Date(Date.now() - 60 * 60 * 1000).toISOString();
-  const notAfter = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
-  return { notBefore, notAfter };
-}
-
 export function useClients() {
   return useQuery({
     queryKey: clientKeys.all,
@@ -70,12 +64,12 @@ export function useRenameClient() {
 
 export function useIssueRuntime() {
   return useClientMutation((input: { clientId: string; days: number }) =>
-    http.post<RuntimeGrant>(fpath(`/clients/${input.clientId}/runtime`), grantWindow(input.days)),
+    http.post<RuntimeGrant>(fpath(`/clients/${input.clientId}/runtime`), { days: input.days }),
   );
 }
 
 export function useRevokeRuntime() {
   return useClientMutation((input: { clientId: string; days: number }) =>
-    http.post<RuntimeGrant>(fpath(`/clients/${input.clientId}/runtime/revoke`), grantWindow(input.days)),
+    http.post<RuntimeGrant>(fpath(`/clients/${input.clientId}/runtime/revoke`), { days: input.days }),
   );
 }

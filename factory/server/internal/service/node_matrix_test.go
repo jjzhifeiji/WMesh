@@ -63,8 +63,8 @@ func testNodeMatrix(t *testing.T, run func(string, func(*testing.T))) {
 	now := time.Now().UTC()
 	// 服务器和本机都用现在，表示还在有效窗口里。
 	valid := factory.Clocks{Server: now, Local: now}
-	// 划出一小时前到一天后，作为凭证有效窗口。
-	nb, na := now.Add(-time.Hour), now.Add(24*time.Hour)
+	// 签一天时服务器算出的失效点，用来把钟拨过期。
+	na := now.Add(24 * time.Hour)
 
 	// 生成一个新标识，用来当目录、资产或客户端。
 	cidA := id.New()
@@ -95,7 +95,7 @@ func testNodeMatrix(t *testing.T, run func(string, func(*testing.T))) {
 		// 另开一个错误变量，避免盖住外层的结果。
 		var err error
 		// 签发运行凭证，供后面步骤使用，失败则前提断了。
-		cred1, err = facA.IssueRuntimeGrant(ctx, saTok, cidA, nb, na)
+		cred1, err = facA.IssueRuntimeGrant(ctx, saTok, cidA, 1)
 		// 签发运行凭证没成功，后面的断言就没有依据。
 		if err != nil {
 			// 签发运行凭证失败即停，不能把这一步的失败当成通过。
@@ -116,7 +116,7 @@ func testNodeMatrix(t *testing.T, run func(string, func(*testing.T))) {
 	// 旧凭证不能覆盖更新的修订，评估仍然放行。
 	run("1.2", func(t *testing.T) {
 		// 签发运行凭证，供后面步骤使用，失败则前提断了。
-		cred2, err := facA.IssueRuntimeGrant(ctx, saTok, cidA, nb, na)
+		cred2, err := facA.IssueRuntimeGrant(ctx, saTok, cidA, 1)
 		// 签发运行凭证没成功，后面的断言就没有依据。
 		if err != nil {
 			// 签发运行凭证失败即停，不能把这一步的失败当成通过。
@@ -145,7 +145,7 @@ func testNodeMatrix(t *testing.T, run func(string, func(*testing.T))) {
 	// 没有绑定过的标识不能签发运行凭证。
 	run("2.1", func(t *testing.T) {
 		// 给没有绑定过的标识签发必须因找不到被拒绝。
-		if _, err := facA.IssueRuntimeGrant(ctx, saTok, id.New(), nb, na); !errors.Is(err, domain.ErrNotFound) {
+		if _, err := facA.IssueRuntimeGrant(ctx, saTok, id.New(), 1); !errors.Is(err, domain.ErrNotFound) {
 			// 未绑定也能签发就停，节点可以凭空出现。
 			t.Fatalf("unbound: %v", err)
 		}
@@ -167,7 +167,7 @@ func testNodeMatrix(t *testing.T, run func(string, func(*testing.T))) {
 	// 不能用本厂会话给另一家厂的节点签发。
 	run("2.2", func(t *testing.T) {
 		// 用甲厂会话给乙厂节点签发必须因找不到被拒绝。
-		if _, err := facA.IssueRuntimeGrant(ctx, saTok, cidB, nb, na); !errors.Is(err, domain.ErrNotFound) {
+		if _, err := facA.IssueRuntimeGrant(ctx, saTok, cidB, 1); !errors.Is(err, domain.ErrNotFound) {
 			// 能签给别厂节点就停，凭证发串了厂。
 			t.Fatalf("other factory: %v", err)
 		}
@@ -180,7 +180,7 @@ func testNodeMatrix(t *testing.T, run func(string, func(*testing.T))) {
 			t.Fatal(err)
 		}
 		// 绑定作废之后再签发必须因绑定已作废被拒绝。
-		if _, err := facA.IssueRuntimeGrant(ctx, saTok, cidA, nb, na); !errors.Is(err, domain.ErrBindingVoid) {
+		if _, err := facA.IssueRuntimeGrant(ctx, saTok, cidA, 1); !errors.Is(err, domain.ErrBindingVoid) {
 			// 作废后还能签发就停，废掉的绑定还活着。
 			t.Fatalf("voided: %v", err)
 		}
@@ -190,7 +190,7 @@ func testNodeMatrix(t *testing.T, run func(string, func(*testing.T))) {
 			t.Fatal(err)
 		}
 		// 签发运行凭证，供后面步骤使用，失败则前提断了。
-		cred1, err = facA.IssueRuntimeGrant(ctx, saTok, cidA, nb, na)
+		cred1, err = facA.IssueRuntimeGrant(ctx, saTok, cidA, 1)
 		// 签发运行凭证没成功，后面的断言就没有依据。
 		if err != nil {
 			// 签发运行凭证失败即停，不能把这一步的失败当成通过。
@@ -306,7 +306,7 @@ func testNodeMatrix(t *testing.T, run func(string, func(*testing.T))) {
 	})
 
 	// 吊销运行凭证，供后面步骤使用，失败则前提断了。
-	revoked, err := facA.RevokeRuntimeGrant(ctx, saTok, cidA, nb, na)
+	revoked, err := facA.RevokeRuntimeGrant(ctx, saTok, cidA, 1)
 	// 吊销运行凭证没成功，后面的断言就没有依据。
 	if err != nil {
 		// 吊销运行凭证失败即停，不能把这一步的失败当成通过。
@@ -382,7 +382,7 @@ func testNodeMatrix(t *testing.T, run func(string, func(*testing.T))) {
 	})
 
 	// 签发运行凭证，供后面步骤使用，失败则前提断了。
-	fresh, err := facA.IssueRuntimeGrant(ctx, saTok, cidA, nb, na)
+	fresh, err := facA.IssueRuntimeGrant(ctx, saTok, cidA, 1)
 	// 签发运行凭证没成功，后面的断言就没有依据。
 	if err != nil {
 		// 签发运行凭证失败即停，不能把这一步的失败当成通过。
@@ -477,5 +477,111 @@ func bagOf(factoryID, clientID uuid.UUID, pub, priv, facPub []byte) factory.Bag 
 		PrivateKey:    priv,
 		FactoryID:     factoryID,
 		FactoryPublic: facPub,
+	}
+}
+
+// 运行凭证天数越界被拒，起止按服务器时钟算，签发撤销两条路径都验。
+func TestRuntimeGrantServerWindow(t *testing.T) {
+	// 准备贯穿本用例的上下文，不设截止时间。
+	ctx := context.Background()
+	// 起一套隔离厂库，起不来则本用例没有库可测。
+	h := New(t)
+	// 开通本厂，供后面步骤使用，失败则前提断了。
+	seed, fac, err := h.Provision(ctx, "sa-w", "超管W")
+	// 开通本厂没成功，后面的断言就没有依据。
+	if err != nil {
+		// 开通本厂失败即停，不能把这一步的失败当成通过。
+		t.Fatal(err)
+	}
+	// 激活账号没成功，后面的断言就没有依据。
+	if err := fac.Activate(ctx, "sa-w", seed.ActivationToken, "sw-pass"); err != nil {
+		// 激活账号失败即停，不能把这一步的失败当成通过。
+		t.Fatal(err)
+	}
+	// 口令登录，供后面步骤使用，失败则前提断了。
+	saTok, err := fac.Login(ctx, "sa-w", "sw-pass")
+	// 口令登录没成功，后面的断言就没有依据。
+	if err != nil {
+		// 口令登录失败即停，不能把这一步的失败当成通过。
+		t.Fatal(err)
+	}
+	// 生成一个新标识，当作要签凭证的这台客户端。
+	cid := id.New()
+	// 生成节点密钥对，签发要求已登记 32 字节公钥。
+	pub, _, err := nodekey.Generate()
+	// 生成节点密钥没成功，后面的断言就没有依据。
+	if err != nil {
+		// 生成节点密钥失败即停，不能把这一步的失败当成通过。
+		t.Fatal(err)
+	}
+	// 登记客户端绑定没成功，后面的断言就没有依据。
+	if _, err := fac.AcceptBinding(ctx, cid, "Client-W1", pub, 1); err != nil {
+		// 登记客户端绑定失败即停，不能把这一步的失败当成通过。
+		t.Fatal(err)
+	}
+
+	// 零天、负数和超过一年都不合法，签发和撤销都得拒绝。
+	for _, days := range []int{0, -1, 366} {
+		// 签发越界天数必须报天数不合法，不能签出窗口。
+		if _, err := fac.IssueRuntimeGrant(ctx, saTok, cid, days); !errors.Is(err, domain.ErrInvalidGrantDays) {
+			// 越界天数没被拒就停，接口还能签任意长窗口。
+			t.Fatalf("issue days=%d: %v", days, err)
+		}
+		// 撤销越界天数同样必须报天数不合法。
+		if _, err := fac.RevokeRuntimeGrant(ctx, saTok, cid, days); !errors.Is(err, domain.ErrInvalidGrantDays) {
+			// 越界天数没被拒就停，撤销路径漏了校验。
+			t.Fatalf("revoke days=%d: %v", days, err)
+		}
+	}
+	// 越界被拒后不能落下任何凭证，修订还没开始。
+	if _, err := fac.Store().LatestRuntimeGrant(ctx, cid); !errors.Is(err, domain.ErrNotFound) {
+		// 有凭证落库就停，拒绝之前已经写了修订。
+		t.Fatalf("grant written on reject: %v", err)
+	}
+
+	// 签发一天和撤销一年，核对起止都贴着服务器当前时刻。
+	cases := []struct {
+		days int  // 这次请求的天数
+		run  bool // true 走签发，false 走撤销
+	}{{1, true}, {365, false}}
+	// 逐条按天数签发或撤销，再核对窗口。
+	for _, c := range cases {
+		// 记下调用前的服务器时刻，作为窗口下界的基准。
+		before := time.Now().UTC()
+		// 先放空凭证，按路径签发或撤销之后再填。
+		var cred factory.RuntimeCred
+		// 按用例选签发或撤销路径。
+		if c.run {
+			// 走签发路径，窗口应由服务器时钟算出。
+			cred, err = fac.IssueRuntimeGrant(ctx, saTok, cid, c.days)
+			// 不是签发就走撤销路径。
+		} else {
+			// 走撤销路径，窗口同样应由服务器时钟算出。
+			cred, err = fac.RevokeRuntimeGrant(ctx, saTok, cid, c.days)
+		}
+		// 记下调用后的服务器时刻，作为窗口上界的基准。
+		after := time.Now().UTC()
+		// 合法天数被拒就停，正常签发不能失败。
+		if err != nil {
+			// 签发或撤销失败即停，后面的窗口没有依据。
+			t.Fatalf("days=%d run=%v: %v", c.days, c.run, err)
+		}
+		// 允许几秒误差，只防窗口偏离服务器时钟。
+		slack := 3 * time.Second
+		// 生效时间应在调用前后减一小时的区间里。
+		if cred.NotBefore.Before(before.Add(-time.Hour-slack)) || cred.NotBefore.After(after.Add(-time.Hour+slack)) {
+			// 生效时间偏了就停，窗口没按服务器时钟算。
+			t.Fatalf("notBefore %v not near %v-1h", cred.NotBefore, before)
+		}
+		// 失效时间应在调用前后加天数的区间里。
+		if cred.NotAfter.Before(before.AddDate(0, 0, c.days).Add(-slack)) || cred.NotAfter.After(after.AddDate(0, 0, c.days).Add(slack)) {
+			// 失效时间偏了就停，天数没按服务器时钟折成窗口。
+			t.Fatalf("notAfter %v not near %v+%dd", cred.NotAfter, before, c.days)
+		}
+		// 签发应能运行、撤销应不能运行，标记不能反。
+		if cred.CanRun != c.run {
+			// 运行标记与路径不符就停，签发和撤销混了。
+			t.Fatalf("canRun %v want %v", cred.CanRun, c.run)
+		}
 	}
 }

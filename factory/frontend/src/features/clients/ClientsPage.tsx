@@ -36,6 +36,12 @@ export function ClientsPage() {
     return m;
   }, [grants.data]);
 
+  // 表单实例是页面级的，旧值会盖过 initialValues；打开时显式填回这台设备的名字，免得带出上一台的。
+  const openRename = (row: Client) => {
+    renameForm.setFieldsValue({ name: row.name });
+    setRenameFor(row);
+  };
+
   const columns: TableColumnsType<Client> = [
     { title: "名称", dataIndex: "name", width: 140, ellipsis: true, render: (name: string) => <Typography.Text strong>{name}</Typography.Text> },
     { title: "识别号", dataIndex: "deviceSerial", width: 160, render: (v: string | undefined) => v || "—" },
@@ -80,7 +86,7 @@ export function ClientsPage() {
       render: (_, row) =>
         row.status === "bound" ? (
           <Space size={4}>
-            <Button size="small" onClick={() => setRenameFor(row)}>
+            <Button size="small" onClick={() => openRename(row)}>
               改名
             </Button>
             {row.publicKey ? (
@@ -109,7 +115,7 @@ export function ClientsPage() {
             ) : null}
           </Space>
         ) : (
-          <Button size="small" onClick={() => setRenameFor(row)}>
+          <Button size="small" onClick={() => openRename(row)}>
             改名
           </Button>
         ),

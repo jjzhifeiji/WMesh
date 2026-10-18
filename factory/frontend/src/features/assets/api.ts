@@ -202,10 +202,13 @@ export function usePromoteAsset() {
   return useAssetMutation((id: string) => http.post<Asset>(fpath(`/assets/${id}/promote`)));
 }
 
-export function useAssetContent(id: string | null) {
+// useAssetContent 读正文。fresh 给编辑弹窗：单独缓存、不当新鲜，每次打开都重取，不沿用详情面板正在取的那次。
+export function useAssetContent(id: string | null, opts?: { fresh?: boolean }) {
+  const fresh = opts?.fresh ?? false;
   return useQuery({
-    queryKey: ["asset-content", id],
+    queryKey: fresh ? ["asset-content", id, "edit"] : ["asset-content", id],
     queryFn: ({ signal }) => http.get<{ content: string }>(fpath(`/assets/${id}/content`), signal),
     enabled: Boolean(id),
+    ...(fresh ? { staleTime: 0 } : {}),
   });
 }

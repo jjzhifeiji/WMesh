@@ -26,6 +26,7 @@ const zh: Record<string, string> = {
   "invalid work context": "工作上下文无效",
   "invalid id": "标识格式不对",
   "invalid name": "名字不能为空，最多 64 个字",
+  "runtime grant days out of range": "有效天数只能是 1～365",
   "name already exists in this folder": "这个文件夹里已有同名项",
   "invalid key material": "公钥格式不对，需要 32 字节的 base64 或 hex",
   "revision is not strictly newer": "修订号必须比已接受的更大",

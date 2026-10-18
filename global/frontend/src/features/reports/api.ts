@@ -1,4 +1,5 @@
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
+import type { Dayjs } from "dayjs";
 import { http } from "@/shared/api/client";
 
 export type WeldGroup = "factory" | "project" | "day" | "grain";
@@ -26,6 +27,14 @@ export function useWeldReports(from: string, to: string, factoryId = "") {
     queryFn: ({ signal }) => http.get<WeldSummaryRow[]>(`/v1/weld-reports?${qs}`, signal),
     placeholderData: keepPreviousData,
   });
+}
+
+// 所选日历日按 UTC 零点发：服务端按 UTC 日比较，用本地零点会多带进相邻一天。
+export function utcDayRange(start: Dayjs, end: Dayjs) {
+  return {
+    from: `${start.format("YYYY-MM-DD")}T00:00:00Z`,
+    to: `${end.add(1, "day").format("YYYY-MM-DD")}T00:00:00Z`,
+  };
 }
 
 export function formatLengthM(mm: number) {

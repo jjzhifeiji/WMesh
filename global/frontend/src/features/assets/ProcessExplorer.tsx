@@ -1,5 +1,5 @@
 import { FolderOutlined, FileOutlined } from "@ant-design/icons";
-import { App, Dropdown, Empty, Input, Tree, Typography, type MenuProps, type TreeDataNode } from "antd";
+import { App, Button, Dropdown, Empty, Input, Space, Tree, Typography, type MenuProps, type TreeDataNode } from "antd";
 import { useEffect, useMemo, useRef, useState, type DragEvent, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { errorMessage } from "@/shared/api/client";
@@ -178,8 +178,12 @@ export function ProcessExplorer({
   const { message, modal } = App.useApp();
   const local = useFS(kind);
   const remote = useFactoryFS(factoryId ?? null, kind);
-  const nodes = (factoryId ? remote.data : local.data) ?? none;
-  const loading = factoryId ? remote.isLoading : local.isLoading;
+  // 当前在看的目录：看厂目录取远端，否则取本平台。
+  const q = factoryId ? remote : local;
+  const nodes = q.data ?? none;
+  const loading = q.isLoading;
+  // 一次都没拉到才算失败；拉到过再失败就继续显示旧目录。
+  const failed = q.isError && !q.data;
   const mkdir = useCreateFSFolder();
   const rename = useRenameFSNode();
   const move = useMoveFSNode();
@@ -596,6 +600,13 @@ export function ProcessExplorer({
           <div className="fs-tree-body">
             {loading ? (
               <Typography.Text type="secondary">载入目录…</Typography.Text>
+            ) : failed ? (
+              <Space direction="vertical" size={8}>
+                <Typography.Text type="danger">{errorMessage(q.error)}</Typography.Text>
+                <Button size="small" loading={q.isFetching} onClick={() => void q.refetch()}>
+                  重试
+                </Button>
+              </Space>
             ) : (
               <Tree
                 blockNode
@@ -657,7 +668,9 @@ export function ProcessExplorer({
               if (!searching && current) dropInto(current, e);
             }}
           >
-            {shown.length === 0 ? (
+            {failed ? (
+              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="目录没拉到" />
+            ) : shown.length === 0 ? (
               <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={searching ? `没有符合的${noun}` : "这个文件夹是空的"} />
             ) : (
               shown.map((n) => (

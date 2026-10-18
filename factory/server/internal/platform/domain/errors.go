@@ -37,6 +37,7 @@ var (
 	ErrDeviceSerialMismatch  = errors.New("device serial does not match")           // 读到的号与这台已钉的不一致
 	ErrStaleRevision         = errors.New("revision is not strictly newer")         // 只接受更高修订
 	ErrBindingVoid           = errors.New("client binding is void")                 // 作废后不得再签发
+	ErrInvalidGrantDays      = errors.New("runtime grant days out of range")        // 运行凭证天数只能是 1～365
 	ErrRevisionConflict      = errors.New("revision does not match")                // 资产期望修订对不上
 	ErrIntegrity             = errors.New("asset integrity check failed")           // 正文与摘要不一致或摘要长度不对
 	ErrContentLeaseExpired   = errors.New("content lease expired")                  // 厂侧解包租约到期或尚未签发

@@ -1,7 +1,8 @@
 import { HolderOutlined } from "@ant-design/icons";
 import { Button, Checkbox, Input, Select, Typography } from "antd";
 import { useId, useState, type DragEvent } from "react";
-import { enumDefault, enumOptions, kindOf, parseText, textOf, type ContentSchema, type Kind, type TemplateField } from "./schema";
+import { DraftInput } from "./ContentFields";
+import { enumDefault, enumOptions, kindOf, type ContentSchema, type Kind, type TemplateField } from "./schema";
 
 type DragRef = { listId: string; index: number };
 
@@ -105,9 +106,10 @@ function FieldList({
       {fields.map((f, i) => {
         const line =
           over && from != null && over.at === i && dropDest(from, over.at, over.edge) !== from ? over.edge : null;
+        // 行 key 只用下标：键名可编辑，拼进 key 会每敲一字就重建整行，输入框失焦、下级列表跟着丢。
         return (
           <div
-            key={`${f.key}-${i}`}
+            key={i}
             className={["schema-row-wrap", from === i ? "is-dragging" : "", line ? `is-over-${line}` : ""]
               .filter(Boolean)
               .join(" ")}
@@ -297,13 +299,7 @@ function DefaultCell({ field, onChange }: { field: TemplateField; onChange: (f: 
     );
   }
   if (kindOf(field) === "string") {
-    return (
-      <Input
-        size="small"
-        value={textOf(field.default)}
-        onChange={(e) => onChange({ ...field, default: parseText(e.target.value) })}
-      />
-    );
+    return <DraftInput size="small" value={field.default} onChange={(v) => onChange({ ...field, default: v })} />;
   }
   return null;
 }

@@ -57,8 +57,6 @@ func testPersonMatrix(t *testing.T, run func(string, func(*testing.T))) {
 	now := time.Now().UTC()
 	// 准备一组对齐的时钟，时间倒了离线登录会被拒。
 	valid := factory.Clocks{Server: now, Local: now}
-	// 把时间拨到指定偏移，用来制造过期或未生效。
-	nb, na := now.Add(-time.Hour), now.Add(24*time.Hour)
 
 	// 新取一个编号，撞号会让两条记录分不清。
 	cidA := id.New()
@@ -82,7 +80,7 @@ func testPersonMatrix(t *testing.T, run func(string, func(*testing.T))) {
 		t.Fatal(err)
 	}
 	// 签发运行授权，失败说明越权或客户端不对。
-	runtime, err := facA.IssueRuntimeGrant(ctx, saTok, cidA, nb, na)
+	runtime, err := facA.IssueRuntimeGrant(ctx, saTok, cidA, 1)
 	// 签发授权失败就停，否则后面没有可靠结果。
 	if err != nil {
 		// 把签发授权的错误打出来并停住，避免继续往下验。

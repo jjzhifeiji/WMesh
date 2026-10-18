@@ -6,7 +6,6 @@ import (
 	"context"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
 
@@ -304,10 +303,8 @@ func TestClientChannelPullAndPolicyFanout(t *testing.T) {
 		t.Fatalf("limit fanout %+v %v %s", in, err, raw)
 	}
 
-	// 把时间拨到指定偏移，用来制造过期或未生效。
-	nb, na := time.Now().UTC().Add(-time.Hour), time.Now().UTC().Add(24*time.Hour)
 	// 签发授权失败就停，否则后面没有可靠结果。
-	if _, err := fac.IssueRuntimeGrant(ctx, sa, cid, nb, na); err != nil {
+	if _, err := fac.IssueRuntimeGrant(ctx, sa, cid, 1); err != nil {
 		// 把签发授权的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}

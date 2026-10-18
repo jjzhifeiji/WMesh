@@ -4,7 +4,6 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"strings"
-	"time"
 
 	"wmesh/factory/internal/platform/domain"
 )
@@ -30,16 +29,4 @@ func decodeOptionalPublicKey(s string) ([]byte, error) {
 		return b, nil
 	}
 	return nil, domain.ErrInvalidKey
-}
-
-// 把 RFC3339 收成 UTC。
-func parseTime(s string) (time.Time, error) {
-	// 按约定格式解析时刻，失败则拒绝。
-	t, err := time.Parse(time.RFC3339, strings.TrimSpace(s))
-	// 失败则停止，不把这一步当成成功。
-	if err != nil {
-		return time.Time{}, err
-	}
-	// 收成同一时区，避免窗口因时区错位。
-	return t.UTC(), nil
 }

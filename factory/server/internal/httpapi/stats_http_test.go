@@ -195,6 +195,20 @@ func TestWeldFactsHTTP(t *testing.T) {
 		// 与预期不符就停测，避免后面连环误判。
 		t.Fatalf("project report %d %s", code, body)
 	}
+	// 按洛杉矶时区看日报，两条凌晨一点的 UTC 焊次都落到前一天。
+	code, body = do(t, srv, "GET", base+"/weld-reports?group=day&tz=America/Los_Angeles", saTok, "")
+	// 要有当地 09-15、不能有 UTC 才有的 09-17，否则时区没传到底。
+	if code != http.StatusOK || !strings.Contains(body, `"day":"2026-09-15"`) || strings.Contains(body, `"day":"2026-09-17"`) {
+		// 与预期不符就停测，避免后面连环误判。
+		t.Fatalf("day report tz %d %s", code, body)
+	}
+	// 时区名不认识，应当回非法请求而不是悄悄按 UTC。
+	code, body = do(t, srv, "GET", base+"/weld-reports?group=day&tz=Bad/Zone", saTok, "")
+	// 不是非法请求则本测失败。
+	if code != http.StatusBadRequest {
+		// 与预期不符就停测，避免后面连环误判。
+		t.Fatalf("bad tz %d %s", code, body)
+	}
 	// 按条件查看每次起停。
 	code, body = do(t, srv, "GET", base+"/weld-runs", saTok, "")
 	// 不是成功，或正文与预期不符则失败。

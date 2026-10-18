@@ -27,16 +27,16 @@ export function ClientPolicyPage() {
     });
   }, [data, form]);
 
+  // 只提交 patch 里的项，其余取服务端当前值：开关不能顺带把时效框里未校验的输入（如清空）存成 0。
   function persist(patch: Partial<FormValues>) {
     if (!data) return;
-    const values = form.getFieldsValue();
     save.mutate(
       {
         maxCachedProjects: data.maxCachedProjects,
         cacheScope: "all",
-        persistUnwrapKey: patch.persistUnwrapKey ?? values.persistUnwrapKey ?? false,
-        keyTtlSeconds: patch.keyTtlSeconds ?? values.keyTtlSeconds ?? 0,
-        encryptPouch: patch.encryptPouch ?? values.encryptPouch ?? true,
+        persistUnwrapKey: patch.persistUnwrapKey ?? data.persistUnwrapKey,
+        keyTtlSeconds: patch.keyTtlSeconds ?? data.keyTtlSeconds,
+        encryptPouch: patch.encryptPouch ?? data.encryptPouch,
         extra: data.extra ?? {},
       } satisfies ClientPolicyInput,
       {

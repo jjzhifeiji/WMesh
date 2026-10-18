@@ -98,7 +98,7 @@ type WeldReportRow struct {
 	DisplayName string     `json:"displayName,omitempty"` // 显示名
 	OrgUnitID   *uuid.UUID `json:"orgUnitId,omitempty"`   // 发生节点
 	OrgPath     []PathNode `json:"orgPath,omitempty"`     // 发生时路径
-	Day         string     `json:"day,omitempty"`         // UTC 日期 YYYY-MM-DD
+	Day         string     `json:"day,omitempty"`         // 报表时区日期 YYYY-MM-DD
 	ProjectID   *uuid.UUID `json:"projectId,omitempty"`   // 工程身份
 	ProjectName string     `json:"projectName,omitempty"` // 工程名
 	LengthMM    int64      `json:"lengthMm"`              // 该组焊长毫米
@@ -275,8 +275,8 @@ func (s *Stats) MyWeldStats(ctx context.Context, token string) (PadWeldStats, er
 	return out, s.audit(ctx, &acc.ID, nil, "my_weld_stats", acc.ID.String(), audit.Allow)
 }
 
-// ListWeldReport 按维度归集调用方能看的事实。
-func (s *Stats) ListWeldReport(ctx context.Context, token, group string, from, to *time.Time) ([]WeldReportRow, error) {
+// ListWeldReport 按维度归集调用方能看的事实；按日维在 loc 时区切日，空按 UTC。
+func (s *Stats) ListWeldReport(ctx context.Context, token, group string, from, to *time.Time, loc *time.Location) ([]WeldReportRow, error) {
 	// 先确认会话仍有效，过期或停用直接拒绝
 	acc, err := s.RequireActive(ctx, token)
 	// 会话无效或账号已停用，拒绝继续
@@ -299,8 +299,8 @@ func (s *Stats) ListWeldReport(ctx context.Context, token, group string, from, t
 		_ = s.audit(ctx, &acc.ID, nil, "list_weld_report", "report", audit.Deny)
 		return nil, err
 	}
-	// 按维度归集焊长和时长
-	agg := store.AggregateWeldFacts(visible, group)
+	// 按维度归集焊长和时长，日期按调用方时区切
+	agg := store.AggregateWeldFacts(visible, group, loc)
 	// 按条数决定是空、超限还是继续
 	out := make([]WeldReportRow, 0, len(agg))
 	// 逐条处理，某一条失败不把整批悄悄算成功
@@ -321,8 +321,8 @@ func (s *Stats) ListWeldReport(ctx context.Context, token, group string, from, t
 		}
 		// 没有日期的汇总行不送出
 		if !row.Day.IsZero() {
-			// 收成稳定时间文本
-			item.Day = row.Day.UTC().Format("2006-01-02")
+			// 按切日时区收成日期文本，不再转回 UTC
+			item.Day = row.Day.Format("2006-01-02")
 		}
 		// 把这一条收进结果，漏了清单就不齐
 		out = append(out, item)

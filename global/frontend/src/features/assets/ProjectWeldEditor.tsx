@@ -858,15 +858,20 @@ function BandSlots({
   onChange: (rows: Weld[]) => void;
 }) {
   const patch = (i: number, next: Weld) => onChange(rows.map((r, j) => (j === i ? next : r)));
+  // 清空时 InputNumber 给 null：不回写，免得立刻填回默认值后接着输入变成 12、05；失焦后显示回原值。
+  const patchNum = (i: number, row: Weld, key: "minGap" | "maxGap" | "layer", v: number | null) => {
+    if (v == null) return;
+    patch(i, { ...row, [key]: key === "layer" ? Math.round(v) : v });
+  };
   return (
     <div>
       <Typography.Text type="secondary">间隙带</Typography.Text>
       {rows.map((row, i) => (
         <div key={i} className="weld-editor-pass">
           <Space wrap size={4}>
-            <Input size="small" style={{ width: 110 }} addonBefore="最小" value={String(num(row.minGap))} disabled={disabled} onChange={(e) => patch(i, { ...row, minGap: Number(e.target.value) || 0 })} />
-            <Input size="small" style={{ width: 110 }} addonBefore="最大" value={String(num(row.maxGap))} disabled={disabled} onChange={(e) => patch(i, { ...row, maxGap: Number(e.target.value) || 0 })} />
-            <Input size="small" style={{ width: 90 }} addonBefore="层" value={String(num(row.layer) || 1)} disabled={disabled} onChange={(e) => patch(i, { ...row, layer: Number(e.target.value) || 1 })} />
+            <InputNumber size="small" style={{ width: 110 }} addonBefore="最小" min={0} step={0.1} value={num(row.minGap)} disabled={disabled} onChange={(v) => patchNum(i, row, "minGap", v)} />
+            <InputNumber size="small" style={{ width: 110 }} addonBefore="最大" min={0} step={0.1} value={num(row.maxGap)} disabled={disabled} onChange={(v) => patchNum(i, row, "maxGap", v)} />
+            <InputNumber size="small" style={{ width: 90 }} addonBefore="层" min={1} precision={0} value={num(row.layer) || 1} disabled={disabled} onChange={(v) => patchNum(i, row, "layer", v)} />
             {disabled ? null : (
               <Button size="small" type="text" danger onClick={() => onChange(rows.filter((_, j) => j !== i))}>
                 删

@@ -20,7 +20,7 @@ const (
 	WeldGroupPerson    = "person"     // 按人
 	WeldGroupProject   = "project"    // 按工程
 	WeldGroupOrg       = "org"        // 按发生组织
-	WeldGroupDay       = "day"        // 按 UTC 日
+	WeldGroupDay       = "day"        // 按报表时区的日
 )
 
 // WeldFact 是一次起停焊的运行事实：焊长、时长跟人走，工程名按当时快照。
@@ -80,7 +80,7 @@ type WeldReportRow struct {
 	DisplayName string     // 显示名
 	OrgUnitID   *uuid.UUID // 发生节点；厂直属为空
 	OrgPath     []PathNode // 发生时路径
-	Day         time.Time  // UTC 日期；非按日维为零值
+	Day         time.Time  // 报表时区当日零点；非按日维为零值
 	ProjectID   *uuid.UUID // 工程身份
 	ProjectName string     // 工程名快照或未关联
 	LengthMM    int64      // 该组焊长毫米
@@ -392,16 +392,21 @@ func (s *Store) ListWeldReport(ctx context.Context, from, to *time.Time, group s
 	if err != nil {
 		return nil, err
 	}
-	// 把这一步的结果交回给调用方。
-	return AggregateWeldFacts(facts, group), nil
+	// 全表窗不带浏览器时区，按 UTC 切日交回。
+	return AggregateWeldFacts(facts, group, time.UTC), nil
 }
 
-// AggregateWeldFacts 把事实按维度收成报表行。
-func AggregateWeldFacts(facts []WeldFactView, group string) []WeldReportRow {
+// AggregateWeldFacts 把事实按维度收成报表行；按日维在 loc 时区切日。
+func AggregateWeldFacts(facts []WeldFactView, group string, loc *time.Location) []WeldReportRow {
 	// 没指定维度就按人、路径和日期汇总。
 	if group == "" {
 		// 没指定维度就按人、路径和日期来汇总。
 		group = WeldGroupPersonDay
+	}
+	// 没给时区就按 UTC 切日，和旧口径一致。
+	if loc == nil {
+		// 空时区退回 UTC，免得解引用空指针。
+		loc = time.UTC
 	}
 	// 临时累计一行报表，同一键加在一起。
 	type acc struct {
@@ -414,7 +419,7 @@ func AggregateWeldFacts(facts []WeldFactView, group string) []WeldReportRow {
 	// 逐条处理，避免漏掉还要读或还要写的行。
 	for _, f := range facts {
 		// 准备汇总键或密钥缓冲区。
-		key, row := weldGroupKey(group, f)
+		key, row := weldGroupKey(group, f, loc)
 		// 看这一组有没有累计过。
 		got, ok := by[key]
 		// 这组还没有就新建一行再累加。
@@ -488,10 +493,12 @@ func weldFactSame(got WeldFact, in WeldFact) bool {
 	return got.OccurredAt.UTC().Truncate(time.Second).Equal(in.OccurredAt.UTC().Truncate(time.Second))
 }
 
-// weldGroupKey 算出汇总键和空合计行。
-func weldGroupKey(group string, f WeldFactView) (string, WeldReportRow) {
-	// 把焊完时间截到当天，汇总按天并。
-	day := f.OccurredAt.UTC().Truncate(24 * time.Hour)
+// weldGroupKey 算出汇总键和空合计行；日期按 loc 时区切。
+func weldGroupKey(group string, f WeldFactView, loc *time.Location) (string, WeldReportRow) {
+	// 先换到报表时区，再看是当地哪一天。
+	local := f.OccurredAt.In(loc)
+	// 取当地零点；Truncate 只按 UTC 截，不能用。
+	day := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, loc)
 	// 空工程名换成未关联，避免空白分组。
 	label := ProjectLabel(f.ProjectName)
 	// 按选定维度生成汇总键。
