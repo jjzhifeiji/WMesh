@@ -4,7 +4,9 @@ package service_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"wmesh/factory/internal/platform/audit"
 	"wmesh/factory/internal/platform/digest"
@@ -1243,6 +1245,109 @@ func TestCopyFS(t *testing.T) {
 	}
 }
 
+// 验收 64 字的文件夹和工艺复制回原夹：截短原名再接副本尾巴，不报同名。
+func TestCopyFSLongName(t *testing.T) {
+	// 准备贯穿本用例的上下文，不设截止时间。
+	ctx := context.Background()
+	// 起一套隔离厂库，起不来则本用例没有库可测。
+	h := New(t)
+	// 开通本厂，供后面步骤使用，失败则前提断了。
+	seed, fac, err := h.Provision(ctx, "sa", "超管")
+	// 开通本厂没成功，后面的断言就没有依据。
+	if err != nil {
+		// 开通本厂失败即停，不能把这一步的失败当成通过。
+		t.Fatal(err)
+	}
+	// 激活账号没成功，后面的断言就没有依据。
+	if err := fac.Activate(ctx, "sa", seed.ActivationToken, "sa-pass"); err != nil {
+		// 激活账号失败即停，不能把这一步的失败当成通过。
+		t.Fatal(err)
+	}
+	// 登录取会话，供后面步骤使用，失败则前提断了。
+	sa := mustLogin(t, ctx, fac, "sa", "sa-pass")
+	// 建人并授角色，供后面步骤使用，失败则前提断了。
+	pe := mustCreateRole(t, ctx, fac, sa, "pe", "pe-pass", factory.RoleOperator, factory.ScopeFactory, nil)
+	// 用直属上下文写源工艺，不把它挂到车间。
+	direct := factory.WorkContext{Direct: true}
+	// 建 64 字的厂级工艺，作为复制源文件。
+	src, err := fac.CreateFactoryProcess(ctx, pe.tok, direct, strings.Repeat("工", 64), []byte("long-fs"))
+	// 建厂级工艺没成功，后面的断言就没有依据。
+	if err != nil {
+		// 建厂级工艺失败即停，不能把这一步的失败当成通过。
+		t.Fatal(err)
+	}
+	// 列出可见目录，供后面步骤使用，失败则前提断了。
+	nodes, err := fac.ListFS(ctx, pe.tok, factory.KindProcess)
+	// 列出可见目录没成功，后面的断言就没有依据。
+	if err != nil {
+		// 列出可见目录失败即停，不能把这一步的失败当成通过。
+		t.Fatal(err)
+	}
+	// 留出厂级根夹，原文件夹建在它下面。
+	var factoryRoot factory.FSNodeView
+	// 逐个目录节点查看，用来认出厂级根夹。
+	for _, n := range nodes {
+		// 无父节点的厂级夹就是厂级根，先把它认出来。
+		if n.NodeKind == store.FSNodeFolder && n.TreeLevel == store.FSTreeFactory && n.ParentID == nil {
+			// 命中没有父节点的厂级夹时，把它记下来。
+			factoryRoot = n
+		}
+	}
+	// 目录里必须有厂级根夹，否则后面没法往下建。
+	if factoryRoot.ID == [16]byte{} {
+		t.Fatal("missing factory root")
+	}
+	// 建原文件夹，长名夹和长名工艺都放这里，再复制回这里。
+	home, err := fac.CreateFSFolder(ctx, pe.tok, factoryRoot.ID, "长名")
+	// 建原文件夹没成功，后面的断言就没有依据。
+	if err != nil {
+		// 建原文件夹失败即停，不能把这一步的失败当成通过。
+		t.Fatal(err)
+	}
+	// 夹名正好 64 字，第 59 字是空格，考截口处去空白。
+	folderName := strings.Repeat("甲", 58) + " " + strings.Repeat("乙", 5)
+	// 建长名文件夹，上限以内的名字应能建成。
+	long, err := fac.CreateFSFolder(ctx, pe.tok, home.ID, folderName)
+	// 建长名文件夹没成功，后面的断言就没有依据。
+	if err != nil {
+		// 建 64 字文件夹失败即停，不能当成通过。
+		t.Fatal(err)
+	}
+	// 长名工艺挂进原文件夹，和长名夹同级。
+	file, err := fac.MoveAssetInto(ctx, pe.tok, src.ID, home.ID)
+	// 挂不进去就停，后面的断言就没有依据。
+	if err != nil {
+		// 长名工艺挂进原文件夹失败即停，不能当成通过。
+		t.Fatal(err)
+	}
+	// 两个源各复制两回，名字应依次是副本和副本 (2)。
+	cases := []struct {
+		src  store.FSNode // 复制源节点
+		want []string     // 两回复制依次应得的名字
+	}{
+		{long, []string{strings.Repeat("甲", 58) + " - 副本", strings.Repeat("甲", 55) + " - 副本 (2)"}},
+		{file, []string{strings.Repeat("工", 59) + " - 副本", strings.Repeat("工", 55) + " - 副本 (2)"}},
+	}
+	// 逐个源核对，每回复制都要截短原名后接尾巴。
+	for _, c := range cases {
+		// 依次复制，名字按副本、副本 (2) 往下排。
+		for _, want := range c.want {
+			// 复制回原文件夹，同名已在，应截短原名后接尾巴。
+			dup, err := fac.CopyFSNode(ctx, pe.tok, c.src.ID, home.ID)
+			// 复制失败或没落在原文件夹就停，长名仍被当成同名。
+			if err != nil || dup.ParentID == nil || *dup.ParentID != home.ID {
+				// 长名复制回原文件夹失败即停，不能当成通过。
+				t.Fatalf("copy long %q: %+v %v", c.src.Name, dup, err)
+			}
+			// 新名不对或超过上限就停，截短规则没生效。
+			if dup.Name != want || utf8.RuneCountInString(dup.Name) > store.FSNameMax {
+				// 复制出的名字不对即停，不能当成通过。
+				t.Fatalf("copy name %q want %q", dup.Name, want)
+			}
+		}
+	}
+}
+
 // 记下当前全部审计的标识，供事后挑出新增的几条。
 func auditIDs(t *testing.T, ctx context.Context, fac *factory.Service) map[[16]byte]struct{} {
 	// 标成辅助函数，失败栈落到调用方。
@@ -1448,5 +1553,119 @@ func TestFactoryFSDeleteFolderAllOrNothing(t *testing.T) {
 	if _, err := fac.Store().FSNodeByID(ctx, folder.ID); !errors.Is(err, domain.ErrNotFound) {
 		// 文件夹还在就停，整夹删除没删掉节点。
 		t.Fatalf("folder should be gone: %v", err)
+	}
+}
+
+// 验收网页新建挂进文件夹：同名自动带编号；目录不在或是别人的个人夹就整笔不建。
+func TestCreateAssetIntoFolder(t *testing.T) {
+	// 准备贯穿本用例的上下文，不设截止时间。
+	ctx := context.Background()
+	// 起一套隔离厂库，起不来则本用例没有库可测。
+	h := New(t)
+	// 开通本厂，供后面步骤使用，失败则前提断了。
+	seed, fac, err := h.Provision(ctx, "sa", "超管")
+	// 开通本厂没成功，后面的断言就没有依据。
+	if err != nil {
+		// 开通本厂失败即停，不能把这一步的失败当成通过。
+		t.Fatal(err)
+	}
+	// 激活账号没成功，后面的断言就没有依据。
+	if err := fac.Activate(ctx, "sa", seed.ActivationToken, "sa-pass"); err != nil {
+		// 激活账号失败即停，不能把这一步的失败当成通过。
+		t.Fatal(err)
+	}
+	// 登录取超管会话，后面拿它试管理员越主人。
+	sa := mustLogin(t, ctx, fac, "sa", "sa-pass")
+	// 建新建资产的人，他往厂级夹里建工艺。
+	pe := mustCreateRole(t, ctx, fac, sa, "pe", "pe-pass", factory.RoleOperator, factory.ScopeFactory, nil)
+	// 建同事，他的个人夹给别人当挂不上的目标。
+	other := mustCreateRole(t, ctx, fac, sa, "ot", "ot-pass", factory.RoleOperator, factory.ScopeFactory, nil)
+	// 取厂级工艺树的根，公用夹要建在它下面。
+	root, err := fac.Store().EnsureFSRoot(ctx, factory.KindProcess, store.FSTreeFactory, nil)
+	// 取根失败就停，没有根建不了文件夹。
+	if err != nil {
+		// 取厂级根失败即停，不能把这一步的失败当成通过。
+		t.Fatal(err)
+	}
+	// 建公用夹，两条同名工艺都建到这里。
+	folder, err := fac.CreateFSFolder(ctx, pe.tok, root.ID, "公用夹")
+	// 建公用夹失败就停，没有目标夹验不了挂目录。
+	if err != nil {
+		// 建公用夹失败即停，不能把这一步的失败当成通过。
+		t.Fatal(err)
+	}
+	// 工作位置带上目标夹，新建时同一笔挂进去。
+	into := factory.WorkContext{Direct: true, FolderID: folder.ID}
+	// 第一条建进公用夹，名字应原样占位。
+	first, err := fac.CreateFactoryProcess(ctx, pe.tok, into, "同名工艺", []byte("a"))
+	// 第一条建不成就停，挂目录的前提断了。
+	if err != nil {
+		// 建第一条失败即停，不能把这一步的失败当成通过。
+		t.Fatal(err)
+	}
+	// 第二条同名再建进去，应成功并自动带编号。
+	second, err := fac.CreateFactoryProcess(ctx, pe.tok, into, "同名工艺", []byte("b"))
+	// 同名被拒说明还按 409 挡新建。
+	if err != nil {
+		// 同名建进文件夹失败即停，重名没有自动带编号。
+		t.Fatalf("same name into folder: %v", err)
+	}
+	// 两条依次应得的文件名：原名，原名加编号。
+	want := []struct {
+		row  factory.Asset // 新建出的资产
+		name string        // 目录里应得的文件名
+	}{{first, "同名工艺"}, {second, "同名工艺 " + second.Code}}
+	// 逐条核对文件节点落在公用夹且名字对得上。
+	for _, w := range want {
+		// 按资产找文件节点，看它挂在哪里。
+		file, err := fac.Store().FSFileByAsset(ctx, w.row.ID)
+		// 没挂进公用夹或名字不对，说明没在同一笔挂好。
+		if err != nil || file.ParentID == nil || *file.ParentID != folder.ID || file.Name != w.name {
+			// 文件挂点或名字不对即停。
+			t.Fatalf("file %+v want %q in %s: %v", file, w.name, folder.ID, err)
+		}
+	}
+	// 取同事的个人根，在下面建同事夹。
+	otherRoot, err := fac.Store().EnsureFSRoot(ctx, factory.KindProcess, store.FSTreePersonal, &other.acc.ID)
+	// 取同事根失败就停，没有别人的夹可试。
+	if err != nil {
+		// 取同事个人根失败即停，不能把这一步的失败当成通过。
+		t.Fatal(err)
+	}
+	// 同事自己建的个人夹，别人建的个人资产挂不进去。
+	otherFolder, err := fac.CreateFSFolder(ctx, other.tok, otherRoot.ID, "同事夹")
+	// 建同事夹失败就停，前提断了。
+	if err != nil {
+		// 建同事夹失败即停，不能把这一步的失败当成通过。
+		t.Fatal(err)
+	}
+	// 记下被拒之前的节点数和资产数。
+	nodes0, assets0 := fsTotals(t, ctx, fac, factory.KindProcess)
+	// 三种挂不上的目标：目录不在、同事不可写、管理员可写但主人不是本人。
+	cases := []struct {
+		tok    string   // 新建人的会话
+		folder [16]byte // 目标文件夹
+		want   error    // 应得的拒绝
+	}{
+		{pe.tok, id.New(), domain.ErrNotFound},
+		{pe.tok, otherFolder.ID, domain.ErrForbidden},
+		{sa, otherFolder.ID, domain.ErrForbidden},
+	}
+	// 逐个目标试新建个人工艺，都应整笔不建。
+	for _, c := range cases {
+		// 建个人工艺到挂不上的目标，应按原因拒绝。
+		_, err := fac.CreatePersonalProcess(ctx, c.tok, factory.WorkContext{Direct: true, FolderID: c.folder}, "挂不上", []byte("c"))
+		// 放行或错误不对，说明挂目录没在建资产前把关。
+		if !errors.Is(err, c.want) {
+			// 拒绝原因不对即停。
+			t.Fatalf("create into %x: %v want %v", c.folder, err, c.want)
+		}
+		// 再数一遍节点和资产，被拒的不应留下任何东西。
+		nodes, assets := fsTotals(t, ctx, fac, factory.KindProcess)
+		// 多出资产或节点，说明挂不上时没整笔回滚。
+		if nodes != nodes0 || assets != assets0 {
+			// 留下了半截即停。
+			t.Fatalf("rejected create left rows: nodes %d->%d assets %d->%d", nodes0, nodes, assets0, assets)
+		}
 	}
 }

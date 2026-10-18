@@ -25,6 +25,7 @@ type PathNode struct {
 type WorkContext struct {
 	Direct    bool       // true 表示 Factory 直属，路径为空
 	OrgUnitID *uuid.UUID // 与 Direct 互斥；必须是本人当前分配的有效节点
+	FolderID  uuid.UUID  // 新建资产要挂的文件夹；空则挂对应树根，事实不用
 }
 
 // FactStub 是最小运行事实：只记创建人和发生时的组织路径，供统计口径验收。

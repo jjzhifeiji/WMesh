@@ -153,6 +153,14 @@ func (h *Handler) createAsset(w http.ResponseWriter, r *http.Request) {
 		writeBadRequest(w, err)
 		return
 	}
+	// 先解析目标文件夹，格式不对就不建资产。
+	parentID, err := parseParentID(req.ParentID)
+	// 参数不合法就按坏请求拒绝。
+	if err != nil {
+		// 把不合法的原因回给调用方。
+		writeBadRequest(w, err)
+		return
+	}
 	// 正文按字节交给服务，不当成文件路径。
 	content := []byte(req.Content)
 	// 没声明可否复制时，默认不可复制。
@@ -164,18 +172,16 @@ func (h *Handler) createAsset(w http.ResponseWriter, r *http.Request) {
 	}
 	// 先留空结果，按种类填入，失败再拒绝。
 	var row service.Asset
-	// 错误留到分支里再赋值，避免未赋值就用。
-	var err error
 	// 按工艺或工程分流，别的种类直接拒绝。
 	switch req.Kind {
 	// 工艺按可否复制和作业类型新建草稿。
 	case service.KindProcess:
-		// 按工艺新建草稿，默认可否复制由请求定。
-		row, err = h.svc.Assets.CreatePlatformProcessWith(r.Context(), bearer(r), req.Name, content, copyable, req.WeldKind)
+		// 按工艺新建草稿并挂进目标文件夹，挂不上整笔不建。
+		row, err = h.svc.Assets.CreatePlatformProcessIn(r.Context(), bearer(r), req.Name, content, copyable, parentID, req.WeldKind)
 	// 工程带上依赖新建草稿。
 	case service.KindProject:
-		// 按工程新建草稿，并带上依赖。
-		row, err = h.svc.Assets.CreatePlatformProject(r.Context(), bearer(r), req.Name, content, req.Deps, req.WeldKind)
+		// 按工程新建草稿并带上依赖，挂不上目录整笔不建。
+		row, err = h.svc.Assets.CreatePlatformProjectIn(r.Context(), bearer(r), req.Name, content, req.Deps, parentID, req.WeldKind)
 	// 种类不对按坏请求拒绝，避免写成脏数据。
 	default:
 		// 把不合法的原因回给调用方。
@@ -188,31 +194,23 @@ func (h *Handler) createAsset(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	// 挂到目录失败，这次创建不算完成。
-	if err := h.placeNewAsset(r, row.ID, req.ParentID); err != nil {
-		// 按业务错误回写，内部细节不出网。
-		writeErr(w, err)
-		return
-	}
 	// 创建成功，把新记录交回调用方。
 	writeJSON(w, http.StatusCreated, row)
 }
 
-// placeNewAsset 新建后挂到指定文件夹；空父节点则留在根。
-func (h *Handler) placeNewAsset(r *http.Request, assetID uuid.UUID, parent string) error {
-	// 没指定父文件夹就留在根，不算失败。
+// parseParentID 解析新建时要挂的父文件夹；空着就挂根。
+func parseParentID(parent string) (uuid.UUID, error) {
+	// 没指定父文件夹就挂根，不算错。
 	if strings.TrimSpace(parent) == "" {
-		return nil
+		return uuid.Nil, nil
 	}
 	// 解析稳定身份，格式不对就拒绝。
-	parentID, err := uuid.Parse(parent)
-	// 失败把原因交回去，避免留下残缺结果。
+	id, err := uuid.Parse(parent)
+	// 失败把原因交回去，不建资产。
 	if err != nil {
-		return errInvalidID
+		return uuid.Nil, errInvalidID
 	}
-	// 把新建的挂进指定文件夹，失败则创建不算完。
-	_, err = h.svc.Assets.MoveAssetInto(r.Context(), bearer(r), assetID, parentID)
-	return err
+	return id, nil
 }
 
 // 读平台级元数据。

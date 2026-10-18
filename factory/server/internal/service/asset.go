@@ -247,6 +247,12 @@ func (s *Assets) insertAuthored(ctx context.Context, acc Account, wc WorkContext
 		_ = s.auditAt(ctx, &acc.ID, "create_asset", kind, audit.Deny, unitID, path)
 		return Asset{}, err
 	}
+	// 目标文件夹先核写权限，不过就记拒绝，不建资产。
+	if err := s.checkNewAssetFolder(ctx, acc, wc.FolderID); err != nil {
+		// 创建被拒时补记审计，写失败仍维持拒绝。
+		_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny, unitID, path)
+		return Asset{}, err
+	}
 	// 把作业类型收成合法值，不合法就拒绝。
 	weld, err := store.NormalizeWeldKind(firstWeldKind(weldKind))
 	// 作业类型不合法则拒绝，并补记审计。
@@ -307,12 +313,18 @@ func (s *Assets) insertAuthored(ctx context.Context, acc Account, wc WorkContext
 			return Asset{}, err
 		}
 	}
-	// 校验都过了才落成一条资产。
-	return s.insertGoverned(ctx, acc, unitID, path, kind, level, name, content, deps, copyable, weld)
+	// 校验都过了才落成一条资产，并在同一笔里挂进目标文件夹。
+	return s.insertGovernedAt(ctx, acc, unitID, path, assetPlace{ParentID: wc.FolderID}, kind, level, name, content, deps, copyable, weld)
 }
 
-// insertGoverned 落一条草稿；调用方已决定是否套过模版。
+// insertGoverned 落一条草稿并挂到对应树根；调用方已决定是否套过模版。
 func (s *Assets) insertGoverned(ctx context.Context, acc Account, unitID *uuid.UUID, path []PathNode, kind, level, name string, content []byte, deps []AssetDep, copyable bool, weldKind ...string) (Asset, error) {
+	// 不指定文件夹，文件挂到对应树根。
+	return s.insertGovernedAt(ctx, acc, unitID, path, assetPlace{}, kind, level, name, content, deps, copyable, weldKind...)
+}
+
+// insertGovernedAt 落一条草稿并挂到指定位置；挂不上则资产一起回滚。
+func (s *Assets) insertGovernedAt(ctx context.Context, acc Account, unitID *uuid.UUID, path []PathNode, at assetPlace, kind, level, name string, content []byte, deps []AssetDep, copyable bool, weldKind ...string) (Asset, error) {
 	// 把作业类型收成合法值，不合法就拒绝。
 	weld, err := store.NormalizeWeldKind(firstWeldKind(weldKind))
 	// 作业类型不合法则拒绝，并补记审计。
@@ -322,17 +334,17 @@ func (s *Assets) insertGoverned(ctx context.Context, acc Account, unitID *uuid.U
 		return Asset{}, err
 	}
 	// 写入本厂原件，成功还要记审计。
-	return s.putGoverned(ctx, acc, unitID, path, Asset{
+	return s.putGoverned(ctx, acc, unitID, path, at, Asset{
 		Kind: kind, Level: level, Name: name, Status: AssetDraft, Copyable: assetCopyable(kind, copyable), WeldKind: weld,
 		Content: content, Digest: digest.Sum(content), CreatorID: acc.ID,
 		OrgUnitID: unitID, OrgPath: path, Deps: deps,
 	})
 }
 
-// putGoverned 写入本厂原件；状态由调用方决定，管理后台新建仍走草稿。
-func (s *Assets) putGoverned(ctx context.Context, acc Account, unitID *uuid.UUID, path []PathNode, in Asset) (Asset, error) {
-	// 把这条原件写入本厂库。
-	row, err := s.store.InsertGovernedAsset(ctx, in)
+// putGoverned 写入本厂原件并挂目录；状态由调用方决定，管理后台新建仍走草稿。
+func (s *Assets) putGoverned(ctx context.Context, acc Account, unitID *uuid.UUID, path []PathNode, at assetPlace, in Asset) (Asset, error) {
+	// 原件和文件节点同一事务写入，挂不上就一起回滚。
+	row, err := s.store.InsertGovernedAssetInto(ctx, in, at.ParentID, at.OrRoot)
 	// 落库失败则记拒绝，不假装已经建成。
 	if err != nil {
 		// 创建被拒时补记审计，写失败仍维持拒绝。
@@ -356,6 +368,13 @@ func (s *Assets) CreatePadPersonal(ctx context.Context, token string, kind, name
 // CreatePad 示教器新建：个人级谁都可以；厂级只给管理员；身份沿用调用方的 UUIDv7。
 // 身份必须是本厂没有的新身份；自带号只认本厂登记过的 C 段；本厂删过的身份只能沿用原号。
 func (s *Assets) CreatePad(ctx context.Context, token, level, kind, name string, content []byte, id uuid.UUID, code string, deps []AssetDep, weldKind ...string) (Asset, error) {
+	// 不指定文件夹，交给带目录的核心挂到对应树根。
+	return s.CreatePadIn(ctx, token, level, kind, name, content, id, code, deps, uuid.Nil, weldKind...)
+}
+
+// CreatePadIn 示教器新建并挂进指定文件夹；空父级挂树根。
+// 目录不在、不是文件夹、种类树或主人不对、无写权限都改挂该资产所属树根，只有库错误才报错。
+func (s *Assets) CreatePadIn(ctx context.Context, token, level, kind, name string, content []byte, id uuid.UUID, code string, deps []AssetDep, parentID uuid.UUID, weldKind ...string) (Asset, error) {
 	// 核对登录仍有效，后面的操作都靠这次会话。
 	acc, err := s.RequireActive(ctx, token)
 	// 登录已失效则拒绝，避免未登录的人继续。
@@ -399,6 +418,14 @@ func (s *Assets) CreatePad(ctx context.Context, token, level, kind, name string,
 	// 定下制作时的工作位置，并准备冻结路径。
 	unitID, path, err := s.resolveAuthorContext(ctx, acc, WorkContext{Direct: true})
 	// 工作位置不合法则拒绝，并补记审计。
+	if err != nil {
+		// 创建被拒时补记审计，写失败仍维持拒绝。
+		_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny, unitID, path)
+		return Asset{}, err
+	}
+	// 目标文件夹不在或不可写就改挂树根，只有库错误才拒绝。
+	parentID, err = s.padNewAssetFolder(ctx, acc, parentID)
+	// 核目录时库出错则拒绝，并补记审计。
 	if err != nil {
 		// 创建被拒时补记审计，写失败仍维持拒绝。
 		_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny, unitID, path)
@@ -469,8 +496,8 @@ func (s *Assets) CreatePad(ctx context.Context, token, level, kind, name string,
 			return Asset{}, err
 		}
 	}
-	// 写入本厂原件，成功还要记审计。
-	return s.putGoverned(ctx, acc, unitID, path, Asset{
+	// 写入本厂原件并挂目录，事务里挂不上也退回树根。
+	return s.putGoverned(ctx, acc, unitID, path, assetPlace{ParentID: parentID, OrRoot: true}, Asset{
 		ID: id, Kind: kind, Level: level, Name: name, Code: strings.TrimSpace(code),
 		Status: AssetAvailable, Copyable: true, WeldKind: weld, Content: content, Digest: digest.Sum(content),
 		CreatorID: acc.ID, OrgUnitID: unitID, OrgPath: path, Deps: deps,

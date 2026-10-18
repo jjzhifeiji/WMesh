@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/google/uuid"
 
@@ -340,7 +339,7 @@ func (s *Assets) copyFSInto(ctx context.Context, token string, src, dest FSNode)
 	return moved, nil
 }
 
-// uniqueFSName 目标文件夹下不撞名；已占用则加「副本」。
+// uniqueFSName 目标文件夹下不撞名；已占用则加「副本」，原名过长先截短再接。
 func (s *Assets) uniqueFSName(ctx context.Context, parentID uuid.UUID, wanted string) (string, error) {
 	// 去掉多余空白或前后缀。
 	wanted = strings.TrimSpace(wanted)
@@ -362,24 +361,23 @@ func (s *Assets) uniqueFSName(ctx context.Context, parentID uuid.UUID, wanted st
 		// 记下已占用的名字，后面避开它们。
 		taken[k.Name] = struct{}{}
 	}
-	// 先试原名和副本，再试带序号的名字。
-	cands := []string{wanted, wanted + " - 副本"}
-	// 准备带序号的副本名，避免文件夹重名。
+	// 先试原名和副本，再试带序号的副本尾巴。
+	tails := []string{"", " - 副本"}
+	// 准备带序号的副本尾巴，避免文件夹重名。
 	for i := 2; i <= 99; i++ {
 		// 把这一项接进结果。
-		cands = append(cands, fmt.Sprintf("%s - 副本 (%d)", wanted, i))
+		tails = append(tails, fmt.Sprintf(" - 副本 (%d)", i))
 	}
 	// 按候选名依次试，撞名就换下一个。
-	for _, c := range cands {
-		// 字数不在允许范围就拒绝，避免空名或超长。
-		if utf8.RuneCountInString(c) > 64 {
-			continue
-		}
+	for _, tail := range tails {
+		// 原名过长就先截短再接尾巴，不再整条跳过。
+		c := clipAssetName(wanted, tail)
 		// 这个名字还没占用，可以拿来当文件夹名。
 		if _, ok := taken[c]; !ok {
 			return c, nil
 		}
 	}
+	// 一百个候选真的都被占了，才按同名拒绝。
 	return "", domain.ErrDuplicateName
 }
 

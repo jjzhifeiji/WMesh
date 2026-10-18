@@ -210,6 +210,14 @@ func (h *Handler) createAsset(w http.ResponseWriter, r *http.Request) {
 			writeBadRequest(w, err)
 			return
 		}
+		// 先解析目标文件夹，格式不对就不建资产。
+		parentID, err := parseParentID(req.ParentID)
+		// 解析失败则拒绝，不用这个残缺的值继续。
+		if err != nil {
+			// 请求不合法，回非法请求并不进入业务。
+			writeBadRequest(w, err)
+			return
+		}
 		// 把直属或节点收成工作位置，非法则拒绝。
 		wc, err := parseWorkContext(req.Direct, req.OrgUnitID)
 		// 上一步没通过则停止，不把失败写成成功。
@@ -218,6 +226,8 @@ func (h *Handler) createAsset(w http.ResponseWriter, r *http.Request) {
 			writeBadRequest(w, err)
 			return
 		}
+		// 目标文件夹随工作位置交给业务，和建资产同一笔提交。
+		wc.FolderID = parentID
 		// 正文按原始字节保存，适配层不改编码。
 		content := []byte(req.Content)
 		// 没指定时默认可复制，便于以后升档。
@@ -259,12 +269,6 @@ func (h *Handler) createAsset(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, err)
 			return
 		}
-		// 被拒绝则停止，不继续写成功响应。
-		if err := placeNewAsset(r, svc, row.ID, req.ParentID); err != nil {
-			// 把失败译成状态回给调用方，不写成功。
-			writeErr(w, err)
-			return
-		}
 		// 创建成功，把新记录回给调用方。
 		writeJSON(w, http.StatusCreated, row)
 	})
@@ -297,16 +301,18 @@ func (h *Handler) createPadAsset(w http.ResponseWriter, r *http.Request) {
 			// 采用本机已经发出的资产身份。
 			id = parsed
 		}
-		// 正文按原始字节保存，适配层不改编码。
-		row, err := svc.Assets.CreatePad(r.Context(), bearer(r), req.Level, req.Kind, req.Name, []byte(req.Content), id, req.Code, req.Deps, req.WeldKind)
-		// 上一步没通过则停止，不把失败写成成功。
+		// 先解析目标文件夹，格式不对就不建资产。
+		parentID, err := parseParentID(req.ParentID)
+		// 解析失败则拒绝，不用这个残缺的值继续。
 		if err != nil {
-			// 把失败译成状态回给调用方，不写成功。
-			writeErr(w, err)
+			// 请求不合法，回非法请求并不进入业务。
+			writeBadRequest(w, err)
 			return
 		}
-		// 被拒绝则停止，不继续写成功响应。
-		if err := placeNewAsset(r, svc, row.ID, req.ParentID); err != nil {
+		// 正文按原始字节保存；目录挂不上由业务退回树根。
+		row, err := svc.Assets.CreatePadIn(r.Context(), bearer(r), req.Level, req.Kind, req.Name, []byte(req.Content), id, req.Code, req.Deps, parentID, req.WeldKind)
+		// 上一步没通过则停止，不把失败写成成功。
+		if err != nil {
 			// 把失败译成状态回给调用方，不写成功。
 			writeErr(w, err)
 			return

@@ -109,6 +109,13 @@ func (assetRow) TableName() string { return "assets" }
 
 // InsertAsset 写入一条平台级工艺或工程；可复制由调用方给定，修订从 1 起。
 func (s *Store) InsertAsset(ctx context.Context, in Asset) (Asset, error) {
+	// 不指定文件夹，文件挂到该类的根上。
+	return s.InsertAssetInto(ctx, in, uuid.Nil)
+}
+
+// InsertAssetInto 写入一条平台级资产并在同一事务里挂进指定文件夹；空父级挂根。
+// 目录不在、不是文件夹或种类不对就整笔回滚，资产和编号都不留。
+func (s *Store) InsertAssetInto(ctx context.Context, in Asset, parentID uuid.UUID) (Asset, error) {
 	// 依赖先收成库里的正文，工艺带依赖会在这里被拒。
 	deps, err := marshalAssetDeps(in.Kind, in.Deps)
 	// 依赖收不成库里的正文就停，避免写下坏内容。
@@ -162,6 +169,11 @@ func (s *Store) InsertAsset(ctx context.Context, in Asset) (Asset, error) {
 		if err := tx.Create(&row).Error; err != nil {
 			// 库约束收成业务错误再交回，不抛原文。
 			return mapAssetWriteErr(err)
+		}
+		// 指定了文件夹就挂进去，挂不上整笔回滚。
+		if parentID != uuid.Nil {
+			// 同级重名自动带编号；目录不对则资产一起回滚。
+			return placeAssetFileTx(tx, row.Kind, row.ID, row.Name, row.Code, parentID)
 		}
 		// 没有这类的根就建一棵，已有则直接用。
 		root, err := ensureFSRootTx(tx, row.Kind, FSTreePlatform, nil)

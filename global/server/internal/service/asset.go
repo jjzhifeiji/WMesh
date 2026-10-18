@@ -17,7 +17,7 @@ import (
 	"wmesh/global/internal/store"
 )
 
-const assetNameMax = 64 // 资产显示名字数上限，与目录名和前端提示一致
+const assetNameMax = store.FSNameMax // 资产显示名字数上限，与目录名共用一个数
 
 // normalizeAssetName 去掉首尾空白后须 1～64 字，否则按名称不合法拒绝。
 func normalizeAssetName(name string) (string, error) {
@@ -91,6 +91,12 @@ func (s *Assets) CreatePlatformProcess(ctx context.Context, token, name string, 
 
 // CreatePlatformProcessWith 创建平台级工艺并记下可复制，状态草稿。
 func (s *Assets) CreatePlatformProcessWith(ctx context.Context, token, name string, content []byte, copyable bool, weldKind ...string) (Asset, error) {
+	// 不指定文件夹，交给带目录的核心挂到根上。
+	return s.CreatePlatformProcessIn(ctx, token, name, content, copyable, uuid.Nil, weldKind...)
+}
+
+// CreatePlatformProcessIn 创建平台级工艺并在同一事务里挂进指定文件夹；空父级挂根，挂不上整笔回滚。
+func (s *Assets) CreatePlatformProcessIn(ctx context.Context, token, name string, content []byte, copyable bool, parentID uuid.UUID, weldKind ...string) (Asset, error) {
 	// 只有 WAN 管理员能做平台级工艺。失败一律记拒绝。
 	admin, err := s.RequireAdmin(ctx, token)
 	// 无效就不能继续，不当已经登录。
@@ -125,11 +131,11 @@ func (s *Assets) CreatePlatformProcessWith(ctx context.Context, token, name stri
 		_ = s.audit(ctx, &admin.ID, nil, nil, "create_asset", name, audit.Deny)
 		return Asset{}, err
 	}
-	// 写入这一条，失败就不能继续。
-	row, err := s.store.InsertAsset(ctx, Asset{
+	// 资产和文件节点同一事务写入，挂不上目录就一起回滚。
+	row, err := s.store.InsertAssetInto(ctx, Asset{
 		Kind: KindProcess, Name: name, Status: AssetDraft, Copyable: copyable, WeldKind: kind,
 		Content: content, Digest: digest.Sum(content), CreatorID: admin.ID,
-	})
+	}, parentID)
 	// 这一步失败就停，避免留下半截。
 	if err != nil {
 		// 建资产被拒就留审计，不写正文。
@@ -139,6 +145,11 @@ func (s *Assets) CreatePlatformProcessWith(ctx context.Context, token, name stri
 	// 新建成功才记允许。
 	if err := s.audit(ctx, &admin.ID, nil, nil, "create_asset", assetTarget(row.ID, row.Revision), audit.Allow); err != nil {
 		return Asset{}, err
+	}
+	// 放进了文件夹就照旧通知厂端对齐目录。
+	if parentID != uuid.Nil {
+		// 通知厂端对齐平台目录。
+		s.notifyPlatformFS(ctx, KindProcess)
 	}
 	// 去掉正文再返回。
 	return stripContent(row), nil
@@ -701,6 +712,12 @@ func (s *Assets) rewritePromoteDeps(ctx context.Context, kind string, deps []Ass
 
 // CreatePlatformProject 创建平台级工程；不设可复制，参数里的工艺写入 deps。
 func (s *Assets) CreatePlatformProject(ctx context.Context, token, name string, content []byte, deps []AssetDep, weldKind ...string) (Asset, error) {
+	// 不指定文件夹，交给带目录的核心挂到根上。
+	return s.CreatePlatformProjectIn(ctx, token, name, content, deps, uuid.Nil, weldKind...)
+}
+
+// CreatePlatformProjectIn 创建平台级工程并在同一事务里挂进指定文件夹；空父级挂根，挂不上整笔回滚。
+func (s *Assets) CreatePlatformProjectIn(ctx context.Context, token, name string, content []byte, deps []AssetDep, parentID uuid.UUID, weldKind ...string) (Asset, error) {
 	// 只有 WAN 管理员能做平台级工程。失败一律记拒绝。
 	admin, err := s.RequireAdmin(ctx, token)
 	// 无效就不能继续，不当已经登录。
@@ -767,11 +784,11 @@ func (s *Assets) CreatePlatformProject(ctx context.Context, token, name string, 
 		_ = s.audit(ctx, &admin.ID, nil, nil, "create_asset", name, audit.Deny)
 		return Asset{}, err
 	}
-	// 落草稿，带上已核过的工艺依赖。
-	row, err := s.store.InsertAsset(ctx, Asset{
+	// 落草稿，带上已核过的工艺依赖，挂不上目录就一起回滚。
+	row, err := s.store.InsertAssetInto(ctx, Asset{
 		Kind: KindProject, Name: name, Status: AssetDraft, Copyable: true, WeldKind: kind,
 		Content: content, Digest: digest.Sum(content), CreatorID: admin.ID, Deps: deps,
-	})
+	}, parentID)
 	// 这一步失败就停，避免留下半截。
 	if err != nil {
 		// 建资产被拒就留审计，不写正文。
@@ -781,6 +798,11 @@ func (s *Assets) CreatePlatformProject(ctx context.Context, token, name string, 
 	// 新建成功才记允许。
 	if err := s.audit(ctx, &admin.ID, nil, nil, "create_asset", assetTarget(row.ID, row.Revision), audit.Allow); err != nil {
 		return Asset{}, err
+	}
+	// 放进了文件夹就照旧通知厂端对齐目录。
+	if parentID != uuid.Nil {
+		// 通知厂端对齐平台目录。
+		s.notifyPlatformFS(ctx, KindProject)
 	}
 	// 去掉正文再返回。
 	return stripContent(row), nil

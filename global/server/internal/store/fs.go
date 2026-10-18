@@ -21,7 +21,7 @@ const (
 	FSTreePlatform = "platform" // WAN 只有这一棵
 )
 
-const fsNameMax = 64 // 与显示名错误文案对齐
+const FSNameMax = 64 // 目录名与资产名共用的字数上限，与前端提示对齐
 
 // FSNode 是目录树上的一条：文件夹或文件引用。
 type FSNode struct {
@@ -101,7 +101,7 @@ func checkFSName(name string) (string, error) {
 	// 先去掉首尾空白，再看是不是合法文件夹名。
 	name = strings.TrimSpace(name)
 	// 空名、超长或带分隔符都不能当文件夹名。
-	if name == "" || utf8.RuneCountInString(name) > fsNameMax || strings.ContainsAny(name, "/\\") {
+	if name == "" || utf8.RuneCountInString(name) > FSNameMax || strings.ContainsAny(name, "/\\") {
 		return "", domain.ErrInvalidName
 	}
 	return name, nil

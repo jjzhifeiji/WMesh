@@ -23,7 +23,7 @@ const (
 	FSTreePersonal = "personal" // 某人的用户目录
 )
 
-const fsNameMax = 64 // 与显示名错误文案对齐
+const FSNameMax = 64 // 目录名字数上限，复制起名截短也按它算
 
 // FSNode 是目录树上的一条：文件夹或文件引用。
 type FSNode struct {
@@ -103,7 +103,7 @@ func checkFSName(name string) (string, error) {
 	// 去掉首尾空白，纯空白不当有效内容。
 	name = strings.TrimSpace(name)
 	// 超过字数上限就截断，避免超出列宽。
-	if name == "" || utf8.RuneCountInString(name) > fsNameMax || strings.ContainsAny(name, "/\\") {
+	if name == "" || utf8.RuneCountInString(name) > FSNameMax || strings.ContainsAny(name, "/\\") {
 		return "", domain.ErrInvalidName
 	}
 	return name, nil
@@ -627,26 +627,11 @@ func placeAssetFileTx(tx *gorm.DB, assetKind, treeLevel string, ownerID *uuid.UU
 	if n > 0 {
 		return nil
 	}
-	// 准备承接查到的目录节点。
-	var parent FSNode
-	// 先留出错误位，后面的分支再填。
-	var err error
-	// 没指定父级就挂到这棵树的根上。
-	if parentID == uuid.Nil {
-		// 先确保目录根，结果留给紧跟着的判断。
-		parent, err = ensureFSRootTx(tx, assetKind, treeLevel, ownerID)
-		// 指定了父级就读那个节点，不再新建根。
-	} else {
-		// 先读取目录节点，结果留给紧跟着的判断。
-		parent, err = fsNodeTx(tx, parentID)
-	}
+	// 取出要挂的父文件夹，挂不上就整笔拒绝。
+	parent, err := assetParentTx(tx, assetKind, treeLevel, ownerID, parentID)
 	// 出错就停，避免把失败当成已经完成。
 	if err != nil {
 		return err
-	}
-	// 父级必须是文件夹，文件下面不能再挂。
-	if parent.NodeKind != FSNodeFolder || parent.AssetKind != assetKind || parent.TreeLevel != treeLevel {
-		return domain.ErrForbidden
 	}
 	// 先挑选不重名，结果留给紧跟着的判断。
 	fileName, err := uniqueChildName(tx, parent.ID, name, code)
@@ -668,6 +653,45 @@ func placeAssetFileTx(tx *gorm.DB, assetKind, treeLevel string, ownerID *uuid.UU
 		return mapFSErr(err)
 	}
 	return nil
+}
+
+// assetParentTx 取文件要挂的父文件夹；不在、不是文件夹、种类树或主人不对都拒绝。
+func assetParentTx(tx *gorm.DB, assetKind, treeLevel string, ownerID *uuid.UUID, parentID uuid.UUID) (FSNode, error) {
+	// 没指定父级就挂到这棵树的根上。
+	if parentID == uuid.Nil {
+		// 取或建这棵树的根，新建默认挂在这里。
+		return ensureFSRootTx(tx, assetKind, treeLevel, ownerID)
+	}
+	// 指定了父级就读那个节点，不再新建根。
+	parent, err := fsNodeTx(tx, parentID)
+	// 读取目录节点失败就停，避免带着错误继续。
+	if err != nil {
+		return FSNode{}, err
+	}
+	// 必须是同种类同一棵树的文件夹，个人树还要同一主人。
+	if parent.NodeKind != FSNodeFolder || parent.AssetKind != assetKind || parent.TreeLevel != treeLevel || !ownerEq(parent.OwnerID, ownerID) {
+		return FSNode{}, domain.ErrForbidden
+	}
+	return parent, nil
+}
+
+// fitAssetParentTx 示教器新建用：目标挂不上就改挂树根，只有库错误才交回。
+func fitAssetParentTx(tx *gorm.DB, assetKind, treeLevel string, ownerID *uuid.UUID, parentID uuid.UUID) (uuid.UUID, error) {
+	// 没指定父级本来就挂树根，不用再核。
+	if parentID == uuid.Nil {
+		return uuid.Nil, nil
+	}
+	// 按同一口径试一下目标文件夹能不能挂。
+	_, err := assetParentTx(tx, assetKind, treeLevel, ownerID, parentID)
+	// 目录不在或不合适就退回树根，不挡新建。
+	if errors.Is(err, domain.ErrNotFound) || errors.Is(err, domain.ErrForbidden) {
+		return uuid.Nil, nil
+	}
+	// 库错误照实交回，整笔回滚。
+	if err != nil {
+		return uuid.Nil, err
+	}
+	return parentID, nil
 }
 
 // syncFSFileNameTx 资产改名时同步文件节点名；撞名则保持旧名。

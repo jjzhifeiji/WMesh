@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"unicode/utf8"
@@ -429,7 +430,7 @@ func (s *Assets) copyFSInto(ctx context.Context, token string, src, dest FSNode)
 	return moved, nil
 }
 
-// uniqueFSName 目标文件夹下不撞名；已占用则加「副本」。
+// uniqueFSName 目标文件夹下不撞名；已占用则加「副本」，原名过长先截短再接。
 func (s *Assets) uniqueFSName(ctx context.Context, parentID uuid.UUID, wanted string) (string, error) {
 	// 去掉两端空白，空的改成未命名。
 	wanted = strings.TrimSpace(wanted)
@@ -451,25 +452,38 @@ func (s *Assets) uniqueFSName(ctx context.Context, parentID uuid.UUID, wanted st
 		// 这个名字已被占用，候选要避开。
 		taken[k.Name] = struct{}{}
 	}
-	// 先试原名，再试带副本字样的名字。
-	cands := []string{wanted, wanted + " - 副本"}
+	// 先试原名，再试带副本字样的尾巴。
+	tails := []string{"", " - 副本"}
 	// 名字被占就加序号，最多试到九十九。
 	for i := 2; i <= 99; i++ {
 		// 原名和一次副本都被占时，继续加序号。
-		cands = append(cands, fmt.Sprintf("%s - 副本 (%d)", wanted, i))
+		tails = append(tails, fmt.Sprintf(" - 副本 (%d)", i))
 	}
-	// 挑一个不撞名且不超过长度的候选。
-	for _, c := range cands {
-		// 名字超长的候选丢掉，目录名有上限。
-		if utf8.RuneCountInString(c) > 64 {
-			continue
-		}
+	// 挑一个不撞名的候选，过长的先截短再用。
+	for _, tail := range tails {
+		// 原名过长就先截短再接尾巴，不再整条丢掉。
+		c := clipFSName(wanted, tail)
 		// 这个名字还没被占用，就用它。
 		if _, ok := taken[c]; !ok {
 			return c, nil
 		}
 	}
+	// 一百个候选真的都被占了，才按同名拒绝。
 	return "", domain.ErrDuplicateName
+}
+
+// clipFSName 原名按字截短再接上尾巴，整体不超过目录名上限。
+func clipFSName(name, tail string) string {
+	// 尾巴要完整保留，先算原名还能留几个字。
+	keep := store.FSNameMax - utf8.RuneCountInString(tail)
+	// 按字切开，免得把一个汉字切成半截。
+	r := []rune(name)
+	// 超出可留字数才截，没超就原样用。
+	if keep >= 0 && len(r) > keep {
+		// 截到可留字数，并去掉截口处的空白。
+		name = strings.TrimSpace(string(r[:keep]))
+	}
+	return name + tail
 }
 
 // canCopyFSInto 只限工艺树、个人树只许主人贴：同树可粘贴；平台副本可粘进本厂厂级。
@@ -823,4 +837,55 @@ func (s *Assets) placeCopyBeside(ctx context.Context, srcID, newID uuid.UUID) {
 	}
 	// 把节点挂到同一棵树的另一个文件夹。
 	_, _ = s.store.MoveFSNode(ctx, file.ID, *src.ParentID)
+}
+
+// assetPlace 是新建资产要挂的目录位置，和建资产同一事务落定。
+type assetPlace struct {
+	ParentID uuid.UUID // 目标文件夹；空则挂对应树根
+	OrRoot   bool      // 挂不上就退回树根，只给示教器
+}
+
+// checkNewAssetFolder 网页新建先核目标文件夹：读不到或不可写就整笔拒绝。
+func (s *Assets) checkNewAssetFolder(ctx context.Context, acc Account, parentID uuid.UUID) error {
+	// 没指定父级就挂树根，不用再核。
+	if parentID == uuid.Nil {
+		return nil
+	}
+	// 读出目标文件夹，没有就不建资产。
+	parent, err := s.store.FSNodeByID(ctx, parentID)
+	// 目录不在或读失败就拒绝，资产一条都不落。
+	if err != nil {
+		return err
+	}
+	// 这棵树只读或不是主人则拒绝；种类和树在事务里再核。
+	return s.canWriteFS(ctx, acc, parent)
+}
+
+// padNewAssetFolder 示教器新建：目录不在或不可写就改挂树根，只有库错误才报错。
+func (s *Assets) padNewAssetFolder(ctx context.Context, acc Account, parentID uuid.UUID) (uuid.UUID, error) {
+	// 没指定父级就挂树根，不用再核。
+	if parentID == uuid.Nil {
+		return uuid.Nil, nil
+	}
+	// 读出目标文件夹，已删就改挂树根。
+	parent, err := s.store.FSNodeByID(ctx, parentID)
+	// 目录已经不在，退回树根，免得示教器一直重传。
+	if errors.Is(err, domain.ErrNotFound) {
+		return uuid.Nil, nil
+	}
+	// 库错误照实交回，这次新建不算成。
+	if err != nil {
+		return uuid.Nil, err
+	}
+	// 核当前人能不能往这里写，结果留给下面分辨。
+	err = s.canWriteFS(ctx, acc, parent)
+	// 没有写权限就退回树根，资产照样建成。
+	if errors.Is(err, domain.ErrForbidden) {
+		return uuid.Nil, nil
+	}
+	// 权限查询出错照实交回，不当成没权限。
+	if err != nil {
+		return uuid.Nil, err
+	}
+	return parentID, nil
 }

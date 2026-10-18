@@ -4,7 +4,9 @@ package service_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"wmesh/global/internal/platform/domain"
 	global "wmesh/global/internal/service"
@@ -588,6 +590,89 @@ func TestPlatformCopyFSAllOrNothing(t *testing.T) {
 	}
 }
 
+// 验 64 字的文件夹和工艺复制回原夹：截短原名再接副本尾巴，不报同名。
+func TestPlatformCopyFSLongName(t *testing.T) {
+	// 准备本测上下文，没有它库和服务都开不了。
+	ctx := context.Background()
+	// 起云端库和服务，起不来整段验收作废。
+	h := New(t)
+	// 立云端超管失败就停，立不住后面没有人能登录。
+	if err := h.WAN.BootstrapAdmin(ctx, "w", "wan-secret"); err != nil {
+		// 不符即停：立云端超管失败。
+		t.Fatal(err)
+	}
+	// 登录拿会话，没有票后面接口都进不去。
+	tok, err := h.WAN.Login(ctx, "w", "wan-secret")
+	// 登录拿会话失败就停，没有票后面接口都进不去。
+	if err != nil {
+		// 不符即停：登录拿会话失败。
+		t.Fatal(err)
+	}
+	// 取工艺目录根，文件夹要建在它下面。
+	root, err := h.WAN.Store().EnsureFSRoot(ctx, global.KindProcess)
+	// 取根失败就停，没有根建不了文件夹。
+	if err != nil {
+		// 不符即停：取工艺目录根失败。
+		t.Fatal(err)
+	}
+	// 建原文件夹，长名夹和长名工艺都放这里，再复制回这里。
+	home, err := h.WAN.CreateFSFolder(ctx, tok, root.ID, "长名")
+	// 建原文件夹失败就停，没有落脚处验不了复制。
+	if err != nil {
+		// 不符即停：建原文件夹失败。
+		t.Fatal(err)
+	}
+	// 夹名正好 64 字，第 59 字是空格，考截口处去空白。
+	folderName := strings.Repeat("甲", 58) + " " + strings.Repeat("乙", 5)
+	// 建长名文件夹，上限以内的名字应能建成。
+	long, err := h.WAN.CreateFSFolder(ctx, tok, home.ID, folderName)
+	// 建长名文件夹失败就停，前提断了。
+	if err != nil {
+		// 不符即停：建 64 字文件夹失败。
+		t.Fatal(err)
+	}
+	// 建 64 字的工艺，上限以内的名字应能建成。
+	proc, err := h.WAN.CreatePlatformProcess(ctx, tok, strings.Repeat("工", 64), []byte("long"))
+	// 建长名工艺失败就停，前提断了。
+	if err != nil {
+		// 不符即停：建 64 字工艺失败。
+		t.Fatal(err)
+	}
+	// 长名工艺挂进原文件夹，和长名夹同级。
+	file, err := h.WAN.MoveAssetInto(ctx, tok, proc.ID, home.ID)
+	// 挂不进去就停，前提断了。
+	if err != nil {
+		// 不符即停：长名工艺挂进原文件夹失败。
+		t.Fatal(err)
+	}
+	// 两个源各复制两回，名字应依次是副本和副本 (2)。
+	cases := []struct {
+		src  store.FSNode // 复制源节点
+		want []string     // 两回复制依次应得的名字
+	}{
+		{long, []string{strings.Repeat("甲", 58) + " - 副本", strings.Repeat("甲", 55) + " - 副本 (2)"}},
+		{file, []string{strings.Repeat("工", 59) + " - 副本", strings.Repeat("工", 55) + " - 副本 (2)"}},
+	}
+	// 逐个源核对，每回复制都要截短原名后接尾巴。
+	for _, c := range cases {
+		// 依次复制，名字按副本、副本 (2) 往下排。
+		for _, want := range c.want {
+			// 复制回原文件夹，同名已在，应截短原名后接尾巴。
+			dup, err := h.WAN.CopyFSNode(ctx, tok, c.src.ID, home.ID)
+			// 复制失败或没落在原文件夹就停，长名仍被当成同名。
+			if err != nil || dup.ParentID == nil || *dup.ParentID != home.ID {
+				// 不符即停：长名复制回原文件夹失败。
+				t.Fatalf("copy long %q: %+v %v", c.src.Name, dup, err)
+			}
+			// 新名不对或超过上限就停，截短规则没生效。
+			if dup.Name != want || utf8.RuneCountInString(dup.Name) > store.FSNameMax {
+				// 不符即停：复制出的名字不对。
+				t.Fatalf("copy name %q want %q", dup.Name, want)
+			}
+		}
+	}
+}
+
 // 数出工艺目录的节点数和平台资产数，核对被拒的复制什么都没多。
 func platformFSTotals(t *testing.T, ctx context.Context, h *Harness) (int, int) {
 	// 标成辅助函数，失败栈落到调用方。
@@ -608,4 +693,125 @@ func platformFSTotals(t *testing.T, ctx context.Context, h *Harness) (int, int) 
 	}
 	// 交回两个数量，由调用方比对复制前后。
 	return len(nodes), len(assets)
+}
+
+// 验网页新建挂进文件夹：同名自动带编号；目录已删、挂到文件上或种类不对就整笔不建。
+func TestPlatformCreateIntoFolder(t *testing.T) {
+	// 准备本测上下文，没有它库和服务都开不了。
+	ctx := context.Background()
+	// 起云端库和服务，起不来整段验收作废。
+	h := New(t)
+	// 立云端超管失败就停，立不住后面没有人能登录。
+	if err := h.WAN.BootstrapAdmin(ctx, "w", "wan-secret"); err != nil {
+		// 不符即停：立云端超管失败。
+		t.Fatal(err)
+	}
+	// 登录拿会话，没有票后面接口都进不去。
+	tok, err := h.WAN.Login(ctx, "w", "wan-secret")
+	// 登录拿会话失败就停，没有票后面接口都进不去。
+	if err != nil {
+		// 不符即停：登录拿会话失败。
+		t.Fatal(err)
+	}
+	// 取工艺目录根，文件夹要建在它下面。
+	root, err := h.WAN.Store().EnsureFSRoot(ctx, global.KindProcess)
+	// 取根失败就停，没有根建不了文件夹。
+	if err != nil {
+		// 不符即停：取工艺目录根失败。
+		t.Fatal(err)
+	}
+	// 建标准库夹，两条同名工艺都建到这里。
+	folder, err := h.WAN.CreateFSFolder(ctx, tok, root.ID, "标准库")
+	// 建夹失败就停，没有目标夹验不了挂目录。
+	if err != nil {
+		// 不符即停：建标准库夹失败。
+		t.Fatal(err)
+	}
+	// 第一条建进标准库，名字应原样占位。
+	first, err := h.WAN.CreatePlatformProcessIn(ctx, tok, "同名工艺", []byte("a"), false, folder.ID)
+	// 第一条建不成就停，挂目录的前提断了。
+	if err != nil {
+		// 不符即停：建第一条失败。
+		t.Fatal(err)
+	}
+	// 第二条同名再建进去，应成功并自动带编号。
+	second, err := h.WAN.CreatePlatformProcessIn(ctx, tok, "同名工艺", []byte("b"), false, folder.ID)
+	// 同名被拒说明还按 409 挡新建。
+	if err != nil {
+		// 不符即停：同名建进文件夹失败。
+		t.Fatalf("same name into folder: %v", err)
+	}
+	// 两条依次应得的文件名：原名，原名加编号。
+	want := []struct {
+		row  global.Asset // 新建出的资产
+		name string       // 目录里应得的文件名
+	}{{first, "同名工艺"}, {second, "同名工艺 " + second.Code}}
+	// 逐条核对文件节点落在标准库且名字对得上。
+	for _, w := range want {
+		// 按资产找文件节点，看它挂在哪里。
+		file, err := h.WAN.Store().FSFileByAsset(ctx, w.row.ID)
+		// 没挂进标准库或名字不对，说明没在同一笔挂好。
+		if err != nil || file.ParentID == nil || *file.ParentID != folder.ID || file.Name != w.name {
+			// 不符即停：文件挂点或名字不对。
+			t.Fatalf("file %+v want %q in %s: %v", file, w.name, folder.ID, err)
+		}
+	}
+	// 第一条的文件节点，拿来当挂不上的目标。
+	firstFile, err := h.WAN.Store().FSFileByAsset(ctx, first.ID)
+	// 找不到文件节点就停，前提断了。
+	if err != nil {
+		// 不符即停：读第一条的文件节点失败。
+		t.Fatal(err)
+	}
+	// 建一个夹随即删掉，模拟弹窗拿着旧目录。
+	gone, err := h.WAN.CreateFSFolder(ctx, tok, root.ID, "旧夹")
+	// 建夹失败就停，前提断了。
+	if err != nil {
+		// 不符即停：建旧夹失败。
+		t.Fatal(err)
+	}
+	// 删掉旧夹失败就停，验不了目录已删。
+	if err := h.WAN.DeleteFSNode(ctx, tok, gone.ID); err != nil {
+		// 不符即停：删旧夹失败。
+		t.Fatal(err)
+	}
+	// 记下被拒之前的节点数和资产数。
+	nodes0, assets0 := platformFSTotals(t, ctx, h)
+	// 三种挂不上的目标，各自按原因拒绝。
+	cases := []struct {
+		label  string                       // 情形说明
+		create func() (global.Asset, error) // 这次新建
+		want   error                        // 应得的拒绝
+	}{
+		// 目录已删，应按找不到拒绝。
+		{"gone", func() (global.Asset, error) {
+			// 建工艺到已删的夹。
+			return h.WAN.CreatePlatformProcessIn(ctx, tok, "挂不上", []byte("c"), false, gone.ID)
+		}, domain.ErrNotFound},
+		// 目标是文件不是文件夹，应拒绝。
+		{"file", func() (global.Asset, error) {
+			// 建工艺到一个文件节点下。
+			return h.WAN.CreatePlatformProcessIn(ctx, tok, "挂不上", []byte("c"), false, firstFile.ID)
+		}, domain.ErrForbidden},
+		// 工程挂到工艺夹，种类不对应拒绝。
+		{"kind", func() (global.Asset, error) {
+			// 建工程到工艺目录的夹里。
+			return h.WAN.CreatePlatformProjectIn(ctx, tok, "挂不上", []byte(`[]`), nil, folder.ID)
+		}, domain.ErrForbidden},
+	}
+	// 逐个情形试新建，都应整笔不建。
+	for _, c := range cases {
+		// 放行或错误不对，说明挂目录没和建资产同一笔把关。
+		if _, err := c.create(); !errors.Is(err, c.want) {
+			// 不符即停：拒绝原因不对。
+			t.Fatalf("%s: %v want %v", c.label, err, c.want)
+		}
+		// 再数一遍节点和资产，被拒的不应留下任何东西。
+		nodes, assets := platformFSTotals(t, ctx, h)
+		// 多出资产或节点，说明挂不上时没整笔回滚。
+		if nodes != nodes0 || assets != assets0 {
+			// 不符即停：被拒的新建留下了半截。
+			t.Fatalf("%s left rows: nodes %d->%d assets %d->%d", c.label, nodes0, nodes, assets0, assets)
+		}
+	}
 }

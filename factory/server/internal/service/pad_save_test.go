@@ -13,6 +13,7 @@ import (
 	"wmesh/factory/internal/platform/domain"
 	"wmesh/factory/internal/platform/id"
 	factory "wmesh/factory/internal/service"
+	"wmesh/factory/internal/store"
 )
 
 // 平板保存后应为可用，管理后台新建则仍是草稿。
@@ -264,5 +265,115 @@ func TestPadCreateProjectDepsByLevel(t *testing.T) {
 	if _, err := fac.GetAsset(ctx, sa, platOnlyID); !errors.Is(err, domain.ErrNotFound) {
 		// 找到了说明被拒的工程仍被写进库。
 		t.Fatalf("rejected platform project exists: %v", err)
+	}
+}
+
+// 示教器建到已删的夹或同事的个人夹时退回所属树根，照样建成；自己的夹照常挂进去。
+func TestPadCreateFolderFallsBackToRoot(t *testing.T) {
+	// 准备无取消的上下文，后面每次调用都挂在上面。
+	ctx := context.Background()
+	// 拉起隔离厂库，起不来说明测试库还没就绪。
+	h := New(t)
+	// 建厂并签发超管激活码，失败则没有厂可测。
+	seed, fac, err := h.Provision(ctx, "sa-f", "超管F")
+	// 建厂失败就停，否则后面没有可靠结果。
+	if err != nil {
+		// 把建厂的错误打出来并停住，避免继续往下验。
+		t.Fatal(err)
+	}
+	// 开通失败就停，否则后面没有可靠结果。
+	if err := fac.Activate(ctx, "sa-f", seed.ActivationToken, "sa-pass"); err != nil {
+		// 把开通的错误打出来并停住，避免继续往下验。
+		t.Fatal(err)
+	}
+	// 登录取超管会话，后面拿它试管理员建到同事夹。
+	sa := mustLogin(t, ctx, fac, "sa-f", "sa-pass")
+	// 示教器上的操作员，在自己的个人树里建。
+	op := mustCreateRole(t, ctx, fac, sa, "op-f", "op-pass", factory.RoleOperator, factory.ScopeFactory, nil)
+	// 同事，他的个人夹给管理员当目标。
+	mate := mustCreateRole(t, ctx, fac, sa, "mate-f", "mate-pass", factory.RoleOperator, factory.ScopeFactory, nil)
+	// 准备这段正文字节，示教器每条都用它。
+	body := []byte(`{"name":"pad","current":170}`)
+	// 取操作员的个人根，夹都建在它下面。
+	opRoot, err := fac.Store().EnsureFSRoot(ctx, factory.KindProcess, store.FSTreePersonal, &op.acc.ID)
+	// 取个人根失败就停，没有地方建夹。
+	if err != nil {
+		// 把取个人根的错误打出来并停住。
+		t.Fatal(err)
+	}
+	// 建一个留着的夹，正常挂目录要落在这里。
+	keep, err := fac.CreateFSFolder(ctx, op.tok, opRoot.ID, "现场夹")
+	// 建夹失败就停，前提断了。
+	if err != nil {
+		// 把建夹的错误打出来并停住。
+		t.Fatal(err)
+	}
+	// 再建一个夹随即删掉，模拟示教器拿着旧目录。
+	gone, err := fac.CreateFSFolder(ctx, op.tok, opRoot.ID, "旧夹")
+	// 建夹失败就停，前提断了。
+	if err != nil {
+		// 把建夹的错误打出来并停住。
+		t.Fatal(err)
+	}
+	// 删掉旧夹失败就停，后面验不了退回根。
+	if err := fac.DeleteFSNode(ctx, op.tok, gone.ID); err != nil {
+		// 把删夹的错误打出来并停住。
+		t.Fatal(err)
+	}
+	// 管理员要建到的同事个人根。
+	mateRoot, err := fac.Store().EnsureFSRoot(ctx, factory.KindProcess, store.FSTreePersonal, &mate.acc.ID)
+	// 取同事根失败就停，没有别人的夹可试。
+	if err != nil {
+		// 把取同事根的错误打出来并停住。
+		t.Fatal(err)
+	}
+	// 同事自己建的个人夹，管理员的个人资产挂不进去。
+	mateFolder, err := fac.CreateFSFolder(ctx, mate.tok, mateRoot.ID, "同事夹")
+	// 建同事夹失败就停，前提断了。
+	if err != nil {
+		// 把建同事夹的错误打出来并停住。
+		t.Fatal(err)
+	}
+	// 三种情形：自己的夹、已删的夹、管理员建到同事夹。
+	cases := []struct {
+		tok    string   // 示教器登录的会话
+		name   string   // 新建资产的名字
+		folder [16]byte // 示教器带来的父文件夹
+		home   [16]byte // 应落的文件夹；空则落新建人的个人根
+	}{
+		{op.tok, "进夹", keep.ID, keep.ID},
+		{op.tok, "夹已删", gone.ID, [16]byte{}},
+		{sa, "管理员个人", mateFolder.ID, [16]byte{}},
+	}
+	// 逐个情形新建，都应成功并落到该落的地方。
+	for _, c := range cases {
+		// 示教器按个人级新建并带上父文件夹。
+		row, err := fac.CreatePadIn(ctx, c.tok, factory.AssetLevelPersonal, factory.KindProcess, c.name, body, id.New(), "", nil, c.folder)
+		// 被拒说明挂不上时没退回根，示教器会一直重传。
+		if err != nil {
+			// 把新建的错误打出来并停住。
+			t.Fatalf("pad create %s: %v", c.name, err)
+		}
+		// 先按应落的夹算，空的换成新建人的个人根。
+		home := c.home
+		// 应落根时按创建人取个人根，管理员落他自己的根。
+		if home == [16]byte{} {
+			// 取新建人的个人根，确认资产没进别人的树。
+			own, err := fac.Store().EnsureFSRoot(ctx, factory.KindProcess, store.FSTreePersonal, &row.CreatorID)
+			// 取根失败就停，没法核挂点。
+			if err != nil {
+				// 把取根的错误打出来并停住。
+				t.Fatal(err)
+			}
+			// 改按新建人的个人根核对。
+			home = own.ID
+		}
+		// 按资产找文件节点，看它挂在哪里。
+		file, err := fac.Store().FSFileByAsset(ctx, row.ID)
+		// 挂点或主人不对，说明退回的不是本人的树根。
+		if err != nil || file.ParentID == nil || *file.ParentID != home || file.OwnerID == nil || *file.OwnerID != row.CreatorID {
+			// 把文件节点打出来并停住。
+			t.Fatalf("pad %s file %+v want parent %x: %v", c.name, file, home, err)
+		}
 	}
 }

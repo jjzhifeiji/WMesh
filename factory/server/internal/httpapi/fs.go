@@ -240,19 +240,17 @@ func parseNodeID(r *http.Request) (uuid.UUID, error) {
 	return id, nil
 }
 
-// placeNewAsset 新建后挂到指定文件夹；空父节点则留在对应树根。
-func placeNewAsset(r *http.Request, svc *service.Service, assetID uuid.UUID, parent string) error {
-	// 没指定父级就留在树根，不算失败。
+// parseParentID 解析新建时要挂的父文件夹；空着就挂对应树根。
+func parseParentID(parent string) (uuid.UUID, error) {
+	// 没指定父级就挂树根，不算错。
 	if strings.TrimSpace(parent) == "" {
-		return nil
+		return uuid.Nil, nil
 	}
-	// 父文件夹必须合法，否则不把记录挂上去。
-	parentID, err := uuid.Parse(parent)
+	// 父文件夹编号必须合法，否则不建资产。
+	id, err := uuid.Parse(parent)
 	// 解析失败则拒绝，不用这个残缺的值继续。
 	if err != nil {
-		return errInvalidID
+		return uuid.Nil, errInvalidID
 	}
-	// 把记录挂进指定文件夹，挂不上则失败。
-	_, err = svc.Assets.MoveAssetInto(r.Context(), bearer(r), assetID, parentID)
-	return err
+	return id, nil
 }

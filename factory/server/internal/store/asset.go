@@ -115,6 +115,13 @@ func (governedAssetRow) TableName() string { return "assets" }
 // InsertGovernedAsset 写入本厂一条工艺或工程，修订从 1 起；正文必须封成 WM2。
 // 带身份或编号的先核：身份须是新的，自带号只认本厂登记的 C 段，删过的身份只沿用原号。
 func (s *Store) InsertGovernedAsset(ctx context.Context, in Asset) (Asset, error) {
+	// 不指定文件夹，文件挂到对应树根。
+	return s.InsertGovernedAssetInto(ctx, in, uuid.Nil, false)
+}
+
+// InsertGovernedAssetInto 写入一条资产并在同一事务里挂进指定文件夹；空父级挂树根。
+// orRoot 为假时挂不上就整笔回滚；为真时目录不在或不合适就改挂树根，只给示教器用。
+func (s *Store) InsertGovernedAssetInto(ctx context.Context, in Asset, parentID uuid.UUID, orRoot bool) (Asset, error) {
 	// 人必须已经在本厂，否则不继续写。
 	if err := s.assertPersonExists(ctx, in.CreatorID); err != nil {
 		return Asset{}, err
@@ -222,8 +229,23 @@ func (s *Store) InsertGovernedAsset(ctx context.Context, in Asset) (Asset, error
 			// 先把库错误译成业务错误再交回。
 			return mapAssetWriteErr(err)
 		}
-		// 做完挂上文件节点后把结果交回。
-		return placeAssetFileTx(tx, row.Kind, row.Level, ownerPtr(row.Level, row.CreatorID), row.ID, row.Name, row.Code, uuid.Nil)
+		// 个人树按创建人认主人，厂级树不记主人。
+		owner := ownerPtr(row.Level, row.CreatorID)
+		// 先定下文件挂点，示教器挂不上时退回树根。
+		at := parentID
+		// 只有示教器打开退回开关，网页挂不上就整笔回滚。
+		if orRoot {
+			// 目标不合适就换成树根，库错误照样回滚。
+			fit, err := fitAssetParentTx(tx, row.Kind, row.Level, owner, parentID)
+			// 核挂点时库出错就停，资产不落库。
+			if err != nil {
+				return err
+			}
+			// 改用核过的挂点，可能已退回树根。
+			at = fit
+		}
+		// 挂上文件节点，挂不上则资产一起回滚。
+		return placeAssetFileTx(tx, row.Kind, row.Level, owner, row.ID, row.Name, row.Code, at)
 	})
 	// 出错就停，避免把失败当成已经完成。
 	if err != nil {
