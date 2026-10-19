@@ -102,7 +102,8 @@ func (s *Updates) installedBaseline(ctx context.Context) (int64, error) {
 	return max(installed, s.runningCode), nil
 }
 
-// completeReplica 本厂已收且摘要对得上的那一份；不完整当没有。
+// completeReplica 本厂已收且摘要对得上的那一份；对象缺失或摘要不符当没有。
+// 存储瞬时故障原样交回，免得被当成缺失去 WAN 重下整包。
 func (s *Updates) completeReplica(ctx context.Context, kind string, version int64) (SoftwareReplica, bool, error) {
 	// 按种类和版本读本厂已收副本。
 	row, err := s.store.SoftwareReplica(ctx, kind, version)
@@ -116,9 +117,13 @@ func (s *Updates) completeReplica(ctx context.Context, kind string, version int6
 	}
 	// 只打开对象问长度，不整包读进内存。
 	obj, err := s.blobs.Open(ctx, row.ObjectKey)
-	// 对象打不开就当不完整，不把坏包给出去。
-	if err != nil {
+	// 对象确实没了才当不完整，重拉时补回。
+	if errors.Is(err, blob.ErrNotFound) {
 		return SoftwareReplica{}, false, nil
+	}
+	// 存储一时打不开就交回原因，不当缺失去重下。
+	if err != nil {
+		return SoftwareReplica{}, false, err
 	}
 	// 记下对象总长，核对记录要按长度比。
 	size := obj.Size()
@@ -126,7 +131,12 @@ func (s *Updates) completeReplica(ctx context.Context, kind string, version int6
 	_ = obj.Close()
 	// 摘要每个对象只整包核一次，核不过当不完整。
 	if err := s.checkBlob(ctx, row.ObjectKey, row.Digest, size); err != nil {
-		return SoftwareReplica{}, false, nil
+		// 摘要不符或核时对象没了才当不完整，重拉时补回。
+		if errors.Is(err, domain.ErrIntegrity) {
+			return SoftwareReplica{}, false, nil
+		}
+		// 读流断了或请求取消就交回原因，下次再核。
+		return SoftwareReplica{}, false, err
 	}
 	return row, true, nil
 }

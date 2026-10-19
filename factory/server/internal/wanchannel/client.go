@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	"net/http"
 	"net/url"
@@ -213,7 +212,7 @@ func wanRoot(raw string) (string, error) {
 	return strings.TrimRight(u.String(), "/"), nil
 }
 
-// 把 WAN 英文错误收回本侧业务错误。
+// 把 WAN 英文错误收回本侧业务错误；认不出的交回空，由调用方按状态码收。
 func mapChannelError(msg string) error {
 	// 把平台英文错误收成业务错误，调用方不用猜字符串。
 	switch msg {
@@ -238,13 +237,8 @@ func mapChannelError(msg string) error {
 	// WAN 按来源限频，收成限频错误，页面提示稍后再试，不当内部故障。
 	case domain.ErrTooManyRequests.Error():
 		return domain.ErrTooManyRequests
-	// 其余原因单独处理，空的当不可达。
+	// 认不出或没给原因就交回空，404、5xx 等由状态码收成业务错误。
 	default:
-		// 没有英文原因就当平台不可达。
-		if msg == "" {
-			return domain.ErrWANUnreachable
-		}
-		// 其余英文原因原样交回，便于对照平台。
-		return errors.New(msg)
+		return nil
 	}
 }

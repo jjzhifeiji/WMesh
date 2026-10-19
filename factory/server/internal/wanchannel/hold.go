@@ -233,11 +233,7 @@ func Hold(ctx context.Context, mqttURL, wanHTTP string, factoryID uuid.UUID, pri
 		wg.Wait()
 	}()
 
-	// 按点续租，到期前换新解包钥。
-	renew := time.NewTicker(leaseEvery)
-	// 离开时停掉续租节拍。
-	defer renew.Stop()
-	// 短周期探活，死代理不能干等到续租。
+	// 短周期探活，死代理要尽快退回外层重拨。
 	alive := time.NewTicker(aliveEvery)
 	// 离开时停掉探活节拍。
 	defer alive.Stop()
@@ -247,7 +243,7 @@ func Hold(ctx context.Context, mqttURL, wanHTTP string, factoryID uuid.UUID, pri
 	defer soft.Stop()
 	// 谁先到就处理谁，取消才离开。
 	for {
-		// 下行、续租、探活和进页补拉谁先到就处理谁。
+		// 下行、探活、问包和进页补拉谁先到就处理谁；续租由 KeepLease 独立跑。
 		select {
 		// 取消就结束本次连接，把原因交回外层。
 		case <-ctx.Done():
@@ -295,22 +291,6 @@ func Hold(ctx context.Context, mqttURL, wanHTTP string, factoryID uuid.UUID, pri
 		case <-soft.C:
 			// 通道一直连着也去问最高版，放到后台问，不占主循环。
 			jobs.sync()
-		// 到点就续租，没人接收则跳过。
-		case <-renew.C:
-			// 没人接收租约就跳过，不空打平台。
-			if applyLease == nil {
-				continue
-			}
-			// 预备装新的解包钥。
-			var lr leaseResp
-			// 续租失败只记日志，不断开通道。
-			if err := pull.post(ctx, "/v1/channel/lease", &lr); err != nil {
-				// 记下续租失败，下一拍再试。
-				slog.Warn("renew content lease", "err", err)
-				continue
-			}
-			// 经 HTTPS 领到的新钥交给专门落地，落不上只记日志不断开。
-			applyPulledLease(applyLease, lr)
 		// 页面要补拉时只标脏，后台按种类轻量补拉。
 		case req := <-outbound:
 			// 标上要补的种类，同类去抖期内只拉一次。
@@ -1088,11 +1068,11 @@ func applyCmd(cli mqtt.Client, up string, cmd Cmd, body json.RawMessage, failed 
 	}
 }
 
-// 把经 HTTPS 领到的租约钥交给本厂进程：没人接或空钥就跳过，落不上只记日志，不断通道。
-func applyPulledLease(applyLease LeaseHandler, lr leaseResp) {
+// 把经 HTTPS 领到的租约钥交给本厂进程：没人接或空钥就跳过，落不上只记日志，不断通道；交回是否落上。
+func applyPulledLease(applyLease LeaseHandler, lr leaseResp) bool {
 	// 没有接收方或钥是空的就跳过。
 	if applyLease == nil || len(lr.Lease) == 0 {
-		return
+		return false
 	}
 	// 先按更细的时间格式读到期时刻。
 	na, err := time.Parse(time.RFC3339Nano, lr.NotAfter)
@@ -1105,13 +1085,15 @@ func applyPulledLease(applyLease LeaseHandler, lr leaseResp) {
 	if err != nil {
 		// 记下到期时间认不出，连接继续留着。
 		slog.Warn("drop content lease, bad notAfter", "notAfter", lr.NotAfter)
-		return
+		return false
 	}
 	// 把解包钥和到期时间交给本厂进程，落不上只记日志。
 	if err := applyLease(Lease{Key: lr.Lease, NotAfter: na}); err != nil {
 		// 记下租约失败，连接继续留着。
 		slog.Warn("apply content lease", "err", err)
+		return false
 	}
+	return true
 }
 
 // 把绑定/作废指令收成设备意图。

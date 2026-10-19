@@ -629,6 +629,8 @@ func (s *Store) TamperAssetContent(ctx context.Context, assetID uuid.UUID, conte
 	if res.RowsAffected == 0 {
 		return domain.ErrNotFound
 	}
+	// 夹具可能写进明文，下次领约要重新整扫补封。
+	s.setPlainSealed(false)
 	return nil
 }
 

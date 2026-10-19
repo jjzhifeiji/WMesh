@@ -17,6 +17,7 @@ const (
 	tableAssets   = "assets"         // 本厂工艺/工程正文
 	tableReplicas = "asset_replicas" // 已收平台级副本正文
 	mkAAD         = "content-mk"     // 包装 MK 用的附加数据
+	sealBatch     = 200              // 补封遗留明文每批取的行数，不一次读全表
 )
 
 // 内容主钥的包装件，全表只留一行。
@@ -38,6 +39,14 @@ type cryptBox struct {
 	notAfter time.Time        // WAN 给出的墙上到期，只用来算窗口
 	online   bool             // 在线时厂钟快了也收下刚签发的租约
 	now      func() time.Time // 夹具时钟；空则用系统钟
+	sealed   bool             // 本进程已整扫完遗留明文，续租不再扫
+}
+
+// 补封扫描用的窄行，只取主键和正文。
+type plainRow struct {
+	ID       uuid.UUID `gorm:"type:uuid"` // 稳定身份
+	Revision int64     // 修订；副本表里和身份组成主键
+	Content  []byte    `gorm:"type:bytea"` // 库内正文，粗筛出来的遗留明文
 }
 
 // liveMK 复制当前 MK；调用方用完后 Zero。
@@ -440,52 +449,91 @@ func (s *Store) RequireContentLease() error {
 }
 
 // sealPlainRows 把厂库里还没封的正文就地封成 WM2，不改修订和摘要。
+// 本进程整扫成功一次后续租不再扫：新写入都经 persistBody 封装，不会再出明文。
 func (s *Store) sealPlainRows(ctx context.Context) error {
-	// 准备承接查到的多条工艺或工程。
-	var assets []governedAssetRow
-	// 按条件取多行失败就停，避免带着错误继续。
-	if err := s.db.WithContext(ctx).Select("id", "revision", "content").Find(&assets).Error; err != nil {
-		return err
+	// 本进程已经整扫过就直接放行，弱网反复续租不再翻表。
+	if s.plainSealed() {
+		return nil
 	}
-	// 逐条处理，避免漏掉还要读或还要写的行。
-	for _, row := range assets {
-		// 已经是信封就跳过，避免重复封装。
-		if contentcrypt.IsEnvelope(row.Content) {
-			continue
-		}
-		// 先封装正文，结果留给紧跟着的判断。
-		env, err := s.persistBody(row.ID, row.Revision, tableAssets, nonempty(row.Content))
-		// 封装正文失败就停，避免带着错误继续。
-		if err != nil {
-			return err
-		}
-		// 更新指定列失败就停，避免带着错误继续。
-		if err := s.db.WithContext(ctx).Model(&governedAssetRow{}).Where("id = ? AND revision = ?", row.ID, row.Revision).Update("content", env).Error; err != nil {
+	// 工艺工程表和副本表都要扫，表名同时是信封绑定的标签。
+	for _, table := range []string{tableAssets, tableReplicas} {
+		// 这张表没封完就停，下次领约再整扫一遍。
+		if err := s.sealPlainTable(ctx, table); err != nil {
 			return err
 		}
 	}
-	// 准备承接查到的多条平台副本。
-	var replicas []replicaRow
-	// 按条件取多行失败就停，避免带着错误继续。
-	if err := s.db.WithContext(ctx).Select("id", "revision", "content").Find(&replicas).Error; err != nil {
-		return err
-	}
-	// 逐条处理，避免漏掉还要读或还要写的行。
-	for _, row := range replicas {
-		// 已经是信封就跳过，避免重复封装。
-		if contentcrypt.IsEnvelope(row.Content) {
-			continue
-		}
-		// 先封装正文，结果留给紧跟着的判断。
-		env, err := s.persistBody(row.ID, row.Revision, tableReplicas, nonempty(row.Content))
-		// 封装正文失败就停，避免带着错误继续。
-		if err != nil {
-			return err
-		}
-		// 更新指定列失败就停，避免带着错误继续。
-		if err := s.db.WithContext(ctx).Model(&replicaRow{}).Where("id = ? AND revision = ?", row.ID, row.Revision).Update("content", env).Error; err != nil {
-			return err
-		}
-	}
+	// 两张表都扫完没出错才记下，之后续租跳过。
+	s.setPlainSealed(true)
 	return nil
+}
+
+// sealPlainTable 库里只挑遗留明文，按 (id, revision) 键集分批就地封上。
+func (s *Store) sealPlainTable(ctx context.Context, table string) error {
+	// 游标从最小身份起，首批从表头取。
+	afterID, afterRev := uuid.Nil, int64(0)
+	// 一批一批往后翻，取不满一批就说明翻到底了。
+	for {
+		// 准备承接这一批遗留明文。
+		var rows []plainRow
+		// 只取不像信封的行：比最短信封短，或开头不是魔数加版本。
+		err := s.db.WithContext(ctx).Model(sealModel(table)).Select("id", "revision", "content").
+			Where("(length(content) < ? OR substring(content from 1 for ?) <> ?) AND (id, revision) > (?, ?)",
+				contentcrypt.MinEnvelope, len(contentcrypt.EnvelopeHead), []byte(contentcrypt.EnvelopeHead), afterID, afterRev).
+			Order("id").Order("revision").Limit(sealBatch).Find(&rows).Error
+		// 取这一批失败就停，避免带着错误继续。
+		if err != nil {
+			return err
+		}
+		// 逐条处理，避免漏掉这一批里的明文。
+		for _, row := range rows {
+			// 库里粗筛后在 Go 里复核，已是信封就跳过。
+			if contentcrypt.IsEnvelope(row.Content) {
+				continue
+			}
+			// 先封装正文，结果留给紧跟着的判断。
+			env, err := s.persistBody(row.ID, row.Revision, table, nonempty(row.Content))
+			// 封装正文失败就停，避免带着错误继续。
+			if err != nil {
+				return err
+			}
+			// 更新指定列失败就停，避免带着错误继续。
+			if err := s.db.WithContext(ctx).Model(sealModel(table)).Where("id = ? AND revision = ?", row.ID, row.Revision).Update("content", env).Error; err != nil {
+				return err
+			}
+		}
+		// 不满一批说明已到表尾，这张表扫完了。
+		if len(rows) < sealBatch {
+			return nil
+		}
+		// 游标挪到这一批最后一行，下一批从它之后取。
+		afterID, afterRev = rows[len(rows)-1].ID, rows[len(rows)-1].Revision
+	}
+}
+
+// sealModel 按表名给出落库模型，补封更新沿用原表的列规则。
+func sealModel(table string) any {
+	// 副本表用副本行，其余都是工艺工程表。
+	if table == tableReplicas {
+		return &replicaRow{}
+	}
+	return &governedAssetRow{}
+}
+
+// plainSealed 本进程是否已整扫完遗留明文。
+func (s *Store) plainSealed() bool {
+	// 先占住内存租约，避免和改标记的并发交错。
+	s.crypt.mu.Lock()
+	// 放开内存租约，后面的读写才进得来。
+	defer s.crypt.mu.Unlock()
+	return s.crypt.sealed
+}
+
+// setPlainSealed 记下遗留明文是否已整扫完；夹具直改正文后要清掉重扫。
+func (s *Store) setPlainSealed(done bool) {
+	// 先占住内存租约，避免和读标记的并发交错。
+	s.crypt.mu.Lock()
+	// 放开内存租约，后面的读写才进得来。
+	defer s.crypt.mu.Unlock()
+	// 记下整扫结果，下次领约据此决定扫不扫。
+	s.crypt.sealed = done
 }

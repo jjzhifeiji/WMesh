@@ -33,6 +33,12 @@ const (
 // KeySize 是 L / MK / DEK 的字节数。
 const KeySize = keySize
 
+// MinEnvelope 是 WM2 信封最短字节数，库里粗筛遗留明文时用。
+const MinEnvelope = minEnvelope
+
+// EnvelopeHead 是信封开头的魔数加版本字节，库里粗筛遗留明文时用。
+const EnvelopeHead = magic + string(rune(version))
+
 // Seal 用 KEK 包一把新 DEK，再加密正文；每次信封都不同。
 func Seal(kek, plaintext, aad []byte) ([]byte, error) {
 	// 钥长不对就拒绝封装，避免封出坏信封。

@@ -87,3 +87,38 @@ func TestSealRoundtrip(t *testing.T) {
 		t.Fatal("short json must not look like envelope")
 	}
 }
+
+// 库里粗筛明文靠导出的头和最短长度，必须和信封判定一致。
+func TestEnvelopeHeadMatchesIsEnvelope(t *testing.T) {
+	// 抽一把新的随机密钥。
+	kek, err := contentcrypt.RandomKey()
+	// 没能抽一把新的随机密钥就停住本用例。
+	if err != nil {
+		// 没能抽一把新的随机密钥就停住本用例。
+		t.Fatal(err)
+	}
+	// 封一份空正文，得到最短的真实信封。
+	env, err := contentcrypt.Seal(kek, nil, []byte("assets"))
+	// 没能用封装钥把正文封进信封就停住本用例。
+	if err != nil {
+		// 没能用封装钥把正文封进信封就停住本用例。
+		t.Fatal(err)
+	}
+	// 头必须是四字节，且真实信封以它开头、长度够最短线。
+	if len(contentcrypt.EnvelopeHead) != 4 || !bytes.HasPrefix(env, []byte(contentcrypt.EnvelopeHead)) || len(env) < contentcrypt.MinEnvelope {
+		// 导出常量和信封格式对不上，库里粗筛会漏或多。
+		t.Fatalf("head %q min %d env %d", contentcrypt.EnvelopeHead, contentcrypt.MinEnvelope, len(env))
+	}
+	// 拼一段恰好最短长度、带正确头的字节。
+	edge := append([]byte(contentcrypt.EnvelopeHead), make([]byte, contentcrypt.MinEnvelope-len(contentcrypt.EnvelopeHead))...)
+	// 恰好最短要算信封，少一字节就不算。
+	if !contentcrypt.IsEnvelope(edge) || contentcrypt.IsEnvelope(edge[:len(edge)-1]) {
+		// 最短线和信封判定不一致就停住。
+		t.Fatalf("min envelope edge mismatch")
+	}
+	// 头换成别的版本字节就不能算信封。
+	if contentcrypt.IsEnvelope(append([]byte("WM2\x02"), edge[4:]...)) {
+		// 版本不对竟算信封就停住。
+		t.Fatalf("wrong version must not look like envelope")
+	}
+}

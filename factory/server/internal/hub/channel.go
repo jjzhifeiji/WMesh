@@ -166,8 +166,10 @@ func (h *Hub) stopChannel(factoryID uuid.UUID) {
 	}
 }
 
-// 断线退避重连；注销后停，避免空转。
+// 断线退避重连；注销后停，避免空转。续租另起 HTTPS 循环，不跟 MQTT 拨号绑在一起。
 func (h *Hub) holdChannel(ctx context.Context, factoryID uuid.UUID) {
+	// 续租独立跑，MQTT 拨不通也照续，随本条通道一起停。
+	go h.keepLease(ctx, factoryID)
 	// 第一次断线只等一秒再拨。
 	wait := time.Second
 	// 断线就退避再拨，注销或取消才停。
@@ -221,6 +223,82 @@ func (h *Hub) holdChannel(ctx context.Context, factoryID uuid.UUID) {
 			// 这次失败就把等待加倍，但不超过半分钟。
 			wait *= 2
 		}
+	}
+}
+
+// 经 HTTPS 独立续内容租约；厂内在线跟它走，WAN 名录在线仍看 MQTT presence。
+func (h *Hub) keepLease(ctx context.Context, factoryID uuid.UUID) {
+	// 取齐服务、平台地址和签发钥，取不齐就不续。
+	svc, wanURL, priv, ok := h.leaseMaterial(ctx, factoryID)
+	// 已取消或本厂还没有签发钥就不续，后者由拨号那路停通道。
+	if !ok {
+		return
+	}
+	// 续租循环离开就标离线，墙钟过期的租约不再给满窗。
+	defer svc.Store().SetContentChannelOnline(false)
+	// 按点续租，失败退避，注销或取消才返回。
+	err := wanchannel.KeepLease(ctx, wanURL, factoryID, priv, func(l wanchannel.Lease) error { // 领到的钥放进内存，解开本厂正文。
+		// 经 HTTPS 领到租约即算在线，厂钟快了也收下这把。
+		svc.Store().SetContentChannelOnline(true)
+		// 把解包钥放进内存，解开本厂 MK。
+		return svc.ApplyContentLease(ctx, l.Key, l.NotAfter)
+	})
+	// 不是注销就到此为止，取消时通道已在停。
+	if !errors.Is(err, domain.ErrFactoryRetired) {
+		return
+	}
+	// 记下续租时平台说已注销，通道随之停掉。
+	slog.Info("factory retired on lease, stop wan channel", "factory", factoryID)
+	// 注销落到本厂库，登录立即关掉。
+	if closeErr := svc.Auth.CloseFromWAN(ctx); closeErr != nil {
+		// 落不上只记下，MQTT 那路回连时还会再落。
+		slog.Warn("close factory from wan", "factory", factoryID, "err", closeErr)
+	}
+	// 停掉这条出站，注销后不再拨也不再续。
+	h.stopChannel(factoryID)
+}
+
+// 取续租要用的服务、平台地址和签发钥；库暂时打不开就退避再取，没钥或已取消交回 false。
+func (h *Hub) leaseMaterial(ctx context.Context, factoryID uuid.UUID) (*service.Service, string, []byte, bool) {
+	// 第一次取不到只等一秒再取。
+	wait := time.Second
+	// 取到为止，取消或没钥才离开。
+	for {
+		// 打开这家厂，打不开就退避再试。
+		svc, err := h.Service(ctx, factoryID)
+		// 厂库开得了才去读签发钥。
+		if err == nil {
+			// 读出本厂签发私钥，续租要用它签名。
+			var k store.SigningKey
+			// 读钥，库错按退避再取。
+			k, err = svc.Store().SigningKey(ctx)
+			// 读到钥就取平台地址交回。
+			if err == nil && len(k.PrivateKey) > 0 {
+				// 读平台地址前先占住通道表。
+				h.presenceMu.Lock()
+				// 取出平台地址，续租按它拼请求。
+				wanURL := h.wanURL
+				// 地址取完就放开通道锁。
+				h.presenceMu.Unlock()
+				return svc, wanURL, k.PrivateKey, true
+			}
+			// 还没有签发钥就不续，拨号那路会停掉通道。
+			if err == nil || errors.Is(err, domain.ErrNotFound) {
+				return nil, "", nil, false
+			}
+		}
+		// 记下这次没取齐，退避后再取。
+		slog.Warn("prepare content lease", "factory", factoryID, "err", err)
+		// 等到取消或退避结束。
+		select {
+		// 取消了就不再取。
+		case <-ctx.Done():
+			return nil, "", nil, false
+		// 退避到点再取。
+		case <-time.After(wait):
+		}
+		// 退避翻倍，封顶半分钟。
+		wait = min(wait*2, 30*time.Second)
 	}
 }
 
@@ -283,10 +361,6 @@ func (h *Hub) dialHold(ctx context.Context, factoryID uuid.UUID) error {
 		// 摘完就放开通道锁。
 		h.presenceMu.Unlock()
 	}()
-	// 通道连上才允许解厂库正文。
-	svc.Store().SetContentChannelOnline(true)
-	// 离开时标成离线，没通道就不再解正文。
-	defer svc.Store().SetContentChannelOnline(false)
 	// 读出本厂已钉的 WAN 指令验签公钥，没有就等首轮 HTTPS 索引来钉。
 	wanKey, err := svc.Node.WANKey(ctx)
 	// 读库出错就交回，外层退避后再试，不无钉钥地连。

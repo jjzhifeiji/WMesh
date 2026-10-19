@@ -84,46 +84,6 @@ func (p *puller) get(ctx context.Context, path string, dst any) error {
 	return nil
 }
 
-// 带厂钥签名 POST JSON。
-func (p *puller) post(ctx context.Context, path string, dst any) error {
-	// 组好带取消的提交，超时才能停掉。
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.wanHTTP+path, nil)
-	// 请求组不出来就当平台不可达。
-	if err != nil {
-		return domain.ErrWANUnreachable
-	}
-	// 补上厂钥签名，没有签名平台会拒绝。
-	p.sign(req)
-	// 送出提交，网络失败就当平台不可达。
-	res, err := p.do(req)
-	// 送不出去就当不可达，调用方可以再试。
-	if err != nil {
-		return domain.ErrWANUnreachable
-	}
-	// 读完就关掉响应，连接才能复用。
-	defer res.Body.Close()
-	// 只读到上限，异常页面不能灌满内存。
-	body, err := io.ReadAll(io.LimitReader(res.Body, 1<<20))
-	// 响应读不完就当不可达，避免用半截正文。
-	if err != nil {
-		return domain.ErrWANUnreachable
-	}
-	// 平台拒绝就把状态收成业务错误。
-	if res.StatusCode >= 300 {
-		// 按状态和英文原因交回，调用方不要当成功。
-		return mapHTTPStatus(res.StatusCode, body)
-	}
-	// 调用方不要正文就到此为止。
-	if dst == nil {
-		return nil
-	}
-	// 正文解不开就当不可达，避免用残缺回执。
-	if err := json.Unmarshal(body, dst); err != nil {
-		return domain.ErrWANUnreachable
-	}
-	return nil
-}
-
 // 带厂钥签名 POST JSON 正文；2xx 即算收下，回执可有可无。
 func (p *puller) postJSON(ctx context.Context, path string, payload, dst any) error {
 	// 编出正文，编不出就不发，避免残缺上送。
@@ -214,7 +174,7 @@ func (p *puller) sign(req *http.Request) {
 	req.Header.Set("X-WMesh-Sign", base64.StdEncoding.EncodeToString(sig))
 }
 
-// 把 WAN HTTP 错误收回本侧业务错误。
+// 把 WAN HTTP 错误收回本侧业务错误：先认英文原因，认不出再按状态码收。
 func mapHTTPStatus(code int, body []byte) error {
 	// 预备装平台英文原因，没有就按状态码收。
 	var wrap struct {
@@ -222,28 +182,34 @@ func mapHTTPStatus(code int, body []byte) error {
 	}
 	// 解不开也不中断，后面按状态码收成错误。
 	_ = json.Unmarshal(body, &wrap)
-	// 平台给了英文原因就收成对应业务错误。
-	if wrap.Error != "" {
-		// 英文原因再收成业务错误，调用方不用猜字符串。
-		return mapChannelError(wrap.Error)
+	// 认得的英文原因（建厂码、停用、注销等）比状态码更细，先收。
+	if err := mapChannelError(wrap.Error); err != nil {
+		return err
 	}
+	// 认不出原因就按状态码收，调用方才能按错误类型分路。
+	switch {
 	// 未授权是 WAN 不认本厂签名，不是本厂会话失效，调用方不要当网络抖动。
-	if code == http.StatusUnauthorized {
+	case code == http.StatusUnauthorized:
 		return domain.ErrWANSignatureRejected
-	}
-	// 被限频就收成限频错误，稍后再试。
-	if code == http.StatusTooManyRequests {
-		return domain.ErrTooManyRequests
-	}
 	// 被禁止就当无权，调用方不要重试同一请求。
-	if code == http.StatusForbidden {
+	case code == http.StatusForbidden:
 		return domain.ErrForbidden
-	}
 	// 找不到就当没有这份资源。
-	if code == http.StatusNotFound {
+	case code == http.StatusNotFound:
 		return domain.ErrNotFound
+	// 被限频就收成限频错误，稍后再试。
+	case code == http.StatusTooManyRequests:
+		return domain.ErrTooManyRequests
+	// 平台 5xx 或网关出错是暂时故障，收成不可达，调用方退避重试。
+	case code >= http.StatusInternalServerError:
+		return domain.ErrWANUnreachable
 	}
-	// 其余状态交回数字，调用方不要当成功。
+	// 其余状态带上原因交回，便于对照平台。
+	if wrap.Error != "" {
+		// 码和原文一起交回，不冒充任何已知业务错误。
+		return fmt.Errorf("wan http %d: %s", code, wrap.Error)
+	}
+	// 没给原因就只交回数字，调用方不要当成功。
 	return fmt.Errorf("wan http %d", code)
 }
 
