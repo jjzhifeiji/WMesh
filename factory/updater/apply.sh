@@ -6,6 +6,7 @@ DIR="${WMESH_UPDATE_DIR:-/var/lib/wmesh/update}"
 SERVICE="${APP_SERVICE:-app}"
 COMPOSE="${COMPOSE_FILE:-/work/docker-compose.yml}"
 PROJECT="${COMPOSE_PROJECT_NAME:-wmesh-factory}"
+# 只是起步值：每轮按宿主此刻的 .env 现算（refresh_app_image），容器创建时定死的环境变量会跟 .env 对不上。
 APP_IMAGE="${APP_IMAGE:-wmesh-factory-app:dev}"
 APP_KIND="${APP_KIND:-factory_service}"
 PREV_IMAGE="${PROJECT}-app:previous"
@@ -48,6 +49,26 @@ write_file() {
   printf '%s' "$body" > "${path}.tmp" || return 0
   mv "${path}.tmp" "$path" || return 0
   chown 10001:10001 "$path" || true
+}
+
+# 按宿主此刻的 .env 现算 app 镜像名，和 compose_up 读同一份配置；宿主改了 WMESH_VERSION / WMESH_REGISTRY 不必重建 updater。
+# .env 和 compose 都没变就沿用上次结果，免得每轮都跑 compose config；算不出就沿用上次的（起步是容器环境里的值）。
+# compose config --images 会连依赖服务一起列且不保证先后，所以从 app 自己那段取 image。
+refresh_app_image() {
+  sum=$(cat /work/.env "$COMPOSE" 2>/dev/null | cksum)
+  [ "$sum" != "${app_image_sum:-}" ] || return 0
+  img=$(docker compose --env-file /work/.env -f "$COMPOSE" -p "$PROJECT" config "$SERVICE" 2>/dev/null | awk -v svc="$SERVICE" '
+    $0 == "  " svc ":" { inside = 1; next }
+    inside && /^ ? ?[^ ]/ { exit }
+    inside && /^    image:[[:space:]]/ { sub(/^    image:[[:space:]]*/, ""); gsub(/["\047]/, ""); print; exit }' || true)
+  [ -n "$img" ] || return 0
+  APP_IMAGE=$img
+  app_image_sum=$sum
+}
+
+# app 镜像去掉标签后的仓库名；仓库地址带端口（如 reg.local:5000/）时只去最后的 :标签。
+app_repo() {
+  printf '%s' "$APP_IMAGE" | sed 's/:[^:/]*$//'
 }
 
 compose_up() {
@@ -146,7 +167,7 @@ revert() {
 
 # 只清无用 app 标签和悬空层；current / previous 和正在跑的基础设施不动。
 prune_images() {
-  repo=$(printf '%s' "$APP_IMAGE" | sed 's/:.*$//')
+  repo=$(app_repo)
   keep_app=$(docker image inspect -f '{{.Id}}' "$APP_IMAGE" 2>/dev/null || true)
   keep_prev=$(docker image inspect -f '{{.Id}}' "$PREV_IMAGE" 2>/dev/null || true)
   docker images --format '{{.Repository}}:{{.Tag}} {{.ID}}' 2>/dev/null | while read -r ref id; do
@@ -165,7 +186,7 @@ prune_images() {
 # 只清点名的 app 标签；current / previous 拒绝。成功无输出。
 prune_one() {
   ref=$1
-  repo=$(printf '%s' "$APP_IMAGE" | sed 's/:.*$//')
+  repo=$(app_repo)
   keep_app=$(docker image inspect -f '{{.Id}}' "$APP_IMAGE" 2>/dev/null || true)
   keep_prev=$(docker image inspect -f '{{.Id}}' "$PREV_IMAGE" 2>/dev/null || true)
   case "$ref" in
@@ -198,7 +219,7 @@ prune_req_target() {
 
 # 给 app 看的本机 app 镜像占用；docker 失败也写空清单。
 write_images() {
-  repo=$(printf '%s' "$APP_IMAGE" | sed 's/:.*$//')
+  repo=$(app_repo)
   keep_app=$(docker image inspect -f '{{.Id}}' "$APP_IMAGE" 2>/dev/null || true)
   keep_prev=$(docker image inspect -f '{{.Id}}' "$PREV_IMAGE" 2>/dev/null || true)
   raw="$DIR/images.raw"
@@ -294,6 +315,8 @@ tick_images() {
 
 prepare_dir
 while true; do
+  # 先按宿主此刻的 .env 定下这一轮的 app 镜像名，清单、清镜像、换包和回退都用它。
+  refresh_app_image
   tick_images
   # 挂载不安全就这次不 load、不换，正在跑的 app 不动；写了结果就不会再进下面的换包。
   if [ -f "$DIR/pending.json" ] && [ -f "$DIR/pending.tar" ] && [ ! -f "$DIR/status.json" ]; then

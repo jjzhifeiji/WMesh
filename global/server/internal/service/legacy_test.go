@@ -1025,3 +1025,141 @@ func TestImportLegacyRenameLongPath(t *testing.T) {
 		t.Fatalf("again reason %+v", again.Skipped)
 	}
 }
+
+// 升级前按完整路径名存下的超长工艺名，重导时仍按摘要沿用，不绑到别处同名工艺，也不另出副本。
+func TestImportLegacyPreUpgradeLongPathLabel(t *testing.T) {
+	// 准备本测上下文，没有它库和服务都开不了。
+	ctx := context.Background()
+	// 起云端库和服务，起不来整段验收作废。
+	h := New(t)
+	// 立云端超管失败就停，立不住后面没有人能登录。
+	if err := h.WAN.BootstrapAdmin(ctx, "w", "wan-secret"); err != nil {
+		// 不符即停：立云端超管失败。
+		t.Fatal(err)
+	}
+	// 登录拿会话，没有票后面接口都进不去。
+	tok, err := h.WAN.Login(ctx, "w", "wan-secret")
+	// 登录拿会话失败就停，没有票后面接口都进不去。
+	if err != nil {
+		// 不符即停：登录拿会话失败。
+		t.Fatal(err)
+	}
+	// 浅路径那份占住短名「1K6.5mmD」。
+	user := service.LegacyFile{Path: "User/1K6.5mmD.json", Content: []byte(`{"current":1}`)}
+	// 七十一个字的目录，路径名远超 64 字。
+	deepDir := "A" + strings.Repeat("深", 70)
+	// 深路径下同名、内容不同的一份。
+	deep := service.LegacyFile{Path: deepDir + "/1K6.5mmD.json", Content: []byte(`{"current":2}`)}
+	// 先导浅路径那份，名字就是文件名。
+	first, err := h.WAN.ImportLegacy(ctx, tok, service.LegacyImport{Processes: []service.LegacyFile{user}})
+	// 导入失败或条数不是 1 就停，不能当通过。
+	if err != nil || len(first.Processes) != 1 || first.Processes[0].Name != "1K6.5mmD" {
+		// 不符即停：浅路径那份没按文件名建成。
+		t.Fatalf("user %+v %v", first, err)
+	}
+	// 再按另起名导深路径那份，撞短名后按路径另起。
+	second, err := h.WAN.ImportLegacy(ctx, tok, service.LegacyImport{Rename: true, Processes: []service.LegacyFile{deep}})
+	// 导入失败或条数不是 1 就停，不能当通过。
+	if err != nil || len(second.Processes) != 1 {
+		// 不符即停：深路径那份没导进来。
+		t.Fatalf("deep %+v %v", second, err)
+	}
+	// 升级前的写法：完整路径名，不截短。
+	long := deepDir + "/1K6.5mmD"
+	// 把名字改回完整路径名，摆出升级前留下的数据。
+	if err := h.DB.Exec("UPDATE assets SET name = ? WHERE id = ?", long, second.Processes[0].ID).Error; err != nil {
+		// 不符即停：摆不出旧数据就验不了。
+		t.Fatal(err)
+	}
+	// 引用深路径那份的工程，覆盖导入时会按路径重新钉依赖。
+	proj := service.LegacyFile{Path: "single_layer/深焊/project_data.json", Content: []byte(`[{"id":"w1","processPath":"` + deep.Path + `","points":[]}]`), Overwrite: true}
+	// 整棵树按默认方式重导，深路径那份应按完整路径名和摘要认回原身份。
+	again, err := h.WAN.ImportLegacy(ctx, tok, service.LegacyImport{Processes: []service.LegacyFile{user, deep}, Projects: []service.LegacyFile{proj}})
+	// 导入失败、又新建了工艺或有被拒的就停。
+	if err != nil || len(again.Processes) != 0 || len(again.Projects) != 1 || len(again.Rejected) != 0 {
+		// 不符即停：升级前的长名没认出来。
+		t.Fatalf("again %+v %v", again, err)
+	}
+	// 两份都该按内容相同跳过，深路径那份不能落成同名内容不同。
+	if !legacySkipped(again.Skipped, deep.Path, "same content") || !legacySkipped(again.Skipped, user.Path, "same content") {
+		// 不符即停：深路径那份绑到了别处的同名工艺。
+		t.Fatalf("again reason %+v", again.Skipped)
+	}
+	// 工程应钉住深路径那份原身份，不能钉到浅路径那份。
+	assertLegacyDeps(t, ctx, h.WAN, tok, again.Projects[0].ID, second.Processes[0].ID.String())
+	// 按另起名再导一次，内容相同仍应沿用，不出截短名的副本。
+	ren, err := h.WAN.ImportLegacy(ctx, tok, service.LegacyImport{Rename: true, Processes: []service.LegacyFile{user, deep}})
+	// 导入失败或又新建了就停。
+	if err != nil || len(ren.Processes) != 0 || !legacySkipped(ren.Skipped, deep.Path, "same content") {
+		// 不符即停：另起名时出了副本。
+		t.Fatalf("rename %+v %v", ren, err)
+	}
+}
+
+// 升级前存下的超长显示名，重导时仍按原写法认同名：默认跳过并沿用，覆盖时改原身份。
+func TestImportLegacyPreUpgradeLongName(t *testing.T) {
+	// 准备本测上下文，没有它库和服务都开不了。
+	ctx := context.Background()
+	// 起云端库和服务，起不来整段验收作废。
+	h := New(t)
+	// 立云端超管失败就停，立不住后面没有人能登录。
+	if err := h.WAN.BootstrapAdmin(ctx, "w", "wan-secret"); err != nil {
+		// 不符即停：立云端超管失败。
+		t.Fatal(err)
+	}
+	// 登录拿会话，没有票后面接口都进不去。
+	tok, err := h.WAN.Login(ctx, "w", "wan-secret")
+	// 登录拿会话失败就停，没有票后面接口都进不去。
+	if err != nil {
+		// 不符即停：登录拿会话失败。
+		t.Fatal(err)
+	}
+	// 七十个字的显示名，远超 64 字上限。
+	long := strings.Repeat("长", 70)
+	// 首导时名字会被截到 64 字。
+	first, err := h.WAN.ImportLegacy(ctx, tok, service.LegacyImport{
+		Processes: []service.LegacyFile{{Path: "p/1.json", Content: []byte(`{"name":"` + long + `","current":1}`)}},
+		Projects:  []service.LegacyFile{{Path: "single_layer/x/project_data.json", Name: long, Content: []byte(`[{"id":"w1","processPath":"p/1.json","points":[]}]`)}},
+	})
+	// 导入失败或条数不对就停，不能当通过。
+	if err != nil || len(first.Processes) != 1 || len(first.Projects) != 1 {
+		// 不符即停：首导没把工艺和工程都收进来。
+		t.Fatalf("first %+v %v", first, err)
+	}
+	// 把两条的名字都改回完整写法，摆出升级前留下的数据。
+	for _, id := range []uuid.UUID{first.Processes[0].ID, first.Projects[0].ID} {
+		// 直接改库，服务层已写不出超长名。
+		if err := h.DB.Exec("UPDATE assets SET name = ? WHERE id = ?", long, id).Error; err != nil {
+			// 不符即停：摆不出旧数据就验不了。
+			t.Fatal(err)
+		}
+	}
+	// 同路径换了内容再按默认方式导，应按长名认出同名并跳过。
+	changed := service.LegacyFile{Path: "p/1.json", Content: []byte(`{"name":"` + long + `","current":2}`)}
+	// 工程原样再导，同名应跳过。
+	proj := service.LegacyFile{Path: "single_layer/x/project_data.json", Name: long, Content: []byte(`[{"id":"w1","processPath":"p/1.json","points":[]}]`)}
+	// 默认方式重导。
+	skip, err := h.WAN.ImportLegacy(ctx, tok, service.LegacyImport{Processes: []service.LegacyFile{changed}, Projects: []service.LegacyFile{proj}})
+	// 导入失败或新建了截短名的副本就停。
+	if err != nil || len(skip.Processes) != 0 || len(skip.Projects) != 0 {
+		// 不符即停：长名没认出来，另出了副本。
+		t.Fatalf("skip %+v %v", skip, err)
+	}
+	// 工艺应按同名内容不同跳过，工程按同名跳过。
+	if !legacySkipped(skip.Skipped, "p/1.json", "name exists, content differs") || !legacySkipped(skip.Skipped, proj.Path, "name exists") {
+		// 不符即停：跳过原因不对。
+		t.Fatalf("skip reason %+v", skip.Skipped)
+	}
+	// 按覆盖再导，应改原身份，不另建。
+	over, err := h.WAN.ImportLegacy(ctx, tok, service.LegacyImport{Overwrite: true, Processes: []service.LegacyFile{changed}, Projects: []service.LegacyFile{proj}})
+	// 导入失败或条数不对就停。
+	if err != nil || len(over.Processes) != 1 || len(over.Projects) != 1 {
+		// 不符即停：覆盖没落到原身份上。
+		t.Fatalf("over %+v %v", over, err)
+	}
+	// 覆盖后身份变了就停，长名那条应原地改。
+	if over.Processes[0].ID != first.Processes[0].ID || over.Projects[0].ID != first.Projects[0].ID {
+		// 不符即停：覆盖另建了一份。
+		t.Fatalf("over ids %s %s", over.Processes[0].ID, over.Projects[0].ID)
+	}
+}

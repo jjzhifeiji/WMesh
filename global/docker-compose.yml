@@ -62,6 +62,7 @@ services:
       WMESH_UPDATE_DIR: /var/lib/wmesh/update
       COMPOSE_PROJECT_NAME: wmesh-global
       APP_SERVICE: app
+      # 只是起步值：apply.sh 每轮按宿主此刻的 .env 现算 app 镜像名，改了 .env 不必重建 updater。
       APP_IMAGE: ${WMESH_REGISTRY:-}wmesh-global-app:${WMESH_VERSION:-dev}
       APP_KIND: wan_service
       COMPOSE_FILE: /work/docker-compose.yml

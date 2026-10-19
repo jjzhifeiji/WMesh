@@ -159,8 +159,8 @@ func statusOf(err error) int {
 	// 平台暂时不可达，回上游故障。
 	case errors.Is(err, domain.ErrWANUnreachable):
 		return http.StatusBadGateway
-	// 激活码试得太勤，回请求过多，稍后再试。
-	case errors.Is(err, domain.ErrTooManyAttempts):
+	// 激活码试得太勤，或 WAN 按来源限频，回请求过多，稍后再试。
+	case errors.Is(err, domain.ErrTooManyAttempts), errors.Is(err, domain.ErrTooManyRequests):
 		return http.StatusTooManyRequests
 	// 无权，或动到最后一名超管，则回禁止。
 	case errors.Is(err, domain.ErrForbidden), errors.Is(err, domain.ErrLastAdmin),

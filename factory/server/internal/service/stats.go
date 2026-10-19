@@ -29,15 +29,16 @@ var weldDemoNS = uuid.MustParse("7c2e1a90-6b4d-4f11-9c3a-0b8e5d2f1748")
 const weldDemoCount = 45 // 一次写入的演示焊次数
 
 const (
-	wanPushRetryMin = 5 * time.Second // 焊汇总上送失败后第一次等多久再推
-	wanPushRetryMax = 5 * time.Minute // 焊汇总上送退避封顶，WAN 久断也不拖太久
+	wanPushRetryMin    = 5 * time.Second // 焊汇总上送失败后第一次等多久再推
+	wanPushRetryMax    = 5 * time.Minute // 焊汇总上送退避封顶，WAN 久断也不拖太久
+	wanPushSignRetries = 2               // 签名被 WAN 拒时每批最多补推几次：回包已校正时差，厂钥真不对也不一直打
 )
 
 // errWeldLocalRead 标记读本厂焊汇总失败，后台上送据此退避重试。
 var errWeldLocalRead = errors.New("read local weld summaries")
 
 // WeldWANPoster 把无人员组织的焊汇总交给 WAN；测试可空。
-// 暂时送不出（连不上、5xx、读不到钥）交回 ErrWANUnreachable，后台会退避重试；其它错误不重试。
+// 暂时送不出（连不上、5xx、读不到钥）交回 ErrWANUnreachable，后台会退避重试；签名被拒交回 ErrWANSignatureRejected，每批限次重试；其它错误不重试。
 type WeldWANPoster interface {
 	// 把不含人员组织的焊汇总交给广域侧
 	PostWeldSummaries(ctx context.Context, factoryID uuid.UUID, rows []WeldWANSummary) error
@@ -689,6 +690,8 @@ func (s *Stats) RunWANPush(ctx context.Context) {
 		}
 		// 每批从退避起点开始，连续失败才加倍
 		wait := s.wanRetryMin
+		// 这一批还能因签名被拒补推几次，刚起进程时钟还没校正会撞上
+		signLeft := wanPushSignRetries
 		// 推这一批，可恢复的失败退避后重读再推
 		for {
 			// 重读本厂库并上送全量汇总
@@ -701,8 +704,17 @@ func (s *Stats) RunWANPush(ctx context.Context) {
 			if err == nil {
 				break
 			}
+			// 先按错误种类看值不值得重试
+			retry := weldPushRetryable(err)
+			// 签名被拒多半是钟偏，被拒的回包已按 Date 校正时差，还有名额就再签再推
+			if !retry && errors.Is(err, domain.ErrWANSignatureRejected) && signLeft > 0 {
+				// 用掉一次补推名额，用完再被拒就当业务拒绝
+				signLeft--
+				// 这次按可恢复处理，退避后重推
+				retry = true
+			}
 			// 业务拒绝、没有钥或厂已注销，重试也没用
-			if !weldPushRetryable(err) {
+			if !retry {
 				// 只记一次告警，等下一个信号再推
 				slog.Warn("push weld summaries rejected", "factory", s.store.FactoryID(), "err", err)
 				break

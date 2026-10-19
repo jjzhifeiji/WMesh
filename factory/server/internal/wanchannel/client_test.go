@@ -113,6 +113,31 @@ func TestEnrollDisabled(t *testing.T) {
 	}
 }
 
+// WAN 按来源限频回 429 时，认领两步都收成限频错误，不当内部故障。
+func TestEnrollTooManyRequests(t *testing.T) {
+	// 带英文原因和不带正文两种回包都要认。
+	for _, body := range []string{`{"error":"too many requests"}`, ""} {
+		// 替身一律回请求过多，模拟同一出口 IP 名额用完。
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			// 先写请求过多的状态码。
+			w.WriteHeader(http.StatusTooManyRequests)
+			// 按用例带上或不带英文原因。
+			_, _ = w.Write([]byte(body))
+		}))
+		// 用建厂码换身份，应收回限频错误。
+		_, err := Enroll(context.Background(), srv.URL, "code")
+		// 交公钥这一步同样应收回限频错误。
+		confirmErr := Confirm(context.Background(), srv.URL, "code", make([]byte, 32))
+		// 用完就关掉替身，避免端口一直占住。
+		srv.Close()
+		// 任一步没收成限频错误就停测。
+		if !errors.Is(err, domain.ErrTooManyRequests) || !errors.Is(confirmErr, domain.ErrTooManyRequests) {
+			// 带上正文和两步的实际错误便于定位。
+			t.Fatalf("body %q: enroll %v confirm %v", body, err, confirmErr)
+		}
+	}
+}
+
 // 非网页地址不能拿来认领，应当直接拒绝。
 func TestEnrollRejectsWSURL(t *testing.T) {
 	// 用错误协议去认领，应当被拒绝。

@@ -61,4 +61,6 @@ var (
 	ErrSoftwareInstallFailed = errors.New("software install failed")                // 确认后安装失败，旧版本继续跑
 	ErrSoftwareApplying      = errors.New("software update is applying")            // 上一包还在换、没出结果，不能再确认
 	ErrTooManyAttempts       = errors.New("too many attempts")                      // 激活码试得太勤，稍后再试
+	ErrTooManyRequests       = errors.New("too many requests")                      // WAN 按来源限频，稍后再试
+	ErrWANSignatureRejected  = errors.New("wan rejected factory signature")         // WAN 不认本厂签名：钟偏出时间窗或厂钥没登记
 )

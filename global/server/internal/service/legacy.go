@@ -179,17 +179,19 @@ func (s *Assets) ImportLegacy(ctx context.Context, token string, in LegacyImport
 			// 按工程规则取名或核对。
 			name = projectDisplayName(rel)
 		}
-		// 查重前先按字截到资产名上限，免得新建时因超长被拒。
-		name = clipAssetName(name, "")
+		// 没截短的原写法留着查重，升级前存下的长名只能按它对上。
+		raw := name
+		// 新建时按字截到资产名上限，免得因超长被拒。
+		name = clipAssetName(raw, "")
 		// 整理导入的名字或路径。
 		overwrite, rename := importFileFlags(in, f)
 		// 名字已被本批别的路径占用，按路径另起，不跳过也不覆盖。
-		if book.takenByBatch(KindProject, name) {
+		if book.takenByBatch(KindProject, raw, name) {
 			// 先改用路径名，路径名也被本批占用才加序号。
-			name = book.batchFreeName(KindProject, name, rel, "")
+			name, raw = book.batchFreeName(KindProject, name, raw, rel, "")
 		}
 		// 库里已有同名工程且不覆盖，再看是否另起名。
-		if cur, ok := book.names[importNameKey(KindProject, name)]; ok && !overwrite {
+		if cur, ok := book.find(KindProject, raw, name); ok && !overwrite {
 			// 不另起名就跳过同名，沿用已有那一条。
 			if !rename {
 				// 沿用的身份算本批占用，后面同名另起。
@@ -199,7 +201,9 @@ func (s *Assets) ImportLegacy(ctx context.Context, token string, in LegacyImport
 				continue
 			}
 			// 找一个还不冲突的名字。
-			name = uniqueImportName(book.names, KindProject, name, rel, "")
+			name = uniqueImportName(book.names, KindProject, name, raw, rel, "")
+			// 另起的新名已截短，原写法就是它，下面不能再对回旧那条。
+			raw = name
 		}
 		// 把旧身份改成新的。
 		body, err := rewriteLegacyProject(f.Content, rel, idx, bands)
@@ -210,7 +214,7 @@ func (s *Assets) ImportLegacy(ctx context.Context, token string, in LegacyImport
 			continue
 		}
 		// 库里已有同名工程，走到这里就是允许覆盖。
-		if cur, ok := book.names[importNameKey(KindProject, name)]; ok {
+		if cur, ok := book.find(KindProject, raw, name); ok {
 			// 按新内容覆盖，草稿顺手改可用。
 			row, err := s.overwriteImported(ctx, token, cur, body)
 			// 覆盖失败就拒绝，不能留半新正文。
@@ -306,6 +310,8 @@ func (p legacyProc) indexKind(row Asset) string {
 func (s *Assets) importLegacyProcess(ctx context.Context, token string, book *importBook, idx *pathIndex, out *LegacyImportResult, p legacyProc) {
 	// 原名截短后接上后缀就是这一份的名字，撞名时再改。
 	name := clipAssetName(p.base, p.suffix)
+	// 没截短的原写法留着查重，升级前存下的长名只能按它对上。
+	raw := p.base + p.suffix
 	// 新建时用的作业类型，本批没人引用就按单层。
 	create := p.kind
 	// 没有工程引用的工艺新建时按单层。
@@ -324,18 +330,18 @@ func (s *Assets) importLegacyProcess(ctx context.Context, token string, book *im
 		return
 	}
 	// 名字已被本批别的路径占用，按路径另起，不跳过也不覆盖。
-	if book.takenByBatch(KindProcess, name) {
+	if book.takenByBatch(KindProcess, raw, name) {
 		// 先改用路径名，路径名也被本批占用才加序号。
-		name = book.batchFreeName(KindProcess, name, p.rel, p.suffix)
+		name, raw = book.batchFreeName(KindProcess, name, raw, p.rel, p.suffix)
 	}
 	// 同名已经在库里，再看作业类型和覆盖开关。
-	if cur, ok := book.names[importNameKey(KindProcess, name)]; ok {
+	if cur, ok := book.find(KindProcess, raw, name); ok {
 		// 按作业类型、覆盖、另起名、跳过依次处理。
 		switch {
 		// 作业类型不同则不沿用不覆盖，另起名新建；没人引用的不限类型。
 		case p.kind != "" && !sameWeldKind(cur.WeldKind, p.kind):
 			// 找一个还不冲突的名字。
-			name = uniqueImportName(book.names, KindProcess, name, p.rel, p.suffix)
+			name = uniqueImportName(book.names, KindProcess, name, raw, p.rel, p.suffix)
 		// 允许覆盖时改正文，身份保持不变。
 		case p.overwrite:
 			// 按新内容覆盖，草稿顺手改可用。
@@ -356,7 +362,7 @@ func (s *Assets) importLegacyProcess(ctx context.Context, token string, book *im
 		// 允许另起名时按路径另起新名新建。
 		case p.rename:
 			// 找一个还不冲突的名字。
-			name = uniqueImportName(book.names, KindProcess, name, p.rel, p.suffix)
+			name = uniqueImportName(book.names, KindProcess, name, raw, p.rel, p.suffix)
 		// 既不覆盖也不另起名，就沿用库里那一条。
 		default:
 			// 沿用的身份算本批占用，后面同名另起。
@@ -647,10 +653,22 @@ func (b *importBook) claim(row Asset) {
 	b.claimed[row.ID] = struct{}{}
 }
 
-// takenByBatch 这个名字对到的身份已被本批别的路径占用。
-func (b *importBook) takenByBatch(kind, name string) bool {
-	// 先看名字有没有对到条目。
-	cur, ok := b.names[importNameKey(kind, name)]
+// find 按给出的几种写法依次找同名条目，先给的先认；没截短的原写法放前面，升级前存下的长名才对得上。
+func (b *importBook) find(kind string, names ...string) (Asset, bool) {
+	// 逐个写法去对照表里找。
+	for _, n := range names {
+		// 这种写法对到条目就交回。
+		if cur, ok := b.names[importNameKey(kind, n)]; ok {
+			return cur, true
+		}
+	}
+	return Asset{}, false
+}
+
+// takenByBatch 这几种写法先对到的那条身份已被本批别的路径占用。
+func (b *importBook) takenByBatch(kind string, names ...string) bool {
+	// 先看名字有没有对到条目，和后面查重认的是同一条。
+	cur, ok := b.find(kind, names...)
 	// 名字没有条目就不算占用。
 	if !ok {
 		return false
@@ -660,29 +678,31 @@ func (b *importBook) takenByBatch(kind, name string) bool {
 	return ok
 }
 
-// batchFreeName 避开本批已占用的名字：先用路径名（带作业类型后缀），仍撞再加序号。
-func (b *importBook) batchFreeName(kind, name, rel, suffix string) string {
+// batchFreeName 避开本批已占用的名字：先用路径名（带作业类型后缀），仍撞再加序号；交回新名和它没截短的写法。
+func (b *importBook) batchFreeName(kind, name, raw, rel, suffix string) (string, string) {
 	// 用去掉扩展名的相对路径当候选新名，拆份的再接后缀。
-	label := importPathLabel(rel, suffix)
+	label, rawLabel := importPathLabel(rel, suffix), rawPathLabel(rel, suffix)
 	// 路径名和原名不同，才考虑拿路径另起。
 	if label != "" && label != name {
 		// 路径名没被本批占用就用它，撞库里的后面照常处理。
-		if !b.takenByBatch(kind, label) {
-			return label
+		if !b.takenByBatch(kind, rawLabel, label) {
+			return label, rawLabel
 		}
 		// 路径名也被本批占用了，后面在它上面加序号。
-		name = label
+		name, raw = label, rawLabel
 	}
 	// 仍被本批占用就加序号，直到找出本批没用过的。
 	for i := 2; i < 1000; i++ {
+		// 要接的序号尾巴。
+		tail := " (" + strconv.Itoa(i) + ")"
 		// 原名先截短再加序号，整名不超过资产名上限。
-		n := clipAssetName(name, " ("+strconv.Itoa(i)+")")
-		// 本批没用过这个名字就用它。
-		if !b.takenByBatch(kind, n) {
-			return n
+		n := clipAssetName(name, tail)
+		// 本批没用过这个名字（含升级前不截短的写法）就用它。
+		if !b.takenByBatch(kind, raw+tail, n) {
+			return n, raw + tail
 		}
 	}
-	return name
+	return name, raw
 }
 
 // sameContent 在候选名里找摘要和作业类型都相同的可用工艺，本批占用过的不算；want 空不限类型。
@@ -720,8 +740,8 @@ func (b *importBook) sameContent(name, rel, want string, sums [][]byte) (Asset, 
 func importCandidates(name, rel, want string) []string {
 	// 去掉扩展名的相对路径，拿来排第一个候选。
 	label := strings.TrimSpace(legacyPathLabel(rel))
-	// 路径名在前，同名不同路径时先认自己那条；都按入库时截短的写法比。
-	bases := []string{clipAssetName(label, ""), clipAssetName(name, "")}
+	// 路径名在前，同名不同路径时先认自己那条；没截短的原写法排在截短的前面，升级前存下的长名也能按摘要沿用。
+	bases := []string{label, clipAssetName(label, ""), name, clipAssetName(name, "")}
 	// 非单层时再加带作业类型后缀的写法。
 	if suffix := weldKindSuffix(want); suffix != "" {
 		// 两个名字各截短后加一份后缀，和新建时写法一样。
@@ -757,8 +777,8 @@ func candidateRank(cands []string, name string) int {
 	tail := name[len(m[1]):]
 	// 带序号的变体排在所有原写法之后。
 	for i, c := range cands {
-		// 候选截短后加序号对上了，就算这个候选的变体。
-		if clipAssetName(c, tail) == name {
+		// 候选截短后加序号，或升级前不截短直接加序号，对上了就算这个候选的变体。
+		if clipAssetName(c, tail) == name || c+tail == name {
 			// 排位加上原写法的个数。
 			return len(cands) + i
 		}
@@ -1425,29 +1445,43 @@ func importFileFlags(in LegacyImport, f LegacyFile) (overwrite, rename bool) {
 	return in.Overwrite || f.Overwrite, in.Rename || f.Rename
 }
 
-// uniqueImportName 同名按相对路径（带作业类型后缀）另起；仍撞则加序号。
-func uniqueImportName(names map[string]Asset, kind, name, rel, suffix string) string {
+// uniqueImportName 同名按相对路径（带作业类型后缀）另起；仍撞则加序号。raw 是没截短的写法，升级前存下的长名也算占用。
+func uniqueImportName(names map[string]Asset, kind, name, raw, rel, suffix string) string {
 	// 用去掉扩展名的相对路径当候选新名，拆份的再接后缀。
-	label := importPathLabel(rel, suffix)
+	label, rawLabel := importPathLabel(rel, suffix), rawPathLabel(rel, suffix)
 	// 空和有值走不同路，避免把空白写进名录。
 	if label != "" && label != name {
-		// 同名已经在库里，按覆盖或跳过处理。
-		if _, ok := names[importNameKey(kind, label)]; !ok {
+		// 截短和没截短的写法库里都没有，才拿路径名另起。
+		if !importNameTaken(names, kind, rawLabel, label) {
 			return label
 		}
 		// 改用路径标签当名字，避开已经占用的原名。
-		name = label
+		name, raw = label, rawLabel
 	}
 	// 从二开始加序号，直到这个名字还没占用。
 	for i := 2; i < 1000; i++ {
+		// 要接的序号尾巴。
+		tail := " (" + strconv.Itoa(i) + ")"
 		// 原名先截短再加序号，整名不超过资产名上限。
-		n := clipAssetName(name, " ("+strconv.Itoa(i)+")")
-		// 库里和本批都没用过这个名字就用它。
-		if _, ok := names[importNameKey(kind, n)]; !ok {
+		n := clipAssetName(name, tail)
+		// 库里和本批都没用过这个名字（含升级前不截短的写法）就用它。
+		if !importNameTaken(names, kind, raw+tail, n) {
 			return n
 		}
 	}
 	return name
+}
+
+// importNameTaken 这几种写法里有一种已在对照表里就算占用。
+func importNameTaken(names map[string]Asset, kind string, all ...string) bool {
+	// 逐个写法去对照表里找。
+	for _, n := range all {
+		// 对到条目就算占用。
+		if _, ok := names[importNameKey(kind, n)]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 // importPathLabel 按路径另起的名字；非首种作业类型那份再接后缀。
@@ -1460,6 +1494,18 @@ func importPathLabel(rel, suffix string) string {
 	}
 	// 路径名太长就截短，后缀完整保留，免得新建时因超长被拒。
 	return clipAssetName(label, suffix)
+}
+
+// rawPathLabel 路径名没截短的写法，只拿来对升级前存下的长名，不拿来新建。
+func rawPathLabel(rel, suffix string) string {
+	// 用去掉扩展名的相对路径当名字。
+	label := strings.TrimSpace(legacyPathLabel(rel))
+	// 没有路径名就不起，也不单留一个后缀。
+	if label == "" {
+		return ""
+	}
+	// 不截短，直接接上后缀。
+	return label + suffix
 }
 
 // legacyPathLabel 用去掉后缀的相对路径当新名；多层工程另标一层。

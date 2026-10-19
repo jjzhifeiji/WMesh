@@ -187,6 +187,70 @@ func TestWeldPushNoRetryOnReject(t *testing.T) {
 	g.waitFor(t, func(_ int, rows []factory.WeldWANSummary) bool { return sumLength(rows) == 400 })
 }
 
+// 刚起进程时钟没校正，签名被 WAN 拒；回包已校正时差，退避后重推应推上。
+func TestWeldPushRetriesSignatureRejected(t *testing.T) {
+	// 准备无取消的上下文，后面每次调用都挂在上面。
+	ctx := context.Background()
+	// 建厂并登录超管，焊次都记在超管名下。
+	fac, saTok, saID := pushFactory(t, ctx)
+	// 第一次回签名被拒，之后都成功。
+	g := &gateWAN{errs: []error{domain.ErrWANSignatureRejected}, began: make(chan struct{}, 16)}
+	// 挂上假上送口，须在起循环前挂。
+	fac.SetWeldWANPoster(g)
+	// 退避调小，用例不必等五秒。
+	fac.SetWANPushBackoff(10*time.Millisecond, 40*time.Millisecond)
+	// 起后台上送循环，用例结束时停掉。
+	startWANPush(t, fac)
+	// 汇聚一条，触发后台上送。
+	if _, err := fac.FlushWeldFacts(ctx, saTok, []factory.WeldFact{pushWeld(saID, 500)}); err != nil {
+		// 把汇聚的错误打出来并停住，避免继续往下验。
+		t.Fatal(err)
+	}
+	// 等重推成功，收到的就是这条焊长。
+	g.waitFor(t, func(_ int, rows []factory.WeldWANSummary) bool { return sumLength(rows) == 500 })
+	// 被拒一次、重推一次，不该多推。
+	if calls, _, _ := g.stats(); calls != 2 {
+		// 断言没通过就停，结果和这条用例的预期不一致。
+		t.Fatalf("calls %d", calls)
+	}
+}
+
+// 签名一直被拒（厂钥真不对）时每批只补推有限几次，之后等下一个信号。
+func TestWeldPushSignatureRejectedBounded(t *testing.T) {
+	// 准备无取消的上下文，后面每次调用都挂在上面。
+	ctx := context.Background()
+	// 建厂并登录超管，焊次都记在超管名下。
+	fac, saTok, saID := pushFactory(t, ctx)
+	// 前三次都回签名被拒，之后才成功。
+	rej := domain.ErrWANSignatureRejected
+	// 首推加两次补推都被拒，这一批就该停下。
+	g := &gateWAN{errs: []error{rej, rej, rej}, began: make(chan struct{}, 16)}
+	// 挂上假上送口，须在起循环前挂。
+	fac.SetWeldWANPoster(g)
+	// 退避调小，若误多推很快就能看出来。
+	fac.SetWANPushBackoff(10*time.Millisecond, 40*time.Millisecond)
+	// 起后台上送循环，用例结束时停掉。
+	startWANPush(t, fac)
+	// 汇聚一条，触发后台上送。
+	if _, err := fac.FlushWeldFacts(ctx, saTok, []factory.WeldFact{pushWeld(saID, 600)}); err != nil {
+		// 把汇聚的错误打出来并停住，避免继续往下验。
+		t.Fatal(err)
+	}
+	// 等首推和两次补推都推过。
+	g.waitFor(t, func(calls int, _ []factory.WeldWANSummary) bool { return calls >= 3 })
+	// 留足几轮退避的时间，误多推就会超过三次。
+	time.Sleep(300 * time.Millisecond)
+	// 名额用完后不该再推，也没有推成功的行。
+	if calls, _, last := g.stats(); calls != 3 || len(last) != 0 {
+		// 断言没通过就停，结果和这条用例的预期不一致。
+		t.Fatalf("bounded: calls %d last %+v", calls, last)
+	}
+	// 再发一个信号，这次应推上。
+	fac.RequestWANPush()
+	// 等新信号推上，收到的就是这条焊长。
+	g.waitFor(t, func(_ int, rows []factory.WeldWANSummary) bool { return sumLength(rows) == 600 })
+}
+
 // 会卡住的假上送口，记下同时在推几批和每次推上的行。
 type gateWAN struct {
 	mu     sync.Mutex               // 护住计数和收到的行，上送和断言不在同一协程

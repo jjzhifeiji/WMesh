@@ -227,9 +227,13 @@ func mapHTTPStatus(code int, body []byte) error {
 		// 英文原因再收成业务错误，调用方不用猜字符串。
 		return mapChannelError(wrap.Error)
 	}
-	// 未授权收成未登录，调用方不要当网络抖动。
+	// 未授权是 WAN 不认本厂签名，不是本厂会话失效，调用方不要当网络抖动。
 	if code == http.StatusUnauthorized {
-		return domain.ErrUnauthorized
+		return domain.ErrWANSignatureRejected
+	}
+	// 被限频就收成限频错误，稍后再试。
+	if code == http.StatusTooManyRequests {
+		return domain.ErrTooManyRequests
 	}
 	// 被禁止就当无权，调用方不要重试同一请求。
 	if code == http.StatusForbidden {

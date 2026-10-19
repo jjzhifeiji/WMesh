@@ -51,6 +51,7 @@ const zh: Record<string, string> = {
   "origin code exhausted": "短码或编号已用尽",
   "request body too large": "提交内容太大，超过服务端上限",
   "too many attempts": "尝试太频繁，请稍后再试",
+  "too many requests": "请求太频繁，请稍后再试",
   "internal error": "服务异常，请稍后再试",
 };
 

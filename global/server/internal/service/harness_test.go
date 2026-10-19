@@ -4,6 +4,8 @@ package service_test
 import (
 	"testing"
 
+	"gorm.io/gorm"
+
 	"wmesh/global/internal/platform/contenttpl"
 	"wmesh/global/internal/platform/testpg"
 	"wmesh/global/internal/service"
@@ -54,6 +56,8 @@ type Harness struct {
 	t *testing.T
 	// 被测的云端应用服务。
 	WAN *service.Service
+	// 同一块云端库，用来摆出旧版本留下、服务层已写不出的数据。
+	DB *gorm.DB
 }
 
 // 开一块已迁移的云端库，并接上应用服务。
@@ -64,6 +68,8 @@ func New(t *testing.T) *Harness {
 	admin := testpg.Open(t)
 	// 建一块云端库，建不成迁移没有地方跑。
 	_, wanDSN := testpg.CreateDB(t, admin, "wmesh_wan")
-	// 迁移并接上服务，任一步失败夹具不能用。
-	return &Harness{t: t, WAN: service.NewService(store.Open(testpg.OpenMigrated(t, wanDSN)))}
+	// 迁移好的库，服务和用例共用。
+	db := testpg.OpenMigrated(t, wanDSN)
+	// 接上服务，用例要摆旧数据时也能直接写库。
+	return &Harness{t: t, WAN: service.NewService(store.Open(db)), DB: db}
 }

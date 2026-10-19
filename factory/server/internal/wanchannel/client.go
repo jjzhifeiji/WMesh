@@ -232,6 +232,12 @@ func mapChannelError(msg string) error {
 	// 钥不合法就拒绝，避免装上坏钥。
 	case domain.ErrInvalidKey.Error():
 		return domain.ErrInvalidKey
+	// WAN 不认这次签名（多半是钟偏出时间窗），回包已按 Date 校正时差，调用方可以再签再试。
+	case "unauthorized":
+		return domain.ErrWANSignatureRejected
+	// WAN 按来源限频，收成限频错误，页面提示稍后再试，不当内部故障。
+	case domain.ErrTooManyRequests.Error():
+		return domain.ErrTooManyRequests
 	// 其余原因单独处理，空的当不可达。
 	default:
 		// 没有英文原因就当平台不可达。
