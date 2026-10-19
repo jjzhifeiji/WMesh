@@ -1,12 +1,18 @@
-# WAN 工程常用动作。开发机：make test；部署机只需 docker + make：make up / make upgrade。
+# WAN 工程常用动作。开发机：make test / make dev-up（按源码重建）；部署机只需 docker + make：make up / make upgrade（不重建 app，版本只经 OTA 更换）。
 SHELL := /bin/bash
 COMPOSE ?= docker compose
 # 打进二进制的构建号（探活 build）；镜像标签另由 .env 的 WMESH_VERSION 决定，默认 dev
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 export WMESH_BUILD_VERSION := $(VERSION)
+# 离线包目标平台，默认 x86 服务器；arm64 目标机用 make bundle BUNDLE_PLATFORM=linux/arm64
+BUNDLE_PLATFORM ?= linux/amd64
+# 包名末尾的架构：去掉 linux/、其余斜杠换横杠，如 amd64
+BUNDLE_ARCH = $(subst /,-,$(patsubst linux/%,%,$(BUNDLE_PLATFORM)))
+# docker save --platform 要 Docker 28+；旧版经典存储一个标签只存一种架构，不带也只导出上面拉好的目标架构
+BUNDLE_SAVE_FLAGS = $(if $(shell docker save --help 2>/dev/null | grep -- --platform),--platform $(BUNDLE_PLATFORM))
 
 .DEFAULT_GOAL := help
-.PHONY: help env test-db test-db-down test guard build up down logs ps upgrade bundle push dev-server dev-web
+.PHONY: help env test-db test-db-down test guard build up dev-up down logs ps upgrade bundle push dev-server dev-web
 
 help: ## 列出可用命令
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  %-14s %s\n", $$1, $$2}'
@@ -31,8 +37,13 @@ test: test-db ## 门禁 + 服务端 vet + 矩阵验收，前端 lint + 类型检
 build: env ## 构建应用镜像（二进制构建号取 git describe，镜像标签取 .env 的 WMESH_VERSION）
 	$(COMPOSE) build --pull
 
-up: env ## 拉起 app + db + oss + alloy 并等到健康
+up: env ## 拉起 app + db + oss + alloy 并等到健康，再重建 updater 换上最新 apply.sh；沿用本机已有 app 镜像（OTA 换上或 docker load），本机没有才构建
+	$(COMPOSE) up -d --wait
+	$(COMPOSE) up -d --no-deps --force-recreate updater
+
+dev-up: env ## 开发机按当前源码重建 app 并拉起、等到健康，再重建 updater（会覆盖本机同标签 app 镜像，部署机别用）
 	$(COMPOSE) up -d --build --wait
+	$(COMPOSE) up -d --no-deps --force-recreate updater
 
 down: ## 停止并移除容器，保留数据卷
 	$(COMPOSE) down
@@ -43,15 +54,18 @@ logs: ## 跟随应用日志
 ps: ## 查看容器状态
 	$(COMPOSE) ps
 
-upgrade: env ## 升级：拉新基础镜像、重建应用、替换容器；库迁移在应用启动时自动向前执行
+upgrade: env ## 升级：拉新基础镜像、替换容器并重建 updater，不重建 app（版本只经 OTA 更换）；库迁移在应用启动时自动向前执行
 	$(COMPOSE) pull --ignore-buildable --ignore-pull-failures
-	$(COMPOSE) build --pull
 	$(COMPOSE) up -d --wait --remove-orphans
+	$(COMPOSE) up -d --no-deps --force-recreate updater
 
-bundle: build ## 导出离线安装包 dist/*.tar（含 app/db/oss/alloy 镜像），目标机 docker load -i 后 make up
-	$(COMPOSE) pull --ignore-buildable --ignore-pull-failures
-	mkdir -p dist && docker save -o dist/wmesh-global-images-$(VERSION).tar $$($(COMPOSE) config --images)
-	@ls -lh dist/wmesh-global-images-$(VERSION).tar
+bundle: env ## 按 BUNDLE_PLATFORM（默认 linux/amd64）导出离线安装包 dist/*.tar（含 app/db/oss/alloy 镜像），目标机 docker load -i 后 make up；打完本机这些镜像是目标架构，本机再跑先 make dev-up 换回；Linux 非 amd64 打包机先装 binfmt
+	DOCKER_DEFAULT_PLATFORM=$(BUNDLE_PLATFORM) $(COMPOSE) build --pull
+	DOCKER_DEFAULT_PLATFORM=$(BUNDLE_PLATFORM) $(COMPOSE) pull --ignore-buildable --ignore-pull-failures
+	mkdir -p dist && docker save $(BUNDLE_SAVE_FLAGS) -o dist/wmesh-global-images-$(VERSION)-$(BUNDLE_ARCH).tar $$($(COMPOSE) config --images)
+	@ls -lh dist/wmesh-global-images-$(VERSION)-$(BUNDLE_ARCH).tar
+	@echo ">> 包内镜像为 $(BUNDLE_PLATFORM)；本机 app 等同标签镜像也换成了该架构，本机要再跑先 make dev-up 换回本机架构"
+	@echo ">> Linux 打包机与目标架构不同（如 arm64 机打 amd64）要先装 binfmt 才能构建"
 
 push: build ## 推送应用镜像到 .env 里的 WMESH_REGISTRY
 	$(COMPOSE) push app

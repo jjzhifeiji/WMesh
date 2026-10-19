@@ -59,5 +59,6 @@ var (
 	ErrAssetCodeConflict     = errors.New("asset code already exists")              // 同号不同身份，或同身份编号不一致
 	ErrOriginCodeExhausted   = errors.New("origin code exhausted")                  // 短码用尽或编号序号溢出
 	ErrSoftwareInstallFailed = errors.New("software install failed")                // 确认后安装失败，旧版本继续跑
+	ErrSoftwareApplying      = errors.New("software update is applying")            // 上一包还在换、没出结果，不能再确认
 	ErrTooManyAttempts       = errors.New("too many attempts")                      // 激活码试得太勤，稍后再试
 )

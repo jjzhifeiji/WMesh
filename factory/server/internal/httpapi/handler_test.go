@@ -759,10 +759,12 @@ func TestFactorySoftwareHTTP(t *testing.T) {
 		// 与预期不符就停测，避免后面连环误判。
 		t.Fatalf("anon current %d %s", code, body)
 	}
-	// 查看当前已装版本，未装时应当为空。
+	// 本进程版本号和下一版的文本，断言版本时要用。
+	running, next := strconv.FormatInt(release.Code, 10), strconv.FormatInt(release.Code+1, 10)
+	// 查看当前已装版本，没记过已装时应是本进程版本。
 	code, body = do(t, srv, "GET", base+"/software/current", tok, "")
-	// 不是成功，或正文与预期不符则失败。
-	if code != http.StatusOK || gjson(t, body, "version") != "0" {
+	// 不是成功，或不是本进程版本号和版本名则失败。
+	if code != http.StatusOK || gjson(t, body, "version") != running || gjson(t, body, "versionName") != release.Name {
 		// 与预期不符就停测，避免后面连环误判。
 		t.Fatalf("empty current %d %s", code, body)
 	}
@@ -781,25 +783,25 @@ func TestFactorySoftwareHTTP(t *testing.T) {
 		t.Fatalf("empty pending %d %s", code, body)
 	}
 	// 准备一段包体，后面用来入库或下载。
-	pkg := []byte("svc-2")
-	// 先放入一份软件包，再走确认或下载。
+	pkg := []byte("svc-next")
+	// 先放入比本进程高一版的软件包，再走确认或下载。
 	if err := svc.Updates.IngestSoftware(context.Background(), service.SoftwareOffer{
 		// 填上种类、版本和摘要，供后面安装核对。
-		Kind: service.SoftwareFactoryService, Version: 2, VersionName: "1.2.0", Digest: digest.Sum(pkg), Body: pkg,
+		Kind: service.SoftwareFactoryService, Version: release.Code + 1, VersionName: "1.2.0", Digest: digest.Sum(pkg), Body: pkg,
 	}); err != nil {
 		t.Fatalf("ingest: %v", err)
 	}
 	// 查看待确认的包，没有则应当为空。
 	code, body = do(t, srv, "GET", base+"/software/pending", tok, "")
 	// 不是成功，或正文与预期不符则失败。
-	if code != http.StatusOK || gjson(t, body, "version") != "2" || gjson(t, body, "versionName") != "1.2.0" {
+	if code != http.StatusOK || gjson(t, body, "version") != next || gjson(t, body, "versionName") != "1.2.0" {
 		// 与预期不符就停测，避免后面连环误判。
 		t.Fatalf("pending %d %s", code, body)
 	}
 	// 假定更换已经成功，才能把待确认看成已装。
 	svc.Updates.SetApplyOutcome(service.ApplyOK)
 	// 确认切换版本，未确认不能当成已装。
-	code, body = do(t, srv, "POST", base+"/software/confirm", tok, `{"kind":"factory_service","version":2}`)
+	code, body = do(t, srv, "POST", base+"/software/confirm", tok, `{"kind":"factory_service","version":`+next+`}`)
 	// 不是无内容则本测失败。
 	if code != http.StatusNoContent {
 		// 与预期不符就停测，避免后面连环误判。
@@ -815,7 +817,7 @@ func TestFactorySoftwareHTTP(t *testing.T) {
 	// 查看当前已装版本，未装时应当为空。
 	code, body = do(t, srv, "GET", base+"/software/current", tok, "")
 	// 不是成功，或正文与预期不符则失败。
-	if code != http.StatusOK || gjson(t, body, "version") != "2" || gjson(t, body, "versionName") != "1.2.0" {
+	if code != http.StatusOK || gjson(t, body, "version") != next || gjson(t, body, "versionName") != "1.2.0" {
 		// 与预期不符就停测，避免后面连环误判。
 		t.Fatalf("installed current %d %s", code, body)
 	}

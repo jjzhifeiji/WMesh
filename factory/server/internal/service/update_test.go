@@ -66,7 +66,7 @@ func (m *memSource) Latest(_ context.Context, kind string) (factory.SoftwareMeta
 }
 
 // 按种类和版本给出正文，拒绝或对不上就返回错误
-func (m *memSource) Pull(_ context.Context, kind string, version int64) ([]byte, error) {
+func (m *memSource) Pull(_ context.Context, kind string, version int64, _ []byte) ([]byte, error) {
 	// 锁住拉取计数，避免并发把次数写乱
 	m.mu.Lock()
 	// 拉取次数加一，多出来说明没有走幂等
@@ -85,6 +85,9 @@ func (m *memSource) Pull(_ context.Context, kind string, version int64) ([]byte,
 	}
 	return o.Body, nil
 }
+
+// 内存源没有暂存可清，收下通知直接忽略
+func (m *memSource) Received(string, int64, []byte) {}
 
 // 用正文算出摘要并拼报价，摘要错则拉取会被拒
 func offerOf(kind string, version int64, name string, body []byte) factory.SoftwareOffer {
@@ -705,22 +708,158 @@ func TestPadClientSoftwarePull(t *testing.T) {
 		// 软件元数据不对就失败
 		t.Fatalf("meta %+v %v", row, err)
 	}
-	// 平板拉取软件正文，失败则本步验收不能继续
-	body, err := fac.PullPadClientSoftware(ctx, tok, 51)
-	// 平板拉取软件正文失败就停，避免带着错误继续验
-	if err != nil || !bytes.Equal(body, apk) {
+	// 平板打开软件包流，失败则本步验收不能继续
+	pack, err := fac.PullPadClientSoftware(ctx, tok, 51, false)
+	// 平板打开软件包流失败就停，避免带着错误继续验
+	if err != nil {
+		// 打不开就把原因打出并停掉本例
+		t.Fatalf("pull %v", err)
+	}
+	// 读完整份流再比正文
+	body := readStream(t, pack)
+	// 正文对不上就失败
+	if !bytes.Equal(body, apk) {
 		// 拉取结果不对就失败
-		t.Fatalf("pull %q %v", body, err)
+		t.Fatalf("pull %q", body)
 	}
 	// 期望平板拉取软件正文被拒为不存在，放行即失败
-	if _, err := fac.PullPadClientSoftware(ctx, tok, 9); !errors.Is(err, domain.ErrNotFound) {
+	if _, err := fac.PullPadClientSoftware(ctx, tok, 9, false); !errors.Is(err, domain.ErrNotFound) {
 		// 缺了应有的记录就失败
 		t.Fatalf("missing %v", err)
 	}
 	// 期望平板拉取软件正文被拒为未授权，放行即失败
-	if _, err := fac.PullPadClientSoftware(ctx, "", 51); !errors.Is(err, domain.ErrUnauthorized) {
+	if _, err := fac.PullPadClientSoftware(ctx, "", 51, false); !errors.Is(err, domain.ErrUnauthorized) {
 		// 空令牌还能操作就失败，应当未授权
 		t.Fatalf("anon pull %v", err)
+	}
+}
+
+// 本进程版本算已装基线：旧包不收不拉，同版不提示，高一版才提示
+func TestRunningSoftwareBaseline(t *testing.T) {
+	// 准备空上下文，后续调用都挂在这上面
+	ctx := context.Background()
+	// 起一套测试库和厂服务，起不来则本例无法开始
+	h := New(t)
+	// 建厂并种初始超管，失败则本步验收不能继续
+	seed, fac, err := h.Provision(ctx, "sa-rb", "超管")
+	// 建厂并种初始超管失败就停，避免带着错误继续验
+	if err != nil {
+		// 建厂并种初始超管失败就把原因打出并停掉本例
+		t.Fatal(err)
+	}
+	// 激活初始超管失败就停，避免带着错误继续验
+	if err := fac.Activate(ctx, "sa-rb", seed.ActivationToken, "sa-pass"); err != nil {
+		// 激活初始超管失败就把原因打出并停掉本例
+		t.Fatal(err)
+	}
+	// 登录取出令牌，登不上则后面没有身份
+	tok := mustLogin(t, ctx, fac, "sa-rb", "sa-pass")
+	// 假定本进程跑的是 v10，库里还没记过已装
+	fac.Updates.SetRunningSoftware(10, "1.10.0")
+	// 没记过已装也没有副本，当前版本应是本进程的
+	cur, err := fac.CurrentFactorySoftware(ctx, tok)
+	// 读失败或不是 v10 和本进程版本名就失败
+	if err != nil || cur.Version != 10 || cur.VersionName != "1.10.0" {
+		// 当前版本不对就把结果打出并停掉本例
+		t.Fatalf("running current %+v %v", cur, err)
+	}
+	// 收 v8 低于本进程版本，应当拒为过旧
+	if err := fac.IngestSoftware(ctx, offerOf(factory.SoftwareFactoryService, 8, "1.8.0", []byte("factory-svc-8"))); !errors.Is(err, domain.ErrStaleRevision) {
+		// 旧包被收下就把错误打出并停掉本例
+		t.Fatalf("ingest v8 %v", err)
+	}
+	// 用内存源代替云端，云端最高只有 v8
+	src := &memSource{}
+	// 云端只给 v8，比本进程旧
+	src.put(offerOf(factory.SoftwareFactoryService, 8, "1.8.0", []byte("factory-svc-8")))
+	// 换上软件源，问包和拉包都走它
+	fac.Updates.SetSoftwareSource(src)
+	// 记下审计条数，不拉旧包时也不该多记
+	rows, err := fac.ListAudit(ctx)
+	// 读审计失败就停，避免带着错误继续验
+	if err != nil {
+		// 读审计失败就把原因打出并停掉本例
+		t.Fatal(err)
+	}
+	// 留下拉包前的条数，后面比有没有多记
+	audits := len(rows)
+	// 通道通知 v8 时应直接拒为过旧
+	if err := fac.Updates.EnsureSoftware(ctx, factory.SoftwareFactoryService, 8); !errors.Is(err, domain.ErrStaleRevision) {
+		// 没拒成过旧就把错误打出并停掉本例
+		t.Fatalf("ensure v8 %v", err)
+	}
+	// 锁住拉取计数，避免并发把次数写乱
+	src.mu.Lock()
+	// 读出拉取次数，旧包一次都不该拉
+	pulls := src.pulls
+	// 放开拉取计数，不放则后面读不到次数
+	src.mu.Unlock()
+	// 拉过旧包就失败，每次问包都会整包重下
+	if pulls != 0 {
+		// 旧包被拉就把次数打出并停掉本例
+		t.Fatalf("pulled stale %d", pulls)
+	}
+	// 再读审计，拒旧包不该多记
+	rows, err = fac.ListAudit(ctx)
+	// 读失败或条数变了就失败
+	if err != nil || len(rows) != audits {
+		// 多记审计就把条数打出并停掉本例
+		t.Fatalf("audit %d -> %d %v", audits, len(rows), err)
+	}
+	// 收下同版 v10，可以收但不该提示
+	if err := fac.IngestSoftware(ctx, offerOf(factory.SoftwareFactoryService, 10, "1.10.0", []byte("factory-svc-10"))); err != nil {
+		// 同版收不下就把原因打出并停掉本例
+		t.Fatal(err)
+	}
+	// 同版不该有待装提示
+	p, err := fac.PendingFactorySoftware(ctx, tok)
+	// 读失败或有提示就失败
+	if err != nil || p != nil {
+		// 同版还提示就把结果打出并停掉本例
+		t.Fatalf("pending same %+v %v", p, err)
+	}
+	// 确认同版应按找不到拒绝，不白白重启
+	if err := fac.ConfirmFactoryUpdate(ctx, tok, factory.SoftwareFactoryService, 10); !errors.Is(err, domain.ErrNotFound) {
+		// 同版能确认就把错误打出并停掉本例
+		t.Fatalf("confirm same %v", err)
+	}
+	// 当前版本仍是 v10
+	cur, err = fac.CurrentFactorySoftware(ctx, tok)
+	// 读失败或不是 v10 就失败
+	if err != nil || cur.Version != 10 || cur.VersionName != "1.10.0" {
+		// 当前版本不对就把结果打出并停掉本例
+		t.Fatalf("current same %+v %v", cur, err)
+	}
+	// 收下高一版 v11，这时才该提示
+	if err := fac.IngestSoftware(ctx, offerOf(factory.SoftwareFactoryService, 11, "1.11.0", []byte("factory-svc-11"))); err != nil {
+		// 新版收不下就把原因打出并停掉本例
+		t.Fatal(err)
+	}
+	// 高一版应有待装提示
+	p, err = fac.PendingFactorySoftware(ctx, tok)
+	// 读失败或没提示 v11 就失败
+	if err != nil || p == nil || p.Version != 11 {
+		// 新版没提示就把结果打出并停掉本例
+		t.Fatalf("pending next %+v %v", p, err)
+	}
+	// 列副本看保留原因，正在跑的和最高都不能删
+	items, err := fac.ListFactorySoftware(ctx, tok, factory.SoftwareFactoryService)
+	// 列副本失败就停，避免带着错误继续验
+	if err != nil {
+		// 列副本失败就把原因打出并停掉本例
+		t.Fatal(err)
+	}
+	// 按版本记下保留原因，便于逐个核对
+	keep := map[int64]string{}
+	// 逐份记下保留原因
+	for _, it := range items {
+		// 按版本记下这份的保留原因
+		keep[it.Version] = it.Keep
+	}
+	// v10 是正在跑的、v11 是最高，标错就失败
+	if keep[10] != factory.SoftwareKeepInstalled || keep[11] != factory.SoftwareKeepLatest {
+		// 保留原因不对就把结果打出并停掉本例
+		t.Fatalf("keep %+v", keep)
 	}
 }
 
@@ -849,5 +988,168 @@ func TestImageOccupancy(t *testing.T) {
 	if jan.ref != "app:old" {
 		// 清理目标记错就失败，请求没落到清洁工
 		t.Fatalf("ref %q", jan.ref)
+	}
+}
+
+// 假的换包进度来源，按设定交回 updater 结果
+type stubApplyReporter struct {
+	phase   string // 设定的阶段，ok 或 fail
+	kind    string // 设定的种类，对不上就记错包
+	version int64  // 设定的版本，对不上就记错包
+	errMsg  string // 设定的失败原因，应当进审计对象
+}
+
+// 按设定交回进度，不碰磁盘
+func (r *stubApplyReporter) Progress() (string, string, int64, string, error) {
+	return r.phase, r.kind, r.version, r.errMsg, nil
+}
+
+// 挑出某动作某结果的审计行，读不到就停掉本例
+func softwareAudit(t *testing.T, ctx context.Context, fac *factory.Service, action, result string) []audit.Row {
+	// 标成辅助函数，失败栈落到调用方
+	t.Helper()
+	// 读出本厂审计，读不到就没法数
+	rows, err := fac.ListAudit(ctx)
+	// 读审计失败就停，避免带着错误继续验
+	if err != nil {
+		// 读审计失败就把原因打出并停掉本例
+		t.Fatal(err)
+	}
+	// 准备收下对上动作和结果的行
+	var out []audit.Row
+	// 逐行挑出对上动作和结果的
+	for _, r := range rows {
+		// 动作和结果都对上才收下
+		if r.Action == action && r.Result == result {
+			// 收下这一行，后面数条数看对象
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// 落地失败只记一条带原因的拒绝，再确认后再失败另记，成功照旧一条允许
+func TestApplyFailAudit(t *testing.T) {
+	// 准备空上下文，后续调用都挂在这上面
+	ctx := context.Background()
+	// 起一套测试库和厂服务，起不来则本例无法开始
+	h := New(t)
+	// 建厂并种初始超管，失败则本步验收不能继续
+	seed, fac, err := h.Provision(ctx, "sa-af", "超管")
+	// 建厂并种初始超管失败就停，避免带着错误继续验
+	if err != nil {
+		// 建厂并种初始超管失败就把原因打出并停掉本例
+		t.Fatal(err)
+	}
+	// 激活初始超管失败就停，避免带着错误继续验
+	if err := fac.Activate(ctx, "sa-af", seed.ActivationToken, "sa-pass"); err != nil {
+		// 激活初始超管失败就把原因打出并停掉本例
+		t.Fatal(err)
+	}
+	// 登录取出令牌，登不上则后面没有身份
+	tok := mustLogin(t, ctx, fac, "sa-af", "sa-pass")
+	// 收下厂服务 v7，没有它就没有可确认的包
+	if err := fac.IngestSoftware(ctx, offerOf(factory.SoftwareFactoryService, 7, "1.7.0", []byte("factory-svc-7"))); err != nil {
+		// 收包失败就把原因打出并停掉本例
+		t.Fatal(err)
+	}
+	// 先记下已装版本，失败后必须原样不动
+	before, err := fac.CurrentFactorySoftware(ctx, tok)
+	// 读已装版本失败就停，避免带着错误继续验
+	if err != nil {
+		// 读已装版本失败就把原因打出并停掉本例
+		t.Fatal(err)
+	}
+	// 超管确认 v7，留下一条确认允许
+	if err := fac.ConfirmFactoryUpdate(ctx, tok, factory.SoftwareFactoryService, 7); err != nil {
+		// 确认失败就把原因打出并停掉本例
+		t.Fatal(err)
+	}
+	// 假定 updater 探活失败并已切回上一版
+	rep := &stubApplyReporter{phase: "fail", kind: factory.SoftwareFactoryService, version: 7, errMsg: "health check failed"}
+	// 换上假的进度来源，读到的就是这份失败
+	fac.SetApplyReporter(rep)
+	// 连查三次进度，模拟页面轮询
+	for i := 0; i < 3; i++ {
+		// 查一次进度，页面要照样看到失败
+		got, err := fac.ApplyProgress(ctx, tok)
+		// 读不到或没报失败原因就失败
+		if err != nil || got.Phase != "fail" || got.Error != "health check failed" {
+			// 页面没看到失败就把结果打出并停掉本例
+			t.Fatalf("progress %+v %v", got, err)
+		}
+	}
+	// 再模拟进程重启补记一次
+	if err := fac.SettleStaged(ctx); err != nil {
+		// 启动补记失败就把原因打出并停掉本例
+		t.Fatal(err)
+	}
+	// 挑出落地拒绝，同一次结果只该有一条
+	denies := softwareAudit(t, ctx, fac, "apply_software", audit.Deny)
+	// 条数不是一或对象没带原因就失败
+	if len(denies) != 1 || denies[0].Target != "factory_service v7: health check failed" {
+		// 重复记或没带原因就把审计打出并停掉本例
+		t.Fatalf("denies %+v", denies)
+	}
+	// 再读已装版本，失败不能改它
+	cur, err := fac.CurrentFactorySoftware(ctx, tok)
+	// 读失败或版本变了就失败
+	if err != nil || cur.Version != before.Version {
+		// 已装被改动就把结果打出并停掉本例
+		t.Fatalf("installed %+v before %+v %v", cur, before, err)
+	}
+	// 再确认一次 v7，规格允许重试
+	if err := fac.ConfirmFactoryUpdate(ctx, tok, factory.SoftwareFactoryService, 7); err != nil {
+		// 再确认失败就把原因打出并停掉本例
+		t.Fatal(err)
+	}
+	// 再报失败后查一次进度，应另记一条
+	if _, err := fac.ApplyProgress(ctx, tok); err != nil {
+		// 查进度失败就把原因打出并停掉本例
+		t.Fatal(err)
+	}
+	// 重启补记一次，不该再多记
+	if err := fac.SettleStaged(ctx); err != nil {
+		// 启动补记失败就把原因打出并停掉本例
+		t.Fatal(err)
+	}
+	// 两次确认各失败一次，应当正好两条
+	if n := len(softwareAudit(t, ctx, fac, "apply_software", audit.Deny)); n != 2 {
+		// 条数不对就把条数打出并停掉本例
+		t.Fatalf("denies after reconfirm %d", n)
+	}
+	// 改成 updater 探活通过
+	rep.phase, rep.errMsg = "ok", ""
+	// 连查两次进度，成功也会被轮询
+	for i := 0; i < 2; i++ {
+		// 查一次进度，读不到就失败
+		if _, err := fac.ApplyProgress(ctx, tok); err != nil {
+			// 查进度失败就把原因打出并停掉本例
+			t.Fatal(err)
+		}
+	}
+	// 重启补记一次，已装幂等不再多记
+	if err := fac.SettleStaged(ctx); err != nil {
+		// 启动补记失败就把原因打出并停掉本例
+		t.Fatal(err)
+	}
+	// 挑出落地允许，成功照旧只该一条
+	allows := softwareAudit(t, ctx, fac, "apply_software", audit.Allow)
+	// 条数不是一或对象不对就失败
+	if len(allows) != 1 || allows[0].Target != "factory_service v7" {
+		// 成功记多或记错就把审计打出并停掉本例
+		t.Fatalf("allows %+v", allows)
+	}
+	// 成功后已装必须换成 v7
+	cur, err = fac.CurrentFactorySoftware(ctx, tok)
+	// 读失败或没换成 v7 就失败
+	if err != nil || cur.Version != 7 {
+		// 已装没记上就把结果打出并停掉本例
+		t.Fatalf("installed after ok %+v %v", cur, err)
+	}
+	// 成功不该多出落地拒绝
+	if n := len(softwareAudit(t, ctx, fac, "apply_software", audit.Deny)); n != 2 {
+		// 拒绝条数变了就把条数打出并停掉本例
+		t.Fatalf("denies after ok %d", n)
 	}
 }

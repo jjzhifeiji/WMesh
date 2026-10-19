@@ -75,10 +75,16 @@ func (s wanSoftwareSrc) Latest(ctx context.Context, kind string) (service.Softwa
 	return service.SoftwareMeta{Kind: m.Kind, Version: m.Version, VersionName: m.VersionName, Digest: m.Digest}, nil
 }
 
-// Pull 已认领厂会话按版本拉包字节。
-func (s wanSoftwareSrc) Pull(ctx context.Context, kind string, version int64) ([]byte, error) {
-	// 按版本把包字节拉回来，失败则不要安装。
-	return wanchannel.PullSoftwareBody(ctx, s.wanURL, s.factoryID, s.priv, kind, version)
+// Pull 已认领厂会话按版本拉包字节；边下边落暂存，断了下次接着下。
+func (s wanSoftwareSrc) Pull(ctx context.Context, kind string, version int64, want []byte) ([]byte, error) {
+	// 按版本把包字节拉回来，摘要对不上则不要安装。
+	return wanchannel.PullSoftwareBody(ctx, s.wanURL, s.factoryID, s.priv, kind, version, want)
+}
+
+// Received 本厂已收下这一版，删掉这家厂对应的拉包暂存。
+func (s wanSoftwareSrc) Received(kind string, version int64, sum []byte) {
+	// 按厂、种类、版本和摘要找到暂存删掉，没有也不出错。
+	wanchannel.DropSoftwarePart(s.factoryID, kind, version, sum)
 }
 
 // 把厂→WAN 拉包源挂到本厂服务。
@@ -93,25 +99,13 @@ func (h *Hub) attachSoftwareSource(factoryID uuid.UUID, svc *service.Service, wa
 	})
 }
 
-// 新进程起来后读 updater 状态，成功才记已装。
+// 新进程起来后按 updater 结果补记：成功记已装，失败或切回记落地失败。
 func (h *Hub) completeStaged(svc *service.Service) {
-	// 看落盘位置能不能回报换装结果。
-	r, ok := h.pendingSink.(interface {
-		// 读更新器是否已经换完，成功才记已装。
-		Report() (kind string, version int64, ok bool, present bool, err error)
-	})
-	// 不能回报换装结果就跳过，不当成已装完。
-	if !ok {
-		return
+	// 没结果或还在换都不记；补记没写上只警告，查进度时还会再补。
+	if err := svc.Updates.SettleStaged(context.Background()); err != nil {
+		// 记下哪家厂没补上，便于排查。
+		slog.Warn("settle staged software", "factory", svc.Store().FactoryID(), "err", err)
 	}
-	// 读更新器是否已经换完，成功才记已装。
-	kind, version, applied, present, err := r.Report()
-	// 没换成功就不记已装，避免库和磁盘不一致。
-	if err != nil || !present || !applied {
-		return
-	}
-	// 换装成功才把库里的包记成已装。
-	_ = svc.Updates.MarkInstalled(context.Background(), kind, version)
 }
 
 // 每厂只起一条出站循环，已有则跳过。
@@ -364,7 +358,7 @@ func (h *Hub) dialHold(ctx context.Context, factoryID uuid.UUID) error {
 		}
 		// 收不下就交回：内容坏的通道只记日志，库错等按退避补拉。
 		return svc.Closure.AcceptTemplateDelivery(ctx, snap)
-	}, func(raw json.RawMessage) error { // 软件通知交给本厂，没字节再按版本去拉。
+	}, func(sctx context.Context, raw json.RawMessage) error { // 软件通知在后台交给本厂，没字节再按版本去拉。
 		// 软件包：本厂没有完整副本才去拉，失败只记日志，不断通道。
 		var offer service.SoftwareOffer
 		// 软件通知解不开只记日志，不去拉包。
@@ -375,15 +369,17 @@ func (h *Hub) dialHold(ctx context.Context, factoryID uuid.UUID) error {
 		}
 		// 通知没带字节就按版本去拉，失败只记日志。
 		if len(offer.Body) == 0 {
-			// 本厂没有这份才去拉，失败只记日志。
-			if err := svc.Updates.EnsureSoftware(ctx, offer.Kind, offer.Version); err != nil {
+			// 本厂没有这份才去拉；通道离开只是不再等，下载照常在后台跑完。
+			err := svc.Updates.EnsureSoftware(sctx, offer.Kind, offer.Version)
+			// 比已装还旧是常态，通道离开也不算失败，都不打警告。
+			if err != nil && !errors.Is(err, domain.ErrStaleRevision) && sctx.Err() == nil {
 				// 记下没拉到软件包，连接继续留着。
 				slog.Warn("ensure software", "factory", factoryID, "kind", offer.Kind, "err", err)
 			}
 			return nil
 		}
 		// 通知里带了字节就收下，失败只记日志。
-		if err := svc.Updates.IngestSoftware(ctx, offer); err != nil {
+		if err := svc.Updates.IngestSoftware(sctx, offer); err != nil {
 			// 记下没能收下软件包，连接继续留着。
 			slog.Warn("accept software", "factory", factoryID, "err", err)
 		}

@@ -6,6 +6,9 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sync"
+
+	"wmesh/global/internal/platform/domain"
 )
 
 const (
@@ -17,6 +20,9 @@ const (
 	imagesFile  = "images.json"  // updater 写本机 app 镜像占用
 )
 
+// stageMu 让同进程的几次确认排队落包，免得交错写成半份。
+var stageMu sync.Mutex
+
 // Dir 把确认后的包写到 dir。
 type Dir string
 
@@ -27,53 +33,16 @@ type pendingMeta struct {
 	Digest  []byte `json:"digest"`  // SHA-256
 }
 
-// 换容器之后写下的就绪或失败。
+// 换容器之后写下的就绪或失败，以及换的是哪一版。
 type statusMeta struct {
-	OK    bool   `json:"ok"`              // 探活通过
-	Error string `json:"error,omitempty"` // 失败原因，不进业务库
+	OK      bool   `json:"ok"`                // 探活通过
+	Kind    string `json:"kind,omitempty"`    // updater 开工时读到的种类
+	Version int64  `json:"version,omitempty"` // updater 开工时读到的版本；旧格式为 0
+	Digest  []byte `json:"digest,omitempty"`  // updater 开工时读到的摘要，便于对账
+	Error   string `json:"error,omitempty"`   // 失败原因，只写进落地失败审计
 }
 
-// Report 读 updater 状态；没有 status 则 present=false。
-func (d Dir) Report() (kind string, version int64, ok bool, present bool, err error) {
-	// 先取出目录字符串。
-	dir := string(d)
-	// 没给目录就用默认更新区。
-	if dir == "" {
-		// 默认落在本机更新目录。
-		dir = "/var/lib/wmesh/update"
-	}
-	// 先读换容器的结果。
-	raw, err := os.ReadFile(filepath.Join(dir, statusFile))
-	// 读失败要区分还没有结果。
-	if err != nil {
-		// 文件不在表示还没换完。
-		if os.IsNotExist(err) {
-			return "", 0, false, false, nil
-		}
-		return "", 0, false, false, err
-	}
-	// 准备接换容器写下的结果。
-	var st statusMeta
-	// 拆不开则结果在，但内容坏了。
-	if err := json.Unmarshal(raw, &st); err != nil {
-		return "", 0, false, true, err
-	}
-	// 再读待切换说明，补上种类和版本。
-	metaRaw, err := os.ReadFile(filepath.Join(dir, pendingFile))
-	// 说明读不到就只交回成败。
-	if err != nil {
-		return "", 0, st.OK, true, err
-	}
-	// 准备接待切换说明。
-	var meta pendingMeta
-	// 说明拆不开也只交回成败。
-	if err := json.Unmarshal(metaRaw, &meta); err != nil {
-		return "", 0, st.OK, true, err
-	}
-	return meta.Kind, meta.Version, st.OK, true, nil
-}
-
-// Stage 只写 tar 和待切换说明，不换容器。
+// Stage 只写 tar 和待切换说明，不换容器；上一包还没出结果就拒绝。
 func (d Dir) Stage(kind string, version int64, digest, body []byte) error {
 	// 先取出目录字符串。
 	dir := string(d)
@@ -82,12 +51,32 @@ func (d Dir) Stage(kind string, version int64, digest, body []byte) error {
 		// 默认落在本机更新目录。
 		dir = "/var/lib/wmesh/update"
 	}
+	// 同进程的几次确认排队落包，免得交错写。
+	stageMu.Lock()
+	// 落完或中途失败都放开，下一次确认才能进来。
+	defer stageMu.Unlock()
 	// 目录必须在，包才写得进去。
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	// 清掉上一轮结果，避免把旧成败当成这次。
-	_ = os.Remove(filepath.Join(dir, statusFile))
+	// 看 updater 是否还在排队或正在换上一包。
+	busy, err := applyingNow(dir)
+	// 判不清就停，不冒险覆盖正在用的包。
+	if err != nil {
+		return err
+	}
+	// 上一包还没出结果就拒绝，免得结果记到新版本头上。
+	if busy {
+		return domain.ErrSoftwareApplying
+	}
+	// 先删待切换说明，updater 就不会拿旧说明配上新旧不明的包。
+	if err := removeIfAny(filepath.Join(dir, pendingFile)); err != nil {
+		return err
+	}
+	// 再清掉上一轮结果，避免把旧成败当成这次。
+	if err := removeIfAny(filepath.Join(dir, statusFile)); err != nil {
+		return err
+	}
 	// 先写到临时文件，写完再换名。
 	tmp := filepath.Join(dir, tarFile+".tmp")
 	// 包写失败则不替换正式文件。
@@ -114,7 +103,7 @@ func (d Dir) Stage(kind string, version int64, digest, body []byte) error {
 	return os.Rename(metaTmp, filepath.Join(dir, pendingFile))
 }
 
-// Progress 读待切换与 updater 结果：idle / applying / ok / fail。
+// Progress 读待切换与 updater 结果：idle / applying / ok / fail；结果带版本就按结果报。
 func (d Dir) Progress() (phase, kind string, version int64, errMsg string, err error) {
 	// 先取出目录字符串。
 	dir := string(d)
@@ -137,11 +126,18 @@ func (d Dir) Progress() (phase, kind string, version int64, errMsg string, err e
 	}
 	// 有结果就分成功和失败。
 	if hasStatus {
+		// 旧 updater 不写版本，只能沿用待切换说明。
+		kind, version = meta.Kind, meta.Version
+		// 结果写明了换的是哪一版，就以它为准。
+		if st.Version > 0 {
+			// 待切换说明可能已换成下一版，只认 updater 自己记的。
+			kind, version = st.Kind, st.Version
+		}
 		// 探活通过就算换完了。
 		if st.OK {
-			return "ok", meta.Kind, meta.Version, "", nil
+			return "ok", kind, version, "", nil
 		}
-		return "fail", meta.Kind, meta.Version, st.Error, nil
+		return "fail", kind, version, st.Error, nil
 	}
 	// 只有说明、还没有结果，就是正在换。
 	if hasPending {
@@ -190,6 +186,46 @@ func readStatus(dir string) (statusMeta, bool, error) {
 		return statusMeta{}, false, err
 	}
 	return st, true, nil
+}
+
+// 有待切换说明和包、却还没有结果，就是 updater 在排队或正在换。
+func applyingNow(dir string) (bool, error) {
+	// 说明和包缺一个，updater 都不会开工。
+	for _, name := range []string{pendingFile, tarFile} {
+		// 看这个文件在不在。
+		ok, err := exists(filepath.Join(dir, name))
+		// 查不了就交回错误，不在就不算在换。
+		if err != nil || !ok {
+			return false, err
+		}
+	}
+	// 再看 updater 写没写结果。
+	done, err := exists(filepath.Join(dir, statusFile))
+	// 结果查不了就交回错误，不贸然覆盖。
+	if err != nil {
+		return false, err
+	}
+	return !done, nil
+}
+
+// 看文件在不在；不在不算错。
+func exists(path string) (bool, error) {
+	// 只取文件信息，不读正文。
+	_, err := os.Stat(path)
+	// 不在就交回否，不当成故障。
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+// 删掉文件；本来就没有不算错。
+func removeIfAny(path string) error {
+	// 删不掉且不是本来就没有，才交回错误。
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
 
 // 清镜像之后写下的空间和成败。

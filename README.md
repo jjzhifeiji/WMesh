@@ -20,8 +20,8 @@
 ./scripts/dev-up.sh
 
 # 或分工程：
-cd factory && make up    # 厂内 http://localhost:52081
-cd global && make up     # WAN  http://localhost:52080
+cd factory && make dev-up    # 厂内 http://localhost:52081
+cd global && make dev-up     # WAN  http://localhost:52080
 ```
 
 首次 `make up` 会把 `.env.example` 复制成 `.env`；生产环境先改掉里面的密码，并保证两侧 `WMESH_BOOTSTRAP_TOKEN` 一致。

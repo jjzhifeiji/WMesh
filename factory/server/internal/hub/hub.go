@@ -16,6 +16,7 @@ import (
 	"wmesh/factory/internal/platform/domain"
 	"wmesh/factory/internal/platform/nodekey"
 	"wmesh/factory/internal/platform/provision"
+	"wmesh/factory/internal/platform/release"
 	"wmesh/factory/internal/service"
 	"wmesh/factory/internal/store"
 	"wmesh/factory/internal/wanchannel"
@@ -193,6 +194,8 @@ func (h *Hub) ensure(factoryID uuid.UUID) (*service.Service, error) {
 	}
 	// 按工厂身份打开本厂库并组装应用服务。
 	svc := service.NewService(store.Open(db, factoryID))
+	// 正在跑的版本算已装基线，新装厂不被提示装回同版或旧版。
+	svc.Updates.SetRunningSoftware(release.Code, release.Name)
 	// 已经挂了对象存储才交给这家厂。
 	if h.blobs != nil {
 		// 软件包字节走对象存储，不进进程内存。

@@ -5,9 +5,11 @@ package service
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
+	"golang.org/x/sync/singleflight"
 	"golang.org/x/time/rate"
 
 	"wmesh/global/internal/platform/audit"
@@ -28,7 +30,14 @@ type kernel struct {
 	applyOutcome  ApplyOutcome  // 确认后是否立刻记已装；测试可改
 	pendingSink   PendingSink   // 确认后落盘；空则只走夹具
 	applyReporter ApplyReporter // 读 updater 进度；测试可空
+	applyMu       sync.Mutex    // 串起落地失败的查重和写入，同一次结果只记一条
+	runningCode   int64         // 本进程云端服务版本号；已装基线不低于它，测试可零
+	runningName   string        // 本进程云端服务版本名；库里没这版发布行时给人看
 	imageJanitor  ImageJanitor  // 请 updater 清无用镜像；测试可空
+
+	blobMu      sync.Mutex           // 护着已核摘要表，拉包和发布会并发改
+	blobChecked map[string]blobCheck // 对象键到已核摘要和长度，每个对象只整包核一次
+	blobFly     singleflight.Group   // 同一对象首次核摘要只跑一路，别的等它
 }
 
 // ImageJanitor 把清镜像请求交给 updater，并读本机占用；不在业务进程里碰 docker。
@@ -70,6 +79,8 @@ func (k *kernel) SetBlobs(store blob.Store) {
 	}
 	// 换上对象存储，软件包字节不再进内存夹具。
 	k.blobs = store
+	// 换了存储，旧的核对记录不再算数。
+	k.forgetBlobs()
 }
 
 // Auth 管 WAN 管理员登录、会话和改密码。

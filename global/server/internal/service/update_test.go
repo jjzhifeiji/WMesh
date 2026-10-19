@@ -456,6 +456,95 @@ func TestStorageUsage(t *testing.T) {
 	}
 }
 
+// 本进程版本算云端已装基线：旧包不收，同版不提示，高一版才提示。
+func TestRunningSoftwareBaseline(t *testing.T) {
+	// 准备本测上下文，没有它库和服务都开不了。
+	ctx := context.Background()
+	// 起云端库和服务，起不来整段验收作废。
+	h := New(t)
+	// 立云端超管失败就停，立不住后面没有人能登录。
+	if err := h.WAN.BootstrapAdmin(ctx, "w", "wan-secret"); err != nil {
+		// 不符即停：立云端超管失败。
+		t.Fatal(err)
+	}
+	// 登录拿会话，没有票后面接口都进不去。
+	tok, err := h.WAN.Login(ctx, "w", "wan-secret")
+	// 登录拿会话失败就停，没有票后面接口都进不去。
+	if err != nil {
+		// 不符即停：登录拿会话失败。
+		t.Fatal(err)
+	}
+	// 假定本进程跑的是 v10，库里还没记过已装。
+	h.WAN.Updates.SetRunningSoftware(10, "2.10.0")
+	// 没记过已装也没有发布行，当前版本应是本进程的。
+	cur, err := h.WAN.CurrentWANSoftware(ctx, tok)
+	// 读失败或不是 v10 和本进程版本名就停。
+	if err != nil || cur.Version != 10 || cur.VersionName != "2.10.0" {
+		// 不符即停：当前版本不是本进程的。
+		t.Fatalf("running current %+v %v", cur, err)
+	}
+	// 发布 v8 低于本进程版本，应当拒为过旧。
+	if _, err := h.WAN.PublishSoftware(ctx, tok, global.SoftwareWANService, "2.8.0", 8, []byte("wan-svc-8")); !errors.Is(err, domain.ErrStaleRevision) {
+		// 不符即停：旧包被收下。
+		t.Fatalf("publish v8 %v", err)
+	}
+	// 发布同版 v10，可以收但不该提示。
+	if _, err := h.WAN.PublishSoftware(ctx, tok, global.SoftwareWANService, "2.10.0", 10, []byte("wan-svc-10")); err != nil {
+		// 不符即停：同版发布失败。
+		t.Fatal(err)
+	}
+	// 同版不该有待装提示。
+	p, err := h.WAN.PendingWANSoftware(ctx, tok)
+	// 读失败或有提示就停。
+	if err != nil || p != nil {
+		// 不符即停：同版还提示待装。
+		t.Fatalf("pending same %+v %v", p, err)
+	}
+	// 确认同版应按找不到拒绝，不白白重启。
+	if err := h.WAN.ConfirmWANUpdate(ctx, tok, global.SoftwareWANService, 10); !errors.Is(err, domain.ErrNotFound) {
+		// 不符即停：同版能确认。
+		t.Fatalf("confirm same %v", err)
+	}
+	// 当前版本仍是 v10。
+	cur, err = h.WAN.CurrentWANSoftware(ctx, tok)
+	// 读失败或不是 v10 就停。
+	if err != nil || cur.Version != 10 || cur.VersionName != "2.10.0" {
+		// 不符即停：当前版本不对。
+		t.Fatalf("current same %+v %v", cur, err)
+	}
+	// 发布高一版 v11，这时才该提示。
+	if _, err := h.WAN.PublishSoftware(ctx, tok, global.SoftwareWANService, "2.11.0", 11, []byte("wan-svc-11")); err != nil {
+		// 不符即停：新版发布失败。
+		t.Fatal(err)
+	}
+	// 高一版应有待装提示。
+	p, err = h.WAN.PendingWANSoftware(ctx, tok)
+	// 读失败或没提示 v11 就停。
+	if err != nil || p == nil || p.Version != 11 {
+		// 不符即停：新版没提示。
+		t.Fatalf("pending next %+v %v", p, err)
+	}
+	// 列发布行看保留原因，正在跑的和最高都不能删。
+	items, err := h.WAN.ListSoftwareItems(ctx, tok, global.SoftwareWANService)
+	// 列发布行失败就停，避免带着错误继续验。
+	if err != nil {
+		// 不符即停：列发布行失败。
+		t.Fatal(err)
+	}
+	// 按版本记下保留原因，便于逐个核对。
+	keep := map[int64]string{}
+	// 逐行记下保留原因。
+	for _, it := range items {
+		// 按版本记下这行的保留原因。
+		keep[it.Version] = it.Keep
+	}
+	// v10 是正在跑的、v11 是最高，标错就停。
+	if keep[10] != global.SoftwareKeepInstalled || keep[11] != global.SoftwareKeepLatest {
+		// 不符即停：保留原因不对。
+		t.Fatalf("keep %+v", keep)
+	}
+}
+
 // 镜像清扫桩，占用和点名都从这里读。
 type reportJanitor struct {
 	// 桩返回的镜像清单原文。
@@ -537,5 +626,166 @@ func TestImageOccupancy(t *testing.T) {
 	if jan.ref != "app:old" {
 		// 不符即停：点名必须是旧镜像。
 		t.Fatalf("ref %q", jan.ref)
+	}
+}
+
+// 假的换包进度来源，按设定交回 updater 结果。
+type stubApplyReporter struct {
+	phase   string // 设定的阶段，ok 或 fail
+	kind    string // 设定的种类，对不上就记错包
+	version int64  // 设定的版本，对不上就记错包
+	errMsg  string // 设定的失败原因，应当进审计对象
+}
+
+// 按设定交回进度，不碰磁盘。
+func (r *stubApplyReporter) Progress() (string, string, int64, string, error) {
+	return r.phase, r.kind, r.version, r.errMsg, nil
+}
+
+// 挑出某动作某结果的审计行，读不到就停。
+func softwareAudit(t *testing.T, ctx context.Context, wan *global.Service, action, result string) []audit.Row {
+	// 失败栈指到用例，避免停在夹具里面。
+	t.Helper()
+	// 读出云端审计，读不到就没法数。
+	rows, err := wan.ListAudit(ctx)
+	// 读审计失败就停，避免带着错误继续验。
+	if err != nil {
+		// 不符即停：读审计失败。
+		t.Fatal(err)
+	}
+	// 准备收下对上动作和结果的行。
+	var out []audit.Row
+	// 逐行挑出对上动作和结果的。
+	for _, r := range rows {
+		// 动作和结果都对上才收下。
+		if r.Action == action && r.Result == result {
+			// 收下这一行，后面数条数看对象。
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// 云端落地失败只记一条带原因的拒绝，再确认后再失败另记，成功照旧一条允许。
+func TestApplyFailAudit(t *testing.T) {
+	// 准备本测上下文，没有它库和服务都开不了。
+	ctx := context.Background()
+	// 起云端库和服务，起不来整段验收作废。
+	h := New(t)
+	// 立云端超管失败就停，立不住后面没有人能登录。
+	if err := h.WAN.BootstrapAdmin(ctx, "w", "wan-secret"); err != nil {
+		// 不符即停：立云端超管失败。
+		t.Fatal(err)
+	}
+	// 登录拿会话，没有票后面接口都进不去。
+	tok, err := h.WAN.Login(ctx, "w", "wan-secret")
+	// 登录拿会话失败就停，没有票后面接口都进不去。
+	if err != nil {
+		// 不符即停：登录拿会话失败。
+		t.Fatal(err)
+	}
+	// 发布云端服务 v7，没有它就没有可确认的包。
+	if _, err := h.WAN.PublishSoftware(ctx, tok, global.SoftwareWANService, "2.7.0", 7, []byte("wan-svc-7")); err != nil {
+		// 不符即停：发布云端服务包失败。
+		t.Fatal(err)
+	}
+	// 先记下已装版本，失败后必须原样不动。
+	before, err := h.WAN.CurrentWANSoftware(ctx, tok)
+	// 读已装版本失败就停，避免带着错误继续验。
+	if err != nil {
+		// 不符即停：读已装版本失败。
+		t.Fatal(err)
+	}
+	// 管理员确认 v7，留下一条确认允许。
+	if err := h.WAN.ConfirmWANUpdate(ctx, tok, global.SoftwareWANService, 7); err != nil {
+		// 不符即停：确认云端更新失败。
+		t.Fatal(err)
+	}
+	// 假定 updater 探活失败并已切回上一版。
+	rep := &stubApplyReporter{phase: "fail", kind: global.SoftwareWANService, version: 7, errMsg: "health check failed"}
+	// 换上假的进度来源，读到的就是这份失败。
+	h.WAN.Updates.SetApplyReporter(rep)
+	// 连查三次进度，模拟页面轮询。
+	for i := 0; i < 3; i++ {
+		// 查一次进度，页面要照样看到失败。
+		got, err := h.WAN.ApplyProgress(ctx, tok)
+		// 读不到或没报失败原因就停。
+		if err != nil || got.Phase != "fail" || got.Error != "health check failed" {
+			// 不符即停：页面没看到失败。
+			t.Fatalf("progress %+v %v", got, err)
+		}
+	}
+	// 再模拟进程重启补记一次。
+	if err := h.WAN.SettleStaged(ctx); err != nil {
+		// 不符即停：启动补记失败。
+		t.Fatal(err)
+	}
+	// 挑出落地拒绝，同一次结果只该有一条。
+	denies := softwareAudit(t, ctx, h.WAN, "apply_software", audit.Deny)
+	// 条数不是一、对象没带原因或挂了厂就停。
+	if len(denies) != 1 || denies[0].Target != "wan_service v7: health check failed" || denies[0].FactoryID != nil {
+		// 不符即停：重复记、没带原因或挂错厂。
+		t.Fatalf("denies %+v", denies)
+	}
+	// 再读已装版本，失败不能改它。
+	cur, err := h.WAN.CurrentWANSoftware(ctx, tok)
+	// 读失败或版本变了就停。
+	if err != nil || cur.Version != before.Version {
+		// 不符即停：已装被改动。
+		t.Fatalf("installed %+v before %+v %v", cur, before, err)
+	}
+	// 再确认一次 v7，规格允许重试。
+	if err := h.WAN.ConfirmWANUpdate(ctx, tok, global.SoftwareWANService, 7); err != nil {
+		// 不符即停：再确认失败。
+		t.Fatal(err)
+	}
+	// 再报失败后查一次进度，应另记一条。
+	if _, err := h.WAN.ApplyProgress(ctx, tok); err != nil {
+		// 不符即停：查进度失败。
+		t.Fatal(err)
+	}
+	// 重启补记一次，不该再多记。
+	if err := h.WAN.SettleStaged(ctx); err != nil {
+		// 不符即停：启动补记失败。
+		t.Fatal(err)
+	}
+	// 两次确认各失败一次，应当正好两条。
+	if n := len(softwareAudit(t, ctx, h.WAN, "apply_software", audit.Deny)); n != 2 {
+		// 不符即停：拒绝条数不对。
+		t.Fatalf("denies after reconfirm %d", n)
+	}
+	// 改成 updater 探活通过。
+	rep.phase, rep.errMsg = "ok", ""
+	// 连查两次进度，成功也会被轮询。
+	for i := 0; i < 2; i++ {
+		// 查一次进度，读不到就停。
+		if _, err := h.WAN.ApplyProgress(ctx, tok); err != nil {
+			// 不符即停：查进度失败。
+			t.Fatal(err)
+		}
+	}
+	// 重启补记一次，已装幂等不再多记。
+	if err := h.WAN.SettleStaged(ctx); err != nil {
+		// 不符即停：启动补记失败。
+		t.Fatal(err)
+	}
+	// 挑出落地允许，成功照旧只该一条。
+	allows := softwareAudit(t, ctx, h.WAN, "apply_software", audit.Allow)
+	// 条数不是一或对象不对就停。
+	if len(allows) != 1 || allows[0].Target != "wan_service v7" {
+		// 不符即停：成功记多或记错。
+		t.Fatalf("allows %+v", allows)
+	}
+	// 成功后已装必须换成 v7。
+	cur, err = h.WAN.CurrentWANSoftware(ctx, tok)
+	// 读失败或没换成 v7 就停。
+	if err != nil || cur.Version != 7 {
+		// 不符即停：已装没记上。
+		t.Fatalf("installed after ok %+v %v", cur, err)
+	}
+	// 成功不该多出落地拒绝。
+	if n := len(softwareAudit(t, ctx, h.WAN, "apply_software", audit.Deny)); n != 2 {
+		// 不符即停：拒绝条数变了。
+		t.Fatalf("denies after ok %d", n)
 	}
 }

@@ -2,10 +2,14 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"io"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/google/uuid"
@@ -44,6 +48,26 @@ type Updates struct {
 // SetApplyOutcome 测试注入落地结果；生产保持默认只落盘。
 func (s *Updates) SetApplyOutcome(out ApplyOutcome) { s.applyOutcome = out }
 
+// SetRunningSoftware 记下本进程云端服务版本，启动时由入口传入；不写库。
+func (s *Updates) SetRunningSoftware(code int64, name string) {
+	// 记下版本号，判断新旧时已装不低于它。
+	s.runningCode = code
+	// 记下版本名，库里没这版发布行时给人看。
+	s.runningName = name
+}
+
+// installedBaseline 云端服务已装基线：库里已装与本进程版本取大。
+func (s *Updates) installedBaseline(ctx context.Context) (int64, error) {
+	// 读本机已经装上的版本，没有则是零。
+	installed, err := s.store.InstalledSoftware(ctx, SoftwareWANService)
+	// 读不到已装版本就不能判断新旧。
+	if err != nil {
+		return 0, err
+	}
+	// 首装没记已装，正在跑的版本也算装上了，免得提示同版或旧版。
+	return max(installed, s.runningCode), nil
+}
+
 // MarkInstalled updater 探活通过后记已装；已是该版本则幂等。
 func (s *Updates) MarkInstalled(ctx context.Context, kind string, version int64) error {
 	// 用种类和版本当审计对象。
@@ -60,6 +84,67 @@ func (s *Updates) MarkInstalled(ctx context.Context, kind string, version int64)
 	}
 	// 记成已装后才记允许。
 	return s.audit(ctx, nil, nil, nil, "apply_software", target, audit.Allow)
+}
+
+// MarkApplyFailed updater 换包失败或已切回上一版时记一条落地拒绝；同一次结果只记一次。
+// 最近一次确认之后已记过就跳过，重启和反复轮询都不重记；再确认后再失败另记一条。
+func (s *Updates) MarkApplyFailed(ctx context.Context, kind string, version int64, reason string) error {
+	// 缺种类或版本就对不上是哪次确认，不记。
+	if kind == "" || version < 1 {
+		return nil
+	}
+	// 确认审计的对象，用来找最近一次确认。
+	confirmed := softwareTarget(kind, version)
+	// updater 没给原因也写明不详，对象不留空尾巴。
+	if strings.TrimSpace(reason) == "" {
+		// 原因空着时用固定的不详字样。
+		reason = "unknown"
+	}
+	// 查重和写入串起来，免得并发轮询各记一条。
+	s.applyMu.Lock()
+	// 记完或查失败都放开，下一次查进度才能进来。
+	defer s.applyMu.Unlock()
+	// 看最近一次确认之后是否已经记过这次失败。
+	done, err := s.store.AuditDeniedSince(ctx, "apply_software", confirmed+":", "confirm_software", confirmed)
+	// 查不了或已经记过都不再写，查不了留给下次再补。
+	if err != nil || done {
+		return err
+	}
+	// 本机落地不属哪家厂；对象带上原因，事后能查到为何没换上或已切回。
+	return s.audit(ctx, nil, nil, nil, "apply_software", confirmed+": "+reason, audit.Deny)
+}
+
+// SettleStaged 进程起来后按 updater 结果补记：成功记已装，失败记落地失败。
+// 没有结果或还在换都不记；补记没写上就交回错误，查进度时还会再补。
+func (s *Updates) SettleStaged(ctx context.Context) error {
+	// 没有进度来源就无从补记。
+	if s.applyReporter == nil {
+		return nil
+	}
+	// 读本机更换结果，种类和版本以 updater 记的为准。
+	phase, kind, version, errMsg, err := s.applyReporter.Progress()
+	// 结果读不了就交回，调用方只警告不拦启动。
+	if err != nil {
+		return err
+	}
+	// 缺种类或版本就对不上是哪一包，不记。
+	if kind == "" || version < 1 {
+		return nil
+	}
+	// 按成败分别补记，正在换或闲着都不动。
+	switch phase {
+	// 探活通过才记已装，已是该版本则幂等。
+	case "ok":
+		// 补记已装，晚到的就绪也能补上。
+		return s.MarkInstalled(ctx, kind, version)
+	// 换包失败或已切回上一版，补一条落地拒绝。
+	case "fail":
+		// 补记落地失败，同一次结果只记一条。
+		return s.MarkApplyFailed(ctx, kind, version, errMsg)
+	// 正在换或闲着，等出结果再说。
+	default:
+		return nil
+	}
 }
 
 // validSoftwareKind 只认云端、厂服务和客户端三种包。
@@ -152,6 +237,8 @@ func (s *Updates) PublishSoftware(ctx context.Context, token, kind, versionName 
 			_ = s.audit(ctx, &admin.ID, nil, nil, "publish_software", target, audit.Deny)
 			return SoftwareRelease{}, err
 		}
+		// 刚写进去的就是这份摘要，厂来拉时不必再整包核。
+		s.rememberBlob(existing.ObjectKey, existing.Digest, int64(len(body)))
 		// 审计没记下则中止，不当这次已经成功。
 		if err := s.audit(ctx, &admin.ID, nil, nil, "publish_software", target, audit.Allow); err != nil {
 			return SoftwareRelease{}, err
@@ -172,8 +259,8 @@ func (s *Updates) PublishSoftware(ctx context.Context, token, kind, versionName 
 	}
 	// 云端包和厂端包分开，拿错种类就拒绝。
 	if kind == SoftwareWANService {
-		// 读本机已经装上的版本。
-		installed, err := s.store.InstalledSoftware(ctx, kind)
+		// 读已装基线，库里已装与本进程版本取大。
+		installed, err := s.installedBaseline(ctx)
 		// 读不到已装版本就不许清理或覆盖。
 		if err != nil {
 			return SoftwareRelease{}, err
@@ -195,6 +282,8 @@ func (s *Updates) PublishSoftware(ctx context.Context, token, kind, versionName 
 		_ = s.audit(ctx, &admin.ID, nil, nil, "publish_software", target, audit.Deny)
 		return SoftwareRelease{}, err
 	}
+	// 刚写进去的就是这份摘要，厂来拉时不必再整包核。
+	s.rememberBlob(key, sum, int64(len(body)))
 	// 写入这一条，失败就不能继续。
 	row, err := s.store.InsertSoftwareRelease(ctx, SoftwareRelease{
 		Kind: kind, Version: version, VersionName: versionName, Digest: sum, ObjectKey: key,
@@ -252,37 +341,35 @@ func (s *Updates) LatestSoftware(ctx context.Context, factoryID uuid.UUID, kind 
 	return s.store.SoftwareRelease(ctx, kind, max)
 }
 
-// PullSoftware 已认领厂按版本拉包；只给当前最高，摘要不对不给。
-func (s *Updates) PullSoftware(ctx context.Context, factoryID uuid.UUID, kind string, version int64) (SoftwareOffer, error) {
-	// 用种类和版本当审计对象。
-	target := softwareTarget(kind, version)
+// 厂拉包前的资格核对：种类、认领和是否当前最高；被拒都留审计。
+func (s *Updates) pullableRelease(ctx context.Context, factoryID uuid.UUID, kind string, version int64, target string) (SoftwareRelease, error) {
 	// 厂端不能拉云端包，种类不对就拒绝。
 	if !factoryPullKind(kind) || version < 1 {
 		// 拉包被拒就留审计。
 		_ = s.audit(ctx, nil, nil, &factoryID, "pull_software", target, audit.Deny)
 		// 字数不在允许范围就拒绝，避免空名或超长。
 		if version < 1 {
-			return SoftwareOffer{}, domain.ErrInvalidName
+			return SoftwareRelease{}, domain.ErrInvalidName
 		}
-		return SoftwareOffer{}, domain.ErrForbidden
+		return SoftwareRelease{}, domain.ErrForbidden
 	}
 	// 不够资格就拒绝，不能继续。
 	if err := s.requireEnrolledFactory(ctx, factoryID); err != nil {
 		// 拉包被拒就留审计。
 		_ = s.audit(ctx, nil, nil, &factoryID, "pull_software", target, audit.Deny)
-		return SoftwareOffer{}, err
+		return SoftwareRelease{}, err
 	}
 	// 取当前最高的一版。
 	max, err := s.store.MaxSoftwareRelease(ctx, kind)
 	// 取不到就拒绝，避免发错一版。
 	if err != nil {
-		return SoftwareOffer{}, err
+		return SoftwareRelease{}, err
 	}
 	// 和已有版本比过再决定能不能清、拉或覆盖。
 	if version < max {
 		// 拉包被拒就留审计。
 		_ = s.audit(ctx, nil, nil, &factoryID, "pull_software", target, audit.Deny)
-		return SoftwareOffer{}, domain.ErrStaleRevision
+		return SoftwareRelease{}, domain.ErrStaleRevision
 	}
 	// 处理软件包的版本或对象。
 	rel, err := s.store.SoftwareRelease(ctx, kind, version)
@@ -290,6 +377,19 @@ func (s *Updates) PullSoftware(ctx context.Context, factoryID uuid.UUID, kind st
 	if err != nil {
 		// 拉包被拒就留审计。
 		_ = s.audit(ctx, nil, nil, &factoryID, "pull_software", target, audit.Deny)
+		return SoftwareRelease{}, err
+	}
+	return rel, nil
+}
+
+// PullSoftware 已认领厂按版本拉包；只给当前最高，摘要不对不给。旧厂端走这条 JSON。
+func (s *Updates) PullSoftware(ctx context.Context, factoryID uuid.UUID, kind string, version int64) (SoftwareOffer, error) {
+	// 用种类和版本当审计对象。
+	target := softwareTarget(kind, version)
+	// 先过种类、认领和最高版的核对，被拒已留审计。
+	rel, err := s.pullableRelease(ctx, factoryID, kind, version, target)
+	// 没过核对就不读包字节。
+	if err != nil {
 		return SoftwareOffer{}, err
 	}
 	// 读出这一条再往下用。
@@ -320,14 +420,187 @@ func (s *Updates) PullSoftware(ctx context.Context, factoryID uuid.UUID, kind st
 	}, nil
 }
 
-// CurrentWANSoftware 本机已落地的云端服务版本；未装过则版本为 0。
+// SoftwareStream 是按版本打开的一份软件包流，只给已授权拉取方；用完要关。
+type SoftwareStream struct {
+	Kind        string      // factory_service / client_apk
+	Version     int64       // 单调整数
+	VersionName string      // 给人看的版本名
+	Digest      []byte      // 包文件 SHA-256
+	Body        blob.Object // 包字节流，可定位续传，调用方负责关
+}
+
+// blobCheck 是一份对象已核过的摘要和长度，长度变了就要重核。
+type blobCheck struct {
+	digest []byte // 核对通过时的摘要
+	size   int64  // 核对时的对象总长
+}
+
+// blobVerifyWait 是首次整包核摘要的时限，存储卡住也不会一直挂着。
+const blobVerifyWait = 10 * time.Minute
+
+// OpenSoftware 已认领厂按版本打开包流；只给当前最高，摘要每个对象只核一次。
+// resume 为真是续传请求，不再记允许审计。
+func (s *Updates) OpenSoftware(ctx context.Context, factoryID uuid.UUID, kind string, version int64, resume bool) (SoftwareStream, error) {
+	// 用种类和版本当审计对象。
+	target := softwareTarget(kind, version)
+	// 先过种类、认领和最高版的核对，被拒已留审计。
+	rel, err := s.pullableRelease(ctx, factoryID, kind, version, target)
+	// 没过核对就不打开对象。
+	if err != nil {
+		return SoftwareStream{}, err
+	}
+	// 打开对象流，只问长度，不整包读进内存。
+	obj, err := s.blobs.Open(ctx, rel.ObjectKey)
+	// 打不开就拒绝，避免给出空包。
+	if err != nil {
+		// 拉包被拒就留审计。
+		_ = s.audit(ctx, nil, nil, &factoryID, "pull_software", target, audit.Deny)
+		// 对象不存在就当包已损坏，不当成别的故障。
+		if errors.Is(err, blob.ErrNotFound) {
+			return SoftwareStream{}, domain.ErrIntegrity
+		}
+		return SoftwareStream{}, err
+	}
+	// 摘要没核过就先整包核一遍，坏对象不发出去。
+	if err := s.checkBlob(ctx, rel.ObjectKey, rel.Digest, obj.Size()); err != nil {
+		// 不发了就关上对象流。
+		_ = obj.Close()
+		// 拉包被拒就留审计。
+		_ = s.audit(ctx, nil, nil, &factoryID, "pull_software", target, audit.Deny)
+		return SoftwareStream{}, err
+	}
+	// 从头拉才记允许，续传不重复记。
+	if !resume {
+		// 审计没记下则中止，不当这次已经成功。
+		if err := s.audit(ctx, nil, nil, &factoryID, "pull_software", target, audit.Allow); err != nil {
+			// 不发了就关上对象流。
+			_ = obj.Close()
+			return SoftwareStream{}, err
+		}
+	}
+	return SoftwareStream{
+		Kind: rel.Kind, Version: rel.Version, VersionName: rel.VersionName,
+		Digest: rel.Digest, Body: obj,
+	}, nil
+}
+
+// 核对象摘要：记过且长度没变就放行，否则按对象键单飞整包核一次。
+func (k *kernel) checkBlob(ctx context.Context, key string, want []byte, size int64) error {
+	// 已核过且长度没变就不再整包读。
+	if k.blobVerified(key, want, size) {
+		return nil
+	}
+	// 同一对象只核一路，别的拉包等它的结果。
+	ch := k.blobFly.DoChan(key, func() (any, error) {
+		// 排队期间上一路已核完就不再整包读。
+		if k.blobVerified(key, want, size) {
+			return nil, nil
+		}
+		// 领头的请求断了也核完，等着的人还要结果。
+		return nil, k.hashBlob(context.WithoutCancel(ctx), key, want)
+	})
+	// 核完或本请求先断，谁先到走谁。
+	select {
+	// 核完就交回结果，坏对象是完整性错误。
+	case res := <-ch:
+		return res.Err
+	// 本请求断了就先走，核对照样跑完。
+	case <-ctx.Done():
+		// 交回本请求的取消原因。
+		return ctx.Err()
+	}
+}
+
+// 整包流式算一遍摘要，对得上才记下；坏对象交回完整性错误。
+func (k *kernel) hashBlob(ctx context.Context, key string, want []byte) error {
+	// 给核对定个时限，存储卡住也会收尾。
+	ctx, cancel := context.WithTimeout(ctx, blobVerifyWait)
+	// 核完就取消，含提前返回。
+	defer cancel()
+	// 另开一路流来核，不动拉包那一路的偏移。
+	obj, err := k.blobs.Open(ctx, key)
+	// 对象没了就当包已损坏。
+	if errors.Is(err, blob.ErrNotFound) {
+		return domain.ErrIntegrity
+	}
+	// 别的打不开交回原因，下次再核。
+	if err != nil {
+		return err
+	}
+	// 核完就关上对象流。
+	defer obj.Close()
+	// 边读边算摘要，不整包进内存。
+	h := sha256.New()
+	// 整份读一遍喂给摘要。
+	n, err := io.Copy(h, obj)
+	// 读一半断了就交回，不记核对结果。
+	if err != nil {
+		return err
+	}
+	// 摘要对不上就是坏对象，不能发出去。
+	if subtle.ConstantTimeCompare(h.Sum(nil), want) != 1 {
+		return domain.ErrIntegrity
+	}
+	// 核对通过就记下，下次直接放行。
+	k.rememberBlob(key, want, n)
+	return nil
+}
+
+// 看这份对象是否已按这份摘要和长度核过。
+func (k *kernel) blobVerified(key string, want []byte, size int64) bool {
+	// 读表前先占住，避免和记下交错。
+	k.blobMu.Lock()
+	// 读完就放开。
+	defer k.blobMu.Unlock()
+	// 取出这份对象的核对记录。
+	c, ok := k.blobChecked[key]
+	// 摘要和长度都对上才算核过。
+	return ok && c.size == size && subtle.ConstantTimeCompare(c.digest, want) == 1
+}
+
+// 记下这份对象已核过的摘要和长度，之后拉包不再整包重算。
+func (k *kernel) rememberBlob(key string, sum []byte, size int64) {
+	// 写表前先占住，避免并发写坏。
+	k.blobMu.Lock()
+	// 写完就放开。
+	defer k.blobMu.Unlock()
+	// 第一次记才建表。
+	if k.blobChecked == nil {
+		// 建一张空表，按对象键记。
+		k.blobChecked = map[string]blobCheck{}
+	}
+	// 拷一份摘要记下，调用方事后改不到。
+	k.blobChecked[key] = blobCheck{digest: append([]byte(nil), sum...), size: size}
+}
+
+// 忘掉这份对象的核对记录，删包后同键再发要重核。
+func (k *kernel) forgetBlob(key string) {
+	// 改表前先占住，避免和读交错。
+	k.blobMu.Lock()
+	// 改完就放开。
+	defer k.blobMu.Unlock()
+	// 删掉这一条，没有也不出错。
+	delete(k.blobChecked, key)
+}
+
+// 清空全部核对记录，换了对象存储后都要重核。
+func (k *kernel) forgetBlobs() {
+	// 改表前先占住，避免和读交错。
+	k.blobMu.Lock()
+	// 改完就放开。
+	defer k.blobMu.Unlock()
+	// 换一张空表，旧记录不再算数。
+	k.blobChecked = nil
+}
+
+// CurrentWANSoftware 本机云端服务已装基线；库里没记且本进程没报版本则为 0。
 func (s *Updates) CurrentWANSoftware(ctx context.Context, token string) (SoftwareRelease, error) {
 	// 会话有效才做这一步，无效就当没登录。
 	if _, err := s.RequireAdmin(ctx, token); err != nil {
 		return SoftwareRelease{}, err
 	}
-	// 读本机已经装上的版本。
-	installed, err := s.store.InstalledSoftware(ctx, SoftwareWANService)
+	// 读已装基线，库里已装与本进程版本取大。
+	installed, err := s.installedBaseline(ctx)
 	// 读不到已装版本就不许清理或覆盖。
 	if err != nil {
 		return SoftwareRelease{}, err
@@ -342,7 +615,14 @@ func (s *Updates) CurrentWANSoftware(ctx context.Context, token string) (Softwar
 	if err != nil {
 		// 没有这条就按不存在处理，不当成别的故障。
 		if errors.Is(err, domain.ErrNotFound) {
-			return SoftwareRelease{Kind: SoftwareWANService, Version: installed}, nil
+			// 没有发布行时只给版本号，版本名先空着。
+			cur := SoftwareRelease{Kind: SoftwareWANService, Version: installed}
+			// 基线正是本进程版本，就用本进程的版本名给人看。
+			if installed == s.runningCode {
+				// 填上本进程版本名，管理台不显示空名。
+				cur.VersionName = s.runningName
+			}
+			return cur, nil
 		}
 		return SoftwareRelease{}, err
 	}
@@ -355,8 +635,8 @@ func (s *Updates) PendingWANSoftware(ctx context.Context, token string) (*Softwa
 	if _, err := s.RequireAdmin(ctx, token); err != nil {
 		return nil, err
 	}
-	// 读本机已经装上的版本。
-	installed, err := s.store.InstalledSoftware(ctx, SoftwareWANService)
+	// 读已装基线，库里已装与本进程版本取大。
+	installed, err := s.installedBaseline(ctx)
 	// 读不到已装版本就不许清理或覆盖。
 	if err != nil {
 		return nil, err
@@ -451,7 +731,7 @@ type ApplyProgress struct {
 	Error   string `json:"error,omitempty"` // fail 时 updater 原因
 }
 
-// ApplyProgress 读盘上进度；探活通过才记已装。
+// ApplyProgress 读盘上进度；探活通过才记已装，失败补记一条落地拒绝。
 func (s *Updates) ApplyProgress(ctx context.Context, token string) (ApplyProgress, error) {
 	// 会话有效才做这一步，无效就当没登录。
 	if _, err := s.RequireAdmin(ctx, token); err != nil {
@@ -473,6 +753,11 @@ func (s *Updates) ApplyProgress(ctx context.Context, token string) (ApplyProgres
 		if err := s.MarkInstalled(ctx, kind, version); err != nil {
 			return ApplyProgress{}, err
 		}
+	}
+	// 换包失败或已切回上一版就补一条落地拒绝，同一次结果只记一条。
+	if phase == "fail" {
+		// 审计没写上不挡页面显示失败，下次轮询再补。
+		_ = s.MarkApplyFailed(ctx, kind, version, errMsg)
 	}
 	return ApplyProgress{Phase: phase, Kind: kind, Version: version, Error: errMsg}, nil
 }
@@ -563,8 +848,8 @@ func (s *Updates) softwareKeep(ctx context.Context, kind string, version int64) 
 	installed := int64(0)
 	// 云端包和厂端包分开，拿错种类就拒绝。
 	if kind == SoftwareWANService {
-		// 读本机已经装上的版本。
-		installed, err = s.store.InstalledSoftware(ctx, kind)
+		// 读已装基线，库里已装与本进程版本取大。
+		installed, err = s.installedBaseline(ctx)
 		// 读不到已装版本就不许清理或覆盖。
 		if err != nil {
 			return "", err
@@ -623,6 +908,8 @@ func (s *Updates) DeleteSoftware(ctx context.Context, token, kind string, versio
 		_ = s.audit(ctx, &admin.ID, nil, nil, "prune_software", target, audit.Deny)
 		return err
 	}
+	// 对象已删，核对记录跟着作废。
+	s.forgetBlob(row.ObjectKey)
 	// 删除失败就停，避免库里留下残行。
 	if err := s.store.DeleteSoftwareRelease(ctx, kind, version); err != nil {
 		// 清理被拒就留审计。

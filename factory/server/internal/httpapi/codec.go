@@ -1,12 +1,12 @@
 package httpapi
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -68,12 +68,41 @@ func bearer(r *http.Request) string {
 	return strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 }
 
-// 写出软件包字节，支持 Range 续传。
-func writeBytes(w http.ResponseWriter, r *http.Request, body []byte) {
-	// 按安装包声明类型，而不是文本对象。
+// 边读边写出软件包流，支持 Range 续传；不整包进内存。
+func writeStream(w http.ResponseWriter, r *http.Request, body io.ReadSeeker) {
+	// 兜底清掉读截止；net/http 起后台读时已清过，ServeContent 不管它。
+	_ = http.NewResponseController(w).SetReadDeadline(time.Time{})
+	// 按安装包声明类型，也免得为猜类型多读一段再回头。
 	w.Header().Set("Content-Type", "application/octet-stream")
-	// 按区间写出字节，支持没下完再续。
-	http.ServeContent(w, r, "client.apk", time.Time{}, bytes.NewReader(body))
+	// 交给标准件处理整包、续传和越界。
+	http.ServeContent(w, r, "client.apk", time.Time{}, body)
+}
+
+// 续传请求的起点不在零；没带或格式不对都不算续传。
+func rangeResumes(header string) bool {
+	// 只认字节单位的区间。
+	spec, ok := strings.CutPrefix(strings.TrimSpace(header), "bytes=")
+	// 没带或不是字节区间就不算续传。
+	if !ok {
+		return false
+	}
+	// 多段区间只看第一段的起点。
+	first, _, _ := strings.Cut(spec, ",")
+	// 拆出起点，没有横杠就不是合法区间。
+	start, _, ok := strings.Cut(first, "-")
+	// 不是合法区间就不算续传。
+	if !ok {
+		return false
+	}
+	// 去掉空白再看起点。
+	start = strings.TrimSpace(start)
+	// 只要末尾一段也是接着下，算续传。
+	if start == "" {
+		return true
+	}
+	// 起点收成整数，认不出就不算续传。
+	n, err := strconv.ParseInt(start, 10, 64)
+	return err == nil && n > 0
 }
 
 // 写出 JSON 响应。
@@ -147,6 +176,7 @@ func statusOf(err error) int {
 		errors.Is(err, domain.ErrDuplicateRoleGrant), errors.Is(err, domain.ErrDuplicateSession),
 		errors.Is(err, domain.ErrReferenced), errors.Is(err, domain.ErrRevisionConflict),
 		errors.Is(err, domain.ErrSigningKeyExists), errors.Is(err, domain.ErrSoftwareInstallFailed),
+		errors.Is(err, domain.ErrSoftwareApplying),
 		errors.Is(err, domain.ErrDeviceSerialTaken), errors.Is(err, domain.ErrDuplicateName):
 		return http.StatusConflict
 	// 修订过期或参数不合法时回非法请求。

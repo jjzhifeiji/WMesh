@@ -58,6 +58,23 @@ func (s *Store) ListAudit(ctx context.Context) ([]audit.Row, error) {
 	return rows, err
 }
 
+// AuditDeniedSince 看 since 动作对 sinceTarget 最近一次允许之后，action 是否已有对象以 prefix 开头的拒绝。
+// 从没允许过就看全部；只查不判定，去重口径由调用方定。
+func (s *Store) AuditDeniedSince(ctx context.Context, action, prefix, since, sinceTarget string) (bool, error) {
+	// 准备接住查到的有无，没有匹配行就是否。
+	var found bool
+	// 先取最近一次允许的时刻，再看它之后有没有同前缀的拒绝。
+	err := s.db.WithContext(ctx).Raw(`SELECT EXISTS (
+		SELECT 1 FROM audit_events
+		WHERE action = ? AND result = ? AND starts_with(target, ?)
+		AND occurred_at >= COALESCE((
+			SELECT MAX(occurred_at) FROM audit_events
+			WHERE action = ? AND result = ? AND target = ?
+		), '-infinity'::timestamptz)
+	)`, action, audit.Deny, prefix, since, audit.Allow, sinceTarget).Scan(&found).Error
+	return found, err
+}
+
 // HasTable 看 public 下是否已有该表，给迁移夹具用。
 func (s *Store) HasTable(ctx context.Context, name string) (bool, error) {
 	// 准备接住在不在，零值先不当成没有。

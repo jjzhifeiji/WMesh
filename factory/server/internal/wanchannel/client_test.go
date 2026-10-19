@@ -524,7 +524,7 @@ func TestHoldSoftwareNotifyPassesMetaOnly(t *testing.T) {
 	// 后台跑通道，主流程才能等结果或停机。
 	go func() {
 		// 只收下软件通知，断言里核对没有包字节。
-		errCh <- Hold(ctx, "tcp://"+mqttAddr, httpSrv.URL, fid, priv, nil, nil, nil, nil, nil, func(in json.RawMessage) error {
+		errCh <- Hold(ctx, "tcp://"+mqttAddr, httpSrv.URL, fid, priv, nil, nil, nil, nil, nil, func(_ context.Context, in json.RawMessage) error {
 			// 把软件通知送进断言，核对没有字节。
 			got <- in
 			return nil
@@ -619,7 +619,7 @@ func TestHoldPullsClientAPKFromMQTT(t *testing.T) {
 	// 后台跑通道，主流程才能等结果或停机。
 	go func() {
 		// 只收下软件通知，断言里核对没有包字节。
-		errCh <- Hold(ctx, "tcp://"+mqttAddr, httpSrv.URL, fid, priv, nil, nil, nil, nil, nil, func(in json.RawMessage) error {
+		errCh <- Hold(ctx, "tcp://"+mqttAddr, httpSrv.URL, fid, priv, nil, nil, nil, nil, nil, func(_ context.Context, in json.RawMessage) error {
 			// 把软件通知送进断言，核对没有字节。
 			got <- in
 			return nil
@@ -875,7 +875,7 @@ func TestHoldAppliesDownCmds(t *testing.T) {
 			// 把模版正文送进断言。
 			got.template <- in
 			return nil
-		}, func(in json.RawMessage) error { // 模版回调把正文送出，后面核对模版拉到了。
+		}, func(_ context.Context, in json.RawMessage) error { // 软件回调把通知送出，后面核对收到了。
 			// 把软件通知送进断言。
 			got.software <- in
 			return nil
@@ -1557,7 +1557,7 @@ func TestHoldPageSyncIsLight(t *testing.T) {
 			// 记一次模版落地。
 			templates.Add(1)
 			return nil
-		}, func(json.RawMessage) error { // 软件回调不做事，只让整轮去问包。
+		}, func(context.Context, json.RawMessage) error { // 软件回调不做事，只让整轮去问包。
 			return nil
 		}, nil, func(json.RawMessage) error { // 目录回调只计数。
 			// 记一次目录对齐。
@@ -1565,8 +1565,8 @@ func TestHoldPageSyncIsLight(t *testing.T) {
 			return nil
 		}, nil, nil, nil, out)
 	}()
-	// 等首轮整轮同步做完对账，计数才稳定。
-	waitUntil(t, ctx, errCh, "first sync", func() bool { return reconciles.Load() >= 1 })
+	// 等首轮整轮同步做完对账、后台问完两类包，计数才稳定。
+	waitUntil(t, ctx, errCh, "first sync", func() bool { return reconciles.Load() >= 1 && st.software.Load() >= 2 })
 	// 记下首轮后的租约和问包次数，进页补拉后不该再涨。
 	lease, software := st.lease.Load(), st.software.Load()
 	// 首轮应领过租约也问过包，否则下面的比较没有意义。

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -168,6 +169,142 @@ func (c *Client) Get(ctx context.Context, key string) ([]byte, error) {
 		return nil, fmt.Errorf("oss read %q: %w", key, err)
 	}
 	return body, nil
+}
+
+// Open 按键打开只读流：先问总长，读时才按当前偏移带 Range 去取。
+func (c *Client) Open(ctx context.Context, key string) (blob.Object, error) {
+	// 先问对象头，拿到总长，不取正文。
+	head, err := c.s3.HeadObject(ctx, &s3.HeadObjectInput{
+		Bucket: aws.String(c.bucket),
+		Key:    aws.String(key),
+	})
+	// 问不到要区分没有该键和存储故障。
+	if err != nil {
+		// 没有该键收成统一的找不到。
+		if isMissingObject(err) {
+			return nil, blob.ErrNotFound
+		}
+		// 别的失败带上键名交回。
+		return nil, fmt.Errorf("oss head %q: %w", key, err)
+	}
+	// 记下键和总长，正文等第一次读再取。
+	return &object{c: c, ctx: ctx, key: key, size: aws.ToInt64(head.ContentLength)}, nil
+}
+
+// object 是按偏移分段取的对象流；定位只记位置，读时才开正文。
+type object struct {
+	c    *Client         // 发请求用的客户端和桶
+	ctx  context.Context // 打开时的上下文，读正文跟着它取消
+	key  string          // 对象键，取正文和报错都用它
+	size int64           // 对象总长，打开时由对象头给出
+	off  int64           // 下一次读的起点
+	body io.ReadCloser   // 从 off 起的正文；定位后作废，读时再开
+}
+
+// Size 交回打开时问到的对象总长。
+func (o *object) Size() int64 { return o.size }
+
+// Read 从当前偏移往后读；还没开正文就带 Range 去取。
+func (o *object) Read(p []byte) (int, error) {
+	// 已读到末尾就交回结束，不再去取。
+	if o.off >= o.size {
+		return 0, io.EOF
+	}
+	// 还没开正文就从当前偏移起取到末尾。
+	if o.body == nil {
+		// 带上起点去取，续读不必从头下。
+		out, err := o.c.s3.GetObject(o.ctx, &s3.GetObjectInput{
+			Bucket: aws.String(o.c.bucket),
+			Key:    aws.String(o.key),
+			Range:  aws.String("bytes=" + strconv.FormatInt(o.off, 10) + "-"),
+		})
+		// 取不到要区分没有该键和存储故障。
+		if err != nil {
+			// 没有该键收成统一的找不到。
+			if isMissingObject(err) {
+				return 0, blob.ErrNotFound
+			}
+			// 别的失败带上键名交回。
+			return 0, fmt.Errorf("oss get %q: %w", o.key, err)
+		}
+		// 记下这段正文，后面接着读。
+		o.body = out.Body
+	}
+	// 从正文里读一段，读多少偏移就往后挪多少。
+	n, err := o.body.Read(p)
+	// 偏移跟着读到的字节往后挪。
+	o.off += int64(n)
+	// 正文读完就关上，下一次读按偏移判断。
+	if errors.Is(err, io.EOF) {
+		// 关上这段正文，连接还给池子。
+		_ = o.body.Close()
+		// 清掉正文，需要时再按偏移重开。
+		o.body = nil
+		// 没读够总长就是中途断了，不当读完。
+		if o.off < o.size {
+			return n, io.ErrUnexpectedEOF
+		}
+		return n, io.EOF
+	}
+	// 读一半出错就带上键名交回。
+	if err != nil {
+		// 包上键名，上层不用看存储原文。
+		return n, fmt.Errorf("oss read %q: %w", o.key, err)
+	}
+	return n, nil
+}
+
+// Seek 只挪偏移；位置变了就作废已开的正文，下次读再按新位置取。
+func (o *object) Seek(offset int64, whence int) (int64, error) {
+	// 预备算出新的绝对位置。
+	var abs int64
+	// 按起算点换成绝对位置。
+	switch whence {
+	// 从头算起。
+	case io.SeekStart:
+		// 偏移本身就是绝对位置。
+		abs = offset
+	// 从当前位置算起。
+	case io.SeekCurrent:
+		// 当前位置加上偏移。
+		abs = o.off + offset
+	// 从末尾算起。
+	case io.SeekEnd:
+		// 总长加上偏移。
+		abs = o.size + offset
+	// 不认识的起算点直接拒绝。
+	default:
+		// 交回起算点不认识，不挪偏移。
+		return 0, errors.New("oss seek: invalid whence")
+	}
+	// 落到开头之前不合法，拒绝。
+	if abs < 0 {
+		// 交回位置不合法，不挪偏移。
+		return 0, errors.New("oss seek: negative position")
+	}
+	// 位置变了就关掉旧正文，免得接着读错位。
+	if abs != o.off && o.body != nil {
+		// 关上旧正文，连接还给池子。
+		_ = o.body.Close()
+		// 清掉旧正文，下次读按新位置重开。
+		o.body = nil
+	}
+	// 记下新位置。
+	o.off = abs
+	return abs, nil
+}
+
+// Close 关掉已开的正文；没开过就什么也不做。
+func (o *object) Close() error {
+	// 没开过正文就不用关。
+	if o.body == nil {
+		return nil
+	}
+	// 关上正文，连接还给池子。
+	err := o.body.Close()
+	// 清掉正文，重复关也不出错。
+	o.body = nil
+	return err
 }
 
 // Delete 按键删掉软件包字节；没有该键也算成功。

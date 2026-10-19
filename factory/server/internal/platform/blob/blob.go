@@ -2,8 +2,10 @@
 package blob
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
 	"sync"
 )
 
@@ -16,10 +18,20 @@ type Store interface {
 	Put(ctx context.Context, key string, body []byte) error
 	// Get 按键读出正文。
 	Get(ctx context.Context, key string) ([]byte, error)
+	// Open 按键打开只读流，边读边取不整包进内存；没有该键则找不到。
+	Open(ctx context.Context, key string) (Object, error)
 	// Delete 按键删掉；没有该键也算成功。
 	Delete(ctx context.Context, key string) error
 	// Usage 合计已存字节和对象数，不含磁盘配额。
 	Usage(ctx context.Context) (used, objects int64, err error)
+}
+
+// Object 是按键打开的只读对象流：知道总长、可定位、用完要关。
+type Object interface {
+	// 按偏移读、可定位，用完要关上。
+	io.ReadSeekCloser
+	// Size 交回对象总字节数，打开时就已定下。
+	Size() int64
 }
 
 // Memory 是测试与本阶段默认用的内存对象存根。
@@ -66,6 +78,26 @@ func (m *Memory) Get(_ context.Context, key string) ([]byte, error) {
 	copy(cp, body)
 	return cp, nil
 }
+
+// Open 按键打开只读流；交出的是副本，读时不占锁。
+func (m *Memory) Open(ctx context.Context, key string) (Object, error) {
+	// 先按键取一份副本，没有该键就交回找不到。
+	body, err := m.Get(ctx, key)
+	// 取不到就不开流，原因原样交回。
+	if err != nil {
+		return nil, err
+	}
+	// 副本套上读取器，定位和长度都由它给。
+	return memObject{Reader: bytes.NewReader(body)}, nil
+}
+
+// memObject 是内存副本上的只读流，关掉不用放资源。
+type memObject struct {
+	*bytes.Reader // 读、定位和总长都由它做
+}
+
+// Close 内存流没有连接要放，直接算关上。
+func (memObject) Close() error { return nil }
 
 // Delete 按键删掉；没有该键也算成功。
 func (m *Memory) Delete(_ context.Context, key string) error {

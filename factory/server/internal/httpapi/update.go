@@ -409,15 +409,17 @@ func (h *Handler) pullPadClientSoftware(w http.ResponseWriter, r *http.Request) 
 			writeBadRequest(w, domain.ErrInvalidName)
 			return
 		}
-		// 按版本拉 APK 字节。
-		body, err := svc.Updates.PullPadClientSoftware(r.Context(), bearer(r), version)
+		// 按版本打开 APK 流；起点不在零的续传不再记允许审计。
+		pack, err := svc.Updates.PullPadClientSoftware(r.Context(), bearer(r), version, rangeResumes(r.Header.Get("Range")))
 		// 上一步没通过则停止，不把失败写成成功。
 		if err != nil {
 			// 把失败译成状态回给调用方，不写成功。
 			writeErr(w, err)
 			return
 		}
-		// 按区间写出安装包，摘要已在业务核对过。
-		writeBytes(w, r, body)
+		// 写完就关上对象流，连接还给存储。
+		defer pack.Body.Close()
+		// 按区间边读边写出安装包，摘要已在业务核对过。
+		writeStream(w, r, pack.Body)
 	})
 }

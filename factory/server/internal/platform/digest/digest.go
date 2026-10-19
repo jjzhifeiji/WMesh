@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/binary"
+	"io"
 
 	"github.com/google/uuid"
 )
@@ -30,6 +31,26 @@ func Match(content, digest []byte) bool {
 	}
 	// 交回恒定时间比较，避免看出前缀的结果。
 	return subtle.ConstantTimeCompare(got, digest) == 1
+}
+
+// SumReader 边读边算 SHA-256，不整包进内存；交回摘要和读到的字节数。
+func SumReader(r io.Reader) ([]byte, int64, error) {
+	// 准备流式计算摘要。
+	h := sha256.New()
+	// 整份读一遍喂给摘要，缓冲只占几十 KB。
+	n, err := io.Copy(h, r)
+	// 读一半断了就交回，半截摘要不可信。
+	if err != nil {
+		return nil, n, err
+	}
+	// 交回摘要和读到的字节数。
+	return h.Sum(nil), n, nil
+}
+
+// Equal 恒定时间比两份摘要；不是 32 字节或对不上都算不一致。
+func Equal(got, want []byte) bool {
+	// 长度对上再逐字节比，避免看出前缀。
+	return len(got) == sha256.Size && subtle.ConstantTimeCompare(got, want) == 1
 }
 
 // Member 是闭包摘要的一个成员：身份、修订、已登记摘要和正文。

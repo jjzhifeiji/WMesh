@@ -23,6 +23,24 @@ status() {
   chown 10001:10001 "$DIR/status.json"
 }
 
+# 开工时读出这次要换的种类、版本和摘要；pending.tar 不提前删，留给下次确认覆盖。
+read_pending() {
+  meta=$(tr -d '\n\r' < "$DIR/pending.json" 2>/dev/null || true)
+  cur_kind=$(printf '%s' "$meta" | sed -n 's/.*"kind":"\([^"]*\)".*/\1/p')
+  cur_version=$(printf '%s' "$meta" | sed -n 's/.*"version":\([0-9][0-9]*\).*/\1/p')
+  cur_digest=$(printf '%s' "$meta" | sed -n 's/.*"digest":"\([^"]*\)".*/\1/p')
+  [ -n "$cur_version" ] || cur_version=0
+}
+
+# 写换包结果，带上开工时读到的种类、版本和摘要；app 只按结果里这一版记已装。
+result() {
+  res=$(printf '{"ok":%s,"kind":"%s","version":%s,"digest":"%s"' "$1" "${cur_kind:-}" "${cur_version:-0}" "${cur_digest:-}")
+  if [ -n "${2:-}" ]; then
+    res=$(printf '%s,"error":"%s"' "$res" "$2")
+  fi
+  status "$res}"
+}
+
 # 原子落盘给 app 读，失败也不让主循环退出。
 write_file() {
   path=$1
@@ -34,7 +52,17 @@ write_file() {
 
 compose_up() {
   # 只重建 app，但仍要读 .env 才能解析 compose 里的必填变量。
-  docker compose --env-file /work/.env -f "$COMPOSE" -p "$PROJECT" up -d --no-deps --force-recreate --wait --wait-timeout 90 "$SERVICE"
+  # /work 是整个工程目录，带 --no-build 免得镜像缺失时在 updater 里按宿主源码现编一份。
+  docker compose --env-file /work/.env -f "$COMPOSE" -p "$PROJECT" up -d --no-deps --no-build --force-recreate --wait --wait-timeout 90 "$SERVICE"
+}
+
+# 把换包前的 current 记成 previous；它已是这次要装的包（上次换到一半被打断）就不覆盖，留住真正的旧版。
+mark_previous() {
+  old_id=$1
+  new_id=$(docker image inspect -f '{{.Id}}' "$2" 2>/dev/null || true)
+  [ -n "$old_id" ] || return 0
+  [ "$old_id" != "$new_id" ] || return 0
+  docker tag "$old_id" "$PREV_IMAGE" || true
 }
 
 engine_os() {
@@ -251,24 +279,25 @@ prepare_dir
 while true; do
   tick_images
   if [ -f "$DIR/pending.json" ] && [ -f "$DIR/pending.tar" ] && [ ! -f "$DIR/status.json" ]; then
-    if docker image inspect "$APP_IMAGE" >/dev/null 2>&1; then
-      docker tag "$APP_IMAGE" "$PREV_IMAGE" || true
-    fi
+    read_pending
+    # load 前先按 ID 记下 current，previous 等 load 完比过再定，防止被打断重来时把新包记成旧版。
+    cur_id=$(docker image inspect -f '{{.Id}}' "$APP_IMAGE" 2>/dev/null || true)
     if out=$(docker load -i "$DIR/pending.tar"); then
       img=$(pick_from_load "$out")
       if [ -z "$img" ]; then
-        status "$(printf '{"ok":false,"error":"no image for %s/%s"}' "$(engine_os)" "$(engine_arch)")"
+        result false "$(printf 'no image for %s/%s' "$(engine_os)" "$(engine_arch)")"
       else
+        mark_previous "$cur_id" "$img"
         docker tag "$img" "$APP_IMAGE" || true
         if compose_up; then
-          status '{"ok":true}'
+          result true
         else
           revert
-          status '{"ok":false,"error":"health check failed"}'
+          result false "health check failed"
         fi
       fi
     else
-      status '{"ok":false,"error":"docker load failed"}'
+      result false "docker load failed"
     fi
     write_images || true
   fi

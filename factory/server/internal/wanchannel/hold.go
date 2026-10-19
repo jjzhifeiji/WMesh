@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -41,7 +42,7 @@ const retryMaxFails = 8 // 同一份脏标记连续补拉失败到这个次数�
 type ClientSyncHandler func(keep []uuid.UUID) error
 
 // Hold 用厂钥连 WAN MQTT，订下行、拉索引和正文，并回答升档问询；补拉在后台协程里跑。
-func Hold(ctx context.Context, mqttURL, wanHTTP string, factoryID uuid.UUID, privateKey []byte, apply func(State) error, applyClient func(ClientIntent) error, syncClients ClientSyncHandler, applyClosure ClosureHandler, applyTemplate ClosureHandler, applySoftware ClosureHandler, applyRetract RetractHandler, applyFS ClosureHandler, applyLease LeaseHandler, onRequest RequestHandler, have HaveHandler, outbound <-chan SyncRequest) error {
+func Hold(ctx context.Context, mqttURL, wanHTTP string, factoryID uuid.UUID, privateKey []byte, apply func(State) error, applyClient func(ClientIntent) error, syncClients ClientSyncHandler, applyClosure ClosureHandler, applyTemplate ClosureHandler, applySoftware SoftwareHandler, applyRetract RetractHandler, applyFS ClosureHandler, applyLease LeaseHandler, onRequest RequestHandler, have HaveHandler, outbound <-chan SyncRequest) error {
 	// 没有签发钥就拒绝连接，避免匿名拨上平台。
 	if len(privateKey) == 0 {
 		return domain.ErrNotFound
@@ -144,6 +145,17 @@ func Hold(ctx context.Context, mqttURL, wanHTTP string, factoryID uuid.UUID, pri
 
 	// 用厂钥签后面的拉取，没有签名会被拒绝。
 	pull := newPuller(wanHTTP, factoryID, privateKey)
+	// 问包和拉包挂在内部可取消的上下文上，主循环只负责投递。
+	sctx, scancel := context.WithCancel(ctx)
+	// 后台软件任务，同种类同版本只跑一路。
+	jobs := newSoftwareJobs(sctx, pull, applySoftware)
+	// 离开前先取消软件任务再等它们退出，进度留在暂存文件里。
+	defer func() {
+		// 取消问包和拉包，正在拉的请求随之中断。
+		scancel()
+		// 等软件任务真正退出再返回。
+		jobs.wait()
+	}()
 	// 落库串行，避免主循环和后台补拉交错改本厂；下载正文不占它。
 	var mu sync.Mutex
 	// 记下整轮同步期间落地的绑定，对账时并进名单。
@@ -161,7 +173,7 @@ func Hold(ctx context.Context, mqttURL, wanHTTP string, factoryID uuid.UUID, pri
 		// 离开时放开，下一条才能落库。
 		defer mu.Unlock()
 		// 按类型落库，正文类失败只标脏，别的失败交回调用方。
-		err := applyCmd(cli, up, cmd, body, dirty.failed, apply, applyClient, applyClosure, applyTemplate, applySoftware, applyRetract, applyFS, applyLease, onRequest)
+		err := applyCmd(cli, up, cmd, body, dirty.failed, apply, applyClient, applyClosure, applyTemplate, jobs, applyRetract, applyFS, applyLease, onRequest)
 		// 绑定落上了就记一笔，后台对账不能把它作废。
 		if err == nil && cmd.Typ == CmdClientBind {
 			// 记下刚落地的设备，整轮对账会并上它。
@@ -185,7 +197,7 @@ func Hold(ctx context.Context, mqttURL, wanHTTP string, factoryID uuid.UUID, pri
 	}
 
 	// 回连首轮同步跑：租约、治理状态和绑定对账要先落地才进长循环。
-	if err := pullAndApply(ctx, pull, handle, reconcile, applySoftware, binds); err != nil {
+	if err := pullAndApply(ctx, pull, handle, reconcile, jobs, binds); err != nil {
 		return err
 	}
 	// 后台补拉跟随本条连接，派生子上下文好在离开时先停它。
@@ -201,7 +213,7 @@ func Hold(ctx context.Context, mqttURL, wanHTTP string, factoryID uuid.UUID, pri
 		// 协程退出就销账，等它的一方才能返回。
 		defer wg.Done()
 		// 按脏标记补拉，直到连接离开或遇到注销。
-		runResync(bctx, pull, dirty, handle, reconcile, applySoftware, binds, fatal)
+		runResync(bctx, pull, dirty, handle, reconcile, jobs, binds, fatal)
 	}()
 	// 离开前先停后台补拉并等它退出，旧连接不和新连接首轮同时落库。
 	defer func() {
@@ -263,8 +275,8 @@ func Hold(ctx context.Context, mqttURL, wanHTTP string, factoryID uuid.UUID, pri
 			}
 		// 到点就问有没有新包，一直连着也不漏。
 		case <-soft.C:
-			// 通道一直连着也去问最高版，有新包就静默拉。
-			syncSoftware(ctx, pull, applySoftware)
+			// 通道一直连着也去问最高版，放到后台问，不占主循环。
+			jobs.sync()
 		// 到点就续租，没人接收则跳过。
 		case <-renew.C:
 			// 没人接收租约就跳过，不空打平台。
@@ -518,7 +530,7 @@ func contentRejected(err error) bool {
 }
 
 // 后台补拉协程：退避到点或进页叫醒就补一轮，遇到注销交回主循环。
-func runResync(ctx context.Context, pull *puller, dirty *dirtySet, handle func(context.Context, Cmd) error, reconcile ClientSyncHandler, applySoftware ClosureHandler, binds *bindLog, fatal chan<- error) {
+func runResync(ctx context.Context, pull *puller, dirty *dirtySet, handle func(context.Context, Cmd) error, reconcile ClientSyncHandler, jobs *softwareJobs, binds *bindLog, fatal chan<- error) {
 	// 一直等下一次补拉，连接离开才退出。
 	for {
 		// 退避节拍、进页叫醒或离开，谁先到走谁。
@@ -532,7 +544,7 @@ func runResync(ctx context.Context, pull *puller, dirty *dirtySet, handle func(c
 		case <-dirty.wake:
 		}
 		// 补一轮，只有注销会交回来。
-		if err := resync(ctx, pull, dirty, handle, reconcile, applySoftware, binds); err != nil {
+		if err := resync(ctx, pull, dirty, handle, reconcile, jobs, binds); err != nil {
 			// 交给主循环退出；已有一条在等就不再塞。
 			select {
 			// 把注销送给主循环。
@@ -546,7 +558,7 @@ func runResync(ctx context.Context, pull *puller, dirty *dirtySet, handle func(c
 }
 
 // 按脏标记补拉一轮：全量走整轮同步，否则逐类轻量补；失败的重新标脏。
-func resync(ctx context.Context, pull *puller, dirty *dirtySet, handle func(context.Context, Cmd) error, reconcile ClientSyncHandler, applySoftware ClosureHandler, binds *bindLog) error {
+func resync(ctx context.Context, pull *puller, dirty *dirtySet, handle func(context.Context, Cmd) error, reconcile ClientSyncHandler, jobs *softwareJobs, binds *bindLog) error {
 	// 取出要补的内容，期间的新标脏另算。
 	full, kinds := dirty.take()
 	// 补完再结算，决定清零还是退避。
@@ -554,7 +566,7 @@ func resync(ctx context.Context, pull *puller, dirty *dirtySet, handle func(cont
 	// 全量盖住各种类，只走一次整轮同步。
 	if full {
 		// 整轮重拉：租约、索引、软件和对账都走一遍。
-		err := pullAndApply(ctx, pull, handle, reconcile, applySoftware, binds)
+		err := pullAndApply(ctx, pull, handle, reconcile, jobs, binds)
 		// 结算这一轮，注销交回，别的失败重新标全量。
 		return settle(ctx, dirty, "", err)
 	}
@@ -612,7 +624,7 @@ func pullKind(ctx context.Context, pull *puller, kind string, handle func(contex
 }
 
 // 整轮同步：先领租约再按全量索引逐条落地；有效厂再问包、对账绑定。
-func pullAndApply(ctx context.Context, pull *puller, handle func(context.Context, Cmd) error, reconcile ClientSyncHandler, applySoftware ClosureHandler, binds *bindLog) error {
+func pullAndApply(ctx context.Context, pull *puller, handle func(context.Context, Cmd) error, reconcile ClientSyncHandler, jobs *softwareJobs, binds *bindLog) error {
 	// 预备装当前解包钥，没有它不解正文。
 	var lr leaseResp
 	// 先拿租约，拿不到就整批不做。
@@ -661,8 +673,8 @@ func pullAndApply(ctx context.Context, pull *puller, handle func(context.Context
 	}
 	// 厂仍有效才补拉软件，停用厂不去问包。
 	if active {
-		// 回连补拉厂服务包和漏掉的 APK。
-		syncSoftware(ctx, pull, applySoftware)
+		// 回连补拉厂服务包和漏掉的 APK，放到后台不挡首轮。
+		jobs.sync()
 	}
 	// 没人对账或厂已停用就到此为止。
 	if reconcile == nil || !active {
@@ -754,12 +766,97 @@ func (b *bindLog) end() {
 	}
 }
 
-// 拉当前最高厂服务包和客户端包；没有或失败只记日志。
-func syncSoftware(ctx context.Context, pull *puller, applySoftware ClosureHandler) {
-	// 没人接收就不问包，避免空拉。
-	if applySoftware == nil {
+// 后台软件任务：问最高版和拉包都在这里跑，主循环只负责投递。
+type softwareJobs struct {
+	ctx    context.Context     // 挂在通道内部，离开时取消
+	pull   *puller             // 问最高版用的签名会话
+	apply  SoftwareHandler     // 本厂接手拉包；空则不问包
+	wg     sync.WaitGroup      // 记着在跑的任务，离开前等它们退出
+	mu     sync.Mutex          // 护着在跑表和收工标记
+	active map[string]struct{} // 正在处理的键：种类加版本，或问最高版
+	closed bool                // 已在等收工，不再起新任务
+}
+
+// 建一份空的软件任务表，挂在通道内部的上下文上。
+func newSoftwareJobs(ctx context.Context, pull *puller, apply SoftwareHandler) *softwareJobs {
+	return &softwareJobs{ctx: ctx, pull: pull, apply: apply, active: map[string]struct{}{}}
+}
+
+// 起一路后台任务；同一个键正在跑或已收工就跳过。
+func (j *softwareJobs) spawn(key string, fn func()) {
+	// 占住在跑表，避免两路同时起同一个键。
+	j.mu.Lock()
+	// 改完就放开。
+	defer j.mu.Unlock()
+	// 已收工或同一个键还在跑就不再起。
+	if _, busy := j.active[key]; busy || j.closed {
 		return
 	}
+	// 占上这个键，后来的同键投递跳过。
+	j.active[key] = struct{}{}
+	// 记一路在跑，收工时要等它。
+	j.wg.Add(1)
+	// 放到后台跑，投递的一方立刻返回。
+	go func() {
+		// 跑完就销账，等收工的一方才能返回。
+		defer j.wg.Done()
+		// 跑完就让出这个键，下次同键可以再起。
+		defer j.release(key)
+		// 真正去问包或拉包。
+		fn()
+	}()
+}
+
+// 让出一个键，下次同键投递可以再起。
+func (j *softwareJobs) release(key string) {
+	// 占住在跑表，避免和起任务交错。
+	j.mu.Lock()
+	// 改完就放开。
+	defer j.mu.Unlock()
+	// 删掉这个键。
+	delete(j.active, key)
+}
+
+// 投递一份软件通知：同种类同版本正在处理就跳过，新版本照常开拉。
+func (j *softwareJobs) accept(kind string, version int64, versionName string) {
+	// 没人接收或版本无效就不投。
+	if j.apply == nil || version < 1 {
+		return
+	}
+	// 按种类加版本起一路，正文由本厂另拉。
+	j.spawn(kind+"/"+strconv.FormatInt(version, 10), func() {
+		// 只交种类和版本，本厂已有就跳过重下。
+		acceptSoftware(j.ctx, j.apply, kind, version, versionName)
+	})
+}
+
+// 后台问一遍最高版，有就投递；上一遍还没问完就跳过。
+func (j *softwareJobs) sync() {
+	// 没人接收就不问包，避免空拉。
+	if j.apply == nil {
+		return
+	}
+	// 问最高版也放后台，弱网下不挡主循环。
+	j.spawn("latest", func() {
+		// 问两类最高版，有就逐个投递。
+		syncSoftware(j.ctx, j.pull, j)
+	})
+}
+
+// 收工：不再起新任务，等在跑的都退出。
+func (j *softwareJobs) wait() {
+	// 占住标记，之后的投递一律跳过。
+	j.mu.Lock()
+	// 标成收工，不再登记新任务。
+	j.closed = true
+	// 标完就放开，在跑的任务要来让键。
+	j.mu.Unlock()
+	// 等在跑的任务都退出。
+	j.wg.Wait()
+}
+
+// 问当前最高厂服务包和客户端包，有就交给后台去拉；没有或失败只跳过。
+func syncSoftware(ctx context.Context, pull *puller, jobs *softwareJobs) {
 	// 厂包和客户端包都问最高版。
 	for _, kind := range []string{"factory_service", "client_apk"} {
 		// 只收种类和版本，字节不走这条。
@@ -767,15 +864,17 @@ func syncSoftware(ctx context.Context, pull *puller, applySoftware ClosureHandle
 			Kind    string `json:"kind"`    // factory_service / client_apk
 			Version int64  `json:"version"` // 当前最高
 		}
+		// 问不到这一类就跳过，下一拍再问。
 		if err := pull.get(ctx, "/v1/software/latest?kind="+url.QueryEscape(kind), &meta); err != nil {
 			continue
 		}
-		acceptSoftware(applySoftware, kind, meta.Version, "")
+		// 问到了就投递，同版本在处理就跳过。
+		jobs.accept(kind, meta.Version, "")
 	}
 }
 
 // 只把种类和版本交给本厂去拉；正文不进 MQTT，同版本由本厂跳过重下。
-func acceptSoftware(applySoftware ClosureHandler, kind string, version int64, versionName string) {
+func acceptSoftware(ctx context.Context, applySoftware SoftwareHandler, kind string, version int64, versionName string) {
 	// 没人接收或版本无效就不通知。
 	if applySoftware == nil || version < 1 {
 		return
@@ -786,8 +885,8 @@ func acceptSoftware(applySoftware ClosureHandler, kind string, version int64, ve
 	if err != nil {
 		return
 	}
-	// 本厂拒收只记日志，不断开通道。
-	if err := applySoftware(snap); err != nil {
+	// 本厂拒收只记日志；通道正在离开的不算拒收。
+	if err := applySoftware(ctx, snap); err != nil && ctx.Err() == nil {
 		// 记下拒收原因，下一轮再问。
 		slog.Warn("accept software", "kind", kind, "err", err)
 	}
@@ -858,7 +957,7 @@ func alreadyHave(have HaveHandler, typ, rawID string, revision int64) bool {
 }
 
 // 按指令类型落库或回答升档问询；正文已在锁外拉好，正文类失败交给 failed 标脏，不断通道。
-func applyCmd(cli mqtt.Client, up string, cmd Cmd, body json.RawMessage, failed func(kind, what string, err error), apply func(State) error, applyClient func(ClientIntent) error, applyClosure ClosureHandler, applyTemplate ClosureHandler, applySoftware ClosureHandler, applyRetract RetractHandler, applyFS ClosureHandler, applyLease LeaseHandler, onRequest RequestHandler) error {
+func applyCmd(cli mqtt.Client, up string, cmd Cmd, body json.RawMessage, failed func(kind, what string, err error), apply func(State) error, applyClient func(ClientIntent) error, applyClosure ClosureHandler, applyTemplate ClosureHandler, jobs *softwareJobs, applyRetract RetractHandler, applyFS ClosureHandler, applyLease LeaseHandler, onRequest RequestHandler) error {
 	// 按指令类型落库或回答问询。
 	switch cmd.Typ {
 	// 有解包钥才交给本厂，空的直接忽略。
@@ -957,8 +1056,8 @@ func applyCmd(cli mqtt.Client, up string, cmd Cmd, body json.RawMessage, failed 
 		if cmd.Kind != "client_apk" && cmd.Kind != "factory_service" {
 			return nil
 		}
-		// 只交种类和版本，正文由本厂另拉。
-		acceptSoftware(applySoftware, cmd.Kind, cmd.Version, cmd.VersionName)
+		// 交给后台去拉，主循环立刻回去处理下行。
+		jobs.accept(cmd.Kind, cmd.Version, cmd.VersionName)
 		return nil
 	// 升档问询走上行回执，不在这里拉正文。
 	case CmdAssetList, CmdAssetSnapshot, CmdFSList:

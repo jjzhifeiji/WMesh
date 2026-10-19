@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"golang.org/x/sync/singleflight"
 	"golang.org/x/time/rate"
 
 	"wmesh/factory/internal/platform/audit"
@@ -23,6 +24,9 @@ type kernel struct {
 	softwareSource SoftwareSource           // 厂→WAN 拉包；空则只能夹具 Ingest
 	pendingSink    PendingSink              // 确认后落盘；空则只走夹具
 	applyReporter  ApplyReporter            // 读 updater 进度；测试可空
+	applyMu        sync.Mutex               // 串起落地失败的查重和写入，同一次结果只记一条
+	runningCode    int64                    // 本进程厂服务版本号；已装基线不低于它，测试可零
+	runningName    string                   // 本进程厂服务版本名；库里没这版副本时给人看
 	imageJanitor   ImageJanitor             // 请 updater 清无用镜像；测试可空
 	clientDown     ClientDown               // 厂→Client MQTT；空则只留下发记录
 	wanWeld        WeldWANPoster            // 把无人员组织的焊汇总交给 WAN；空则不上送
@@ -33,6 +37,10 @@ type kernel struct {
 	mqttOnline     map[uuid.UUID]int        // 本厂示教器 MQTT 连接数；>0 才算在线
 	softwareMu     sync.Mutex               // 护着同版本拉包单飞
 	softwareIn     map[string]*softwareWait // 正在拉的（种类/版本）
+
+	blobMu      sync.Mutex           // 护着已核摘要表，收包、查包和下载会并发改
+	blobChecked map[string]blobCheck // 对象键到已核摘要和长度，每个对象只整包核一次
+	blobFly     singleflight.Group   // 同一对象首次核摘要只跑一路，别的等它
 }
 
 // softwareWait 等同版本那一次拉完，避免并发各下一份。
@@ -140,6 +148,8 @@ func (k *kernel) SetBlobs(store blob.Store) {
 	}
 	// 换成对象存储，之后上传正文不再进内存
 	k.blobs = store
+	// 换了存储，旧的核对记录不再算数
+	k.forgetBlobs()
 }
 
 // NewService 组装厂内应用服务；调用方先打开这一家厂库。

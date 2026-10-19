@@ -105,6 +105,9 @@ type RequestHandler func(typ, reqID, kind, assetID string) (assets, snapshot jso
 // ClosureHandler 落地 WAN 推来的平台级闭包（可用或停用修订）；失败不拆连接。
 type ClosureHandler func(raw json.RawMessage) error
 
+// SoftwareHandler 在后台按软件通知去拉包；ctx 随通道离开取消，失败不拆连接。
+type SoftwareHandler func(ctx context.Context, raw json.RawMessage) error
+
 // Lease 是 WAN 下发的内容解包钥，只进内存。
 type Lease struct {
 	Key      []byte    // 内容租约钥 L

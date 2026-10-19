@@ -52,7 +52,7 @@ src/
 ```bash
 make up        # 首次自动生成 .env，请改密码；构建镜像并等到 app/db/oss/alloy 全部健康
 make logs      # 跟随日志（JSON）
-make upgrade   # 拉新基础镜像、重建应用、替换容器；库迁移随启动自动向前
+make upgrade   # 拉新基础镜像、替换容器，不重建应用（版本只经 OTA 更换，按源码重建用 make dev-up）；库迁移随启动自动向前
 make bundle    # 导出离线安装包 dist/*.tar（app + postgres + rustfs + alloy），目标机 docker load -i 后 make up
 make down      # 停容器，保留数据卷
 ```

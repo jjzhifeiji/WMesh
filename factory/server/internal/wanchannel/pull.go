@@ -19,7 +19,7 @@ import (
 	"wmesh/factory/internal/platform/nodekey"
 )
 
-const maxPullBytes = 256 << 20 // 与 WAN 上传上限一致；JSON 带正文会再胀一截
+const maxPullBytes = 256 << 20 // 与 WAN 上传上限一致，按包的原始字节算
 
 // 带着厂钥去拉正文的会话，没有签名会被拒绝。
 type puller struct {
@@ -179,10 +179,16 @@ func (p *puller) postJSON(ctx context.Context, path string, payload, dst any) er
 
 // 送出请求，拿到响应头就按 Date 取时间样本，不等正文。
 func (p *puller) do(req *http.Request) (*http.Response, error) {
+	// 用本会话的长超时客户端送出。
+	return p.doWith(p.client, req)
+}
+
+// 用给定客户端送出请求，拿到响应头就按 Date 取时间样本。
+func (p *puller) doWith(client *http.Client, req *http.Request) (*http.Response, error) {
 	// 记下发出时刻，往返中点要用。
 	sent := time.Now()
 	// 送出请求，返回时只拿到了头，正文还在路上。
-	res, err := p.client.Do(req)
+	res, err := client.Do(req)
 	// 拿到头才取样，网络失败没有 Date 可看。
 	if err == nil {
 		// 按回包 Date 记下时差，401、404 也算。

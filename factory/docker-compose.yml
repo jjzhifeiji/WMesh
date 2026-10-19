@@ -66,10 +66,9 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - update:/var/lib/wmesh/update
-      - ./docker-compose.yml:/work/docker-compose.yml:ro
-      - ./.env:/work/.env:ro
-      - ./updater/apply.sh:/apply.sh:ro
-    command: ["sh", "/apply.sh"]
+      # 只读挂整个工程目录：单文件挂载在宿主 sed -i、vim、git pull 换 inode 后仍读旧文件，OTA 会按旧 .env 重建 app。
+      - .:/work:ro
+    command: ["sh", "/work/updater/apply.sh"]
     restart: unless-stopped
     logging: *logging
 

@@ -25,6 +25,7 @@ import (
 	"wmesh/global/internal/platform/migrate"
 	"wmesh/global/internal/platform/mqttbroker"
 	"wmesh/global/internal/platform/oss"
+	"wmesh/global/internal/platform/release"
 	"wmesh/global/internal/service"
 	"wmesh/global/internal/store"
 	"wmesh/global/internal/web"
@@ -84,6 +85,8 @@ func run(ctx context.Context, log *slog.Logger) error {
 
 	// 按平台库组装服务，账号和名录都走这里。
 	svc := service.NewService(store.Open(db))
+	// 正在跑的版本算已装基线，首装不被提示装回同版或旧版。
+	svc.Updates.SetRunningSoftware(release.Code, release.Name)
 	// 确认只把 tar 落到更新目录；真正换容器由本机 updater 做。
 	updateDir := appupdate.Dir(cfg.UpdateDir)
 	// 把落盘位置交给更新服务，确认后才写目录。
@@ -92,13 +95,10 @@ func run(ctx context.Context, log *slog.Logger) error {
 	svc.Updates.SetApplyReporter(updateDir)
 	// 旧镜像由这个目录清理，避免磁盘被占满。
 	svc.Updates.SetImageJanitor(updateDir)
-	// 更新器报告已换成功，才把库里的包记成已装。
-	if kind, version, ok, present, err := updateDir.Report(); err == nil && present && ok {
-		// 记下已装，失败只警告，不拦住启动。
-		if err := svc.Updates.MarkInstalled(ctx, kind, version); err != nil {
-			// 没能标成已装就记警告，下次仍可再认。
-			log.Warn("mark wan software installed", "err", err)
-		}
+	// 按更新器结果补记：换成功记已装，失败或切回记落地失败；只警告，不拦住启动。
+	if err := svc.Updates.SettleStaged(ctx); err != nil {
+		// 没能补记就记警告，管理员查进度时还会再补。
+		log.Warn("settle wan software", "err", err)
 	}
 	// 启动时清掉在线标记，避免上次崩溃留下假在线。
 	if err := svc.ResetChannelPresence(ctx); err != nil {

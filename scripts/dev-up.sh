@@ -38,7 +38,7 @@ up_side() {
   local def_port="$3"
   [[ -d "$ROOT/$dir" ]] || die "没有 $dir/"
   echo ">> ${name}：按当前源码重建"
-  make -C "$ROOT/$dir" up
+  make -C "$ROOT/$dir" dev-up
   local port
   port="$(http_port "$ROOT/$dir" "$def_port")"
   local url="http://127.0.0.1:${port}"

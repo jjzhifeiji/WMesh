@@ -149,7 +149,8 @@ func statusOf(err error) int {
 		errors.Is(err, domain.ErrClientBound), errors.Is(err, domain.ErrClientKeyTaken),
 		errors.Is(err, domain.ErrRevisionConflict), errors.Is(err, domain.ErrFactoryKeyExists),
 		errors.Is(err, domain.ErrReferenced), errors.Is(err, domain.ErrDeviceSerialTaken),
-		errors.Is(err, domain.ErrSoftwareInstallFailed), errors.Is(err, domain.ErrDuplicateName):
+		errors.Is(err, domain.ErrSoftwareInstallFailed), errors.Is(err, domain.ErrDuplicateName),
+		errors.Is(err, domain.ErrSoftwareApplying):
 		return http.StatusConflict
 	// 建厂引导失败当上游故障，细节只进日志。
 	case errors.Is(err, domain.ErrFactoryBootstrap):

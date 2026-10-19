@@ -24,6 +24,7 @@ const zh: Record<string, string> = {
   "device serial already bound": "这个识别号已经登记过了",
   "revision does not match": "别人已经改过这条，请刷新后再写",
   "revision is not strictly newer": "不能下发更低的版本",
+  "software update is applying": "上一个更新还在安装，等出结果后再确认",
   "asset integrity check failed": "内容与摘要对不上，不能当有效资产用",
   "asset is not available": "草稿或已停用，不能这样用",
   "asset is not copyable": "不可复制，不能升档或放宽",
