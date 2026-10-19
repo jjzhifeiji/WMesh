@@ -1,4 +1,5 @@
 -- 工程模版副本带名称，按身份取最高修订。
+-- +goose Up
 
 ALTER TABLE content_template_replicas
     ADD COLUMN name TEXT NOT NULL DEFAULT ''; -- 工程模版名称；工艺为空

@@ -1,4 +1,5 @@
 -- 工厂治理状态：停用/启用可逆；已认领的删除只注销，不物理删历史。
+-- +goose Up
 
 ALTER TABLE factories
     ADD COLUMN status TEXT NOT NULL DEFAULT 'active', -- active / disabled / retired

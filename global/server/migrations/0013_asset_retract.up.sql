@@ -1,4 +1,5 @@
 -- 记下已删除的平台级身份，厂回连时补送撤回。
+-- +goose Up
 
 CREATE TABLE asset_retractions (
     asset_id UUID PRIMARY KEY, -- 已删除的平台级身份

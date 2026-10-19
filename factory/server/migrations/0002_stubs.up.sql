@@ -1,4 +1,5 @@
 -- 归属桩：运行事实与个人资产只记创建时路径，禁止后续改写快照。
+-- +goose Up
 
 CREATE TABLE fact_stubs (
     id UUID PRIMARY KEY, -- 事实桩稳定身份

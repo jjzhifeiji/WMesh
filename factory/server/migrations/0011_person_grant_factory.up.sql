@@ -1,4 +1,5 @@
 -- 人员离线授权改为厂级：本厂设备通用，不再绑特定 Client。
+-- +goose Up
 
 ALTER TABLE person_offline_grants DROP CONSTRAINT IF EXISTS person_offline_grants_client_id_fkey;
 ALTER TABLE person_offline_grants DROP CONSTRAINT IF EXISTS person_offline_grants_person_id_client_id_revision_key;

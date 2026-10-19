@@ -1,4 +1,5 @@
 -- 本厂 Client 加人看的名字；公钥可空，等本机首次上线再登记。不改已落库绑定身份。
+-- +goose Up
 
 ALTER TABLE clients
     ADD COLUMN name TEXT NOT NULL DEFAULT 'Client'; -- 给人看的名字，可改，不当身份

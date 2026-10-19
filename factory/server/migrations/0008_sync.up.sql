@@ -1,5 +1,6 @@
 -- 上传记录：只记元数据，正文在对象存根，不进审计、不进 WAN。
 -- 不改 fact_stubs；汇聚沿用其主键做产生端幂等键。
+-- +goose Up
 
 CREATE TABLE upload_records (
     id UUID PRIMARY KEY, -- 产生端稳定身份，汇聚幂等键

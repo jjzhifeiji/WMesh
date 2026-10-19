@@ -1,5 +1,6 @@
 -- 平台级只读副本、工程下发到 Client 的授权与记录、本厂缓存上限。
 -- 不改 assets 当前行；Client 缓存正文不进厂库。
+-- +goose Up
 
 CREATE TABLE factory_settings (
     id SMALLINT PRIMARY KEY DEFAULT 1, -- 单行；本厂一份设置
@@ -52,12 +53,14 @@ COMMENT ON COLUMN asset_replicas.digest IS 'SHA-256 摘要 32 字节';
 COMMENT ON COLUMN asset_replicas.deps IS '工艺必须 []；工程为钉死依赖';
 COMMENT ON COLUMN asset_replicas.received_at IS '本厂收到该修订的时间';
 
+-- +goose StatementBegin
 CREATE FUNCTION prevent_replica_delete() RETURNS trigger
 LANGUAGE plpgsql AS $$
 BEGIN
     RAISE EXCEPTION 'asset replicas cannot be physically deleted';
 END;
 $$;
+-- +goose StatementEnd
 
 CREATE TRIGGER asset_replicas_no_delete
     BEFORE DELETE ON asset_replicas

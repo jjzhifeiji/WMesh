@@ -1,4 +1,5 @@
 -- 已收到的云端内容模版副本；按身份+修订并存，不得改已收正文。
+-- +goose Up
 
 CREATE TABLE content_template_replicas (
     id UUID NOT NULL, -- 与 WAN 原件相同
@@ -22,12 +23,14 @@ COMMENT ON COLUMN content_template_replicas.schema IS '字段表';
 COMMENT ON COLUMN content_template_replicas.digest IS '字段表 SHA-256';
 COMMENT ON COLUMN content_template_replicas.received_at IS '本厂收到时间';
 
+-- +goose StatementBegin
 CREATE FUNCTION prevent_template_replica_delete() RETURNS trigger
 LANGUAGE plpgsql AS $$
 BEGIN
     RAISE EXCEPTION 'content template replicas cannot be physically deleted';
 END;
 $$;
+-- +goose StatementEnd
 
 CREATE TRIGGER content_template_replicas_no_delete
     BEFORE DELETE ON content_template_replicas

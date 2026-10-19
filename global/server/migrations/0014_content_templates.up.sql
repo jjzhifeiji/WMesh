@@ -1,4 +1,5 @@
 -- 工艺/工程各一份当前字段模版；不是焊接资产，不进 assets。
+-- +goose Up
 
 CREATE TABLE content_templates (
     id UUID PRIMARY KEY, -- 稳定身份，每类一个

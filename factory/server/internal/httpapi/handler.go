@@ -115,16 +115,18 @@ type bootResp struct {
 
 // 探活结果，库和对象存储分开标记。
 type healthResp struct {
-	Status      string `json:"status"`      // ok 或 degraded
-	Version     int64  `json:"version"`     // 版本号
-	VersionName string `json:"versionName"` // 版本名
-	Build       string `json:"build"`       // 构建串
-	DB          string `json:"db"`          // ok 或 down
-	OSS         string `json:"oss"`         // ok / down / off（未配置）
-	DemoData    bool   `json:"demoData"`    // 开发版放开演示焊次入口；生产恒为假，页面据此藏按钮
+	Status      string          `json:"status"`      // ok 或 degraded
+	Version     int64           `json:"version"`     // 版本号
+	VersionName string          `json:"versionName"` // 版本名
+	Build       string          `json:"build"`       // 构建串
+	DB          string          `json:"db"`          // ok 或 down
+	OSS         string          `json:"oss"`         // ok / down / off（未配置）
+	DemoData    bool            `json:"demoData"`    // 开发版放开演示焊次入口；生产恒为假，页面据此藏按钮
+	Schema      hub.SchemaState `json:"schema"`      // 各厂库迁移版本与打开失败退避；个别厂失败不改 status 和状态码
 }
 
 // healthz 库不通回 503 让编排判定不健康；OSS 掉线只标 degraded，不影响账号管理继续服务。
+// 个别厂库迁移失败只列在 schema 里，按退避自动重试，不拖累整体状态。
 func (h *Handler) healthz(w http.ResponseWriter, r *http.Request) {
 	// 给这次探活限时，免得库卡住拖死接口。
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
@@ -151,6 +153,8 @@ func (h *Handler) healthz(w http.ResponseWriter, r *http.Request) {
 			slog.Warn("healthz oss probe failed", "err", err)
 		}
 	}
+	// 各厂库迁移版本和打开失败的厂只作参考，不影响整体状态和状态码。
+	resp.Schema = h.Hub.SchemaStatus(ctx)
 	// 通过之后把结果回给调用方。
 	writeJSON(w, code, resp)
 }

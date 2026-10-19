@@ -1,5 +1,6 @@
 -- 本厂可关 Client 本机袋 SQLCipher，便于现场用 Database Inspector；默认仍加密。
 -- 关加密后盘上是明文 SQLite；切换会让 Client 丢掉旧袋文件再重建。
+-- +goose Up
 
 ALTER TABLE factory_settings
     ADD COLUMN encrypt_pouch BOOLEAN NOT NULL DEFAULT true; -- 本机袋是否 SQLCipher 整库加密

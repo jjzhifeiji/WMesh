@@ -1,5 +1,6 @@
 -- 把本厂 Client 策略并进 factory_settings 单行：修订、缓存范围、解封钥是否落盘、时效与扩展键。
 -- 不另起第二张表；不改已有 max_cached_projects 取值。
+-- +goose Up
 
 ALTER TABLE factory_settings
     ADD COLUMN revision BIGINT NOT NULL DEFAULT 0, -- 策略修订；Client 只接受更高

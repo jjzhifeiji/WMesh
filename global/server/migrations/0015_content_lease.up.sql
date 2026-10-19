@@ -1,4 +1,5 @@
 -- 每厂一把内容租约钥，只用于续发和解过站信封；不进审计、不存厂正文。
+-- +goose Up
 
 CREATE TABLE content_leases (
     factory_id UUID PRIMARY KEY REFERENCES factories (id), -- 这家厂

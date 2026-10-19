@@ -1,4 +1,5 @@
 -- 解开工艺的钥匙跟人走；焊机只有编号，不再持钥。
+-- +goose Up
 
 ALTER TABLE people
     ADD COLUMN unwrap_key BYTEA; -- 登录人到站解封钥；未登录过为空

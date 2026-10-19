@@ -1,5 +1,6 @@
 -- 本厂短码、Client 短码、工艺工程只读编号；已有自建行按本厂计数补齐。
 -- 已有平台级副本不编造云端号，等下次下发带上。不改 UUID、修订、正文、摘要或审计原文。
+-- +goose Up
 
 CREATE TABLE asset_code_seq (
     kind TEXT PRIMARY KEY, -- process / project

@@ -1,4 +1,5 @@
 -- 每人退出后是否保留示教器上自己的库文件；默认留。
+-- +goose Up
 
 ALTER TABLE people
     ADD COLUMN keep_pouch BOOLEAN NOT NULL DEFAULT true; -- 退出后留下该人的库文件

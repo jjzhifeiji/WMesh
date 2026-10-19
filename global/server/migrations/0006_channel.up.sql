@@ -1,5 +1,6 @@
 -- 建厂码哈希与初始超管显示名：厂端出站认领，WAN 不再反打厂内网。
 -- 不存建厂码原文、日常密码或厂内人员明细。
+-- +goose Up
 
 ALTER TABLE factories
     ADD COLUMN enrollment_token_hash TEXT, -- 一次性建厂码哈希，认领成功后清空

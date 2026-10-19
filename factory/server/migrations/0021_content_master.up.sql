@@ -1,4 +1,5 @@
 -- 本厂内容主钥只以租约钥包装后落盘；L 与 MK 原文不进库。
+-- +goose Up
 
 CREATE TABLE content_master (
     id SMALLINT PRIMARY KEY DEFAULT 1, -- 单行

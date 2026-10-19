@@ -1,4 +1,5 @@
 -- 为已有表补库内表/列注释，供管理工具阅读；不改列类型或已落库数据。
+-- +goose Up
 
 COMMENT ON TABLE people IS '本厂自然人账号，固定只属于本厂库，不属于任何组织节点';
 COMMENT ON COLUMN people.id IS '稳定身份，改名也不变';
@@ -79,6 +80,14 @@ COMMENT ON COLUMN personal_asset_stubs.org_path IS '创建时路径，改分配�
 COMMENT ON COLUMN personal_asset_stubs.content IS '内容正文；不进审计';
 COMMENT ON COLUMN personal_asset_stubs.created_at IS '创建时间';
 
-COMMENT ON TABLE schema_migrations IS '已套用的向前迁移文件名，禁止改已落库数据';
-COMMENT ON COLUMN schema_migrations.name IS '已执行的 SQL 文件名';
-COMMENT ON COLUMN schema_migrations.applied_at IS '套用成功时间';
+-- 旧执行器留下的 schema_migrations 只在老库里有；新库由 goose 记版本，不再建这张表。
+-- +goose StatementBegin
+DO $$
+BEGIN
+    IF to_regclass('public.schema_migrations') IS NOT NULL THEN
+        COMMENT ON TABLE schema_migrations IS '已套用的向前迁移文件名，禁止改已落库数据';
+        COMMENT ON COLUMN schema_migrations.name IS '已执行的 SQL 文件名';
+        COMMENT ON COLUMN schema_migrations.applied_at IS '套用成功时间';
+    END IF;
+END $$;
+-- +goose StatementEnd

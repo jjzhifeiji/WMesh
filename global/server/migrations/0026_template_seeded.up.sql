@@ -1,4 +1,5 @@
 -- 内置工程模版只在空库首次落一次：抢到标记才插种子，删光后读取不再补回。
+-- +goose Up
 
 CREATE TABLE content_template_seeds (
     kind TEXT PRIMARY KEY, -- 已落过种子的模版类型

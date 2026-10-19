@@ -1,5 +1,7 @@
 -- 平台级可复制与厂级同一套：草稿可改，可用后只许收紧。新建仍默认为否。
+-- +goose Up
 
+-- +goose StatementBegin
 DO $$
 DECLARE r record;
 BEGIN
@@ -14,5 +16,6 @@ BEGIN
         EXECUTE format('ALTER TABLE assets DROP CONSTRAINT %I', r.conname);
     END LOOP;
 END $$;
+-- +goose StatementEnd
 
 COMMENT ON COLUMN assets.copyable IS '可否被上一级复制；草稿可改，可用后只许收紧；新建默认为否';

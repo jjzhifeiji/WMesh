@@ -1,4 +1,5 @@
 -- 本厂软件副本与厂服务已装版本；不存包字节，不改 assets。
+-- +goose Up
 
 CREATE TABLE wan_trust (
     id SMALLINT PRIMARY KEY DEFAULT 1, -- 单行

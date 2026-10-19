@@ -162,6 +162,12 @@ func (k *kernel) Ping(ctx context.Context) error {
 	return k.store.Ping(ctx)
 }
 
+// SchemaVersion 读 WAN 库已套到的迁移版本，给探活用。
+func (k *kernel) SchemaVersion(ctx context.Context) (int64, error) {
+	// 转给库层去读版本表。
+	return k.store.SchemaVersion(ctx)
+}
+
 // AdminExists 给进程启动判断是否还需引导，避免每次重启都留一条拒绝审计。
 func (k *kernel) AdminExists(ctx context.Context) (bool, error) {
 	// 按管理员处理，失败就不能继续。

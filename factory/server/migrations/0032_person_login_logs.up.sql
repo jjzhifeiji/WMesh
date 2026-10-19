@@ -1,4 +1,5 @@
 -- 示教器每次登录留下现场快照：版本、设备号、型号、WiFi 名；不含密码和令牌。
+-- +goose Up
 
 CREATE TABLE person_login_logs (
     id UUID PRIMARY KEY, -- 登录记录稳定身份

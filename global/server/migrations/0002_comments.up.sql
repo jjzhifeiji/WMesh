@@ -1,4 +1,5 @@
 -- 为已有表补库内表/列注释，供管理工具阅读；不改列类型或已落库数据。
+-- +goose Up
 
 COMMENT ON TABLE factories IS 'WAN 工厂名录，不含厂内组织或普通账号';
 COMMENT ON COLUMN factories.id IS '工厂稳定身份，也用来选厂库';
@@ -37,6 +38,14 @@ COMMENT ON COLUMN audit_events.result IS 'allow 或 deny';
 COMMENT ON COLUMN audit_events.time_source IS '时间来源，本阶段固定 server';
 COMMENT ON COLUMN audit_events.occurred_at IS '服务端记录时间';
 
-COMMENT ON TABLE schema_migrations IS '已套用的向前迁移文件名，禁止改已落库数据';
-COMMENT ON COLUMN schema_migrations.name IS '已执行的 SQL 文件名';
-COMMENT ON COLUMN schema_migrations.applied_at IS '套用成功时间';
+-- 旧执行器留下的 schema_migrations 只在老库里有；新库由 goose 记版本，不再建这张表。
+-- +goose StatementBegin
+DO $$
+BEGIN
+    IF to_regclass('public.schema_migrations') IS NOT NULL THEN
+        COMMENT ON TABLE schema_migrations IS '已套用的向前迁移文件名，禁止改已落库数据';
+        COMMENT ON COLUMN schema_migrations.name IS '已执行的 SQL 文件名';
+        COMMENT ON COLUMN schema_migrations.applied_at IS '套用成功时间';
+    END IF;
+END $$;
+-- +goose StatementEnd

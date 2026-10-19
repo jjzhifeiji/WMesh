@@ -1,4 +1,5 @@
 -- 焊事实补工程快照与焊接模式，供按工程汇总和下钻每次。
+-- +goose Up
 
 ALTER TABLE weld_facts
     ADD COLUMN project_id UUID, -- 当时工程身份；未打开可空

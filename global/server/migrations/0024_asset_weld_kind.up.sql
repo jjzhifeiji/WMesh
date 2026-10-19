@@ -1,5 +1,6 @@
 -- 工艺/工程自带作业类型：单层焊道、多层焊缝、T排对接。
 -- 已有行先落单层；工程再按正文里的空库模版身份改。
+-- +goose Up
 
 ALTER TABLE assets
     ADD COLUMN weld_kind TEXT NOT NULL DEFAULT 'single'; -- 作业类型

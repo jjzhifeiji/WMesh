@@ -1,5 +1,6 @@
 -- 本厂接受的 Client 绑定、节点运行凭证和人员离线授权；签发密钥只在本厂库。
 -- 不存他厂名录、不存 Client 私钥；已落库路径快照与审计原文不改。
+-- +goose Up
 
 CREATE TABLE signing_keys (
     id UUID PRIMARY KEY, -- 本厂签发密钥行身份；全表只能一行

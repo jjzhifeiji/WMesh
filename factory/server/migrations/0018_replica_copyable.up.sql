@@ -1,5 +1,7 @@
 -- 平台级副本可复制与源相同；本厂仍不得改。
+-- +goose Up
 
+-- +goose StatementBegin
 DO $$
 DECLARE r record;
 BEGIN
@@ -14,5 +16,6 @@ BEGIN
         EXECUTE format('ALTER TABLE asset_replicas DROP CONSTRAINT %I', r.conname);
     END LOOP;
 END $$;
+-- +goose StatementEnd
 
 COMMENT ON COLUMN asset_replicas.copyable IS '与源相同；本厂不得改、不得因下发放宽';

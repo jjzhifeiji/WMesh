@@ -1,4 +1,5 @@
 -- 本厂原件和平台级副本都记下作业类型；已有行先单层。厂库正文是信封，不按 JSON 回填。
+-- +goose Up
 
 ALTER TABLE assets
     ADD COLUMN weld_kind TEXT NOT NULL DEFAULT 'single'; -- 作业类型

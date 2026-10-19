@@ -1,5 +1,6 @@
 -- 本厂 Client 钉机械臂识别号，并持有到站重封用的解封钥。
 -- 解封钥不进列表 JSON、不进审计；未作废设备号本厂唯一。
+-- +goose Up
 
 ALTER TABLE clients
     ADD COLUMN device_serial TEXT NOT NULL DEFAULT '', -- 从设备读到的机械臂识别号；未登记为空

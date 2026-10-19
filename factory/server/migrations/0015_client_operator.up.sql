@@ -1,4 +1,5 @@
 -- 本厂设备记下当前使用人，供列表展示；不是人员授权，不进 WAN。
+-- +goose Up
 
 ALTER TABLE clients
     ADD COLUMN operator_id UUID REFERENCES people (id);

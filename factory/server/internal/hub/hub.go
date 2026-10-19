@@ -5,16 +5,21 @@ package hub
 import (
 	"context"
 	"errors"
+	"log/slog"
+	"sort"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/google/uuid"
+	"golang.org/x/sync/singleflight"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 
 	"wmesh/factory/internal/platform/blob"
 	"wmesh/factory/internal/platform/domain"
+	"wmesh/factory/internal/platform/migrate"
 	"wmesh/factory/internal/platform/nodekey"
 	"wmesh/factory/internal/platform/provision"
 	"wmesh/factory/internal/platform/release"
@@ -45,9 +50,26 @@ func (t *tenant) close() {
 	}
 }
 
+// 厂库打开失败后的退避：30 秒起，每再失败一次翻倍，封顶 10 分钟。
+const (
+	openBackoffMin = 30 * time.Second // 首次失败后等多久再试
+	openBackoffMax = 10 * time.Minute // 连续失败时最多等这么久
+)
+
+// openFailure 一家厂最近一次打开失败；退避期内直接交回这次的错，到点再试。
+type openFailure struct {
+	err   error         // 上次建库、连库或迁移失败的原错误
+	at    time.Time     // 上次失败的时间
+	wait  time.Duration // 本轮退避时长，再失败就翻倍
+	retry time.Time     // 到这个时间之后才再试
+}
+
 // Hub 按工厂稳定身份选库；没有库就当作工厂还不存在。
 type Hub struct {
-	mu          sync.Mutex                                // 护着已打开的厂库表，避免并发开出两份。
+	mu          sync.Mutex                                // 护着已打开的厂库表；只在查表和登记时短占，建库迁移不占
+	opening     singleflight.Group                        // 同一家厂的并发打开合并成一路，别的厂不等它
+	failed      map[uuid.UUID]*openFailure                // 打开失败、正在退避的厂；打开成功即清掉，同受 mu 保护
+	now         func() time.Time                          // 取当前时间算退避；测试可换成假钟
 	presenceMu  sync.Mutex                                // 护着出站通道表，避免两路同时重连。
 	adminDSN    string                                    // 维护库连接串，用来派生各厂的库。
 	admin       *gorm.DB                                  // 维护库连接，只负责建厂和列厂。
@@ -82,7 +104,7 @@ func New(adminDSN string) (*Hub, error) {
 	if err := sqlDB.Ping(); err != nil {
 		return nil, err
 	}
-	return &Hub{adminDSN: adminDSN, admin: admin, tenants: map[uuid.UUID]*tenant{}, presence: map[uuid.UUID]context.CancelFunc{}, syncReq: map[uuid.UUID]chan wanchannel.SyncRequest{}}, nil
+	return &Hub{adminDSN: adminDSN, admin: admin, tenants: map[uuid.UUID]*tenant{}, failed: map[uuid.UUID]*openFailure{}, now: time.Now, presence: map[uuid.UUID]context.CancelFunc{}, syncReq: map[uuid.UUID]chan wanchannel.SyncRequest{}}, nil
 }
 
 // SetPendingSink 生产写入更新目录；须在打开厂库之前调用。
@@ -178,33 +200,69 @@ func (h *Hub) Service(ctx context.Context, factoryID uuid.UUID) (*service.Servic
 	return h.ensure(factoryID)
 }
 
-// 没有厂库就建并组装服务；已打开则复用。
+// ensure 没有厂库就建并组装服务；已打开则复用。
+// 同一家厂的并发打开合并成一路；建库、迁移不占 h.mu，慢迁移只挡这一家。
 func (h *Hub) ensure(factoryID uuid.UUID) (*service.Service, error) {
-	// 占住厂库表，避免两路同时建同一家。
+	// 按厂身份合并并发打开，同一家只跑一路，别的厂各走各的。
+	v, err, _ := h.opening.Do(factoryID.String(), func() (any, error) {
+		// 真正去查表、建库迁移并登记这家厂。
+		return h.open(factoryID)
+	})
+	// 打开失败就原样交回，退避记录已在 open 里记下。
+	if err != nil {
+		return nil, err
+	}
+	// 合并的各路拿到同一份服务。
+	return v.(*service.Service), nil
+}
+
+// open 打开一家厂：只在查表和登记两处占 h.mu，建库、迁移和组装都在锁外做。
+// 只由 ensure 经合并调用，同一家厂不会有两路同时进来。
+func (h *Hub) open(factoryID uuid.UUID) (*service.Service, error) {
+	// 占住厂库表，只看已打开和退避记录，并抄出组装要用的配置。
 	h.mu.Lock()
-	// 离开时放开，别的厂才能继续打开。
-	defer h.mu.Unlock()
 	// 已经打开就复用，不再建第二份。
 	if t, ok := h.tenants[factoryID]; ok {
+		// 复用前先放开锁。
+		h.mu.Unlock()
 		return t.svc, nil
+	}
+	// 退避期内不再重开，直接交回上次的错，免得每个请求都重跑失败的迁移。
+	if f, ok := h.failed[factoryID]; ok && h.now().Before(f.retry) {
+		// 取出上次的错再放锁。
+		err := f.err
+		// 交回前先放开锁。
+		h.mu.Unlock()
+		return nil, err
+	}
+	// 抄出维护库、对象存储和更新目录，锁外组装时不再读共享字段。
+	admin, blobs, sink := h.admin, h.blobs, h.pendingSink
+	// 查完就放开，建库迁移期间别的厂和探活照常取锁。
+	h.mu.Unlock()
+	// 枢纽已关就当厂不存在，不再建库。
+	if admin == nil {
+		return nil, domain.ErrNotFound
 	}
 	// 按工厂身份算出这家厂的库名。
 	name := provision.DBName(factoryID)
 	// 没有厂库就建出来，建失败就不要打开半套。
-	if err := provision.Ensure(h.admin, name); err != nil {
-		return nil, err
+	if err := provision.Ensure(admin, name); err != nil {
+		// 记下失败并排好下次重试，原错误照旧交回。
+		return nil, h.recordFailure(factoryID, err)
 	}
 	// 拼出这家厂的连接串，拼不出就不要去连。
 	dsn, err := provision.SwapDB(h.adminDSN, name)
 	// 连接串拼不出就交回，不要拿空地址去连。
 	if err != nil {
-		return nil, err
+		// 记下失败并排好下次重试，原错误照旧交回。
+		return nil, h.recordFailure(factoryID, err)
 	}
-	// 打开并套用迁移，失败就不要对外服务。
+	// 打开并套用迁移，失败就不要对外服务；等锁、等表锁都在锁外。
 	db, err := provision.OpenMigrated(dsn)
 	// 迁移或打开失败就交回，不要带着半套库继续。
 	if err != nil {
-		return nil, err
+		// 只影响这一家：记下失败按退避重试，别的厂照常打开。
+		return nil, h.recordFailure(factoryID, err)
 	}
 	// 按工厂身份打开本厂库并组装应用服务。
 	svc := service.NewService(store.Open(db, factoryID))
@@ -213,21 +271,21 @@ func (h *Hub) ensure(factoryID uuid.UUID) (*service.Service, error) {
 	// 演示焊次开关跟进程配置走，生产关着就一条都写不进。
 	svc.Stats.SetDemoData(h.demoData.Load())
 	// 已经挂了对象存储才交给这家厂。
-	if h.blobs != nil {
+	if blobs != nil {
 		// 软件包字节走对象存储，不进进程内存。
-		svc.SetBlobs(h.blobs)
+		svc.SetBlobs(blobs)
 	}
 	// 已经挂了更新目录才交给这家厂。
-	if h.pendingSink != nil {
+	if sink != nil {
 		// 确认后的安装包落到更新目录。
-		svc.Updates.SetPendingSink(h.pendingSink)
+		svc.Updates.SetPendingSink(sink)
 		// 能回报换装结果的才记上，供启动时补记。
-		if r, ok := h.pendingSink.(service.ApplyReporter); ok {
+		if r, ok := sink.(service.ApplyReporter); ok {
 			// 能回报换装结果的才记上，供启动时补记。
 			svc.Updates.SetApplyReporter(r)
 		}
 		// 能清理旧镜像的才记上，避免磁盘被占满。
-		if j, ok := h.pendingSink.(service.ImageJanitor); ok {
+		if j, ok := sink.(service.ImageJanitor); ok {
 			// 能清理旧镜像的才记上，避免磁盘被占满。
 			svc.Updates.SetImageJanitor(j)
 		}
@@ -249,6 +307,24 @@ func (h *Hub) ensure(factoryID uuid.UUID) (*service.Service, error) {
 	svc.SetClientDown(h)
 	// 让这家厂能把焊汇总送到平台。
 	svc.SetWeldWANPoster(h)
+	// 组装完再占住厂库表登记。
+	h.mu.Lock()
+	// 离开时放开，登记只占这一小段。
+	defer h.mu.Unlock()
+	// 拿回锁再查一次：已有登记就用它，这份库关掉，免得登记两份。
+	if t, ok := h.tenants[factoryID]; ok {
+		// 关掉多开的这份连接池。
+		closeDB(db)
+		return t.svc, nil
+	}
+	// 组装期间枢纽已关就不登记，连接池关掉免得泄漏。
+	if h.admin == nil {
+		// 关掉刚开的连接池。
+		closeDB(db)
+		return nil, domain.ErrNotFound
+	}
+	// 打开成功就清掉这家的失败记录，探活不再列它。
+	delete(h.failed, factoryID)
 	// 上送循环跟着这家厂的库走，不跟 h.run：没配 WAN 时 h.run 一直是空。
 	pushCtx, stopPush := context.WithCancel(context.Background())
 	// 循环退出时关闭，关库方据此等它。
@@ -263,6 +339,122 @@ func (h *Hub) ensure(factoryID uuid.UUID) (*service.Service, error) {
 	// 记下来，下次按身份直接复用这份服务。
 	h.tenants[factoryID] = &tenant{db: db, svc: svc, stopPush: stopPush, pushDone: pushDone}
 	return svc, nil
+}
+
+// recordFailure 锁外打开失败后占住厂库表记下退避，原错误照旧交回。
+func (h *Hub) recordFailure(factoryID uuid.UUID, err error) error {
+	// 记退避要改失败表，先占住厂库表。
+	h.mu.Lock()
+	// 记完就放开。
+	defer h.mu.Unlock()
+	// 记下失败并排好下次重试。
+	return h.openFailed(factoryID, err)
+}
+
+// closeDB 关掉一份没登记上的厂库连接池，关不掉也不盖过主流程。
+func closeDB(db *gorm.DB) {
+	// 取出底层连接池，能取到才关。
+	if sqlDB, err := db.DB(); err == nil {
+		// 关掉这份连接池。
+		_ = sqlDB.Close()
+	}
+}
+
+// openFailed 记下这家厂打开失败并排好下次重试；调用方须占着 h.mu。原错误照旧交回。
+func (h *Hub) openFailed(factoryID uuid.UUID, err error) error {
+	// 取当前时间，失败时间和下次重试都从这里算。
+	now := h.now()
+	// 首次失败先等最短的一档。
+	wait := openBackoffMin
+	// 上次也失败过就翻倍，封顶不再加。
+	if f, ok := h.failed[factoryID]; ok {
+		// 翻倍后与封顶取小。
+		wait = min(f.wait*2, openBackoffMax)
+	}
+	// 记下这次失败，退避期内直接交回它。
+	h.failed[factoryID] = &openFailure{err: err, at: now, wait: wait, retry: now.Add(wait)}
+	// 原错误只进日志，探活只报文件名或大类。
+	slog.Warn("open factory db failed, will retry", "factory", factoryID, "wait", wait, "err", err)
+	return err
+}
+
+// SchemaState 探活看的各厂库结构：已打开的报迁移版本，打开失败的报退避。
+type SchemaState struct {
+	Factories []FactorySchema  `json:"factories"` // 已打开的厂库及其迁移版本，按厂身份排序
+	Failing   []FactoryFailure `json:"failing"`   // 最近一次打开失败、尚未重开成功的厂
+}
+
+// FactorySchema 一家已打开厂库的迁移版本。
+type FactorySchema struct {
+	FactoryID uuid.UUID `json:"factoryId"` // 工厂稳定身份
+	Version   int64     `json:"version"`   // 已套到的迁移版本；读不出时为 -1
+}
+
+// FactoryFailure 一家打开失败的厂；只给失败的迁移文件或大类原因，不带库原文。
+type FactoryFailure struct {
+	FactoryID uuid.UUID `json:"factoryId"`      // 工厂稳定身份
+	Reason    string    `json:"reason"`         // migrate=迁移没做完；open=建库或连库失败
+	File      string    `json:"file,omitempty"` // 没套上的迁移文件；说不清是哪支时为空
+	FailedAt  time.Time `json:"failedAt"`       // 最近一次失败时间
+	RetryAt   time.Time `json:"retryAt"`        // 到这个时间之后，下次有人访问才再试
+}
+
+// SchemaStatus 交回各厂库迁移版本和打开失败的厂，给探活用；不打开任何新厂库。
+func (h *Hub) SchemaStatus(ctx context.Context) SchemaState {
+	// 先占住厂库表，抄出要看的库和失败记录。
+	h.mu.Lock()
+	// 按家数预留已打开的库，放锁后再去读版本。
+	open := make(map[uuid.UUID]*gorm.DB, len(h.tenants))
+	// 逐家抄下库连接，读版本不必占着锁。
+	for id, t := range h.tenants {
+		// 记下这家的库连接。
+		open[id] = t.db
+	}
+	// 按家数预留失败记录，空的也回空数组。
+	failing := make([]FactoryFailure, 0, len(h.failed))
+	// 逐家抄下失败记录；过了重试点但还没人来重开的也照列。
+	for id, f := range h.failed {
+		// 先按建库或连库失败算，认出迁移错误再改。
+		row := FactoryFailure{FactoryID: id, Reason: "open", FailedAt: f.at, RetryAt: f.retry}
+		// 准备接迁移错误，里面带着失败的文件名。
+		var me *migrate.Error
+		// 是迁移没做完就报文件名，库原文不外露。
+		if errors.As(f.err, &me) {
+			// 标成迁移失败并带上文件名。
+			row.Reason, row.File = "migrate", me.File
+		}
+		// 收下这一家。
+		failing = append(failing, row)
+	}
+	// 抄完就放开，读版本时别的厂照常打开。
+	h.mu.Unlock()
+	// 按家数预留版本结果，空的也回空数组。
+	factories := make([]FactorySchema, 0, len(open))
+	// 逐家读迁移版本。
+	for id, db := range open {
+		// 带上探活的限时去读。
+		v, err := migrate.Version(db.WithContext(ctx))
+		// 读不出就标 -1，原因只进日志。
+		if err != nil {
+			// 记下读不出的原因，探活里不写库原文。
+			slog.Warn("read factory schema version", "factory", id, "err", err)
+			// 标成读不出。
+			v = -1
+		}
+		// 收下这一家的版本。
+		factories = append(factories, FactorySchema{FactoryID: id, Version: v})
+	}
+	// 按厂身份排序，探活输出稳定好比对。
+	sort.Slice(factories, func(i, j int) bool {
+		// 按身份文本从小到大。
+		return factories[i].FactoryID.String() < factories[j].FactoryID.String()
+	})
+	// 失败的厂也按身份排序。
+	sort.Slice(failing, func(i, j int) bool {
+		// 按身份文本从小到大。
+		return failing[i].FactoryID.String() < failing[j].FactoryID.String()
+	})
+	return SchemaState{Factories: factories, Failing: failing}
 }
 
 // SiteFactory 是本机已认领的一家工厂，给登录页免填 UUID。
@@ -406,6 +598,8 @@ func (h *Hub) Drop(factoryID uuid.UUID) error {
 	t, ok := h.tenants[factoryID]
 	// 从内存拿掉，避免还能访问已删的库。
 	delete(h.tenants, factoryID)
+	// 失败记录一并清掉，探活不再列已删的厂。
+	delete(h.failed, factoryID)
 	// 登记清完就放开厂库锁，上送循环退出时还要取它。
 	h.mu.Unlock()
 	// 内存里开过就先停上送循环，再关这家的连接。

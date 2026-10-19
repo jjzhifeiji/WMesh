@@ -72,16 +72,18 @@ type healthResp struct {
 	Build       string `json:"build"`       // 构建串
 	DB          string `json:"db"`          // ok 或 down
 	OSS         string `json:"oss"`         // ok / down / off（未配置）
+	Schema      int64  `json:"schema"`      // WAN 库已套到的迁移版本；库不通或读不出时为 -1
 }
 
 // healthz 库不通回 503 让编排判定不健康；OSS 掉线只标 degraded，不影响名录管理继续服务。
+// schema 报 WAN 库当前迁移版本，只作参考；迁移失败时进程不会起来，轮不到探活。
 func (h *Handler) healthz(w http.ResponseWriter, r *http.Request) {
 	// 探活最多等三秒，免得编排被拖住。
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 	// 离开时取消限时，避免协程继续占着。
 	defer cancel()
-	// 先按库正常、存储未配置来组装探活。
-	resp := healthResp{Status: "ok", Version: h.versionCode, VersionName: h.versionName, Build: h.version, DB: "ok", OSS: "off"}
+	// 先按库正常、存储未配置、迁移版本未读来组装探活。
+	resp := healthResp{Status: "ok", Version: h.versionCode, VersionName: h.versionName, Build: h.version, DB: "ok", OSS: "off", Schema: -1}
 	// 先当健康，库失败再改成不可用。
 	code := http.StatusOK
 	// 库探活失败就把本机标成不健康。
@@ -90,6 +92,20 @@ func (h *Handler) healthz(w http.ResponseWriter, r *http.Request) {
 		resp.Status, resp.DB, code = "degraded", "down", http.StatusServiceUnavailable
 		// 库探活失败记一笔，响应里只标不健康。
 		slog.Warn("healthz db ping failed", "err", err)
+	}
+	// 库通了才读迁移版本，库不通再读只会多等一回。
+	if resp.DB == "ok" {
+		// 读出 WAN 库已套到的迁移版本，只作参考，不改整体状态和状态码。
+		v, err := h.svc.SchemaVersion(ctx)
+		// 读不出就标 -1，原因只进日志。
+		if err != nil {
+			// 标成读不出。
+			v = -1
+			// 记下读不出的原因，探活里不写库原文。
+			slog.Warn("healthz schema version failed", "err", err)
+		}
+		// 把版本放进探活结果。
+		resp.Schema = v
 	}
 	// 接了对象存储才探，没接就标未配置。
 	if h.OSSProbe != nil {

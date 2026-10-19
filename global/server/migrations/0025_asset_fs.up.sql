@@ -1,4 +1,5 @@
 -- 平台级工艺/工程目录树：文件夹单独成行，文件节点引用资产。
+-- +goose Up
 
 CREATE TABLE asset_fs_nodes (
     id UUID PRIMARY KEY, -- 节点身份，不当路径

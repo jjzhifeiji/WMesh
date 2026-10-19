@@ -1,5 +1,6 @@
 -- 工厂/Client 短码与平台级工艺工程只读编号；已有行按创建顺序补齐。
 -- 不改 UUID、修订、正文、摘要或审计原文。
+-- +goose Up
 
 CREATE TABLE origin_code_seq (
     kind TEXT PRIMARY KEY, -- factory / client

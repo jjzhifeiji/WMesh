@@ -1,4 +1,5 @@
 -- 本厂治理状态：由 WAN 通道下发，修订只向前。不存厂内人员。
+-- +goose Up
 
 CREATE TABLE factory_lifecycle (
     id SMALLINT PRIMARY KEY DEFAULT 1, -- 全表一行

@@ -1,4 +1,5 @@
 -- 每人最多一条有效组织分配；多出来的保留最早一条，其余标结束。
+-- +goose Up
 
 UPDATE assignments AS a
 SET status = 'ended', ended_at = now()

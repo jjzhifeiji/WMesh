@@ -1,5 +1,7 @@
 -- 管理员可挂整厂；组织负责人仍只能挂节点。
+-- +goose Up
 
+-- +goose StatementBegin
 DO $$
 DECLARE
     cname text;
@@ -15,6 +17,7 @@ BEGIN
         EXECUTE format('ALTER TABLE role_grants DROP CONSTRAINT %I', cname);
     END IF;
 END $$;
+-- +goose StatementEnd
 
 ALTER TABLE role_grants
     ADD CONSTRAINT role_grants_role_scope_check CHECK (

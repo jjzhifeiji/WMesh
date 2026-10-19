@@ -1,5 +1,6 @@
 -- 厂库初始结构：本厂账号、组织树、分配、角色、会话、审计。
 -- 新厂套用同一套迁移；按工厂稳定身份选库。
+-- +goose Up
 
 CREATE TABLE people (
     id UUID PRIMARY KEY, -- 稳定身份，改名也不变

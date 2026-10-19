@@ -1,4 +1,5 @@
 -- 厂端在线时自报的前端/服务版本；离线仍留上次值，名录只在在线时展示。
+-- +goose Up
 
 ALTER TABLE factories
     ADD COLUMN web_version BIGINT NOT NULL DEFAULT 0, -- 厂端前端版本号；0 表示还没报到

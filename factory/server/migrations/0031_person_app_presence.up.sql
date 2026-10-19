@@ -1,4 +1,5 @@
 -- 人员页展示示教器登录在线、最后见到和正在跑的 APK 版本；不进 software_state。
+-- +goose Up
 
 ALTER TABLE sessions
     ADD COLUMN kind TEXT NOT NULL DEFAULT 'web'; -- web=管理端；app=示教器

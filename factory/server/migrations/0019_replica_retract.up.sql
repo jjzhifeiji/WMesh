@@ -1,4 +1,5 @@
 -- 云端删除后厂端撤回展示；历史修订仍可被已钉依赖命中。
+-- +goose Up
 
 ALTER TABLE asset_replicas
     ADD COLUMN retracted BOOLEAN NOT NULL DEFAULT false;

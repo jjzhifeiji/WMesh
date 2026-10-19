@@ -1,4 +1,5 @@
 -- 平台级资产下发授权与记录；不存闭包正文、厂内人员或厂级原件。
+-- +goose Up
 
 CREATE TABLE distribution_grants (
     id UUID PRIMARY KEY, -- 授权记录稳定身份

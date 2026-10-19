@@ -1,5 +1,6 @@
 -- WAN 平台级工艺/工程；正文进库，不进 OSS。
 -- 不存厂级/个人级原件；升档来源身份只做溯源。
+-- +goose Up
 
 CREATE TABLE assets (
     id UUID PRIMARY KEY, -- 稳定身份，不由显示名生成
@@ -52,12 +53,14 @@ COMMENT ON COLUMN assets.deps IS '工艺必须 []；工程为 [{id,revision,dige
 COMMENT ON COLUMN assets.created_at IS '创建时间';
 COMMENT ON COLUMN assets.updated_at IS '最近一次升高修订的时间';
 
+-- +goose StatementBegin
 CREATE FUNCTION prevent_asset_delete() RETURNS trigger
 LANGUAGE plpgsql AS $$
 BEGIN
     RAISE EXCEPTION 'assets cannot be physically deleted';
 END;
 $$;
+-- +goose StatementEnd
 
 CREATE TRIGGER assets_no_delete
     BEFORE DELETE ON assets

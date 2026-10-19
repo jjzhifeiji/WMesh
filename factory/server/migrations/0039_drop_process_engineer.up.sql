@@ -1,4 +1,5 @@
 -- 收回已无的工艺工程师角色。历史行保留 role 字面量，不改旧约束。
+-- +goose Up
 
 UPDATE role_grants
 SET status = 'revoked', revoked_at = now()

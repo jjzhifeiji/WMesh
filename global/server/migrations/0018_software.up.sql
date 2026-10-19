@@ -1,4 +1,5 @@
 -- 软件发布与按下发记录；不存包字节、厂内人员或工艺正文。
+-- +goose Up
 
 CREATE TABLE wan_signing_keys (
     id UUID PRIMARY KEY, -- 云端签发密钥行身份；全表只能一行

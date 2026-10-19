@@ -1,4 +1,5 @@
 -- 厂端上送的焊汇总：只按厂、日、工程名、模式，不含人员与组织。
+-- +goose Up
 
 CREATE TABLE weld_summaries (
     id UUID PRIMARY KEY, -- 汇总行稳定身份

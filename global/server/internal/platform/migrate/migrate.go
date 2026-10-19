@@ -1,475 +1,352 @@
-// Package migrate 按 Flyway 规则只向前套用 SQL：历史进 flyway_schema_history，不做 down，也不改已落库的历史数据。
+// Package migrate 用 goose 只向前套用 SQL：版本记在 goose_db_version，不做 down，也不改已落库的历史数据。
 package migrate
 
 import (
+	"context"
+	"database/sql"
+	"errors"
 	"fmt"
-	"hash/crc32"
 	"io/fs"
 	"path"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 
+	"github.com/pressly/goose/v3"
+	"github.com/pressly/goose/v3/database"
+	"github.com/pressly/goose/v3/lock"
 	"gorm.io/gorm"
 )
 
-var (
-	legacySQLName = regexp.MustCompile(`^(\d+)_(.+)\.up\.sql$`) // 0001_init.up.sql
-	flywaySQLName = regexp.MustCompile(`^V(\d+)__(.+)\.sql$`)   // V0001__init.sql
-)
+// VersionTable goose 记已套版本的表，沿用 goose 默认表名。
+const VersionTable = "goose_db_version"
 
-// Up 按版本顺序套用尚未成功记录的 SQL；每个文件一个事务，失败不记历史，重启可重试。
+// lockKey 迁移锁的 advisory lock 键，与厂端同值；PG 的这种锁按库区分，只在同一 WAN 库内排队。
+const lockKey int64 = 0x574d657368
+
+// lockWaitSeconds 等迁移锁的上限（秒）：过渡用的事务锁和 goose 的会话锁同一口径，测试里可缩短。
+var lockWaitSeconds uint64 = 300
+
+// legacyName 旧执行器的文件名，开头数字就是版本，如 0001_init.up.sql。
+var legacyName = regexp.MustCompile(`^(\d+)_.+\.sql$`)
+
+// versionTableComments 版本表的库内注释；老库过渡和新库建表都补上。
+var versionTableComments = []string{
+	`COMMENT ON TABLE goose_db_version IS 'goose 已套用的向前迁移版本；只增不删，禁止 down'`,
+	`COMMENT ON COLUMN goose_db_version.id IS '登记顺序，自增'`,
+	`COMMENT ON COLUMN goose_db_version.version_id IS '迁移版本号，取文件名开头数字；0 是建表时的起点'`,
+	`COMMENT ON COLUMN goose_db_version.is_applied IS '是否已套用；本仓只向前，恒为真'`,
+	`COMMENT ON COLUMN goose_db_version.tstamp IS '登记时间；老库过渡登记的是过渡当时'`,
+}
+
+// Error 迁移没做完：失败的版本整段回滚、不记版本，下次再迁会自动重试。
+type Error struct {
+	File string // 没套上的迁移文件名；锁超时、解析失败等说不清是哪支时为空
+	Err  error  // 库或 goose 给的原错误
+}
+
+// Error 带上失败的文件名，方便日志里直接对到是哪支脚本。
+func (e *Error) Error() string {
+	// 说不清是哪支脚本时只报原错误。
+	if e.File == "" {
+		// 交回带前缀的原错误文字。
+		return fmt.Sprintf("migrate: %v", e.Err)
+	}
+	// 交回带文件名的错误文字。
+	return fmt.Sprintf("migrate %s: %v", e.File, e.Err)
+}
+
+// Unwrap 让调用方仍能按原错误判断，比如库连不上。
+func (e *Error) Unwrap() error {
+	return e.Err
+}
+
+// Up 按版本顺序套用尚未登记的 SQL；每个文件一个事务，失败回滚、不记版本，下次自动重试。
+// 同一库的多路迁移（多进程、多实例或并行测试）凭库内迁移锁排队，后到的等前面迁完再看版本。
 func Up(db *gorm.DB, fsys fs.FS, dir string) error {
-	// 历史表必须先在，否则没法记套用。
-	if err := ensureHistory(db); err != nil {
-		return err
-	}
-	// 旧库只有 schema_migrations 时，按已套用文件登记 Flyway 历史，不重跑。
-	if err := baselineLegacy(db, fsys, dir); err != nil {
-		return err
-	}
-	// 列出待套用的脚本。
-	names, err := listSQL(fsys, dir)
-	// 列不出来就停，避免漏套。
+	// 迁移跟着进程走，不设超时；只给等锁设上限。
+	ctx := context.Background()
+	// 取出底层连接池，goose 只认标准库的库句柄。
+	sqlDB, err := db.DB()
+	// 取不出连接池就没法迁，原样交回。
 	if err != nil {
 		return err
 	}
-	// 先核对已套过的脚本没被改过，对不上就一支都不套。
-	if err := verifyChecksums(db, fsys, dir, names); err != nil {
-		return err
-	}
-	// 记下当前库用户，写进历史。
-	who, err := currentUser(db)
-	// 用户取不到就不套，历史不能空着操作者。
+	// 只把迁移目录交给 goose，目录外的文件不当迁移。
+	sub, err := fs.Sub(fsys, dir)
+	// 目录不合法就停，免得迁了一半目录。
 	if err != nil {
 		return err
 	}
-	// 按文件名顺序，跳过已经成功的。
-	for _, name := range names {
-		// 查这支脚本是否已经成功套过。
-		ok, err := alreadyApplied(db, name)
-		// 查失败则停住，避免重复执行。
-		if err != nil {
-			return err
-		}
-		// 成功过的不再执行。
-		if ok {
-			continue
-		}
-		// 把这支脚本的正文读出来。
-		body, err := fs.ReadFile(fsys, path.Join(dir, name))
-		// 读不到就不能套这一支。
-		if err != nil {
-			// 带上文件名交回，方便对是哪一支。
-			return fmt.Errorf("read %s: %w", name, err)
-		}
-		// 从文件名取版本和描述。
-		version, desc, ok := parseVersionedSQL(name)
-		// 名字不合规则就不能套。
-		if !ok {
-			// 带上文件名交回，避免悄悄跳过。
-			return fmt.Errorf("invalid migration name %s", name)
-		}
-		// 记下开始时间，用来算耗时。
-		start := time.Now()
-		// 一个文件放进一个事务，失败整支回滚。
-		err = db.Transaction(func(tx *gorm.DB) error {
-			// 按切开的语句逐条执行。
-			for i, stmt := range splitSQL(string(body)) {
-				// 这一条失败则整文件回滚。
-				if err := tx.Exec(stmt).Error; err != nil {
-					// 带上文件名和序号交回。
-					return fmt.Errorf("apply %s #%d: %w", name, i+1, err)
-				}
-			}
-			// 耗时收成毫秒再记历史。
-			ms := int(time.Since(start).Milliseconds())
-			// 全部成功才追加历史，失败不留行。
-			return insertHistory(tx, who, version, desc, name, checksumOf(body), ms)
-		})
-		// 事务失败则停住，重启可重试这一支。
-		if err != nil {
-			return err
-		}
+	// 老库先按旧历史登记已套版本，免得 goose 从头重跑。
+	if err := adoptLegacy(ctx, sqlDB); err != nil {
+		// 过渡失败整段回滚，下次启动再试。
+		return &Error{Err: err}
+	}
+	// 用库内会话锁排队，每秒探一次，最多等五分钟。
+	locker, err := lock.NewPostgresSessionLocker(lock.WithLockID(lockKey), lock.WithLockTimeout(1, lockWaitSeconds))
+	// 锁参数不合法属于代码错误，直接交回。
+	if err != nil {
+		return err
+	}
+	// 只认本目录里的 SQL，不掺进程里登记的 Go 迁移。
+	provider, err := goose.NewProvider(goose.DialectPostgres, sqlDB, sub, goose.WithSessionLocker(locker), goose.WithDisableGlobalRegistry(true))
+	// 目录里没有迁移或版本重号都在这里报。
+	if err != nil {
+		// 带上前缀交回，调用方据此认作迁移失败。
+		return &Error{Err: err}
+	}
+	// 套用全部未登记的版本，已登记的跳过。
+	if _, err := provider.Up(ctx); err != nil {
+		// 换成带文件名的错误交回。
+		return wrapUpError(err)
 	}
 	return nil
 }
 
-// ensureHistory 建 Flyway 历史表；并保留 schema_migrations 让已发布的 COMMENT ON 仍能套上。
-func ensureHistory(db *gorm.DB) error {
-	// 先保住旧表，已发布的注释迁移才套得上。
-	if err := db.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
-		name TEXT PRIMARY KEY,
-		applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-	)`).Error; err != nil {
-		return err
+// wrapUpError 从 goose 的部分失败里取出失败文件名，其余错误照样包一层。
+func wrapUpError(err error) error {
+	// 准备接 goose 的部分失败，里面记着失败的那支。
+	var partial *goose.PartialError
+	// 是某支脚本执行失败，才说得出文件名。
+	if errors.As(err, &partial) && partial.Failed != nil && partial.Failed.Source != nil {
+		// 只留文件名和库给的原因，goose 的版本前缀去掉。
+		return &Error{File: path.Base(partial.Failed.Source.Path), Err: partial.Err}
 	}
-	// 历史表、索引和库内注释一次列齐。
-	stmts := []string{
-		`CREATE TABLE IF NOT EXISTS flyway_schema_history (
-			installed_rank INT NOT NULL,
-			version VARCHAR(50),
-			description VARCHAR(200) NOT NULL,
-			type VARCHAR(20) NOT NULL,
-			script VARCHAR(1000) NOT NULL,
-			checksum INTEGER,
-			installed_by VARCHAR(100) NOT NULL,
-			installed_on TIMESTAMP NOT NULL DEFAULT NOW(),
-			execution_time INTEGER NOT NULL,
-			success BOOLEAN NOT NULL,
-			CONSTRAINT flyway_schema_history_pk PRIMARY KEY (installed_rank)
-		)`,
-		`CREATE INDEX IF NOT EXISTS flyway_schema_history_s_idx ON flyway_schema_history (success)`,
-		// 库内注释与实体同义；已有库启动时也能补上。
-		`COMMENT ON TABLE flyway_schema_history IS 'Flyway 已套用的向前迁移，禁止 down、禁止改已落库数据'`,
-		`COMMENT ON COLUMN flyway_schema_history.installed_rank IS '套用顺序，从 1 起'`,
-		`COMMENT ON COLUMN flyway_schema_history.version IS '脚本版本号'`,
-		`COMMENT ON COLUMN flyway_schema_history.description IS '脚本描述'`,
-		`COMMENT ON COLUMN flyway_schema_history.type IS '脚本类型，本仓固定 SQL'`,
-		`COMMENT ON COLUMN flyway_schema_history.script IS '已执行的 SQL 文件名'`,
-		`COMMENT ON COLUMN flyway_schema_history.checksum IS '脚本 CRC32，改已落库文件会与历史不符'`,
-		`COMMENT ON COLUMN flyway_schema_history.installed_by IS '套用时的数据库用户'`,
-		`COMMENT ON COLUMN flyway_schema_history.installed_on IS '套用成功时间'`,
-		`COMMENT ON COLUMN flyway_schema_history.execution_time IS '套用耗时毫秒'`,
-		`COMMENT ON COLUMN flyway_schema_history.success IS '是否成功；失败不记行，重启可重试'`,
-	}
-	// 逐条执行，任一条失败就停。
-	for _, stmt := range stmts {
-		// 这一条没建成，后面的历史也不可信。
-		if err := db.Exec(stmt).Error; err != nil {
-			return err
-		}
-	}
-	return nil
+	// 锁超时、解析失败等说不清是哪支，原错误照留。
+	return &Error{Err: err}
 }
 
-// baselineLegacy 把旧 schema_migrations 抄进 Flyway 历史，避免换历史表后重跑。
-func baselineLegacy(db *gorm.DB, fsys fs.FS, dir string) error {
-	// 准备数新历史里已有多少行。
-	var n int64
-	// 数失败就不敢抄，以免重跑已套用的脚本。
-	if err := db.Raw("SELECT COUNT(*) FROM flyway_schema_history").Scan(&n).Error; err != nil {
-		return err
+// Version 读库里已套到的最高版本，给探活看；还没登记过任何版本时回 0。
+// 要限时就先给 db 挂上下文（db.WithContext）。
+func Version(db *gorm.DB) (int64, error) {
+	// 用调用方挂的上下文，没挂就不限时。
+	ctx := db.Statement.Context
+	// 没挂上下文就用空白的，不限时。
+	if ctx == nil {
+		// 换成空白上下文。
+		ctx = context.Background()
 	}
-	// 已经有历史就不用再抄旧表。
-	if n > 0 {
-		return nil
+	// 取出底层连接池，goose 只认标准库的库句柄。
+	sqlDB, err := db.DB()
+	// 取不出连接池就读不了版本。
+	if err != nil {
+		return 0, err
 	}
-	// 没有旧表就无从基线。
-	if !db.Migrator().HasTable("schema_migrations") {
-		return nil
+	// 用 goose 的版本表读法，口径与迁移时一致。
+	store, err := database.NewStore(database.DialectPostgres, VersionTable)
+	// 方言写死，这里出错属于代码错误。
+	if err != nil {
+		return 0, err
 	}
-	// 准备接旧表里的文件名。
-	var names []string
-	// 按名字读出已套用的文件。
-	if err := db.Raw("SELECT name FROM schema_migrations ORDER BY name").Scan(&names).Error; err != nil {
-		return err
+	// 取版本表里的最大版本。
+	v, err := store.GetLatestVersion(ctx, sqlDB)
+	// 表在但一行没有，按还没迁过算。
+	if errors.Is(err, database.ErrVersionNotFound) {
+		return 0, nil
 	}
-	// 旧表是空的就不用抄。
-	if len(names) == 0 {
-		return nil
-	}
-	// 记下当前库用户，写进新历史。
-	who, err := currentUser(db)
-	// 用户取不到就不抄。
+	return v, err
+}
+
+// adoptLegacy 版本表还不在时建出来并补注释；老库按旧历史把已套版本先登记上。
+// 新旧进程同时过渡凭事务级迁移锁排队，旧的 flyway_schema_history 和 schema_migrations 原样保留。
+func adoptLegacy(ctx context.Context, sqlDB *sql.DB) error {
+	// 用 goose 的版本表建法，与它自建的表一模一样。
+	store, err := database.NewStore(database.DialectPostgres, VersionTable)
+	// 方言写死，这里出错属于代码错误。
 	if err != nil {
 		return err
 	}
-	// 整批抄进新历史，中途失败就都不算。
-	return db.Transaction(func(tx *gorm.DB) error {
-		// 每个旧文件名补一行成功历史。
-		for _, name := range names {
-			// 从旧文件名取版本和描述。
-			version, desc, ok := parseVersionedSQL(name)
-			// 名字不合规则就不能当基线。
-			if !ok {
-				// 带上文件名交回，避免悄悄跳过。
-				return fmt.Errorf("invalid legacy migration name %s", name)
-			}
-			// 读不到原文就先记零校验和。
-			sum := 0
-			// 读得到才用正文算校验和。
-			if body, err := fs.ReadFile(fsys, path.Join(dir, name)); err == nil {
-				// 用正文算出校验和，改文件能对出来。
-				sum = checksumOf(body)
-			}
-			// 写入失败则整批回滚。
-			if err := insertHistory(tx, who, version, desc, name, sum, 0); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-}
-
-// verifyChecksums 核对已套用脚本的校验和，改过就报文件名拒绝，基线记零的不比。
-func verifyChecksums(db *gorm.DB, fsys fs.FS, dir string, names []string) error {
-	// 准备接成功历史里的脚本名和校验和。
-	var rows []struct {
-		// 已执行的 SQL 文件名。
-		Script string
-		// 套用时记下的校验和，空值按零算。
-		Checksum int
-	}
-	// 一次读出全部成功行，按顺序读让同名后记的盖住先记的。
-	if err := db.Raw("SELECT script, COALESCE(checksum, 0) AS checksum FROM flyway_schema_history WHERE success ORDER BY installed_rank").Scan(&rows).Error; err != nil {
+	// 先不取锁看一眼，已过渡的库每次启动不必排队。
+	if ok, err := tableExists(ctx, sqlDB, VersionTable); err != nil || ok {
 		return err
 	}
-	// 按文件名收好记下的校验和，逐支好查。
-	recorded := make(map[string]int, len(rows))
-	// 逐行收进表里。
-	for _, r := range rows {
-		// 同名多行时以后记的为准。
-		recorded[r.Script] = r.Checksum
-	}
-	// 只核对目录里现有、且历史里记过的脚本。
-	for _, name := range names {
-		// 取这支脚本当时记下的校验和。
-		want, ok := recorded[name]
-		// 没套过的留给后面套；记零的是读不到原文的基线行，没法比。
-		if !ok || want == 0 {
-			continue
-		}
-		// 把这支脚本现在的正文读出来。
-		body, err := fs.ReadFile(fsys, path.Join(dir, name))
-		// 读不到就没法核对，带上文件名交回。
-		if err != nil {
-			// 带上文件名交回，方便对是哪一支。
-			return fmt.Errorf("read %s: %w", name, err)
-		}
-		// 现在的正文与当时的对不上，说明改过已上线的脚本，新老库会分叉。
-		if got := checksumOf(body); got != want {
-			// 报出文件名和两边的值，拒绝继续迁移。
-			return fmt.Errorf("migration %s checksum mismatch: history %d, file %d", name, want, got)
-		}
-	}
-	return nil
-}
-
-// alreadyApplied 该脚本已成功套用则跳过。
-func alreadyApplied(db *gorm.DB, script string) (bool, error) {
-	// 准备数这支脚本的成功行。
-	var n int64
-	// 只数成功行，失败不记所以不会挡住重试。
-	err := db.Raw("SELECT COUNT(*) FROM flyway_schema_history WHERE script = ? AND success", script).Scan(&n).Error
-	return n > 0, err
-}
-
-// insertHistory 追加一条成功记录；失败的文件不进表，重启可重试。
-func insertHistory(tx *gorm.DB, who, version, description, script string, checksum, elapsedMs int) error {
-	// 准备接当前最大顺序。
-	var rank int
-	// 取不到顺序就不能追加，避免序号撞车。
-	if err := tx.Raw("SELECT COALESCE(MAX(installed_rank), 0) FROM flyway_schema_history").Scan(&rank).Error; err != nil {
+	// 建表、登记和注释放在一个事务里，失败什么都不留。
+	tx, err := sqlDB.BeginTx(ctx, nil)
+	// 开不了事务就没法过渡。
+	if err != nil {
 		return err
 	}
-	// 顺序加一，记下这一支成功。
-	if err := tx.Exec(`INSERT INTO flyway_schema_history
-		(installed_rank, version, description, type, script, checksum, installed_by, execution_time, success)
-		VALUES (?, ?, ?, 'SQL', ?, ?, ?, ?, TRUE)`,
-		rank+1, version, description, script, checksum, who, elapsedMs).Error; err != nil {
+	// 没提交就回滚；提交过再回滚只是空操作。
+	defer func() {
+		// 回滚失败不盖过原错误。
+		_ = tx.Rollback()
+	}()
+	// 等锁与 goose 会话锁同一上限；持锁的进程卡死不放时报错交回，不无限挂着。
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf("SET LOCAL lock_timeout = '%ds'", lockWaitSeconds)); err != nil {
 		return err
 	}
-	// 旧表也记一笔，已发布注释仍能对上文件名。
-	return tx.Exec(`INSERT INTO schema_migrations (name, applied_at) VALUES (?, NOW()) ON CONFLICT (name) DO NOTHING`, script).Error
-}
-
-// currentUser 记下谁套用了脚本，给 Flyway 历史用。
-func currentUser(db *gorm.DB) (string, error) {
-	// 准备接当前库用户。
-	var who string
-	// 取不到用户就不记历史。
-	if err := db.Raw("SELECT CURRENT_USER").Scan(&who).Error; err != nil {
-		return "", err
+	// 事务级迁移锁与 goose 会话锁同键，别的进程正在迁就等它完。
+	if _, err := tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock($1)", lockKey); err != nil {
+		return err
 	}
-	// 空名补一个固定名字，历史列不能空。
-	if who == "" {
-		// 用本系统的名字占位。
-		who = "wmesh"
+	// 拿到锁再看一次，等锁期间别人可能已经过渡完。
+	if ok, err := tableExists(ctx, tx, VersionTable); err != nil || ok {
+		return err
 	}
-	return who, nil
-}
-
-// checksumOf 用 CRC32 当 Flyway checksum。
-func checksumOf(body []byte) int {
-	// 收成有符号整数，跟历史表整数列对齐。
-	return int(int32(crc32.ChecksumIEEE(body)))
-}
-
-// parseVersionedSQL 从 0024_software.up.sql 或 V0024__software.sql 取出版本和描述。
-func parseVersionedSQL(name string) (version, description string, ok bool) {
-	// 先认旧式「序号_描述.up.sql」。
-	if m := legacySQLName.FindStringSubmatch(name); m != nil {
-		// 文件名里的序号必须是整数。
-		n, err := strconv.Atoi(m[1])
-		// 序号解析失败则这个名字作废。
-		if err != nil {
-			return "", "", false
+	// 读出旧历史里已套过的版本，新库为空。
+	versions, err := legacyVersions(ctx, tx)
+	// 旧历史读不懂就停，不能猜着登记。
+	if err != nil {
+		return err
+	}
+	// 建版本表，表结构交给 goose 定。
+	if err := store.CreateVersionTable(ctx, tx); err != nil {
+		return err
+	}
+	// 先记版本 0，与 goose 自建表时一致。
+	if err := store.Insert(ctx, tx, database.InsertRequest{Version: 0}); err != nil {
+		return err
+	}
+	// 按版本从小到大登记旧库已套过的。
+	for _, v := range versions {
+		// 登记不上就整段回滚，下次再试。
+		if err := store.Insert(ctx, tx, database.InsertRequest{Version: v}); err != nil {
+			return err
 		}
-		// 去掉前导零再交出版本和描述。
-		return strconv.Itoa(n), m[2], true
 	}
-	// 再认 Flyway 式「V序号__描述.sql」。
-	if m := flywaySQLName.FindStringSubmatch(name); m != nil {
-		// 文件名里的序号必须是整数。
-		n, err := strconv.Atoi(m[1])
-		// 序号解析失败则这个名字作废。
-		if err != nil {
-			return "", "", false
+	// 给版本表和各列补库内注释。
+	for _, stmt := range versionTableComments {
+		// 注释写不上也回滚，免得留下没注释的表。
+		if _, err := tx.ExecContext(ctx, stmt); err != nil {
+			return err
 		}
-		// 去掉前导零再交出版本和描述。
-		return strconv.Itoa(n), m[2], true
 	}
-	return "", "", false
+	// 交回提交的结果。
+	return tx.Commit()
 }
 
-// listSQL 列出待套用的 .sql，按文件名排序。
-func listSQL(fsys fs.FS, dir string) ([]string, error) {
-	// 读出目录里的条目。
-	entries, err := fs.ReadDir(fsys, dir)
-	// 目录读不到就没有可套用的脚本。
+// legacyVersions 读旧执行器记下的已套版本：先认 flyway_schema_history 的成功行，没有再认 schema_migrations。
+func legacyVersions(ctx context.Context, tx *sql.Tx) ([]int64, error) {
+	// 先看旧 Flyway 历史表在不在。
+	ok, err := tableExists(ctx, tx, "flyway_schema_history")
+	// 查不了表就停，免得漏登记。
 	if err != nil {
 		return nil, err
 	}
-	// 按条目数预留名字表。
-	names := make([]string, 0, len(entries))
-	// 只要普通的 SQL 文件。
-	for _, e := range entries {
-		// 目录和别的后缀跳过。
-		if e.IsDir() || path.Ext(e.Name()) != ".sql" {
-			continue
+	// 表在才去读成功行。
+	if ok {
+		// 只认成功的行，失败的当没套过。
+		got, err := scanStrings(ctx, tx, "SELECT version FROM flyway_schema_history WHERE success AND version IS NOT NULL")
+		// 读不出就停，免得漏登记。
+		if err != nil {
+			return nil, err
 		}
-		// 把这个脚本文件名收下。
-		names = append(names, e.Name())
+		// 有成功行就以它为准。
+		if len(got) > 0 {
+			// 交回按数字收好的版本。
+			return parseVersions(got, false)
+		}
 	}
-	// 按文件名排序，版本顺序才稳定。
-	sort.Strings(names)
-	return names, nil
+	// 再看更老的 schema_migrations 在不在。
+	ok, err = tableExists(ctx, tx, "schema_migrations")
+	// 查不了表或表不在都到此为止。
+	if err != nil || !ok {
+		return nil, err
+	}
+	// 读出已套过的文件名。
+	names, err := scanStrings(ctx, tx, "SELECT name FROM schema_migrations")
+	// 读不出就停，免得漏登记。
+	if err != nil {
+		return nil, err
+	}
+	// 交回按文件名开头数字收好的版本。
+	return parseVersions(names, true)
 }
 
-// splitSQL 按分号切语句，但不切开单引号串、$$ 函数体和行注释里的分号。
-func splitSQL(s string) []string {
-	// 先攒下已经切开的语句。
+// parseVersions 把旧历史里的版本串或文件名收成去重升序的版本号；读不懂就报错，不猜。
+func parseVersions(raw []string, byFileName bool) ([]int64, error) {
+	// 按版本去重，同一版本只登记一次。
+	seen := make(map[int64]bool, len(raw))
+	// 逐条解析。
+	for _, s := range raw {
+		// 先去掉首尾空白，版本串可能带空格。
+		s = strings.TrimSpace(s)
+		// 按文件名记的要先取开头数字。
+		if byFileName {
+			// 按旧文件名规则取开头数字。
+			m := legacyName.FindStringSubmatch(s)
+			// 文件名不合规就停，不能猜版本。
+			if m == nil {
+				// 报出读不懂的文件名。
+				return nil, fmt.Errorf("legacy migration name %q", s)
+			}
+			// 换成开头数字，后面统一转版本号。
+			s = m[1]
+		}
+		// 转成版本号。
+		v, err := strconv.ParseInt(s, 10, 64)
+		// 不是整数就停，不能猜版本。
+		if err != nil {
+			// 报出读不懂的版本串。
+			return nil, fmt.Errorf("legacy migration version %q: %w", s, err)
+		}
+		// 版本 0 建表时已记，这里只收正数。
+		if v > 0 {
+			// 记下这一版。
+			seen[v] = true
+		}
+	}
+	// 按需要的长度准备结果。
+	out := make([]int64, 0, len(seen))
+	// 收进结果。
+	for v := range seen {
+		// 把这一版放进结果。
+		out = append(out, v)
+	}
+	// 从小到大登记，与 goose 按顺序套用一致。
+	sort.Slice(out, func(i, j int) bool {
+		// 小的排前面。
+		return out[i] < out[j]
+	})
+	return out, nil
+}
+
+// queryer 事务和连接池都能查，过渡前后共用一套查表写法。
+type queryer interface {
+	// QueryContext 执行查询并交回结果行。
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	// QueryRowContext 执行查询并交回一行。
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+// tableExists 在当前模式里查表在不在，与建表时不带模式名的写法对得上。
+// 不用 to_regclass：它走目录缓存，咨询锁不刷新缓存，排完队还会看到旧的「没表」。
+func tableExists(ctx context.Context, q queryer, name string) (bool, error) {
+	// 准备接查表结果。
+	var ok bool
+	// 直接读 pg_tables，每条语句取新快照，别人刚提交的表也看得到。
+	err := q.QueryRowContext(ctx, "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_tables WHERE schemaname = current_schema() AND tablename = $1)", name).Scan(&ok)
+	return ok, err
+}
+
+// scanStrings 执行只取一列文本的查询，交回全部行。
+func scanStrings(ctx context.Context, q queryer, query string) ([]string, error) {
+	// 执行查询。
+	rows, err := q.QueryContext(ctx, query)
+	// 查不了就停。
+	if err != nil {
+		return nil, err
+	}
+	// 读完关掉结果集，连接才能还回去。
+	defer func() {
+		// 关闭失败不盖过原错误。
+		_ = rows.Close()
+	}()
+	// 准备收集各行文本。
 	var out []string
-	// 当前还没切完的一段。
-	var cur strings.Builder
-	// 一段收口：去掉空白，空段丢掉。
-	flush := func() {
-		// 去掉首尾空白后还有字才算一句。
-		if t := strings.TrimSpace(cur.String()); t != "" {
-			// 收进结果，顺序保持原文。
-			out = append(out, t)
+	// 逐行读出。
+	for rows.Next() {
+		// 准备接这一行。
+		var s string
+		// 扫不出就停。
+		if err := rows.Scan(&s); err != nil {
+			return nil, err
 		}
-		// 清空缓冲，准备下一句。
-		cur.Reset()
+		// 收下这一行。
+		out = append(out, s)
 	}
-	// 逐字符看，引号和函数体里的分号不算结束。
-	for i := 0; i < len(s); {
-		// 按注释、引号、美元标记和分号分流。
-		switch {
-		// 行注释一直抄到换行。
-		case strings.HasPrefix(s[i:], "--"):
-			// 行注释整行照抄，里面的分号不算语句结束。
-			end := strings.IndexByte(s[i:], '\n')
-			// 没有换行就抄到结尾。
-			if end < 0 {
-				// 整段余下都算注释。
-				end = len(s) - i
-			}
-			// 注释原文留下，不丢掉。
-			cur.WriteString(s[i : i+end])
-			// 指针跳过这段注释。
-			i += end
-		// 单引号串整段照抄。
-		case s[i] == '\'':
-			// 单引号串，'' 是转义；没闭合就照抄到结尾交给数据库报错。
-			j := i + 1
-			// 找到成对的引号，双写引号不当结束。
-			for j < len(s) {
-				// 碰到引号才可能是结束或转义。
-				if s[j] == '\'' {
-					// 两个引号是转义，要一起跳过。
-					if j+1 < len(s) && s[j+1] == '\'' {
-						// 跳过这一对转义引号。
-						j += 2
-						continue
-					}
-					break
-				}
-				// 普通字符继续往前找。
-				j++
-			}
-			// 找到了结束引号就把它算进串里。
-			if j < len(s) {
-				// 把结束引号纳入这一段。
-				j++
-			}
-			// 整段字符串照抄，里面的分号不算结束。
-			cur.WriteString(s[i:j])
-			// 指针跳到串的后面。
-			i = j
-		// 美元引号可能是函数体。
-		case s[i] == '$':
-			// 认出 $$ 或 $tag$，认不出就当普通字符。
-			tag := dollarTag(s[i:])
-			// 不是标记就只抄这一个字符。
-			if tag == "" {
-				// 普通美元符号留在语句里。
-				cur.WriteByte(s[i])
-				// 指针前进一格，继续往下看。
-				i++
-				continue
-			}
-			// 找不到结束标记就抄到文件尾。
-			j := len(s)
-			// 找到成对标记才在那里结束。
-			if end := strings.Index(s[i+len(tag):], tag); end >= 0 {
-				// 结束位置含两边的标记。
-				j = i + len(tag) + end + len(tag)
-			}
-			// 函数体整段照抄，里面的分号不算结束。
-			cur.WriteString(s[i:j])
-			// 指针跳到函数体后面。
-			i = j
-		// 这个分号表示一句结束了。
-		case s[i] == ';':
-			// 把这一句收进结果。
-			flush()
-			// 分号本身不留在下一句里。
-			i++
-		// 普通字符留在当前句里。
-		default:
-			// 把这一个普通字符抄下来。
-			cur.WriteByte(s[i])
-			// 指针前进一格继续扫描。
-			i++
-		}
-	}
-	// 最后一段没有分号也要收下。
-	flush()
-	return out
-}
-
-// dollarTag 识别 $$ 或 $tag$ 开头，返回完整标记；不是则返回空。
-func dollarTag(s string) string {
-	// 至少要有起始美元符和结束美元符。
-	if len(s) < 2 || s[0] != '$' {
-		return ""
-	}
-	// 在下一个美元符前只允许标记名用的字符。
-	for j := 1; j < len(s); j++ {
-		// 取出这一位，看是结束还是非法字符。
-		c := s[j]
-		// 再次碰到美元符，这一段就是完整标记。
-		if c == '$' {
-			return s[:j+1]
-		}
-		// 字母、下划线，以及非首位的数字才合法。
-		if !(c == '_' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || j > 1 && c >= '0' && c <= '9') {
-			return ""
-		}
-	}
-	return ""
+	// 交回读行过程中的错误。
+	return out, rows.Err()
 }

@@ -12,7 +12,7 @@ BUNDLE_ARCH = $(subst /,-,$(patsubst linux/%,%,$(BUNDLE_PLATFORM)))
 BUNDLE_SAVE_FLAGS = $(if $(shell docker save --help 2>/dev/null | grep -- --platform),--platform $(BUNDLE_PLATFORM))
 
 .DEFAULT_GOAL := help
-.PHONY: help env test-db test-db-down test guard build up dev-up down logs ps upgrade bundle push dev-server dev-web
+.PHONY: help env test-db test-db-down test guard migrations-sum build up dev-up down logs ps upgrade bundle push dev-server dev-web
 
 help: ## 列出可用命令
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  %-14s %s\n", $$1, $$2}'
@@ -28,6 +28,9 @@ test-db-down: ## 停掉测试库
 
 guard: ## 注释与分层门禁（对齐 HTGlobal）
 	python3 ../scripts/style_guard.py
+
+migrations-sum: ## 新增迁移后登记进 server/migrations/migrations.sum（只追加新文件，改了已登记的迁移照样报错）
+	cd server && WMESH_UPDATE_MIGRATIONS_SUM=1 go test -count=1 ./migrations/
 
 test: test-db ## 门禁 + 服务端 vet + 矩阵验收，前端 lint + 类型检查
 	python3 ../scripts/style_guard.py

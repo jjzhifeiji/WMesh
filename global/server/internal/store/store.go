@@ -11,6 +11,7 @@ import (
 
 	"wmesh/global/internal/platform/audit"
 	"wmesh/global/internal/platform/id"
+	"wmesh/global/internal/platform/migrate"
 )
 
 // Store 只碰 WAN 库：管理员、工厂名录、Client 绑定、平台级资产、下发授权和 WAN 审计。
@@ -27,6 +28,12 @@ func Open(db *gorm.DB) *Store {
 func (s *Store) Ping(ctx context.Context) error {
 	// 发一条空查询，只确认库还连得上。
 	return s.db.WithContext(ctx).Exec("SELECT 1").Error
+}
+
+// SchemaVersion 读 WAN 库已套到的迁移版本，给探活看。
+func (s *Store) SchemaVersion(ctx context.Context) (int64, error) {
+	// 用迁移包的读法，口径与启动迁移一致。
+	return migrate.Version(s.db.WithContext(ctx))
 }
 
 // DatabaseSize 当前库占用的字节，给超管看存储。

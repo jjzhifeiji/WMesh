@@ -1,4 +1,5 @@
 -- 厂端通道在线监控：上线、最近心跳、离线时间。不存通道令牌或厂内人员。
+-- +goose Up
 
 ALTER TABLE factories
     ADD COLUMN channel_connected_at TIMESTAMPTZ, -- 当前这条 WSS 连上的时间；空表示离线

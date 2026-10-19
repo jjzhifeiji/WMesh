@@ -1,4 +1,5 @@
 -- 设备识别号：WAN 登记时填写，分厂后随绑定推给厂端；不当平台 Client 身份。
+-- +goose Up
 
 ALTER TABLE clients
     ADD COLUMN device_serial TEXT NOT NULL DEFAULT ''; -- 机械臂识别号；未填为空，不当身份

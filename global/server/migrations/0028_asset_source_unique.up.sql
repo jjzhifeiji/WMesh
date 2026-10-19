@@ -1,6 +1,7 @@
 -- 同一升档源只对应一条平台级：并发升档曾可能各插一条，之后再升只覆盖其中一条，另一条成孤儿。
 -- 先把存量重复摘掉来源：同一 source_id 按 updated_at 倒序留最新一条带源（同刻按身份取小的，与按源回读一致），
 -- 其余行的来源三列置空，变成独立平台级，不删数据；再建 source_id 非空的部分唯一索引。
+-- +goose Up
 
 WITH ranked AS (
     SELECT id, row_number() OVER (PARTITION BY source_id ORDER BY updated_at DESC, id) AS rn

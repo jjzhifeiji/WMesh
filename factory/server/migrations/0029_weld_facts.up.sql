@@ -1,4 +1,5 @@
 -- 焊接运行事实：每次起停一条，按产生端身份幂等汇聚；不改 fact_stubs。
+-- +goose Up
 
 CREATE TABLE weld_facts (
     id UUID PRIMARY KEY, -- 产生端事实身份

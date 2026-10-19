@@ -1,4 +1,5 @@
 -- 软件包改为三种独立发布；WAN 自记已装云端服务。分发表与签发钥不再写入。
+-- +goose Up
 
 ALTER TABLE software_releases DROP CONSTRAINT software_releases_kind_check;
 ALTER TABLE software_releases ADD CONSTRAINT software_releases_kind_check

@@ -1,5 +1,6 @@
 -- WAN 库初始结构：只放唯一管理员、工厂名录、初始超管对账和 WAN 审计。
 -- 不含厂内人员、组织、角色或日常密码。
+-- +goose Up
 
 CREATE TABLE factories (
     id UUID PRIMARY KEY, -- 工厂稳定身份，也用来选厂库

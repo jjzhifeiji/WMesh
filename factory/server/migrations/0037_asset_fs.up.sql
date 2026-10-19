@@ -1,4 +1,5 @@
 -- 本厂目录树：平台级副本 / 厂级 / 个人级各一棵；文件节点引用资产或副本身份。
+-- +goose Up
 
 CREATE TABLE asset_fs_nodes (
     id UUID PRIMARY KEY, -- 节点身份，不当路径

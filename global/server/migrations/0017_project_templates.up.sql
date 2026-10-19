@@ -1,4 +1,5 @@
 -- 工程模版改为多份独立行：每份自己的名称、字段表、修订。
+-- +goose Up
 
 ALTER TABLE content_templates
     ADD COLUMN name TEXT NOT NULL DEFAULT ''; -- 工程模版名称；工艺为空
