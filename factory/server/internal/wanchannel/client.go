@@ -17,7 +17,7 @@ import (
 	"wmesh/factory/internal/platform/domain"
 )
 
-var enrollClient = &http.Client{Timeout: 30 * time.Second} // 认领两步都短，不跟拉包共用长超时
+var enrollClient = &http.Client{Timeout: 30 * time.Second, Transport: wanRoundTripper{}} // 认领两步都短，走 https 时校验 WAN 证书
 
 // Offer 是 WAN 给出的待认领身份，不含建厂码。
 type Offer struct {
@@ -155,6 +155,8 @@ func postJSON(ctx context.Context, wanURL, path string, body, dst any) error {
 	res, err := enrollClient.Do(req)
 	// 送不出去就当不可达，调用方可以再试。
 	if err != nil {
+		// 先记下原始原因（如证书校验失败），对外仍收成不可达。
+		logSendFail(req, err)
 		return domain.ErrWANUnreachable
 	}
 	// 读完就关掉响应，连接才能复用。

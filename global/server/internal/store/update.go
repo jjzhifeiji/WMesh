@@ -20,7 +20,7 @@ const (
 	SoftwareClientAPK      = "client_apk"      // 当前 Android 客户端包
 )
 
-// WANSigningKey 是云端签发软件包的密钥；全表一行，私钥不进审计。
+// WANSigningKey 是云端下行指令签名钥，历史上签过软件包；全表一行，私钥不进审计。
 type WANSigningKey struct {
 	ID         uuid.UUID `gorm:"type:uuid;primaryKey" json:"id"`       // 行身份
 	PublicKey  []byte    `gorm:"type:bytea;not null" json:"publicKey"` // Ed25519 公钥 32 字节
@@ -81,7 +81,7 @@ func SoftwareObjectKey(kind string, version int64) string {
 	return fmt.Sprintf("software/%s/%d", kind, version)
 }
 
-// PutWANSigningKey 写入云端唯一签发密钥；已有则拒绝。
+// PutWANSigningKey 写入云端唯一的下行指令签名钥；已有则拒绝。
 func (s *Store) PutWANSigningKey(ctx context.Context, publicKey, privateKey []byte) (WANSigningKey, error) {
 	// 组好唯一签发密钥，身份现发，私钥只留这里。
 	row := WANSigningKey{ID: id.New(), PublicKey: publicKey, PrivateKey: privateKey, CreatedAt: time.Now().UTC()}
@@ -100,7 +100,7 @@ func (s *Store) PutWANSigningKey(ctx context.Context, publicKey, privateKey []by
 	return row, nil
 }
 
-// WANSigningKey 取云端唯一签发密钥，含私钥。
+// WANSigningKey 取云端唯一的下行指令签名钥，含私钥。
 func (s *Store) WANSigningKey(ctx context.Context) (WANSigningKey, error) {
 	// 准备接住库里的那一行，没有再另作处理。
 	var row WANSigningKey

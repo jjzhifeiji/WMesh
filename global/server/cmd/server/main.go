@@ -105,8 +105,13 @@ func run(ctx context.Context, log *slog.Logger) error {
 		// 在线状态清不掉就停机，避免名录显示假在线。
 		return fmt.Errorf("reset channel presence: %w", err)
 	}
-	// 拉起平台侧通道，厂连上来才能收指令。
-	bus, err := mqttbroker.Listen(cfg.MQTTAddr, mqttbroker.Hooks{
+	// 读出或生成下行指令签名钥，之后发指令只用内存里的这把。
+	if err := svc.LoadChannelKey(ctx); err != nil {
+		// 签名钥备不齐就停机，免得发出厂端验不过的指令。
+		return fmt.Errorf("load channel key: %w", err)
+	}
+	// 拉起平台侧通道，配了证书就同时开 MQTTS，厂连上来才能收指令。
+	bus, err := mqttbroker.ListenWith(mqttbroker.Config{Addr: cfg.MQTTAddr, TLSAddr: cfg.MQTTSAddr, TLS: cfg.TLS}, mqttbroker.Hooks{
 		// 校对厂钥签名，对不上就拒绝这条连接。
 		Auth: func(factoryID uuid.UUID, unix int64, sig []byte) error {
 			// 签名对不上就拒绝连接，避免假厂接入。
@@ -184,8 +189,8 @@ func run(ctx context.Context, log *slog.Logger) error {
 		WriteTimeout:      0,
 		IdleTimeout:       120 * time.Second,
 	}
-	// 接住监听失败，主循环才能决定退出。
-	errCh := make(chan error, 1)
+	// 接住两路监听的失败，主循环才能决定退出。
+	errCh := make(chan error, 2)
 	// 后台监听，主流程才能等信号停机。
 	go func() {
 		// 记下已经在听，方便确认地址和构建号。
@@ -193,6 +198,8 @@ func run(ctx context.Context, log *slog.Logger) error {
 		// 把监听结果送回主循环。
 		errCh <- srv.ListenAndServe()
 	}()
+	// 配了证书才开 HTTPS；容器内明文 8080 照留，探活还走它。
+	tlsSrv := startHTTPS(log, srv, cfg, bus, errCh)
 	// 先等监听自己退出或停机信号。
 	select {
 	// 监听自己退出时，先辨是不是正常关闭。
@@ -210,8 +217,41 @@ func run(ctx context.Context, log *slog.Logger) error {
 	defer cancel()
 	// 记下开始收尾，便于对照退出日志。
 	log.Info("global http shutting down")
+	// 开了 HTTPS 就一并停掉，在途请求同样等完。
+	if tlsSrv != nil {
+		// 停 HTTPS 失败不挡明文那路收尾。
+		_ = tlsSrv.Shutdown(shutdownCtx)
+	}
 	// 停掉监听并等在途请求结束。
 	return srv.Shutdown(shutdownCtx)
+}
+
+// startHTTPS 配了证书就按明文那份的处理和超时再开一路 HTTPS；没配只警告，返回 nil。
+func startHTTPS(log *slog.Logger, plain *http.Server, cfg config.Config, bus *mqttbroker.Broker, errCh chan<- error) *http.Server {
+	// 没配证书只开明文，提醒厂↔WAN 链路没有加密。
+	if cfg.TLS == nil {
+		// 明文链路能被抓包，运维要知道还没切 TLS。
+		log.Warn("wan tls not configured, http and mqtt are plaintext")
+		return nil
+	}
+	// 处理和超时照抄明文那份，两路行为一致。
+	srv := &http.Server{
+		Addr:              cfg.HTTPSAddr,
+		Handler:           plain.Handler,
+		TLSConfig:         cfg.TLS,
+		ReadHeaderTimeout: plain.ReadHeaderTimeout,
+		ReadTimeout:       plain.ReadTimeout,
+		WriteTimeout:      plain.WriteTimeout,
+		IdleTimeout:       plain.IdleTimeout,
+	}
+	// 后台监听 HTTPS，失败同样送回主循环。
+	go func() {
+		// 写上两路 TLS 地址和证书到期，便于提前换证。
+		log.Info("global https listening", "addr", cfg.HTTPSAddr, "mqtts", bus.TLSAddr(), "certNotAfter", cfg.TLSNotAfter)
+		// 证书已在配置里，这里不再给文件路径。
+		errCh <- srv.ListenAndServeTLS("", "")
+	}()
+	return srv
 }
 
 // bootstrapAdmin 库里没有管理员时写入；已有则跳过。显式打开覆盖开关时按环境变量重写密码。

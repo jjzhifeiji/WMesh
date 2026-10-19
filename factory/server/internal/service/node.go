@@ -3,6 +3,7 @@ package service
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"errors"
 	"log/slog"
 	"strings"
@@ -245,6 +246,45 @@ func (s *Node) InstallSigningKey(ctx context.Context, publicKey, privateKey []by
 	// 尚无钥才写入认领时用过的那对。
 	_, err = s.store.PutSigningKey(ctx, publicKey, privateKey)
 	return err
+}
+
+// WANKey 读本厂已钉的 WAN 指令验签公钥；还没钉就交回空。
+func (s *Node) WANKey(ctx context.Context) ([]byte, error) {
+	// 读唯一那一行钉钥。
+	row, err := s.store.WANTrust(ctx)
+	// 还没钉不算错，等首轮 HTTPS 索引来钉。
+	if errors.Is(err, domain.ErrNotFound) {
+		return nil, nil
+	}
+	// 读库失败要交回，不能当成没钉而放过验签。
+	if err != nil {
+		return nil, err
+	}
+	return row.PublicKey, nil
+}
+
+// PinWANKey 钉住经证书校验的 HTTPS 拿到的 WAN 公钥；同钥幂等，换钥拒绝并留审计。
+func (s *Node) PinWANKey(ctx context.Context, publicKey []byte) error {
+	// 取本厂身份当审计目标，钥原文不进审计。
+	target := s.store.FactoryID().String()
+	// 不是 32 字节的 Ed25519 公钥就拒绝。
+	if len(publicKey) != ed25519.PublicKeySize {
+		return domain.ErrInvalidKey
+	}
+	// 写入或核对钉钥，库里已是另一把会被拒绝。
+	err := s.store.PutWANTrust(ctx, publicKey)
+	// 换钥被拒要留一条拒绝审计。
+	if errors.Is(err, domain.ErrIntegrity) {
+		// 记下拒绝，原错误照旧交回。
+		_ = s.audit(ctx, nil, nil, "pin_wan_key", target, audit.Deny)
+		return err
+	}
+	// 库错原样交回，调用方只记日志。
+	if err != nil {
+		return err
+	}
+	// 钉上或同钥核对通过才记允许。
+	return s.audit(ctx, nil, nil, "pin_wan_key", target, audit.Allow)
 }
 
 // 运行凭证窗口：天数上限与界面一致，生效提前一小时容下时钟误差。

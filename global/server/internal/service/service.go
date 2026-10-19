@@ -6,6 +6,7 @@ package service
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -34,6 +35,8 @@ type kernel struct {
 	runningCode   int64         // 本进程云端服务版本号；已装基线不低于它，测试可零
 	runningName   string        // 本进程云端服务版本名；库里没这版发布行时给人看
 	imageJanitor  ImageJanitor  // 请 updater 清无用镜像；测试可空
+
+	cmdKey atomic.Pointer[channelKey] // 下行指令签名钥；启动时载入一次，之后只读
 
 	blobMu      sync.Mutex           // 护着已核摘要表，拉包和发布会并发改
 	blobChecked map[string]blobCheck // 对象键到已核摘要和长度，每个对象只整包核一次

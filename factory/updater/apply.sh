@@ -56,6 +56,23 @@ compose_up() {
   docker compose --env-file /work/.env -f "$COMPOSE" -p "$PROJECT" up -d --no-deps --no-build --force-recreate --wait --wait-timeout 90 "$SERVICE"
 }
 
+# app 的绑定挂载源落在 /work 下就不能换：这是 updater 里的路径，宿主机上没有，换完 app 会丢证书目录。
+# 只看 app 自己那段，updater 自己挂的 /work 不算；不安全就打出英文原因并返回失败。
+compose_safe() {
+  if ! cfg=$(docker compose --env-file /work/.env -f "$COMPOSE" -p "$PROJECT" config "$SERVICE" 2>/dev/null); then
+    printf '%s' "compose config failed"
+    return 1
+  fi
+  if ! printf '%s\n' "$cfg" | awk -v svc="$SERVICE" '
+    $0 == "  " svc ":" { inside = 1; next }
+    inside && /^ ? ?[^ ]/ { inside = 0 }
+    inside && /^[[:space:]]+source:[[:space:]]+\/work(\/|$)/ { bad = 1 }
+    END { exit bad }'; then
+    printf '%s' "app bind mount under /work; use absolute host path"
+    return 1
+  fi
+}
+
 # 把换包前的 current 记成 previous；它已是这次要装的包（上次换到一半被打断）就不覆盖，留住真正的旧版。
 mark_previous() {
   old_id=$1
@@ -278,6 +295,13 @@ tick_images() {
 prepare_dir
 while true; do
   tick_images
+  # 挂载不安全就这次不 load、不换，正在跑的 app 不动；写了结果就不会再进下面的换包。
+  if [ -f "$DIR/pending.json" ] && [ -f "$DIR/pending.tar" ] && [ ! -f "$DIR/status.json" ]; then
+    if ! unsafe=$(compose_safe); then
+      read_pending
+      result false "$unsafe"
+    fi
+  fi
   if [ -f "$DIR/pending.json" ] && [ -f "$DIR/pending.tar" ] && [ ! -f "$DIR/status.json" ]; then
     read_pending
     # load 前先按 ID 记下 current，previous 等 load 完比过再定，防止被打断重来时把新包记成旧版。

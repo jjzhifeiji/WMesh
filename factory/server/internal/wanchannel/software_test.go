@@ -451,7 +451,7 @@ func TestHoldSoftwarePullDoesNotBlock(t *testing.T) {
 	// 后台跑通道，主流程才能等结果或停机。
 	go func() {
 		// 绑定回调送出意图，软件回调真去拉包。
-		errCh <- Hold(ctx, "tcp://"+mqttAddr, srv.URL, fid, priv, nil, func(in ClientIntent) error {
+		errCh <- Hold(ctx, "tcp://"+mqttAddr, srv.URL, fid, priv, Trust{}, nil, func(in ClientIntent) error {
 			// 把绑定意图送进断言。
 			got <- in
 			return nil

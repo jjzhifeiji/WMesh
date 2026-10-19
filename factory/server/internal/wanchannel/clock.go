@@ -11,10 +11,10 @@ import (
 
 const skewFloor = 60 // 时差不到这么多秒按零算，时钟正常的厂签名不变
 
-var skewMaxRTT = 5 * time.Second                        // 往返超过这么久的样本估不准，直接丢掉
-var clockProbe = &http.Client{Timeout: 5 * time.Second} // 拨号前取时间样本用，拉不到就沿用旧时差
-var clockSkew atomic.Int64                              // WAN 钟减本机钟（秒），签名按它校正
-var clockReported atomic.Int64                          // 上次打日志时的时差，同一偏差不反复刷
+var skewMaxRTT = 5 * time.Second                                                      // 往返超过这么久的样本估不准，直接丢掉
+var clockProbe = &http.Client{Timeout: 5 * time.Second, Transport: wanRoundTripper{}} // 拨号前取时间样本，拉不到沿用旧时差
+var clockSkew atomic.Int64                                                            // WAN 钟减本机钟（秒），签名按它校正
+var clockReported atomic.Int64                                                        // 上次打日志时的时差，同一偏差不反复刷
 
 // 按 WAN 校正后的当前时间，签名用它才不会被时间窗拒绝。
 func wanNow() time.Time {

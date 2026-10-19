@@ -36,7 +36,7 @@ func newPuller(wanHTTP string, factoryID uuid.UUID, priv []byte) *puller {
 		wanHTTP:   strings.TrimRight(strings.TrimSpace(wanHTTP), "/"),
 		factoryID: factoryID,
 		priv:      priv,
-		client:    &http.Client{Timeout: 10 * time.Minute},
+		client:    &http.Client{Timeout: 10 * time.Minute, Transport: wanRoundTripper{}},
 	}
 }
 
@@ -193,6 +193,9 @@ func (p *puller) doWith(client *http.Client, req *http.Request) (*http.Response,
 	if err == nil {
 		// 按回包 Date 记下时差，401、404 也算。
 		sampleClock(sent, res)
+	} else { // 送不出去就记下原始原因，调用方仍收成不可达。
+		// 证书校验失败等原因只在这里看得到。
+		logSendFail(req, err)
 	}
 	return res, err
 }
@@ -242,7 +245,8 @@ func mapHTTPStatus(code int, body []byte) error {
 
 // 平台当前指令清单，不含大正文。
 type indexResp struct {
-	Cmds []Cmd `json:"cmds"` // 当前指令清单
+	Cmds         []Cmd  `json:"cmds"`         // 当前指令清单
+	WANPublicKey []byte `json:"wanPublicKey"` // 下行指令验签公钥，经证书校验的 HTTPS 才钉
 }
 
 // 平台发来的解包钥和到期时间。

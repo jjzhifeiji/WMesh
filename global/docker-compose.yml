@@ -22,11 +22,19 @@ services:
       WMESH_OSS_SECRET_KEY: ${OSS_SECRET_KEY:?set OSS_SECRET_KEY in .env}
       WMESH_LOG_LEVEL: ${WMESH_LOG_LEVEL:-info}
       WMESH_UPDATE_DIR: /var/lib/wmesh/update
+      # 证书和私钥都配才开 HTTPS 8443 与 MQTTS 8883；都不配只开明文。
+      WMESH_TLS_CERT_FILE: ${WMESH_TLS_CERT_FILE:-}
+      WMESH_TLS_KEY_FILE: ${WMESH_TLS_KEY_FILE:-}
     volumes:
       - update:/var/lib/wmesh/update
+      # 证书目录只认宿主机绝对路径（updater 里相对路径会落到不存在的 /work）；没配挂空卷。
+      - "${WMESH_TLS_DIR:-tls}:/etc/wmesh/tls:ro"
     ports:
-      - "${HTTP_PORT:-52080}:8080"
-      - "${MQTT_PORT:-52183}:1883"
+      # 过渡期明文与 TLS 并行；所有厂切完把 PLAIN_BIND 设成 127.0.0.1 收起明文。
+      - "${PLAIN_BIND:-}:${HTTP_PORT:-52080}:8080"
+      - "${PLAIN_BIND:-}:${MQTT_PORT:-52183}:1883"
+      - "${HTTPS_PORT:-52443}:8443"
+      - "${MQTTS_PORT:-52883}:8883"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
@@ -132,6 +140,7 @@ services:
 
 volumes:
   update:
+  tls:
   pgdata:
   ossdata:
   osslogs:

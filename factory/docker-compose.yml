@@ -15,6 +15,8 @@ services:
       WMESH_DSN: postgres://wmesh:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/postgres?sslmode=disable
       WMESH_WAN_URL: ${WMESH_WAN_URL:-http://host.docker.internal:52080}
       WMESH_WAN_MQTT_URL: ${WMESH_WAN_MQTT_URL:-tcp://host.docker.internal:52183}
+      # WAN 走 https/ssl 时用这份 CA 校验证书；空则用系统根证书
+      WMESH_WAN_CA_FILE: ${WMESH_WAN_CA_FILE:-}
       WMESH_CLIENT_MQTT_ADDR: :1884
       WMESH_CLIENT_MQTT_URL: ${WMESH_CLIENT_MQTT_URL:-}
       WMESH_CLIENT_MQTT_PORT: ${CLIENT_MQTT_PORT:-52184}
@@ -28,6 +30,8 @@ services:
       WMESH_LOG_LEVEL: ${WMESH_LOG_LEVEL:-info}
     volumes:
       - update:/var/lib/wmesh/update
+      # 放 wan-ca.pem 的目录只认宿主机绝对路径（updater 里相对路径会落到不存在的 /work）；没配挂空卷。
+      - "${WMESH_TLS_DIR:-tls}:/etc/wmesh/tls:ro"
     ports:
       - "${HTTP_PORT:-52081}:8080"
       - "${CLIENT_MQTT_PORT:-52184}:1884"
@@ -141,4 +145,5 @@ volumes:
   ossdata:
   osslogs:
   update:
+  tls:
   alloydata:

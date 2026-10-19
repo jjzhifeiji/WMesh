@@ -171,7 +171,7 @@ func TestHold(t *testing.T) {
 	// 后台跑通道，主流程才能等结果或停机。
 	go func() {
 		// 把通道结果送回，超时和失败才能被看见。
-		errCh <- Hold(ctx, "tcp://"+mqttAddr, httpSrv.URL, fid, priv, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+		errCh <- Hold(ctx, "tcp://"+mqttAddr, httpSrv.URL, fid, priv, Trust{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	}()
 	// 给索引一个时限，过了还没有就判失败。
 	deadline := time.Now().Add(2 * time.Second)
@@ -254,7 +254,7 @@ func TestHoldDropsWhenBrokerStops(t *testing.T) {
 	// 后台跑通道，主流程才能等结果或停机。
 	go func() {
 		// 把通道结果送回，超时和失败才能被看见。
-		errCh <- Hold(ctx, "tcp://"+mqttAddr, httpSrv.URL, fid, priv, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+		errCh <- Hold(ctx, "tcp://"+mqttAddr, httpSrv.URL, fid, priv, Trust{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	}()
 	// 结果、通道失败或超时谁先到就走谁。
 	select {
@@ -363,7 +363,7 @@ func TestHoldReportsPresence(t *testing.T) {
 	// 后台跑通道，主流程才能等结果或停机。
 	go func() {
 		// 把通道结果送回，超时和失败才能被看见。
-		errCh <- Hold(ctx, "tcp://"+mqttAddr, httpSrv.URL, fid, priv, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+		errCh <- Hold(ctx, "tcp://"+mqttAddr, httpSrv.URL, fid, priv, Trust{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	}()
 	// 结果、通道失败或超时谁先到就走谁。
 	select {
@@ -440,7 +440,7 @@ func TestHoldLeaseFailKeepsConnection(t *testing.T) {
 	// 后台跑通道，主流程才能等结果或停机。
 	go func() {
 		// 租约落地故意失败，用来确认连接还留着。
-		errCh <- Hold(ctx, "tcp://"+mqttAddr, httpSrv.URL, fid, priv, nil, nil, nil, nil, nil, nil, nil, nil, func(Lease) error {
+		errCh <- Hold(ctx, "tcp://"+mqttAddr, httpSrv.URL, fid, priv, Trust{}, nil, nil, nil, nil, nil, nil, nil, nil, func(Lease) error {
 			return domain.ErrContentLeaseExpired
 		}, nil, nil, nil)
 	}()
@@ -524,7 +524,7 @@ func TestHoldSoftwareNotifyPassesMetaOnly(t *testing.T) {
 	// 后台跑通道，主流程才能等结果或停机。
 	go func() {
 		// 只收下软件通知，断言里核对没有包字节。
-		errCh <- Hold(ctx, "tcp://"+mqttAddr, httpSrv.URL, fid, priv, nil, nil, nil, nil, nil, func(_ context.Context, in json.RawMessage) error {
+		errCh <- Hold(ctx, "tcp://"+mqttAddr, httpSrv.URL, fid, priv, Trust{}, nil, nil, nil, nil, nil, func(_ context.Context, in json.RawMessage) error {
 			// 把软件通知送进断言，核对没有字节。
 			got <- in
 			return nil
@@ -619,7 +619,7 @@ func TestHoldPullsClientAPKFromMQTT(t *testing.T) {
 	// 后台跑通道，主流程才能等结果或停机。
 	go func() {
 		// 只收下软件通知，断言里核对没有包字节。
-		errCh <- Hold(ctx, "tcp://"+mqttAddr, httpSrv.URL, fid, priv, nil, nil, nil, nil, nil, func(_ context.Context, in json.RawMessage) error {
+		errCh <- Hold(ctx, "tcp://"+mqttAddr, httpSrv.URL, fid, priv, Trust{}, nil, nil, nil, nil, nil, func(_ context.Context, in json.RawMessage) error {
 			// 把软件通知送进断言，核对没有字节。
 			got <- in
 			return nil
@@ -675,7 +675,7 @@ func TestHoldRetired(t *testing.T) {
 	// 离开时取消超时，避免计时器一直留着。
 	defer cancel()
 	// 治理回调直接报注销，通道应当因此停下。
-	err = Hold(ctx, "tcp://"+mqttAddr, httpSrv.URL, fid, priv, func(State) error {
+	err = Hold(ctx, "tcp://"+mqttAddr, httpSrv.URL, fid, priv, Trust{}, func(State) error {
 		return domain.ErrFactoryRetired
 	}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	// 不是注销就停测，通道不该继续重连。
@@ -741,7 +741,7 @@ func TestHoldSendsSync(t *testing.T) {
 	// 后台跑通道，主流程才能等结果或停机。
 	go func() {
 		// 把通道结果送回，超时和失败才能被看见。
-		errCh <- Hold(ctx, "tcp://"+mqttAddr, httpSrv.URL, fid, priv, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, out)
+		errCh <- Hold(ctx, "tcp://"+mqttAddr, httpSrv.URL, fid, priv, Trust{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, out)
 	}()
 	// 稍等再看，给通道留出发起请求的时间。
 	time.Sleep(200 * time.Millisecond)
@@ -863,7 +863,7 @@ func TestHoldAppliesDownCmds(t *testing.T) {
 	// 后台跑通道，主流程才能等结果或停机。
 	go func() {
 		// 绑定回调把意图送出，后面核对设备和识别号。
-		errCh <- Hold(ctx, "tcp://"+mqttAddr, httpSrv.URL, fid, priv, nil, func(in ClientIntent) error {
+		errCh <- Hold(ctx, "tcp://"+mqttAddr, httpSrv.URL, fid, priv, Trust{}, nil, func(in ClientIntent) error {
 			// 把绑定意图送进断言。
 			got.client <- in
 			return nil
@@ -996,7 +996,7 @@ func TestHoldSyncClients(t *testing.T) {
 	// 后台跑通道，主流程才能等结果或停机。
 	go func() {
 		// 对账回调把留下的设备送出，后面核对名单。
-		errCh <- Hold(ctx, "tcp://"+mqttAddr, httpSrv.URL, fid, priv, nil, nil, func(keep []uuid.UUID) error {
+		errCh <- Hold(ctx, "tcp://"+mqttAddr, httpSrv.URL, fid, priv, Trust{}, nil, nil, func(keep []uuid.UUID) error {
 			// 把对账留下的设备送进断言。
 			got <- keep
 			return nil
@@ -1062,7 +1062,7 @@ func TestHoldSyncClientsSkipsDisabled(t *testing.T) {
 	// 后台跑通道，主流程才能等结果或停机。
 	go func() {
 		// 停用厂若来对账，就让这次测试失败。
-		errCh <- Hold(ctx, "tcp://"+mqttAddr, httpSrv.URL, fid, priv, nil, nil, func([]uuid.UUID) error {
+		errCh <- Hold(ctx, "tcp://"+mqttAddr, httpSrv.URL, fid, priv, Trust{}, nil, nil, func([]uuid.UUID) error {
 			// 停用厂不该对账，发生了就让测试失败。
 			t.Error("reconcile while disabled")
 			return nil
@@ -1131,7 +1131,7 @@ func TestHoldRetriesFailedClosurePull(t *testing.T) {
 	// 后台跑通道，主流程才能等结果或停机。
 	go func() {
 		// 闭包回调把正文送出，后面核对补拉收到了。
-		errCh <- Hold(ctx, "tcp://"+mqttAddr, st.srv.URL, fid, priv, nil, nil, nil, func(in json.RawMessage) error {
+		errCh <- Hold(ctx, "tcp://"+mqttAddr, st.srv.URL, fid, priv, Trust{}, nil, nil, nil, func(in json.RawMessage) error {
 			// 把闭包正文送进断言。
 			got <- in
 			return nil
@@ -1188,7 +1188,7 @@ func TestHoldRetriesFailedTemplateAndFS(t *testing.T) {
 	// 后台跑通道，主流程才能等结果或停机。
 	go func() {
 		// 模版和目录回调都是第一次报库错，之后成功。
-		errCh <- Hold(ctx, "tcp://"+mqttAddr, st.srv.URL, fid, priv, nil, nil, nil, nil, func(json.RawMessage) error {
+		errCh <- Hold(ctx, "tcp://"+mqttAddr, st.srv.URL, fid, priv, Trust{}, nil, nil, nil, nil, func(json.RawMessage) error {
 			// 第一次模版落地报库错，应当标脏补拉。
 			if tplCalls.Add(1) == 1 {
 				// 报一条库错，通道应标脏不断开。
@@ -1260,7 +1260,7 @@ func TestHoldRetractFailureResyncsFullIndex(t *testing.T) {
 	// 后台跑通道，主流程才能等结果或停机。
 	go func() {
 		// 撤回回调第一次报库错，之后成功。
-		errCh <- Hold(ctx, "tcp://"+mqttAddr, st.srv.URL, fid, priv, nil, nil, nil, nil, nil, nil, func(uuid.UUID) error {
+		errCh <- Hold(ctx, "tcp://"+mqttAddr, st.srv.URL, fid, priv, Trust{}, nil, nil, nil, nil, nil, nil, func(uuid.UUID) error {
 			// 第一次撤回报库错，应当标全量补拉。
 			if calls.Add(1) == 1 {
 				// 报一条库错，通道应标全量不断开。
@@ -1313,7 +1313,7 @@ func TestHoldSkipsResyncOnContentRejected(t *testing.T) {
 	// 后台跑通道，主流程才能等结果或停机。
 	go func() {
 		// 闭包回调一律报编号冲突。
-		errCh <- Hold(ctx, "tcp://"+mqttAddr, st.srv.URL, fid, priv, nil, nil, nil, func(json.RawMessage) error {
+		errCh <- Hold(ctx, "tcp://"+mqttAddr, st.srv.URL, fid, priv, Trust{}, nil, nil, nil, func(json.RawMessage) error {
 			// 记一次调用，再报编号冲突。
 			calls.Add(1)
 			return domain.ErrAssetCodeConflict
@@ -1369,7 +1369,7 @@ func TestHoldResyncGivesUpAfterMaxFails(t *testing.T) {
 	// 后台跑通道，主流程才能等结果或停机。
 	go func() {
 		// 模版回调一律报库错。
-		errCh <- Hold(ctx, "tcp://"+mqttAddr, st.srv.URL, fid, priv, nil, nil, nil, nil, func(json.RawMessage) error {
+		errCh <- Hold(ctx, "tcp://"+mqttAddr, st.srv.URL, fid, priv, Trust{}, nil, nil, nil, nil, func(json.RawMessage) error {
 			// 记一次调用，再报库错。
 			calls.Add(1)
 			// 一律报库错，让标记一直失败。
@@ -1435,7 +1435,7 @@ func TestHoldResyncsWhenQueueFull(t *testing.T) {
 	// 后台跑通道，主流程才能等结果或停机。
 	go func() {
 		// 第一条绑定卡在回调里，主循环不再取队列。
-		errCh <- Hold(ctx, "tcp://"+mqttAddr, st.srv.URL, fid, priv, nil, func(ClientIntent) error {
+		errCh <- Hold(ctx, "tcp://"+mqttAddr, st.srv.URL, fid, priv, Trust{}, nil, func(ClientIntent) error {
 			// 只卡第一条，后面的直接落地。
 			if calls.Add(1) == 1 {
 				// 告诉用例主循环已经卡住。
@@ -1537,7 +1537,7 @@ func TestHoldPageSyncIsLight(t *testing.T) {
 	// 后台跑通道，主流程才能等结果或停机。
 	go func() {
 		// 各回调只计数，后面核对进页补拉碰了哪些。
-		errCh <- Hold(ctx, "tcp://"+mqttAddr, st.srv.URL, fid, priv, func(State) error {
+		errCh <- Hold(ctx, "tcp://"+mqttAddr, st.srv.URL, fid, priv, Trust{}, func(State) error {
 			// 记一次治理状态落地。
 			states.Add(1)
 			return nil
@@ -1641,7 +1641,7 @@ func TestHoldSkipsPullWhenHave(t *testing.T) {
 	// 后台跑通道，主流程才能等结果或停机。
 	go func() {
 		// 闭包回调把正文送出；本厂只认那两条修订已有。
-		errCh <- Hold(ctx, "tcp://"+mqttAddr, st.srv.URL, fid, priv, nil, nil, nil, func(in json.RawMessage) error {
+		errCh <- Hold(ctx, "tcp://"+mqttAddr, st.srv.URL, fid, priv, Trust{}, nil, nil, nil, func(in json.RawMessage) error {
 			// 把闭包正文送进断言。
 			got <- in
 			return nil
@@ -1716,7 +1716,7 @@ func TestHoldPageSyncDebounced(t *testing.T) {
 	// 后台跑通道，主流程才能等结果或停机。
 	go func() {
 		// 回调都不要，只看补拉次数。
-		errCh <- Hold(ctx, "tcp://"+mqttAddr, st.srv.URL, fid, priv, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, out)
+		errCh <- Hold(ctx, "tcp://"+mqttAddr, st.srv.URL, fid, priv, Trust{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, out)
 	}()
 	// 等首轮整轮索引拉完，补拉信箱才有人收。
 	waitUntil(t, ctx, errCh, "first index", func() bool { return st.fullIndex.Load() >= 1 })
@@ -1796,7 +1796,7 @@ func TestHoldPageSyncDoesNotBlockBind(t *testing.T) {
 	// 后台跑通道，主流程才能等结果或停机。
 	go func() {
 		// 绑定回调把意图送出，闭包回调不做事。
-		errCh <- Hold(ctx, "tcp://"+mqttAddr, st.srv.URL, fid, priv, nil, func(in ClientIntent) error {
+		errCh <- Hold(ctx, "tcp://"+mqttAddr, st.srv.URL, fid, priv, Trust{}, nil, func(in ClientIntent) error {
 			// 把绑定意图送进断言。
 			got <- in
 			return nil
@@ -1875,7 +1875,7 @@ func TestHoldWaitsResyncOnExit(t *testing.T) {
 	// 后台跑通道，主流程才能等结果或停机。
 	go func() {
 		// 闭包落库卡到取消之后，再拖一会儿才收尾。
-		errCh <- Hold(ctx, "tcp://"+mqttAddr, st.srv.URL, fid, priv, nil, nil, nil, func(json.RawMessage) error {
+		errCh <- Hold(ctx, "tcp://"+mqttAddr, st.srv.URL, fid, priv, Trust{}, nil, nil, nil, func(json.RawMessage) error {
 			// 通知用例后台已在落库，重复的丢掉。
 			select {
 			// 送出一次开始信号。
@@ -1993,7 +1993,7 @@ func TestHoldBackgroundReconcileKeepsNewBinds(t *testing.T) {
 	// 后台跑通道，主流程才能等结果或停机。
 	go func() {
 		// 绑定和对账回调把结果送出，撤回第一次报库错。
-		errCh <- Hold(ctx, "tcp://"+mqttAddr, st.srv.URL, fid, priv, nil, func(in ClientIntent) error {
+		errCh <- Hold(ctx, "tcp://"+mqttAddr, st.srv.URL, fid, priv, Trust{}, nil, func(in ClientIntent) error {
 			// 把绑定意图送进断言。
 			got <- in
 			return nil
@@ -2363,7 +2363,7 @@ func TestHoldSignsWithWANClock(t *testing.T) {
 	// 后台跑通道，主流程才能等结果或停机。
 	go func() {
 		// 把通道结果送回，被拒或超时才能被看见。
-		errCh <- Hold(ctx, "tcp://"+mqttAddr, httpSrv.URL, fid, priv, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+		errCh <- Hold(ctx, "tcp://"+mqttAddr, httpSrv.URL, fid, priv, Trust{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	}()
 	// 等索引拉到，通道被拒退出就停测。
 	waitUntil(t, ctx, errCh, "index", func() bool { return index.Load() >= 1 })
@@ -2404,7 +2404,7 @@ func TestHoldLogsSkewWhenUnauthorized(t *testing.T) {
 	// 离开时取消超时，避免计时器一直留着。
 	defer cancel()
 	// 拨号应被拒，错误类型保持未授权。
-	err = Hold(ctx, "tcp://"+mqttAddr, httpSrv.URL, fid, priv, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	err = Hold(ctx, "tcp://"+mqttAddr, httpSrv.URL, fid, priv, Trust{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	// 不是未授权就停测，外层退避依赖这个类型。
 	if !errors.Is(err, domain.ErrUnauthorized) {
 		// 错误类型变了就停测。

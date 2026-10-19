@@ -9,8 +9,7 @@ const (
 	CmdClientBind    = "client_bind"       // 把设备分配或改分到本厂
 	CmdClientVoid    = "client_void"       // 作废已经分配到本厂的设备
 	CmdFactoryState  = "factory_state"     // 工厂启用、停用或注销
-	CmdLease         = "lease"             // 下发内容解包钥，只进内存
-	CmdLeaseRenew    = "lease_renew"       // 到期前续上内容解包钥
+	CmdLease         = "lease"             // 内容解包钥只经 HTTPS 领取，通道上的丢弃
 	CmdPresence      = "presence"          // 上报本进程在线时的版本
 	CmdAssetList     = "asset_list"        // 询问本厂可升档的清单
 	CmdAssetSnapshot = "asset_snapshot"    // 询问一笔升档快照正文
@@ -50,4 +49,6 @@ type Cmd struct {
 	Assets             json.RawMessage `json:"assets,omitempty"`             // 升档清单 JSON
 	Snapshot           json.RawMessage `json:"snapshot,omitempty"`           // 升档快照 JSON
 	Error              string          `json:"error,omitempty"`              // 英文业务错误
+	Signed             []byte          `json:"signed,omitempty"`             // 签名覆盖的指令 JSON 原文
+	Sig                []byte          `json:"sig,omitempty"`                // WAN 对本厂和原文的签名
 }

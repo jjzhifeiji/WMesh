@@ -5,6 +5,7 @@ package mqttbroker
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -29,14 +30,15 @@ type Hooks struct {
 
 // Broker 是 WAN 进程内的 MQTT 服务。
 type Broker struct {
-	server *mqtt.Server               // 内嵌的消息服务
-	addr   string                     // 实际监听地址
-	hooks  Hooks                      // 鉴权和在线交给应用服务
-	mu     sync.Mutex                 // 保护等回执的槽位
-	wait   map[string]chan []byte     // 厂+问询号，等升档回执
-	pmu    sync.Mutex                 // 只护每厂锁和当前连接两张表的取放，不包库写
-	locks  map[uuid.UUID]*sync.Mutex  // 每厂一把锁，同厂上下线按连接先后落库
-	conns  map[uuid.UUID]*mqtt.Client // 每厂当前登记的连接，旧连接晚到的离线据此跳过
+	server  *mqtt.Server               // 内嵌的消息服务
+	addr    string                     // 实际监听地址
+	tlsAddr string                     // TLS 实际监听地址；没开 TLS 为空
+	hooks   Hooks                      // 鉴权和在线交给应用服务
+	mu      sync.Mutex                 // 保护等回执的槽位
+	wait    map[string]chan []byte     // 厂+问询号，等升档回执
+	pmu     sync.Mutex                 // 只护每厂锁和当前连接两张表的取放，不包库写
+	locks   map[uuid.UUID]*sync.Mutex  // 每厂一把锁，同厂上下线按连接先后落库
+	conns   map[uuid.UUID]*mqtt.Client // 每厂当前登记的连接，旧连接晚到的离线据此跳过
 }
 
 // DownTopic 仅该厂可订的下行 Topic。
@@ -51,15 +53,28 @@ func UpTopic(factoryID uuid.UUID) string {
 	return "wan/" + factoryID.String() + "/up"
 }
 
+// Config 是 Broker 的监听参数；TLS 为空时只开明文。
+type Config struct {
+	Addr    string      // 明文监听地址，空则 :1883
+	TLSAddr string      // TLS 监听地址，空则 :8883；TLS 为空时不开
+	TLS     *tls.Config // 服务端证书配置；nil 表示不开 TLS 监听
+}
+
 // Listen 在 addr 起 Broker；空则 :1883。
 func Listen(addr string, hooks Hooks) (*Broker, error) {
+	// 只开明文监听，和原来的用法一致。
+	return ListenWith(Config{Addr: addr}, hooks)
+}
+
+// ListenWith 按配置起 Broker；配了 TLS 就同一服务再开一个 TLS 监听，共用鉴权和钩子。
+func ListenWith(cfg Config, hooks Hooks) (*Broker, error) {
 	// 没给地址就听默认端口。
-	if addr == "" {
+	if cfg.Addr == "" {
 		// 默认给厂端连接用。
-		addr = ":1883"
+		cfg.Addr = ":1883"
 	}
 	// 先占住端口，拿到实际地址。
-	ln, err := net.Listen("tcp", addr)
+	ln, err := net.Listen("tcp", cfg.Addr)
 	// 端口占不到就起不来。
 	if err != nil {
 		return nil, err
@@ -91,6 +106,15 @@ func Listen(addr string, hooks Hooks) (*Broker, error) {
 		_ = ln.Close()
 		return nil, err
 	}
+	// 配了证书才再开 TLS 监听，鉴权和上下线走同一套钩子。
+	if cfg.TLS != nil {
+		// 挂上 TLS 监听，失败就把已占的端口都放开。
+		if err := b.listenTLS(server, cfg); err != nil {
+			// 明文端口也放开，避免半起的服务占着。
+			_ = ln.Close()
+			return nil, err
+		}
+	}
 	// 服务准备好，关闭时才能停掉。
 	b.server = server
 	// 监听放后台，调用方先拿到地址。
@@ -98,8 +122,37 @@ func Listen(addr string, hooks Hooks) (*Broker, error) {
 	return b, nil
 }
 
+// listenTLS 在 TLSAddr 上占端口并包一层 TLS，挂到同一个服务上。
+func (b *Broker) listenTLS(server *mqtt.Server, cfg Config) error {
+	// 没给地址就听默认的 MQTTS 端口。
+	if cfg.TLSAddr == "" {
+		// 默认给走 TLS 的厂端用。
+		cfg.TLSAddr = ":8883"
+	}
+	// 先占住 TLS 端口，拿到实际地址。
+	raw, err := net.Listen("tcp", cfg.TLSAddr)
+	// 端口占不到就起不来。
+	if err != nil {
+		return err
+	}
+	// 记下实际地址，测试和日志要用。
+	b.tlsAddr = raw.Addr().String()
+	// 握手在首次读时完成，证书由配置给出。
+	ln := tls.NewListener(raw, cfg.TLS)
+	// 和明文共用一个服务，鉴权与 ACL 不分叉。
+	if err := server.AddListener(listeners.NewNet("tls", ln)); err != nil {
+		// 挂不上就放开 TLS 端口。
+		_ = raw.Close()
+		return err
+	}
+	return nil
+}
+
 // Addr 返回实际监听地址。
 func (b *Broker) Addr() string { return b.addr }
+
+// TLSAddr 返回 TLS 实际监听地址；没开 TLS 为空。
+func (b *Broker) TLSAddr() string { return b.tlsAddr }
 
 // Close 停掉 Broker。
 func (b *Broker) Close() error {

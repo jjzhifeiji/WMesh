@@ -16,7 +16,8 @@ import (
 
 // 该厂当前该有的指令，不含正文。
 type channelIndexResp struct {
-	Cmds []service.Cmd `json:"cmds"` // 当前该厂该有的指令，无正文
+	Cmds         []service.Cmd `json:"cmds"`                   // 当前该厂该有的指令，无正文
+	WANPublicKey []byte        `json:"wanPublicKey,omitempty"` // 下行指令验签公钥，厂端经 HTTPS 钉住
 }
 
 // 内容租约钥和到期时间，按云端钟。
@@ -77,7 +78,7 @@ func (h *Handler) channelIndex(w http.ResponseWriter, r *http.Request) {
 		cmds = []service.Cmd{}
 	}
 	// 把结果交回调用方。
-	writeJSON(w, http.StatusOK, channelIndexResp{Cmds: cmds})
+	writeJSON(w, http.StatusOK, channelIndexResp{Cmds: cmds, WANPublicKey: h.svc.Channel.ChannelPublicKey()})
 }
 
 // 签发或续期内容租约。

@@ -552,7 +552,7 @@ func TestChannelSoftware(t *testing.T) {
 		// 收到一条就交给后面的条件筛选。
 		case raw := <-rawCh:
 			// 响应里缺该有的内容，或混进了不该有的。
-			if strings.Contains(string(raw), "svc-mqtt-body") {
+			if payloadHas(raw, "svc-mqtt-body") {
 				// 这一步失败就不能继续，以免误判通过。
 				t.Fatal("software body leaked into mqtt")
 			}
@@ -946,6 +946,11 @@ func startChannel(t *testing.T, svc *service.Service) (*httptest.Server, string)
 	}
 	// 测完关掉通道，避免端口继续占着。
 	t.Cleanup(func() { _ = bus.Close() })
+	// 载入下行指令签名钥，通道测试都走带签名的格式。
+	if err := svc.LoadChannelKey(context.Background()); err != nil {
+		// 这一步失败就不能继续，以免误判通过。
+		t.Fatal(err)
+	}
 	// 让服务走这块通道，通知才能到达厂端。
 	svc.SetBus(bus)
 	// 起临时云端，只在本测里访问。

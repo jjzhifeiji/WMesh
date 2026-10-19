@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -116,6 +115,11 @@ func TestMatrixSoftware(t *testing.T) {
 		bus := &recordBus{}
 		// 换上记录总线，后面才能核对通知了哪一厂。
 		h.WAN.SetBus(bus)
+		// 载入签名钥，报文按带签名的格式发。
+		if err := h.WAN.LoadChannelKey(ctx); err != nil {
+			// 不符即停：签名钥载入失败。
+			t.Fatal(err)
+		}
 		// 发布客户端包失败就停，包发不出去厂侧就拉不到。
 		if _, err := h.WAN.PublishSoftware(ctx, tok, global.SoftwareClientAPK, "6.2.0", 4, []byte("apk-4")); err != nil {
 			// 不符即停：发布客户端包失败。
@@ -137,7 +141,7 @@ func TestMatrixSoftware(t *testing.T) {
 			t.Fatalf("cmd %+v", bus.got)
 		}
 		// 这里正文留着不该有的旧字段就停，这一步不能算通过。
-		if strings.Contains(string(bus.raw[0]), "apk-4") || strings.Contains(string(bus.raw[1]), "svc-5") {
+		if payloadHas(bus.raw[0], "apk-4") || payloadHas(bus.raw[1], "svc-5") {
 			// 不符即停：这里正文留着不该有的旧字段。
 			t.Fatal("package body on mqtt")
 		}

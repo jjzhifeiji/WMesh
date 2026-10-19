@@ -9,8 +9,28 @@ import (
 	"wmesh/global/internal/platform/domain"
 )
 
-// IndexForFactory 列出该厂当前该有的指令，不含正文。kind 空则工艺和工程都给。
+// IndexForFactory 列出该厂当前该有的指令并逐条签名，不含正文。kind 空则工艺和工程都给。
 func (s *Service) IndexForFactory(ctx context.Context, factoryID uuid.UUID, kind string) ([]Cmd, error) {
+	// 先按名录和种类组好清单。
+	out, err := s.indexForFactory(ctx, factoryID, kind)
+	// 组不出就交回，残缺清单不能发。
+	if err != nil {
+		return nil, err
+	}
+	// 逐条绑定这家厂签名，厂端钉钥后只认验过的原文。
+	for i := range out {
+		// 签好填回原位，旧字段照旧留给老厂。
+		out[i], err = s.signCmd(factoryID, out[i])
+		// 签不出就整份不发，避免半签半不签。
+		if err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+// 列出该厂当前该有的指令，未签名；kind 空则工艺和工程都给。
+func (s *Service) indexForFactory(ctx context.Context, factoryID uuid.UUID, kind string) ([]Cmd, error) {
 	// 按工厂名录处理。
 	fac, err := s.store.FactoryByID(ctx, factoryID)
 	// 没有这家厂或状态不对就拒绝。

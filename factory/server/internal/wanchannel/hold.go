@@ -41,8 +41,8 @@ const retryMaxFails = 8 // 同一份脏标记连续补拉失败到这个次数�
 // ClientSyncHandler 按索引里仍有效的绑定，把漏掉的本厂绑定作废。
 type ClientSyncHandler func(keep []uuid.UUID) error
 
-// Hold 用厂钥连 WAN MQTT，订下行、拉索引和正文，并回答升档问询；补拉在后台协程里跑。
-func Hold(ctx context.Context, mqttURL, wanHTTP string, factoryID uuid.UUID, privateKey []byte, apply func(State) error, applyClient func(ClientIntent) error, syncClients ClientSyncHandler, applyClosure ClosureHandler, applyTemplate ClosureHandler, applySoftware SoftwareHandler, applyRetract RetractHandler, applyFS ClosureHandler, applyLease LeaseHandler, onRequest RequestHandler, have HaveHandler, outbound <-chan SyncRequest) error {
+// Hold 用厂钥连 WAN MQTT，订下行、拉索引和正文，并回答升档问询；https 且已钉钥时下行逐条验签；补拉在后台协程里跑。
+func Hold(ctx context.Context, mqttURL, wanHTTP string, factoryID uuid.UUID, privateKey []byte, trust Trust, apply func(State) error, applyClient func(ClientIntent) error, syncClients ClientSyncHandler, applyClosure ClosureHandler, applyTemplate ClosureHandler, applySoftware SoftwareHandler, applyRetract RetractHandler, applyFS ClosureHandler, applyLease LeaseHandler, onRequest RequestHandler, have HaveHandler, outbound <-chan SyncRequest) error {
 	// 没有签发钥就拒绝连接，避免匿名拨上平台。
 	if len(privateKey) == 0 {
 		return domain.ErrNotFound
@@ -63,6 +63,11 @@ func Hold(ctx context.Context, mqttURL, wanHTTP string, factoryID uuid.UUID, pri
 	opts := mqtt.NewClientOptions()
 	// 写上代理地址，拨错主机就连不上。
 	opts.AddBroker(broker)
+	// 走 ssl 等加密协议时套 TLS，按配置的 CA 校验 WAN 证书。
+	if cfg := mqttTLS(broker); cfg != nil {
+		// 交给 paho 拨号时握手校验，证书不对就连不上。
+		opts.SetTLSConfig(cfg)
+	}
 	// 用工厂身份当会话名，平台据此认厂。
 	opts.SetClientID(factoryID.String())
 	// 用户名同样用工厂身份，和签名配套。
@@ -103,6 +108,9 @@ func Hold(ctx context.Context, mqttURL, wanHTTP string, factoryID uuid.UUID, pri
 		if errors.Is(err, domain.ErrUnauthorized) {
 			// 记下被拒和时差，错误照旧交回外层退避。
 			slog.Warn("wan mqtt connect unauthorized", "factory", factoryID, "skewSeconds", clockSkew.Load())
+		} else { // 别的失败先记下原始原因，证书配错时运维能看到。
+			// 超时没有原因时记为空，照样能和证书错误分开。
+			slog.Warn("wan mqtt connect failed", "factory", factoryID, "broker", broker, "err", tok.Error())
 		}
 		return err
 	}
@@ -145,6 +153,8 @@ func Hold(ctx context.Context, mqttURL, wanHTTP string, factoryID uuid.UUID, pri
 
 	// 用厂钥签后面的拉取，没有签名会被拒绝。
 	pull := newPuller(wanHTTP, factoryID, privateKey)
+	// 本条连接的下行验签状态，首轮拉索引时钉钥，之后 MQTT 也按它验。
+	guard := newCmdGuard(factoryID, wanHTTP, trust)
 	// 问包和拉包挂在内部可取消的上下文上，主循环只负责投递。
 	sctx, scancel := context.WithCancel(ctx)
 	// 后台软件任务，同种类同版本只跑一路。
@@ -173,7 +183,7 @@ func Hold(ctx context.Context, mqttURL, wanHTTP string, factoryID uuid.UUID, pri
 		// 离开时放开，下一条才能落库。
 		defer mu.Unlock()
 		// 按类型落库，正文类失败只标脏，别的失败交回调用方。
-		err := applyCmd(cli, up, cmd, body, dirty.failed, apply, applyClient, applyClosure, applyTemplate, jobs, applyRetract, applyFS, applyLease, onRequest)
+		err := applyCmd(cli, up, cmd, body, dirty.failed, apply, applyClient, applyClosure, applyTemplate, jobs, applyRetract, applyFS, onRequest)
 		// 绑定落上了就记一笔，后台对账不能把它作废。
 		if err == nil && cmd.Typ == CmdClientBind {
 			// 记下刚落地的设备，整轮对账会并上它。
@@ -197,7 +207,7 @@ func Hold(ctx context.Context, mqttURL, wanHTTP string, factoryID uuid.UUID, pri
 	}
 
 	// 回连首轮同步跑：租约、治理状态和绑定对账要先落地才进长循环。
-	if err := pullAndApply(ctx, pull, handle, reconcile, jobs, binds); err != nil {
+	if err := pullAndApply(ctx, pull, guard, handle, applyLease, reconcile, jobs, binds); err != nil {
 		return err
 	}
 	// 后台补拉跟随本条连接，派生子上下文好在离开时先停它。
@@ -213,7 +223,7 @@ func Hold(ctx context.Context, mqttURL, wanHTTP string, factoryID uuid.UUID, pri
 		// 协程退出就销账，等它的一方才能返回。
 		defer wg.Done()
 		// 按脏标记补拉，直到连接离开或遇到注销。
-		runResync(bctx, pull, dirty, handle, reconcile, jobs, binds, fatal)
+		runResync(bctx, pull, guard, dirty, handle, applyLease, reconcile, jobs, binds, fatal)
 	}()
 	// 离开前先停后台补拉并等它退出，旧连接不和新连接首轮同时落库。
 	defer func() {
@@ -269,8 +279,16 @@ func Hold(ctx context.Context, mqttURL, wanHTTP string, factoryID uuid.UUID, pri
 			if json.Unmarshal(raw, &cmd) != nil {
 				continue
 			}
+			// https 且已钉钥时先验签，只用签名里的原文。
+			in, err := guard.open(cmd)
+			// 验不过就丢掉这条并记日志，连接不断。
+			if err != nil {
+				// 记下被拒的类型，便于发现伪造或换钥。
+				slog.Warn("wan down signature rejected, dropped", "factory", factoryID, "typ", cmd.Typ, "err", err)
+				continue
+			}
 			// 落地失败就退出循环，外层重拨。
-			if err := handle(ctx, cmd); err != nil {
+			if err := handle(ctx, in); err != nil {
 				return err
 			}
 		// 到点就问有没有新包，一直连着也不漏。
@@ -291,10 +309,8 @@ func Hold(ctx context.Context, mqttURL, wanHTTP string, factoryID uuid.UUID, pri
 				slog.Warn("renew content lease", "err", err)
 				continue
 			}
-			// 新钥落不上只记日志，不断开。
-			if err := applyLeaseCmd(applyLease, Cmd{Typ: CmdLease, Lease: lr.Lease, NotAfter: lr.NotAfter}); err != nil {
-				slog.Warn("apply content lease", "err", err)
-			}
+			// 经 HTTPS 领到的新钥交给专门落地，落不上只记日志不断开。
+			applyPulledLease(applyLease, lr)
 		// 页面要补拉时只标脏，后台按种类轻量补拉。
 		case req := <-outbound:
 			// 标上要补的种类，同类去抖期内只拉一次。
@@ -529,8 +545,8 @@ func contentRejected(err error) bool {
 	return false
 }
 
-// 后台补拉协程：退避到点或进页叫醒就补一轮，遇到注销交回主循环。
-func runResync(ctx context.Context, pull *puller, dirty *dirtySet, handle func(context.Context, Cmd) error, reconcile ClientSyncHandler, jobs *softwareJobs, binds *bindLog, fatal chan<- error) {
+// 后台补拉协程：退避到点或进页叫醒就补一轮，遇到注销或钉钥冲突交回主循环。
+func runResync(ctx context.Context, pull *puller, guard *cmdGuard, dirty *dirtySet, handle func(context.Context, Cmd) error, applyLease LeaseHandler, reconcile ClientSyncHandler, jobs *softwareJobs, binds *bindLog, fatal chan<- error) {
 	// 一直等下一次补拉，连接离开才退出。
 	for {
 		// 退避节拍、进页叫醒或离开，谁先到走谁。
@@ -544,7 +560,7 @@ func runResync(ctx context.Context, pull *puller, dirty *dirtySet, handle func(c
 		case <-dirty.wake:
 		}
 		// 补一轮，只有注销会交回来。
-		if err := resync(ctx, pull, dirty, handle, reconcile, jobs, binds); err != nil {
+		if err := resync(ctx, pull, guard, dirty, handle, applyLease, reconcile, jobs, binds); err != nil {
 			// 交给主循环退出；已有一条在等就不再塞。
 			select {
 			// 把注销送给主循环。
@@ -558,7 +574,7 @@ func runResync(ctx context.Context, pull *puller, dirty *dirtySet, handle func(c
 }
 
 // 按脏标记补拉一轮：全量走整轮同步，否则逐类轻量补；失败的重新标脏。
-func resync(ctx context.Context, pull *puller, dirty *dirtySet, handle func(context.Context, Cmd) error, reconcile ClientSyncHandler, jobs *softwareJobs, binds *bindLog) error {
+func resync(ctx context.Context, pull *puller, guard *cmdGuard, dirty *dirtySet, handle func(context.Context, Cmd) error, applyLease LeaseHandler, reconcile ClientSyncHandler, jobs *softwareJobs, binds *bindLog) error {
 	// 取出要补的内容，期间的新标脏另算。
 	full, kinds := dirty.take()
 	// 补完再结算，决定清零还是退避。
@@ -566,14 +582,14 @@ func resync(ctx context.Context, pull *puller, dirty *dirtySet, handle func(cont
 	// 全量盖住各种类，只走一次整轮同步。
 	if full {
 		// 整轮重拉：租约、索引、软件和对账都走一遍。
-		err := pullAndApply(ctx, pull, handle, reconcile, jobs, binds)
+		err := pullAndApply(ctx, pull, guard, handle, applyLease, reconcile, jobs, binds)
 		// 结算这一轮，注销交回，别的失败重新标全量。
 		return settle(ctx, dirty, "", err)
 	}
 	// 逐个种类轻量补拉，一类失败不挡别的。
 	for _, kind := range kinds {
 		// 只拉这一类索引，只落闭包、目录和模版。
-		err := pullKind(ctx, pull, kind, handle)
+		err := pullKind(ctx, pull, guard, kind, handle)
 		// 注销要交回，别的失败按种类重新标脏。
 		if err := settle(ctx, dirty, kind, err); err != nil {
 			return err
@@ -582,14 +598,14 @@ func resync(ctx context.Context, pull *puller, dirty *dirtySet, handle func(cont
 	return nil
 }
 
-// 结算一次补拉：注销交回；连接正在离开不算失败；其余失败重新标脏。
+// 结算一次补拉：注销和钉钥冲突交回；连接正在离开不算失败；其余失败重新标脏。
 func settle(ctx context.Context, dirty *dirtySet, kind string, err error) error {
 	// 补上了就什么也不做。
 	if err == nil {
 		return nil
 	}
-	// 注销要交回，外层停掉通道。
-	if errors.Is(err, domain.ErrFactoryRetired) {
+	// 注销要交回外层停掉通道；钉钥冲突交回让本次连接重拨。
+	if errors.Is(err, domain.ErrFactoryRetired) || errors.Is(err, errPinConflict) {
 		return err
 	}
 	// 连接正在离开，补拉被打断不必再标。
@@ -601,16 +617,22 @@ func settle(ctx context.Context, dirty *dirtySet, kind string, err error) error 
 	return nil
 }
 
-// 轻量补拉一类：只拉带种类的索引，只落该类正文，不领租约、不问包、不对账。
-func pullKind(ctx context.Context, pull *puller, kind string, handle func(context.Context, Cmd) error) error {
+// 轻量补拉一类：只拉带种类的索引，验签后只落该类正文，不领租约、不问包、不对账。
+func pullKind(ctx context.Context, pull *puller, guard *cmdGuard, kind string, handle func(context.Context, Cmd) error) error {
 	// 预备装平台返回的这一类指令。
 	var idx indexResp
 	// 索引拿不到就交回，按退避再补。
 	if err := pull.get(ctx, "/v1/channel/index?kind="+url.QueryEscape(kind), &idx); err != nil {
 		return err
 	}
+	// 钉钥并逐条验签，有一条不过整批跳过。
+	cmds, ok, err := guard.openIndex(idx)
+	// 钉钥冲突交回，验不过整批不落，连接照留。
+	if err != nil || !ok {
+		return err
+	}
 	// 逐条挑出这一类的正文指令落地。
-	for _, cmd := range idx.Cmds {
+	for _, cmd := range cmds {
 		// 只认这一类的闭包、目录和模版，绑定和治理状态不碰。
 		if cmd.Kind != kind || (cmd.Typ != CmdClosure && cmd.Typ != CmdFSApply && cmd.Typ != CmdTemplate) {
 			continue
@@ -623,18 +645,16 @@ func pullKind(ctx context.Context, pull *puller, kind string, handle func(contex
 	return nil
 }
 
-// 整轮同步：先领租约再按全量索引逐条落地；有效厂再问包、对账绑定。
-func pullAndApply(ctx context.Context, pull *puller, handle func(context.Context, Cmd) error, reconcile ClientSyncHandler, jobs *softwareJobs, binds *bindLog) error {
+// 整轮同步：先经 HTTPS 领租约再验签全量索引并逐条落地；有效厂再问包、对账绑定。
+func pullAndApply(ctx context.Context, pull *puller, guard *cmdGuard, handle func(context.Context, Cmd) error, applyLease LeaseHandler, reconcile ClientSyncHandler, jobs *softwareJobs, binds *bindLog) error {
 	// 预备装当前解包钥，没有它不解正文。
 	var lr leaseResp
 	// 先拿租约，拿不到就整批不做。
 	if err := pull.get(ctx, "/v1/channel/lease", &lr); err != nil {
 		return err
 	}
-	// 租约落不上就整批停止，避免无钥解正文。
-	if err := handle(ctx, Cmd{Typ: CmdLease, Lease: lr.Lease, NotAfter: lr.NotAfter}); err != nil {
-		return err
-	}
+	// 租约只认这条 HTTPS 领取，交给专门落地；落不上只记日志，索引照拉。
+	applyPulledLease(applyLease, lr)
 	// 从拉索引起记下落地的绑定，对账时并上，免得作废刚绑上的。
 	binds.begin()
 	// 整轮结束就停记，早退也不留着。
@@ -645,12 +665,18 @@ func pullAndApply(ctx context.Context, pull *puller, handle func(context.Context
 	if err := pull.get(ctx, "/v1/channel/index", &idx); err != nil {
 		return err
 	}
+	// 先钉钥再逐条验签，全部过才落地；治理状态和对账名单都取验过的原文。
+	cmds, ok, err := guard.openIndex(idx)
+	// 钉钥冲突交回重拨；验不过整批跳过，不落地、不对账、不问包，连接照留。
+	if err != nil || !ok {
+		return err
+	}
 	// 先当厂仍有效，遇到停用再改。
 	active := true
 	// 收集仍有效的绑定，供后面的对账。
 	var keep []uuid.UUID
 	// 逐条落地，一条失败就整批停。
-	for _, cmd := range idx.Cmds {
+	for _, cmd := range cmds {
 		// 非启用就不对账，避免误作废绑定。
 		if cmd.Typ == CmdFactoryState && cmd.Status != "" && cmd.Status != "active" {
 			// 记下厂已停用或注销。
@@ -957,20 +983,13 @@ func alreadyHave(have HaveHandler, typ, rawID string, revision int64) bool {
 }
 
 // 按指令类型落库或回答升档问询；正文已在锁外拉好，正文类失败交给 failed 标脏，不断通道。
-func applyCmd(cli mqtt.Client, up string, cmd Cmd, body json.RawMessage, failed func(kind, what string, err error), apply func(State) error, applyClient func(ClientIntent) error, applyClosure ClosureHandler, applyTemplate ClosureHandler, jobs *softwareJobs, applyRetract RetractHandler, applyFS ClosureHandler, applyLease LeaseHandler, onRequest RequestHandler) error {
+func applyCmd(cli mqtt.Client, up string, cmd Cmd, body json.RawMessage, failed func(kind, what string, err error), apply func(State) error, applyClient func(ClientIntent) error, applyClosure ClosureHandler, applyTemplate ClosureHandler, jobs *softwareJobs, applyRetract RetractHandler, applyFS ClosureHandler, onRequest RequestHandler) error {
 	// 按指令类型落库或回答问询。
 	switch cmd.Typ {
-	// 有解包钥才交给本厂，空的直接忽略。
+	// 租约只走 HTTPS 领取，MQTT 或索引里带来的一律丢弃，伪造的钥落不进来。
 	case CmdLease:
-		// 没有接收方或钥是空的就跳过。
-		if applyLease == nil || len(cmd.Lease) == 0 {
-			return nil
-		}
-		// 租约落不上只记日志，不断开。
-		if err := applyLeaseCmd(applyLease, cmd); err != nil {
-			// 记下租约失败，连接继续留着。
-			slog.Warn("apply content lease", "err", err)
-		}
+		// 记下丢弃，连接继续留着，便于发现还在经通道发租约的一方。
+		slog.Warn("drop lease from channel, lease only via https")
 		return nil
 	// 治理状态交给本厂落地，没人接收就跳过。
 	case CmdFactoryState:
@@ -1069,21 +1088,30 @@ func applyCmd(cli mqtt.Client, up string, cmd Cmd, body json.RawMessage, failed 
 	}
 }
 
-// 把租约钥交给本厂进程。
-func applyLeaseCmd(applyLease LeaseHandler, cmd Cmd) error {
+// 把经 HTTPS 领到的租约钥交给本厂进程：没人接或空钥就跳过，落不上只记日志，不断通道。
+func applyPulledLease(applyLease LeaseHandler, lr leaseResp) {
+	// 没有接收方或钥是空的就跳过。
+	if applyLease == nil || len(lr.Lease) == 0 {
+		return
+	}
 	// 先按更细的时间格式读到期时刻。
-	na, err := time.Parse(time.RFC3339Nano, cmd.NotAfter)
+	na, err := time.Parse(time.RFC3339Nano, lr.NotAfter)
 	// 这一格式不对就改试到秒的格式。
 	if err != nil {
 		// 再按到秒的格式读，两种都不认才放弃。
-		na, err = time.Parse(time.RFC3339, cmd.NotAfter)
+		na, err = time.Parse(time.RFC3339, lr.NotAfter)
 	}
-	// 到期时间认不出就丢掉这条租约。
+	// 到期时间认不出就丢掉这条租约，记下便于排查。
 	if err != nil {
-		return nil
+		// 记下到期时间认不出，连接继续留着。
+		slog.Warn("drop content lease, bad notAfter", "notAfter", lr.NotAfter)
+		return
 	}
-	// 把解包钥和到期时间交给本厂进程。
-	return applyLease(Lease{Key: cmd.Lease, NotAfter: na})
+	// 把解包钥和到期时间交给本厂进程，落不上只记日志。
+	if err := applyLease(Lease{Key: lr.Lease, NotAfter: na}); err != nil {
+		// 记下租约失败，连接继续留着。
+		slog.Warn("apply content lease", "err", err)
+	}
 }
 
 // 把绑定/作废指令收成设备意图。
@@ -1160,7 +1188,7 @@ func publishUp(cli mqtt.Client, up string, cmd Cmd) error {
 	return nil
 }
 
-// 显式 MQTT 地址优先，否则按 WAN HTTP 主机拼 52183。
+// 显式 MQTT 地址优先，否则按 WAN 主机拼：https 拼 ssl 52883，http 拼 tcp 52183。
 func resolveMQTT(mqttURL, wanHTTP string) (string, error) {
 	// 去掉空白，空的才改按网页主机拼。
 	mqttURL = strings.TrimSpace(mqttURL)
@@ -1173,6 +1201,11 @@ func resolveMQTT(mqttURL, wanHTTP string) (string, error) {
 	// 没有主机就当不可达，避免拨错机器。
 	if err != nil || u.Hostname() == "" {
 		return "", domain.ErrWANUnreachable
+	}
+	// https 的平台配加密代理端口，明文和 TLS 不混用。
+	if isHTTPS(wanHTTP) {
+		// 按平台主机拼 MQTTS 端口。
+		return "ssl://" + net.JoinHostPort(u.Hostname(), "52883"), nil
 	}
 	// 按平台主机拼默认代理端口。
 	return "tcp://" + net.JoinHostPort(u.Hostname(), "52183"), nil

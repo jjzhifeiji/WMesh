@@ -24,6 +24,19 @@ func MQTTConnectPayload(factoryID uuid.UUID, unix int64) []byte {
 	return b
 }
 
+// ChannelCmdPayload WAN 下行指令要签的原文：前缀、目标厂身份、指令 JSON 原文，两边必须字节一致。
+func ChannelCmdPayload(factoryID uuid.UUID, cmd []byte) []byte {
+	// 按前缀、厂身份和指令原文预留缓冲。
+	b := make([]byte, 0, 16+16+len(cmd))
+	// 先写用途前缀，和连接签名、旧软件包签名分开。
+	b = append(b, "wmesh-wan-cmd-v1"...)
+	// 再写目标厂身份，签给别厂的指令转投过来验不过。
+	b = append(b, factoryID[:]...)
+	// 最后跟上指令原文，改一个字节都验不过。
+	b = append(b, cmd...)
+	return b
+}
+
 // FormatMQTTPassword 把时间窗和签名收成 MQTT 密码。
 func FormatMQTTPassword(unix int64, sig []byte) string {
 	// 交回把签名收成可以放进口令的文本的结果。

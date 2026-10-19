@@ -2,8 +2,10 @@
 package config
 
 import (
+	"crypto/x509"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -11,20 +13,22 @@ import (
 
 // Config 是厂内进程一次启动用到的全部外部配置。
 type Config struct {
-	HTTPAddr        string        // 监听地址
-	DSN             string        // 维护库连接串；按工厂身份从这里建/开各厂库，账号需 CREATEDB
-	WebDir          string        // 已构建管理端目录；空表示只提供 API
-	BootstrapToken  string        // 建厂引导共享密码，只用于 /internal/bootstrap；空则关闭该入口
-	WANURL          string        // WAN HTTP 根地址，厂出站认领；空则不能认领
-	WANMQTT         string        // WAN MQTT 地址，空则按 HTTP 主机拼 :52183
-	ClientMQTTAddr  string        // 本厂 Client MQTT 监听；空则 :1884
-	ClientMQTTURL   string        // 回给平板的 MQTT URL；空则按请求主机拼端口
-	ClientMQTTPort  string        // 登录回包 MQTT 端口；空则 52184
-	OSS             OSS           // 厂内对象存储；点云/图片本体落这里，不进 WAN
-	ShutdownTimeout time.Duration // 优雅退出最长等待
-	DockerUpdate    bool          // 超管确认后由帮手 docker load 换本容器
-	DockerHost      string        // Docker 套接字，默认 unix:///var/run/docker.sock
-	DockerUpdateDir string        // 与帮手共用的 tar 目录
+	HTTPAddr        string         // 监听地址
+	DSN             string         // 维护库连接串；按工厂身份从这里建/开各厂库，账号需 CREATEDB
+	WebDir          string         // 已构建管理端目录；空表示只提供 API
+	BootstrapToken  string         // 建厂引导共享密码，只用于 /internal/bootstrap；空则关闭该入口
+	WANURL          string         // WAN HTTP 根地址，厂出站认领；空则不能认领
+	WANMQTT         string         // WAN MQTT 地址，空则按 HTTP 主机拼端口
+	WANCAFile       string         // 校验 WAN 证书的 CA 文件；空则用系统根证书
+	WANRootCAs      *x509.CertPool // 从 WANCAFile 读出的 CA 池；nil 用系统根证书
+	ClientMQTTAddr  string         // 本厂 Client MQTT 监听；空则 :1884
+	ClientMQTTURL   string         // 回给平板的 MQTT URL；空则按请求主机拼端口
+	ClientMQTTPort  string         // 登录回包 MQTT 端口；空则 52184
+	OSS             OSS            // 厂内对象存储；点云/图片本体落这里，不进 WAN
+	ShutdownTimeout time.Duration  // 优雅退出最长等待
+	DockerUpdate    bool           // 超管确认后由帮手 docker load 换本容器
+	DockerHost      string         // Docker 套接字，默认 unix:///var/run/docker.sock
+	DockerUpdateDir string         // 与帮手共用的 tar 目录
 }
 
 // OSS 是 S3 兼容对象存储的接入参数；Endpoint 为空表示本厂暂未接 OSS。
@@ -51,6 +55,7 @@ func Load() (Config, error) {
 		BootstrapToken: os.Getenv("WMESH_BOOTSTRAP_TOKEN"),
 		WANURL:         strings.TrimSpace(os.Getenv("WMESH_WAN_URL")),
 		WANMQTT:        strings.TrimSpace(os.Getenv("WMESH_WAN_MQTT_URL")),
+		WANCAFile:      strings.TrimSpace(os.Getenv("WMESH_WAN_CA_FILE")),
 		ClientMQTTAddr: envOr("WMESH_CLIENT_MQTT_ADDR", ":1884"),
 		ClientMQTTURL:  strings.TrimSpace(os.Getenv("WMESH_CLIENT_MQTT_URL")),
 		ClientMQTTPort: envOr("WMESH_CLIENT_MQTT_PORT", "52184"),
@@ -77,8 +82,35 @@ func Load() (Config, error) {
 		// 环境里的退出等待合法就改用它。
 		c.ShutdownTimeout = d
 	}
-	// 交回半套配置直接拒绝，避免带着空秘文启动的结果。
-	return c, c.validate()
+	// 配了 CA 就当场读成池，读不出不带着坏配置去连 WAN。
+	caErr := c.loadWANCA()
+	// 交回半套配置直接拒绝，和 CA 错误一起交回。
+	return c, errors.Join(c.validate(), caErr)
+}
+
+// loadWANCA 把 WMESH_WAN_CA_FILE 读成 CA 池；没配就留空，走系统根证书。
+func (c *Config) loadWANCA() error {
+	// 没配 CA 文件就用系统根证书，公网证书也能校验。
+	if c.WANCAFile == "" {
+		return nil
+	}
+	// 读 CA 文件，读不到就拒绝启动。
+	raw, err := os.ReadFile(c.WANCAFile)
+	// 文件读不到说明挂载或路径写错了。
+	if err != nil {
+		// 带上原因交回，方便对照挂载路径。
+		return fmt.Errorf("WMESH_WAN_CA_FILE: %w", err)
+	}
+	// 新建空池，只信这份 CA，不混系统根证书。
+	pool := x509.NewCertPool()
+	// 一张 PEM 证书都解不出就不是 CA 文件。
+	if !pool.AppendCertsFromPEM(raw) {
+		// 带上路径交回，方便查是不是拷错了文件。
+		return fmt.Errorf("WMESH_WAN_CA_FILE %q has no PEM certificate", c.WANCAFile)
+	}
+	// 读好的池交给出站通道校验 WAN 证书。
+	c.WANRootCAs = pool
+	return nil
 }
 
 // validate 半配置直接拒绝，避免带空密码上线。
@@ -98,8 +130,38 @@ func (c Config) validate() error {
 		// 把这一段接进结果，顺序要保持住。
 		errs = append(errs, errors.New("WMESH_OSS_BUCKET, WMESH_OSS_ACCESS_KEY and WMESH_OSS_SECRET_KEY are required with WMESH_OSS_ENDPOINT"))
 	}
+	// HTTPS 配明文 MQTT 时，抓到的连接签名能拿去 HTTPS 领租约，直接拒绝。
+	if schemeOf(c.WANURL) == "https" && plainMQTT(c.WANMQTT) {
+		// 记下混配，提示改成 ssl:// 或留空自动拼。
+		errs = append(errs, fmt.Errorf("WMESH_WAN_MQTT_URL %q is plaintext while WMESH_WAN_URL is https; use ssl:// or leave it empty", c.WANMQTT))
+	}
 	// 交回把多条错误并成一条再交回去的结果。
 	return errors.Join(errs...)
+}
+
+// schemeOf 取地址的协议并转小写；解析不了给空。
+func schemeOf(raw string) string {
+	// 解析地址，只要协议部分。
+	u, err := url.Parse(strings.TrimSpace(raw))
+	// 解析不了就当没有协议。
+	if err != nil {
+		return ""
+	}
+	// 协议转小写再比，避免大小写写法漏判。
+	return strings.ToLower(u.Scheme)
+}
+
+// plainMQTT 判断 MQTT 地址是不是明文协议；空地址按 WAN 地址自动拼，不算明文。
+func plainMQTT(raw string) bool {
+	// 按协议认明文，加密的和空的都放过。
+	switch schemeOf(raw) {
+	// 这几种都不加密，链路上能被抓包。
+	case "tcp", "mqtt", "ws":
+		return true
+	// 其余（ssl、tls、mqtts、wss 或留空）不算明文。
+	default:
+		return false
+	}
 }
 
 // envTruthy 1/true/yes/on 视为打开。

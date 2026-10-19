@@ -7,6 +7,9 @@ tmp/
 node_modules/
 dist/
 docs/device-date/projects/license.key
+# 厂↔WAN TLS 证书与私钥（scripts/gen-wan-tls.sh 生成），不入库
+global/tls/
+factory/tls/
 
 # Android Client（独立 git，不纳入本仓）
 client/ShiJiaoQi-New/

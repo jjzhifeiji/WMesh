@@ -17,11 +17,11 @@ const (
 	SoftwareClientAPK      = "client_apk"      // 当前 Android 客户端包
 )
 
-// WANTrust 是本厂验云端软件包用的 WAN 公钥。
+// WANTrust 是本厂钉住的 WAN 下行指令验签公钥；全表一行。
 type WANTrust struct {
 	ID        int16     `gorm:"primaryKey" json:"id"`                 // 固定 1
-	PublicKey []byte    `gorm:"type:bytea;not null" json:"publicKey"` // WAN 公钥 32 字节
-	CreatedAt time.Time `gorm:"not null" json:"createdAt"`            // 写入时间
+	PublicKey []byte    `gorm:"type:bytea;not null" json:"publicKey"` // WAN 指令验签公钥 32 字节
+	CreatedAt time.Time `gorm:"not null" json:"createdAt"`            // 首次钉住时间
 }
 
 // 指定落库表名，避免查询时按类型名去猜。
@@ -75,7 +75,7 @@ func SoftwareObjectKey(kind string, version int64) string {
 	return fmt.Sprintf("software/%s/%d", kind, version)
 }
 
-// PutWANTrust 写入或核对 WAN 公钥；换钥拒绝。
+// PutWANTrust 钉住或核对 WAN 指令验签公钥；同钥幂等，换钥拒绝。
 func (s *Store) PutWANTrust(ctx context.Context, publicKey []byte) error {
 	// 先读云端公钥，结果留给紧跟着的判断。
 	got, err := s.WANTrust(ctx)
@@ -104,7 +104,7 @@ func (s *Store) PutWANTrust(ctx context.Context, publicKey []byte) error {
 	return nil
 }
 
-// WANTrust 读本厂已登记的 WAN 公钥。
+// WANTrust 读本厂已钉住的 WAN 指令验签公钥。
 func (s *Store) WANTrust(ctx context.Context) (WANTrust, error) {
 	// 准备承接查到的那一行。
 	var row WANTrust

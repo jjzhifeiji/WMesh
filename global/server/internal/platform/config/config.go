@@ -2,6 +2,8 @@
 package config
 
 import (
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"os"
@@ -13,6 +15,12 @@ import (
 type Config struct {
 	HTTPAddr        string        // 监听地址
 	MQTTAddr        string        // MQTT Broker 监听地址
+	HTTPSAddr       string        // HTTPS 监听地址，配了证书才开
+	MQTTSAddr       string        // MQTTS 监听地址，配了证书才开
+	TLSCertFile     string        // 服务端证书 PEM 路径，和私钥成对配
+	TLSKeyFile      string        // 服务端私钥 PEM 路径，和证书成对配
+	TLS             *tls.Config   // 证书加载好的 TLS 配置；nil 表示只开明文
+	TLSNotAfter     time.Time     // 服务端证书到期时刻，启动日志里给运维看
 	DSN             string        // WAN 库连接串；只连 WAN 库，不连任何厂库
 	WebDir          string        // 已构建管理端目录；空表示只提供 API
 	AdminLogin      string        // 首次启动写入的唯一 WAN 管理员登录名；空则跳过引导
@@ -43,6 +51,10 @@ func Load() (Config, error) {
 	c := Config{
 		HTTPAddr:      envOr("WMESH_HTTP_ADDR", ":8080"),
 		MQTTAddr:      envOr("WMESH_MQTT_ADDR", ":1883"),
+		HTTPSAddr:     envOr("WMESH_HTTPS_ADDR", ":8443"),
+		MQTTSAddr:     envOr("WMESH_MQTTS_ADDR", ":8883"),
+		TLSCertFile:   strings.TrimSpace(os.Getenv("WMESH_TLS_CERT_FILE")),
+		TLSKeyFile:    strings.TrimSpace(os.Getenv("WMESH_TLS_KEY_FILE")),
 		DSN:           envOr("WMESH_DSN", devDSN),
 		WebDir:        strings.TrimSpace(os.Getenv("WMESH_WEB_DIR")),
 		AdminLogin:    strings.TrimSpace(os.Getenv("WMESH_ADMIN_LOGIN")),
@@ -69,8 +81,42 @@ func Load() (Config, error) {
 		// 用解析出的时长替换默认等待。
 		c.ShutdownTimeout = d
 	}
-	// 拼完再做半配置检查。
-	return c, c.validate()
+	// 证书配齐就当场加载，配错不带着坏证书启动。
+	tlsErr := c.loadTLS()
+	// 拼完再做半配置检查，和证书错误一起交回。
+	return c, errors.Join(c.validate(), tlsErr)
+}
+
+// loadTLS 证书和私钥都配时加载成 TLS 配置；都不配只开明文，只配一项算半配置。
+func (c *Config) loadTLS() error {
+	// 两项都没配就只开明文，开发默认如此。
+	if c.TLSCertFile == "" && c.TLSKeyFile == "" {
+		return nil
+	}
+	// 只配一项是半配置，开不了 TLS 也不该悄悄退回明文。
+	if c.TLSCertFile == "" || c.TLSKeyFile == "" {
+		// 写明两项要一起配。
+		return errors.New("WMESH_TLS_CERT_FILE and WMESH_TLS_KEY_FILE must be set together")
+	}
+	// 读证书和私钥，文件缺失或不配对都在这里报。
+	cert, err := tls.LoadX509KeyPair(c.TLSCertFile, c.TLSKeyFile)
+	// 读不到或不配对就拒绝启动，带上原因方便改。
+	if err != nil {
+		// 带上原因交回，方便对照文件和挂载。
+		return fmt.Errorf("WMESH_TLS_CERT_FILE/WMESH_TLS_KEY_FILE: %w", err)
+	}
+	// 解出叶子证书，取到期时间给启动日志用。
+	leaf, err := x509.ParseCertificate(cert.Certificate[0])
+	// 叶子解不开说明证书坏了，不能上线。
+	if err != nil {
+		// 带上原因交回，证书要重新生成。
+		return fmt.Errorf("WMESH_TLS_CERT_FILE: %w", err)
+	}
+	// 至少 TLS1.2，老协议不再放行。
+	c.TLS = &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{cert}}
+	// 记下到期时间，运维能在日志里看到何时要换。
+	c.TLSNotAfter = leaf.NotAfter
+	return nil
 }
 
 // validate 半配置直接拒绝，避免带空密码上线。

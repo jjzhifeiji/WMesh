@@ -53,8 +53,8 @@ func LatestSoftware(ctx context.Context, wanHTTP string, factoryID uuid.UUID, pr
 
 // 拉包落盘和看门狗的参数；测试可改短。
 var (
-	softwareClient = &http.Client{}   // 拉包不设总时长，靠读间隔看门狗收尾
-	softwareIdle   = 60 * time.Second // 这么久没有新字节才算卡死
+	softwareClient = &http.Client{Transport: wanRoundTripper{}} // 拉包不设总时长，靠读间隔看门狗收尾
+	softwareIdle   = 60 * time.Second                           // 这么久没有新字节才算卡死
 )
 
 // 拉包相关的响应头、目录名和旧格式上限。

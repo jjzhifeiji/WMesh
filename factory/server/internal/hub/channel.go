@@ -287,10 +287,21 @@ func (h *Hub) dialHold(ctx context.Context, factoryID uuid.UUID) error {
 	svc.Store().SetContentChannelOnline(true)
 	// 离开时标成离线，没通道就不再解正文。
 	defer svc.Store().SetContentChannelOnline(false)
+	// 读出本厂已钉的 WAN 指令验签公钥，没有就等首轮 HTTPS 索引来钉。
+	wanKey, err := svc.Node.WANKey(ctx)
+	// 读库出错就交回，外层退避后再试，不无钉钥地连。
+	if err != nil {
+		return err
+	}
+	// 首次钉钥交给本厂服务落库并留审计。
+	trust := wanchannel.Trust{Key: wanKey, Pin: func(pub []byte) error {
+		// 钉住或核对 WAN 公钥，换钥会被拒绝。
+		return svc.Node.PinWANKey(ctx, pub)
+	}}
 	// 连通道时请后台补送焊汇总，和汇聚共用一条串行循环。
 	svc.Stats.RequestWANPush()
 	// 把平台推来的治理状态落到本厂库。
-	err = wanchannel.Hold(ctx, mqttURL, wanURL, factoryID, priv, func(st wanchannel.State) error {
+	err = wanchannel.Hold(ctx, mqttURL, wanURL, factoryID, priv, trust, func(st wanchannel.State) error {
 		// 平台给了短码才更新，空的不去清掉已有短码。
 		if st.ShortCode != "" {
 			// 短码写不进厂库就把这次落地当失败。

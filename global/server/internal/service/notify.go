@@ -65,7 +65,7 @@ func (s *Channel) VerifyFactoryProof(ctx context.Context, factoryID uuid.UUID, u
 	return nil
 }
 
-// HandleFactoryUp 处理无问询号的上行：续内容租约，或收下厂端正在跑的版本。
+// HandleFactoryUp 处理无问询号的上行：收下厂端正在跑的版本；租约只走 HTTPS，不经 MQTT 发。
 func (s *Channel) HandleFactoryUp(ctx context.Context, factoryID uuid.UUID, payload []byte) {
 	// 先留空，解开载荷成功再按类型处理。
 	var cmd Cmd
@@ -73,7 +73,7 @@ func (s *Channel) HandleFactoryUp(ctx context.Context, factoryID uuid.UUID, payl
 	if json.Unmarshal(payload, &cmd) != nil {
 		return
 	}
-	// 按指令类型分发，不认识的直接丢掉。
+	// 按指令类型分发，不认识的（含旧的续租请求）直接丢掉。
 	switch cmd.Typ {
 	// 这是厂端自报版本，不带安装包正文。
 	case CmdPresence:
@@ -81,16 +81,6 @@ func (s *Channel) HandleFactoryUp(ctx context.Context, factoryID uuid.UUID, payl
 		_ = s.TouchChannel(ctx, factoryID)
 		// 做完这一步再继续。
 		_ = s.ReportFactoryRelease(ctx, factoryID, cmd.WebVersion, cmd.WebVersionName, cmd.ServiceVersion, cmd.ServiceVersionName)
-	// 这是续租请求，窗口重新算一天。
-	case CmdLeaseRenew:
-		// 签发或续上这一份。
-		lease, err := s.IssueContentLease(ctx, factoryID)
-		// 失败则对方解不开或用不了。
-		if err != nil {
-			return
-		}
-		// 把变更推给这家厂。
-		s.kernel.publishFactory(factoryID, leaseCmd(lease))
 	}
 }
 
@@ -123,8 +113,14 @@ func (s *Service) CallFactory(ctx context.Context, factoryID uuid.UUID, cmd Cmd)
 		// 编译用来认缝隙目录的匹配式。
 		cmd.ReqID = uuid.NewString()
 	}
+	// 问询号填好再签，签名连问询号一起覆盖。
+	signed, err := s.signCmd(factoryID, cmd)
+	// 签不出就拒绝，不发无签名的问询。
+	if err != nil {
+		return Cmd{}, err
+	}
 	// 编成字节再送出。
-	raw, err := json.Marshal(cmd)
+	raw, err := json.Marshal(signed)
 	// 编不出就拒绝，不发送半截。
 	if err != nil {
 		return Cmd{}, err
@@ -186,23 +182,20 @@ func mapFactoryUpErr(msg string) error {
 	}
 }
 
-// 收成租约指令。
-func leaseCmd(lease ContentLease) Cmd {
-	return Cmd{
-		Typ:      CmdLease,
-		Lease:    lease.Key,
-		NotAfter: lease.NotAfter.UTC().Format(time.RFC3339Nano),
-	}
-}
-
 // 向这一家厂发一条指令。
 func (k *kernel) publishFactory(factoryID uuid.UUID, cmd Cmd) {
 	// 没挂指令总线就跳过推送，测试可以不挂。
 	if k.bus == nil {
 		return
 	}
+	// 绑定这家厂签名，转投或伪造的厂端验不过。
+	signed, err := k.signCmd(factoryID, cmd)
+	// 签不出就不发，厂端不会收到无签名的新格式。
+	if err != nil {
+		return
+	}
 	// 编成字节再送出。
-	raw, err := json.Marshal(cmd)
+	raw, err := json.Marshal(signed)
 	// 编不出就拒绝，不发送半截。
 	if err != nil {
 		return

@@ -27,10 +27,13 @@ RUN apk add --no-cache ca-certificates tzdata \
 COPY --from=server /out/wmesh /usr/local/bin/wmesh
 COPY --from=web /src/dist /srv/web
 USER wmesh
+# 8443/8883 只在配了 WMESH_TLS_CERT_FILE、WMESH_TLS_KEY_FILE 时监听；探活仍走容器内明文 8080。
 ENV WMESH_HTTP_ADDR=:8080 \
     WMESH_MQTT_ADDR=:1883 \
+    WMESH_HTTPS_ADDR=:8443 \
+    WMESH_MQTTS_ADDR=:8883 \
     WMESH_WEB_DIR=/srv/web
-EXPOSE 8080 1883
+EXPOSE 8080 1883 8443 8883
 HEALTHCHECK --interval=10s --timeout=3s --start-period=15s --retries=6 \
     CMD wget -qO- http://127.0.0.1:8080/healthz >/dev/null || exit 1
 ENTRYPOINT ["/usr/local/bin/wmesh"]

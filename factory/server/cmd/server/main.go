@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -18,6 +19,7 @@ import (
 	"wmesh/factory/internal/platform/appupdate"
 	"wmesh/factory/internal/platform/config"
 	"wmesh/factory/internal/platform/oss"
+	"wmesh/factory/internal/wanchannel"
 	"wmesh/factory/internal/web"
 )
 
@@ -80,6 +82,16 @@ func run(ctx context.Context, log *slog.Logger) error {
 		}
 	}
 
+	// 配了自建 CA 就只信它校验 WAN 证书；须在认领和出站通道之前换上。
+	if cfg.WANRootCAs != nil {
+		// 认领、拉索引、拉包和 MQTT 都按这份 CA 校验。
+		wanchannel.UseRootCAs(cfg.WANRootCAs)
+	}
+	// WAN 地址还是 http 就提醒链路明文，能被抓包和伪造。
+	if strings.HasPrefix(strings.ToLower(cfg.WANURL), "http://") {
+		// 只警告不拦，开发和过渡期还在走明文。
+		log.Warn("wan link is plaintext, switch WMESH_WAN_URL to https", "wan", cfg.WANURL)
+	}
 	// 配了平台地址才保持出站，否则可以离线开工。
 	if cfg.WANURL != "" {
 		// 已认领的厂保持出站，断了会自己重连。
