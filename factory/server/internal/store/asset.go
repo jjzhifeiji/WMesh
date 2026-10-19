@@ -548,8 +548,15 @@ func assertAssetDigest(d []byte) error {
 	return nil
 }
 
+// assetSourceIndex 同一升档源只一条厂级的部分唯一索引名，迁移 0045 建。
+const assetSourceIndex = "assets_source_id_uq"
+
 // mapAssetWriteErr 库约束收成业务错误，不抛 SQL。
 func mapAssetWriteErr(err error) error {
+	// 同源已被并发升档先插上，交给升档回读那条，不当编号冲突。
+	if domain.IsUniqueViolation(err) && domain.UniqueConstraint(err) == assetSourceIndex {
+		return domain.ErrAssetSourceTaken
+	}
 	// 唯一约束撞了就改成业务冲突，不抛库原文。
 	if domain.IsUniqueViolation(err) {
 		return domain.ErrAssetCodeConflict

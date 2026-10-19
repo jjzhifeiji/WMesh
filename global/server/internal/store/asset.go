@@ -138,6 +138,10 @@ func (s *Store) InsertAssetInto(ctx context.Context, in Asset, parentID uuid.UUI
 	var row assetRow
 	// 编号、正文和目录挂点同一事务提交，失败一起回滚。
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// 依赖行先上共享锁，并发删除要等这笔提交；已删的就拒绝。
+		if err := lockAssetDepsTx(tx, in.Deps, nil); err != nil {
+			return err
+		}
 		// 行锁取出下一个平台编号，避免并发重号。
 		code, err := nextWANAssetCode(tx, in.Kind)
 		// 编号发不出来就停，避免空号落库。
@@ -218,6 +222,10 @@ func (s *Store) UpdateAsset(ctx context.Context, assetID uuid.UUID, expected int
 		depsJSON, err := marshalAssetDeps(row.Kind, w.Deps)
 		// 依赖收不成库里的正文就停，避免写下坏内容。
 		if err != nil {
+			return err
+		}
+		// 新钉的依赖行上共享锁，并发删除要等这笔提交；已删的就拒绝。
+		if err := lockAssetDepsTx(tx, w.Deps, unmarshalAssetDeps(row.Deps)); err != nil {
 			return err
 		}
 		// 先组好要改的列，修订在期望值上加一。
@@ -357,6 +365,12 @@ func (s *Store) AssetBySource(ctx context.Context, sourceID uuid.UUID, sourceRev
 
 // AssetIsReferenced 是否仍被某条工程的 deps 引用。
 func (s *Store) AssetIsReferenced(ctx context.Context, assetID uuid.UUID) (bool, error) {
+	// 事务外直接查一次，供业务层快速拒绝。
+	return assetReferencedTx(s.db.WithContext(ctx), assetID)
+}
+
+// assetReferencedTx 在给定连接上查有没有工程 deps 钉着这条，事务内外共用。
+func assetReferencedTx(db *gorm.DB, assetID uuid.UUID) (bool, error) {
 	// 编成包含条件，看有没有工程钉着它。
 	raw, err := json.Marshal([]map[string]string{{"id": assetID.String()}})
 	// 编不成正文就停，避免把坏内容写入。
@@ -366,10 +380,50 @@ func (s *Store) AssetIsReferenced(ctx context.Context, assetID uuid.UUID) (bool,
 	// 准备接住行数，不能事先把零当成没有。
 	var n int64
 	// 数量没数出来就停，不能把零当成没有。
-	if err := s.db.WithContext(ctx).Model(&assetRow{}).Where("deps @> ?", raw).Count(&n).Error; err != nil {
+	if err := db.Model(&assetRow{}).Where("deps @> ?", raw).Count(&n).Error; err != nil {
 		return false, err
 	}
 	return n > 0, nil
+}
+
+// lockAssetDepsTx 对新钉的依赖行加共享锁，并发删除须等本笔提交；缺一条就拒绝。
+// kept 是当前行已有的依赖，删除那边复查引用看得到它们，不必再锁。
+func lockAssetDepsTx(tx *gorm.DB, deps, kept []AssetDep) error {
+	// 已有依赖和已收过的身份都记在这里，免得重复去锁。
+	seen := make(map[uuid.UUID]struct{}, len(kept)+len(deps))
+	// 逐条记下当前行已有的依赖。
+	for _, d := range kept {
+		// 记下这条已有依赖，后面跳过它。
+		seen[d.ID] = struct{}{}
+	}
+	// 按数量先准备要锁的身份。
+	ids := make([]uuid.UUID, 0, len(deps))
+	// 逐条挑出新钉的依赖身份。
+	for _, d := range deps {
+		// 已有或已收过就跳过，不重复锁。
+		if _, ok := seen[d.ID]; ok {
+			continue
+		}
+		// 记下这个身份，同一条只锁一次。
+		seen[d.ID] = struct{}{}
+		// 把新钉的身份放进待锁清单。
+		ids = append(ids, d.ID)
+	}
+	// 没有新钉的依赖就不用锁。
+	if len(ids) == 0 {
+		return nil
+	}
+	// 准备接住锁到的身份，少了就是被删了。
+	var got []uuid.UUID
+	// 共享锁住依赖行；正在删的要等它提交，删掉的取不到。
+	if err := tx.Model(&assetRow{}).Clauses(clause.Locking{Strength: "SHARE"}).Where("id IN ?", ids).Pluck("id", &got).Error; err != nil {
+		return err
+	}
+	// 锁到的比要钉的少，说明有依赖已不在，按依赖缺失拒绝。
+	if len(got) < len(ids) {
+		return domain.ErrAssetDependency
+	}
+	return nil
 }
 
 // DeleteAsset 物理删除一条平台级；调用方须先清授权并记撤回。
@@ -387,10 +441,31 @@ func (s *Store) DeleteAsset(ctx context.Context, assetID uuid.UUID) error {
 	return nil
 }
 
-// DeleteAssetAndRetract 清下发授权、记下撤回、再删原件。
+// DeleteAssetAndRetract 锁住原件并复查引用，再清下发授权、记下撤回、删原件。
+// 仍被工程依赖则整笔不动；正在绑它的事务提交后这里才往下查。
 func (s *Store) DeleteAssetAndRetract(ctx context.Context, assetID uuid.UUID) error {
 	// 清授权、记撤回、删原件必须一起成功。
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// 只取身份，锁行用不着正文。
+		var locked assetRow
+		// 排他锁住被删行，和绑依赖的共享锁互斥。
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Select("id").First(&locked, "id = ?", assetID).Error; err != nil {
+			// 没有这一行就按不存在交回，不当成库故障。
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return domain.ErrNotFound
+			}
+			return err
+		}
+		// 锁住后在事务里复查引用，并发刚绑上的也看得到。
+		used, err := assetReferencedTx(tx, assetID)
+		// 引用查不清就不删，不能当没被引用。
+		if err != nil {
+			return err
+		}
+		// 仍被工程依赖就拒绝，授权和原件都不动。
+		if used {
+			return domain.ErrReferenced
+		}
 		// 删除失败就停，不能当成已经清掉。
 		if err := tx.Where("asset_id = ?", assetID).Delete(&distGrantRow{}).Error; err != nil {
 			return err
@@ -439,8 +514,15 @@ func assertAssetDigest(d []byte) error {
 	return nil
 }
 
+// assetSourceIndex 同一升档源只一条平台级的部分唯一索引名，迁移 0028 建。
+const assetSourceIndex = "assets_source_id_uq"
+
 // mapAssetWriteErr 库约束收成业务错误，不抛 SQL。
 func mapAssetWriteErr(err error) error {
+	// 同源已被并发升档先插上，交给升档回读那条，不当编号冲突。
+	if domain.IsUniqueViolation(err) && domain.UniqueConstraint(err) == assetSourceIndex {
+		return domain.ErrAssetSourceTaken
+	}
 	// 编号撞了就按冲突拒绝，不另插一行。
 	if domain.IsUniqueViolation(err) {
 		return domain.ErrAssetCodeConflict

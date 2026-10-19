@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"wmesh/global/internal/platform/domain"
 	"wmesh/global/internal/platform/id"
@@ -277,6 +278,25 @@ func (s *Store) SetClientPublicKey(ctx context.Context, clientID uuid.UUID, publ
 	return nil
 }
 
+// lockAssignableFactory 在事务里共享锁读目标厂；不在名录或已注销就拒绝，停用照常可分。
+func lockAssignableFactory(tx *gorm.DB, factoryID uuid.UUID) error {
+	// 准备接住目标厂那一行，要看它的治理状态。
+	var fac Factory
+	// 共享锁读出目标厂，注销要等这笔提交，提交前不会被改掉。
+	if err := tx.Clauses(clause.Locking{Strength: "SHARE"}).First(&fac, "id = ?", factoryID).Error; err != nil {
+		// 目标厂不在名录就按不存在拒绝。
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return domain.ErrNotFound
+		}
+		return err
+	}
+	// 已注销的厂不再收设备，分过去哪个厂都用不了。
+	if fac.Status == FactoryRetired {
+		return domain.ErrFactoryRetired
+	}
+	return nil
+}
+
 // BindClient 把未绑定 Client 绑到一厂，绑定修订从 0 升到 1。
 func (s *Store) BindClient(ctx context.Context, clientID, factoryID uuid.UUID) (Client, error) {
 	// 记下当前时刻，这一笔里的时间都用它。
@@ -287,8 +307,8 @@ func (s *Store) BindClient(ctx context.Context, clientID, factoryID uuid.UUID) (
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// 准备接住库里的那一行，没有再另作处理。
 		var row Client
-		// 取不到或库出错先停住，再区分没有还是故障。
-		if err := tx.First(&row, "id = ?", clientID).Error; err != nil {
+		// 行锁读出当前行，并发绑定排队，修订不会分叉。
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&row, "id = ?", clientID).Error; err != nil {
 			// 没有这一行就按不存在交回，不当成库故障。
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return domain.ErrNotFound
@@ -299,16 +319,12 @@ func (s *Store) BindClient(ctx context.Context, clientID, factoryID uuid.UUID) (
 		if row.FactoryID != nil {
 			return domain.ErrClientBound
 		}
-		// 目标厂必须已在名录。
-		if err := tx.First(&Factory{}, "id = ?", factoryID).Error; err != nil {
-			// 目标厂不在名录就按不存在拒绝。
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return domain.ErrNotFound
-			}
+		// 共享锁复查目标厂，注销与本次绑定排队。
+		if err := lockAssignableFactory(tx, factoryID); err != nil {
 			return err
 		}
-		// 只改尚未分配的行，修订从 0 升到 1。
-		res := tx.Model(&Client{}).Where("id = ? AND factory_id IS NULL", clientID).Updates(map[string]any{
+		// 只改尚未分配且修订仍是刚读到的行，修订从 0 升到 1。
+		res := tx.Model(&Client{}).Where("id = ? AND factory_id IS NULL AND binding_revision = ?", clientID, row.BindingRevision).Updates(map[string]any{
 			"factory_id":       factoryID,
 			"binding_revision": int64(1),
 			"bound_at":         now,
@@ -321,9 +337,9 @@ func (s *Store) BindClient(ctx context.Context, clientID, factoryID uuid.UUID) (
 			}
 			return res.Error
 		}
-		// 没改到符合条件的行，绑定状态不动。
+		// 修订已被别人升过，不能拿旧值覆盖。
 		if res.RowsAffected == 0 {
-			return domain.ErrClientBound
+			return domain.ErrStaleRevision
 		}
 		// 内存里的归属改到目标厂，和库保持一致。
 		row.FactoryID = &factoryID
@@ -338,18 +354,20 @@ func (s *Store) BindClient(ctx context.Context, clientID, factoryID uuid.UUID) (
 	return out, err
 }
 
-// RebindClient 把已绑定 Client 改到另一厂，绑定修订必须升高。
-func (s *Store) RebindClient(ctx context.Context, clientID, factoryID uuid.UUID) (Client, error) {
+// RebindClient 把已绑定 Client 改到另一厂，绑定修订必须升高；另交回行锁下读到的原厂。
+func (s *Store) RebindClient(ctx context.Context, clientID, factoryID uuid.UUID) (Client, uuid.UUID, error) {
 	// 记下当前时刻，这一笔里的时间都用它。
 	now := time.Now().UTC()
 	// 准备接住事务里写好的结果，失败则不用它。
 	var out Client
+	// 行锁下读到的原厂，作废通知只能发给它。
+	var prev uuid.UUID
 	// 确认已绑定且换了厂，再把修订升高。
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// 准备接住库里的那一行，没有再另作处理。
 		var row Client
-		// 取不到或库出错先停住，再区分没有还是故障。
-		if err := tx.First(&row, "id = ?", clientID).Error; err != nil {
+		// 行锁读出当前行，并发改绑排队，修订不会重号。
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&row, "id = ?", clientID).Error; err != nil {
 			// 没有这一行就按不存在交回，不当成库故障。
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return domain.ErrNotFound
@@ -364,18 +382,16 @@ func (s *Store) RebindClient(ctx context.Context, clientID, factoryID uuid.UUID)
 		if *row.FactoryID == factoryID {
 			return domain.ErrClientBound
 		}
-		// 目标厂必须已在名录。
-		if err := tx.First(&Factory{}, "id = ?", factoryID).Error; err != nil {
-			// 目标厂不在名录就按不存在拒绝。
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return domain.ErrNotFound
-			}
+		// 共享锁复查目标厂，注销与本次改分排队。
+		if err := lockAssignableFactory(tx, factoryID); err != nil {
 			return err
 		}
+		// 先记下锁内的原厂，下面改行前内存里还是它。
+		from := *row.FactoryID
 		// 改分必须升高修订，厂端只认更高修订。
 		next := row.BindingRevision + 1
-		// 只改已经分给别厂的行。
-		res := tx.Model(&Client{}).Where("id = ? AND factory_id IS NOT NULL AND factory_id <> ?", clientID, factoryID).
+		// 只改已分给别厂且修订仍是刚读到的行。
+		res := tx.Model(&Client{}).Where("id = ? AND factory_id IS NOT NULL AND factory_id <> ? AND binding_revision = ?", clientID, factoryID, row.BindingRevision).
 			Updates(map[string]any{
 				"factory_id":       factoryID,
 				"binding_revision": next,
@@ -385,9 +401,9 @@ func (s *Store) RebindClient(ctx context.Context, clientID, factoryID uuid.UUID)
 		if res.Error != nil {
 			return res.Error
 		}
-		// 没改到符合条件的行，绑定状态不动。
+		// 修订已被别人升过，不能拿旧值覆盖。
 		if res.RowsAffected == 0 {
-			return domain.ErrClientBound
+			return domain.ErrStaleRevision
 		}
 		// 内存里的归属改到目标厂，和库保持一致。
 		row.FactoryID = &factoryID
@@ -395,11 +411,13 @@ func (s *Store) RebindClient(ctx context.Context, clientID, factoryID uuid.UUID)
 		row.BindingRevision = next
 		// 记下这次分配生效的时刻。
 		row.BoundAt = &now
+		// 记下锁内读到的原厂，并发改绑时才不会作废错厂。
+		prev = from
 		// 事务成功时才把这一行交出去。
 		out = row
 		return nil
 	})
-	return out, err
+	return out, prev, err
 }
 
 // HasColumn 看某表是否已有该列，给迁移夹具用。

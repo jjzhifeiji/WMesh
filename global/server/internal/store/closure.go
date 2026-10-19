@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"wmesh/global/internal/platform/domain"
 	"wmesh/global/internal/platform/id"
@@ -95,46 +96,30 @@ type distRecordRow struct {
 // 下发记录落这张表，不含包正文。
 func (distRecordRow) TableName() string { return "distribution_records" }
 
-// UpsertFactoryGrant 授予或重新激活某平台级资产到某厂。
+// UpsertFactoryGrant 授予或重新激活某平台级资产到某厂；并发同一对只落一行。
 func (s *Store) UpsertFactoryGrant(ctx context.Context, assetID, factoryID uuid.UUID) (DistributionGrant, error) {
 	// 记下当前时刻，这一笔里的时间都用它。
 	now := time.Now().UTC()
-	// 准备接住已有的那一行，没有再决定插入。
-	var existing distGrantRow
-	// 先找这对资产和厂的授权，没有再插入。
-	err := s.db.WithContext(ctx).First(&existing, "asset_id = ? AND factory_id = ?", assetID, factoryID).Error
-	// 已经有这条授权，就地重新打开。
-	if err == nil {
-		// 已有授权则重新激活，不另开一行。
-		existing.Active = true
-		// 记下这次重新打开授权的时刻。
-		existing.UpdatedAt = now
-		// 写回失败就停，刚才改过的字段不算数。
-		if err := s.db.WithContext(ctx).Save(&existing).Error; err != nil {
-			return DistributionGrant{}, err
-		}
-		// 重新打开后的授权收成视图交回。
-		return grantFromRow(existing), nil
-	}
-	// 不是没有这行，是读取失败，不能当成该新建。
-	if !errors.Is(err, gorm.ErrRecordNotFound) {
-		return DistributionGrant{}, err
-	}
-	// 组一条新的下发授权，一开始就是有效的。
+	// 组一条新的下发授权，撞上已有行时只用来改有效和时间。
 	row := distGrantRow{
 		ID: id.New(), AssetID: assetID, FactoryID: factoryID,
 		Active: true, CreatedAt: now, UpdatedAt: now,
 	}
+	// 一条语句插入或重新激活，并发拉取不再撞唯一约束。
+	err := s.db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "asset_id"}, {Name: "factory_id"}},
+		DoUpdates: clause.AssignmentColumns([]string{"active", "updated_at"}),
+	}).Create(&row).Error
 	// 这一行没写进去就停，不能当成已经落库。
-	if err := s.db.WithContext(ctx).Create(&row).Error; err != nil {
+	if err != nil {
 		// 引用的厂或资产不在名录，按不存在拒绝。
 		if domain.IsForeignKeyViolation(err) {
 			return DistributionGrant{}, domain.ErrNotFound
 		}
 		return DistributionGrant{}, err
 	}
-	// 新授权收成视图再交回。
-	return grantFromRow(row), nil
+	// 撞上已有行时身份和授权时间以库里为准，重读再交回。
+	return s.FactoryGrant(ctx, assetID, factoryID)
 }
 
 // RevokeFactoryGrant 收回某资产对某厂的下发授权。

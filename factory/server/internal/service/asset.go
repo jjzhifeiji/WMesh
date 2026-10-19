@@ -1735,52 +1735,57 @@ func (s *Assets) PromoteToFactory(ctx context.Context, token string, assetID uui
 	rev := src.Revision
 	// 已升过则按摘要和作业类型跳过或覆盖。
 	existing, err := s.store.GovernedAssetBySourceID(ctx, src.ID)
-	// 已经升过则按摘要和作业类型决定跳过还是覆盖。
-	if err == nil {
-		// 厂级已停用则拒绝，摘要相同也不放开，免得被源重新放出来。
-		if existing.Status == AssetDisabled {
-			// 升档被拒时补记审计，写失败仍维持拒绝。
-			_ = s.audit(ctx, &acc.ID, nil, "promote_asset", assetTarget(src.ID, src.Revision), audit.Deny)
-			return Asset{}, domain.ErrAssetNotAvailable
-		}
-		// 正文和作业类型都没变才直接用已升的那条。
-		if bytes.Equal(existing.Digest, src.Digest) && existing.WeldKind == src.WeldKind {
+	// 还没升过就先复制一条新身份的厂级。
+	if errors.Is(err, domain.ErrNotFound) {
+		// 第一次升档复制新身份。
+		row, ierr := s.store.InsertGovernedAsset(ctx, Asset{
+			Kind: src.Kind, Level: AssetLevelFactory, Name: src.Name, Status: AssetAvailable, Copyable: true, WeldKind: src.WeldKind,
+			Content: src.Content, Digest: src.Digest, CreatorID: acc.ID,
+			OrgUnitID: src.OrgUnitID, OrgPath: src.OrgPath,
+			SourceID: &src.ID, SourceRevision: &rev, Deps: src.Deps,
+		})
+		// 插成了就记允许并返回新厂级。
+		if ierr == nil {
 			// 成功必须记上审计，没记上则本次不算做成。
-			if err := s.audit(ctx, &acc.ID, nil, "promote_asset", assetTarget(existing.ID, existing.Revision)+" from "+assetTarget(src.ID, src.Revision), audit.Allow); err != nil {
+			if err := s.audit(ctx, &acc.ID, nil, "promote_asset", assetTarget(row.ID, row.Revision)+" from "+assetTarget(src.ID, src.Revision), audit.Allow); err != nil {
 				return Asset{}, err
 			}
 			// 去掉正文再返回，避免工艺参数外泄。
-			return stripContent(existing), nil
+			return stripContent(row), nil
 		}
-		// 正文或作业类型变了就覆盖厂级；状态和可复制沿用厂级自己的。
-		row, err := s.store.UpdateGovernedAsset(ctx, existing.ID, existing.Revision, store.AssetWrite{
-			Name: src.Name, Content: src.Content, Digest: src.Digest, Copyable: existing.Copyable, Status: existing.Status, WeldKind: src.WeldKind, Deps: src.Deps, SourceRevision: &rev,
-		})
-		// 失败则记拒绝并停下，不继续往下改。
-		if err != nil {
+		// 不是同源被并发升档先插上，就记拒绝并停下。
+		if !errors.Is(ierr, domain.ErrAssetSourceTaken) {
 			// 升档被拒时补记审计，写失败仍维持拒绝。
 			_ = s.audit(ctx, &acc.ID, nil, "promote_asset", assetTarget(src.ID, src.Revision), audit.Deny)
-			return Asset{}, err
+			return Asset{}, ierr
 		}
-		// 成功必须记上审计，没记上则本次不算做成。
-		if err := s.audit(ctx, &acc.ID, nil, "promote_asset", assetTarget(row.ID, row.Revision)+" from "+assetTarget(src.ID, src.Revision), audit.Allow); err != nil {
-			return Asset{}, err
-		}
-		// 去掉正文再返回，避免工艺参数外泄。
-		return stripContent(row), nil
+		// 同源已有一条，回读那条再按摘要跳过或覆盖，不另起一条。
+		existing, err = s.store.GovernedAssetBySourceID(ctx, src.ID)
 	}
-	// 不是找不到则把库错误抛回，避免当成没有。
-	if !errors.Is(err, domain.ErrNotFound) {
+	// 读已有厂级出错则把库错误抛回，避免当成没有。
+	if err != nil {
 		// 升档被拒时补记审计，写失败仍维持拒绝。
 		_ = s.audit(ctx, &acc.ID, nil, "promote_asset", assetTarget(src.ID, src.Revision), audit.Deny)
 		return Asset{}, err
 	}
-	// 第一次升档复制新身份。
-	row, err := s.store.InsertGovernedAsset(ctx, Asset{
-		Kind: src.Kind, Level: AssetLevelFactory, Name: src.Name, Status: AssetAvailable, Copyable: true, WeldKind: src.WeldKind,
-		Content: src.Content, Digest: src.Digest, CreatorID: acc.ID,
-		OrgUnitID: src.OrgUnitID, OrgPath: src.OrgPath,
-		SourceID: &src.ID, SourceRevision: &rev, Deps: src.Deps,
+	// 厂级已停用则拒绝，摘要相同也不放开，免得被源重新放出来。
+	if existing.Status == AssetDisabled {
+		// 升档被拒时补记审计，写失败仍维持拒绝。
+		_ = s.audit(ctx, &acc.ID, nil, "promote_asset", assetTarget(src.ID, src.Revision), audit.Deny)
+		return Asset{}, domain.ErrAssetNotAvailable
+	}
+	// 正文和作业类型都没变才直接用已升的那条。
+	if bytes.Equal(existing.Digest, src.Digest) && existing.WeldKind == src.WeldKind {
+		// 成功必须记上审计，没记上则本次不算做成。
+		if err := s.audit(ctx, &acc.ID, nil, "promote_asset", assetTarget(existing.ID, existing.Revision)+" from "+assetTarget(src.ID, src.Revision), audit.Allow); err != nil {
+			return Asset{}, err
+		}
+		// 去掉正文再返回，避免工艺参数外泄。
+		return stripContent(existing), nil
+	}
+	// 正文或作业类型变了就覆盖厂级；状态和可复制沿用厂级自己的。
+	row, err := s.store.UpdateGovernedAsset(ctx, existing.ID, existing.Revision, store.AssetWrite{
+		Name: src.Name, Content: src.Content, Digest: src.Digest, Copyable: existing.Copyable, Status: existing.Status, WeldKind: src.WeldKind, Deps: src.Deps, SourceRevision: &rev,
 	})
 	// 失败则记拒绝并停下，不继续往下改。
 	if err != nil {

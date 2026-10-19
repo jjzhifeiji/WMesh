@@ -618,52 +618,57 @@ func (s *Assets) PromoteFromSnapshot(ctx context.Context, token string, snap Ass
 	rev := snap.SourceRevision
 	// 按源厂身份找已升过的平台级。
 	existing, err := s.store.AssetBySourceID(ctx, snap.SourceID)
-	// 没有错误才继续，有错留在后面的分支。
-	if err == nil {
-		// 平台级已停用就拒绝，摘要相同也拒，停用件不得改内容或升档。
-		if existing.Status == AssetDisabled {
-			// 升档被拒就留审计。
-			_ = s.audit(ctx, &admin.ID, nil, &fid, "promote_asset", snap.SourceID.String(), audit.Deny)
-			return Asset{}, domain.ErrAssetNotAvailable
-		}
-		// 摘要和作业类型都相同才不覆盖，避免无谓升高修订。
-		if bytes.Equal(existing.Digest, sum) && existing.WeldKind == weld {
-			// 正文和作业类型未变则幂等返回已有平台级。
-			if err := s.audit(ctx, &admin.ID, nil, &fid, "promote_asset", assetTarget(existing.ID, existing.Revision)+" from "+assetTarget(snap.SourceID, snap.SourceRevision), audit.Allow); err != nil {
+	// 还没升过就先插一条新身份的草稿。
+	if errors.Is(err, domain.ErrNotFound) {
+		// 第一次升档则新身份落草稿。
+		row, ierr := s.store.InsertAsset(ctx, Asset{
+			Kind: snap.Kind, Name: snap.Name, Status: AssetDraft, Copyable: assetCopyable(snap.Kind, false), WeldKind: weld,
+			Content: body, Digest: sum, CreatorID: admin.ID,
+			SourceID: &snap.SourceID, SourceRevision: &rev, SourceFactoryID: &snap.SourceFactoryID,
+			Deps: deps,
+		})
+		// 插成了就记允许并返回新平台级。
+		if ierr == nil {
+			// 升档成功才记允许。
+			if err := s.audit(ctx, &admin.ID, nil, &fid, "promote_asset", assetTarget(row.ID, row.Revision)+" from "+assetTarget(snap.SourceID, snap.SourceRevision), audit.Allow); err != nil {
 				return Asset{}, err
 			}
 			// 去掉正文再返回。
-			return stripContent(existing), nil
+			return stripContent(row), nil
 		}
-		// 正文或作业类型变了则覆盖为草稿，身份不变，作业类型跟快照走。
-		row, err := s.store.UpdateAsset(ctx, existing.ID, existing.Revision, store.AssetWrite{
-			Name: snap.Name, Content: body, Digest: sum, Copyable: existing.Copyable, Status: AssetDraft, WeldKind: weld, Deps: deps, SourceRevision: &rev,
-		})
-		// 这一步失败就停，避免留下半截。
-		if err != nil {
+		// 不是同源被并发升档先插上，就按失败拒绝。
+		if !errors.Is(ierr, domain.ErrAssetSourceTaken) {
 			// 升档被拒就留审计。
 			_ = s.audit(ctx, &admin.ID, nil, &fid, "promote_asset", snap.SourceID.String(), audit.Deny)
-			return Asset{}, err
+			return Asset{}, ierr
 		}
-		// 覆盖成功才记允许。
-		if err := s.audit(ctx, &admin.ID, nil, &fid, "promote_asset", assetTarget(row.ID, row.Revision)+" from "+assetTarget(snap.SourceID, snap.SourceRevision), audit.Allow); err != nil {
-			return Asset{}, err
-		}
-		// 去掉正文再返回。
-		return stripContent(row), nil
+		// 同源已有一条，回读那条再按摘要跳过或覆盖，不另起一条。
+		existing, err = s.store.AssetBySourceID(ctx, snap.SourceID)
 	}
-	// 不是没有这条，就当真正的故障返回。
-	if !errors.Is(err, domain.ErrNotFound) {
+	// 读已有平台级出错就当真正的故障返回。
+	if err != nil {
 		// 升档被拒就留审计。
 		_ = s.audit(ctx, &admin.ID, nil, &fid, "promote_asset", snap.SourceID.String(), audit.Deny)
 		return Asset{}, err
 	}
-	// 第一次升档则新身份落草稿。
-	row, err := s.store.InsertAsset(ctx, Asset{
-		Kind: snap.Kind, Name: snap.Name, Status: AssetDraft, Copyable: assetCopyable(snap.Kind, false), WeldKind: weld,
-		Content: body, Digest: sum, CreatorID: admin.ID,
-		SourceID: &snap.SourceID, SourceRevision: &rev, SourceFactoryID: &snap.SourceFactoryID,
-		Deps: deps,
+	// 平台级已停用就拒绝，摘要相同也拒，停用件不得改内容或升档。
+	if existing.Status == AssetDisabled {
+		// 升档被拒就留审计。
+		_ = s.audit(ctx, &admin.ID, nil, &fid, "promote_asset", snap.SourceID.String(), audit.Deny)
+		return Asset{}, domain.ErrAssetNotAvailable
+	}
+	// 摘要和作业类型都相同才不覆盖，避免无谓升高修订。
+	if bytes.Equal(existing.Digest, sum) && existing.WeldKind == weld {
+		// 正文和作业类型未变则幂等返回已有平台级。
+		if err := s.audit(ctx, &admin.ID, nil, &fid, "promote_asset", assetTarget(existing.ID, existing.Revision)+" from "+assetTarget(snap.SourceID, snap.SourceRevision), audit.Allow); err != nil {
+			return Asset{}, err
+		}
+		// 去掉正文再返回。
+		return stripContent(existing), nil
+	}
+	// 正文或作业类型变了则覆盖为草稿，身份不变，作业类型跟快照走。
+	row, err := s.store.UpdateAsset(ctx, existing.ID, existing.Revision, store.AssetWrite{
+		Name: snap.Name, Content: body, Digest: sum, Copyable: existing.Copyable, Status: AssetDraft, WeldKind: weld, Deps: deps, SourceRevision: &rev,
 	})
 	// 这一步失败就停，避免留下半截。
 	if err != nil {
@@ -671,7 +676,7 @@ func (s *Assets) PromoteFromSnapshot(ctx context.Context, token string, snap Ass
 		_ = s.audit(ctx, &admin.ID, nil, &fid, "promote_asset", snap.SourceID.String(), audit.Deny)
 		return Asset{}, err
 	}
-	// 升档成功才记允许。
+	// 覆盖成功才记允许。
 	if err := s.audit(ctx, &admin.ID, nil, &fid, "promote_asset", assetTarget(row.ID, row.Revision)+" from "+assetTarget(snap.SourceID, snap.SourceRevision), audit.Allow); err != nil {
 		return Asset{}, err
 	}

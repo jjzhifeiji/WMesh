@@ -284,15 +284,15 @@ func (s *Org) RevokeRole(ctx context.Context, token string, grantID uuid.UUID) e
 		_ = s.audit(ctx, &acc.ID, nil, "revoke_role", grantID.String(), audit.Deny)
 		return err
 	}
-	// 会变成没有超管入口，拒绝收回
+	// 会变成没有超管入口，拒绝收回；这里先快速预检
 	if err := s.guardLastAdminOnRevoke(ctx, g); err != nil {
 		// 会去掉最后一名有效超管，记下收回角色被拒绝，写失败不改变结果
 		_ = s.audit(ctx, &acc.ID, nil, "revoke_role", grantID.String(), audit.Deny)
 		return err
 	}
-	// 收回后新操作立刻按新角色判定。
-	if err := s.store.RevokeRole(ctx, grantID); err != nil {
-		// 记下收回角色被拒绝，写失败不改变结果
+	// 拿入口锁重数后收回，并发互收超管也只成一个；收回后新操作立刻按新角色判定。
+	if err := s.store.RevokeRoleKeepAdmin(ctx, grantID); err != nil {
+		// 收回失败或会去掉最后一名超管，记下收回角色被拒绝，写失败不改变结果
 		_ = s.audit(ctx, &acc.ID, nil, "revoke_role", grantID.String(), audit.Deny)
 		return err
 	}

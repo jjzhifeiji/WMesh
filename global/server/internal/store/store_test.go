@@ -205,19 +205,19 @@ func TestWANClientBinding(t *testing.T) {
 	}
 
 	// 把已经绑定的设备改到第二家厂。
-	reb, err := s.RebindClient(ctx, c.ID, b.ID)
+	reb, from, err := s.RebindClient(ctx, c.ID, b.ID)
 	// 改绑没写成就停，不能把错误当成已经换厂。
 	if err != nil {
 		// 改绑没写成就停，不能把错误当成已经换厂。
 		t.Fatalf("rebind: %v", err)
 	}
-	// 改绑之后应属于第二家，修订再升一档。
-	if reb.FactoryID == nil || *reb.FactoryID != b.ID || reb.BindingRevision != 2 {
+	// 改绑之后应属于第二家，修订再升一档，原厂交回第一家。
+	if reb.FactoryID == nil || *reb.FactoryID != b.ID || reb.BindingRevision != 2 || from != a.ID {
 		// 改绑没写成就停，不能把错误当成已经换厂。
-		t.Fatalf("rebind: %+v", reb)
+		t.Fatalf("rebind: %+v from %s", reb, from)
 	}
 	// 还是这一家就不算改分，必须拒绝。
-	if _, err := s.RebindClient(ctx, c.ID, b.ID); err != domain.ErrClientBound {
+	if _, _, err := s.RebindClient(ctx, c.ID, b.ID); err != domain.ErrClientBound {
 		// 原厂再改一次没被拒绝就停。
 		t.Fatalf("rebind same: %v", err)
 	}
@@ -232,7 +232,7 @@ func TestWANClientBinding(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 还没绑定的设备不能走改绑。
-	if _, err := s.RebindClient(ctx, u.ID, a.ID); err != domain.ErrUnbound {
+	if _, _, err := s.RebindClient(ctx, u.ID, a.ID); err != domain.ErrUnbound {
 		// 刚登记的设备状态不对就停。
 		t.Fatalf("rebind unbound: %v", err)
 	}

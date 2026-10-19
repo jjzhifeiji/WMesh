@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"wmesh/global/internal/platform/domain"
 	"wmesh/global/internal/platform/id"
@@ -130,23 +131,25 @@ func (s *Store) EnsureFSRoot(ctx context.Context, assetKind string) (FSNode, err
 	return out, err
 }
 
-// ensureFSRootTx 事务内取或建该种类的根文件夹。
-func ensureFSRootTx(tx *gorm.DB, assetKind, treeLevel string, ownerID *uuid.UUID) (FSNode, error) {
+// fsRootQuery 现拼取某棵树根的条件；First 会改写查询，重读不能复用旧的。
+func fsRootQuery(tx *gorm.DB, assetKind, treeLevel string, ownerID *uuid.UUID) *gorm.DB {
 	// 先按种类、树和根去找，主人条件后面再补。
 	q := tx.Where("asset_kind = ? AND tree_level = ? AND parent_id IS NULL AND node_kind = ?", assetKind, treeLevel, FSNodeFolder)
 	// 没有主人就是平台树，根按空主人去对。
 	if ownerID == nil {
 		// 平台树没有主人，根必须对上空主人。
-		q = q.Where("owner_id IS NULL")
-		// 指定了主人就只找这个主人的根。
-	} else {
-		// 只找这个主人的根，不串到别的树。
-		q = q.Where("owner_id = ?", *ownerID)
+		return q.Where("owner_id IS NULL")
 	}
+	// 只找这个主人的根，不串到别的树。
+	return q.Where("owner_id = ?", *ownerID)
+}
+
+// ensureFSRootTx 事务内取或建该种类的根文件夹。
+func ensureFSRootTx(tx *gorm.DB, assetKind, treeLevel string, ownerID *uuid.UUID) (FSNode, error) {
 	// 准备接住库里的那一行，没有再另作处理。
 	var row fsNodeRow
-	// 按上面的条件取根，没有再决定要不要建。
-	err := q.First(&row).Error
+	// 按条件取根，没有再决定要不要建。
+	err := fsRootQuery(tx, assetKind, treeLevel, ownerID).First(&row).Error
 	// 根已经在，直接用，不再建第二棵。
 	if err == nil {
 		// 库行收成目录节点再交回。
@@ -163,24 +166,26 @@ func ensureFSRootTx(tx *gorm.DB, assetKind, treeLevel string, ownerID *uuid.UUID
 		ID: id.New(), Name: "", NodeKind: FSNodeFolder, AssetKind: assetKind,
 		TreeLevel: treeLevel, OwnerID: ownerID, CreatedAt: now, UpdatedAt: now,
 	}
-	// 写入失败先停住，再看是重复还是约束没过。
-	if err := tx.Create(&row).Error; err != nil {
-		// 别人刚建好根，再读那一条来用。
-		if domain.IsUniqueViolation(err) {
-			// 并发下别人刚建好，再读那一条。
-			err = q.First(&row).Error
-			// 再读根仍然失败就停，不能交回空节点。
-			if err != nil {
-				return FSNode{}, err
-			}
-			// 库行收成目录节点再交回。
-			return fsFromRow(row), nil
-		}
+	// 撞上根唯一索引就不插，事务不会因此中止，后面还能重读。
+	res := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&row)
+	// 别的约束没过就停，先收成业务错误。
+	if res.Error != nil {
 		// 建根失败收成业务错误再交回。
-		return FSNode{}, mapFSErr(err)
+		return FSNode{}, mapFSErr(res.Error)
+	}
+	// 真插进去了就是本次新建的根，直接交回。
+	if res.RowsAffected == 1 {
+		// 库行收成目录节点再交回。
+		return fsFromRow(row), nil
+	}
+	// 另起一行承接，带着新身份去读会按主键对不上。
+	var got fsNodeRow
+	// 并发下别人先建好了根，现拼条件重读那一条。
+	if err := fsRootQuery(tx, assetKind, treeLevel, ownerID).First(&got).Error; err != nil {
+		return FSNode{}, err
 	}
 	// 库行收成目录节点再交回。
-	return fsFromRow(row), nil
+	return fsFromRow(got), nil
 }
 
 // ListFSNodes 列出该种类全部节点，不含资产正文。
@@ -340,6 +345,10 @@ func (s *Store) MoveFSNode(ctx context.Context, nodeID, parentID uuid.UUID) (FSN
 		if n.ParentID == nil {
 			return domain.ErrForbidden
 		}
+		// 按节点所在树排队，反向并发搬家不会都过成环检查。
+		if err := lockFSTreeTx(tx, n.AssetKind, n.TreeLevel, n.OwnerID); err != nil {
+			return err
+		}
 		// 先取出父节点，确认它能往下挂。
 		parent, err := fsNodeTx(tx, parentID)
 		// 节点没取到就停，后面的改动没有对象。
@@ -358,8 +367,18 @@ func (s *Store) MoveFSNode(ctx context.Context, nodeID, parentID uuid.UUID) (FSN
 		if !ownerEq(parent.OwnerID, n.OwnerID) {
 			return domain.ErrForbidden
 		}
-		// 不能挂到自己或后代。
-		if parent.ID == n.ID || fsIsAncestorTx(tx, parent.ID, n.ID) {
+		// 不能挂到自己下面。
+		if parent.ID == n.ID {
+			return domain.ErrCycle
+		}
+		// 锁后沿完整父链查目标是不是自己的后代，层级再深也不放行。
+		cyc, err := fsIsAncestorTx(tx, parent.ID, n.ID)
+		// 查父链失败就停，库错误不能当成不成环。
+		if err != nil {
+			return err
+		}
+		// 目标在自己子树里，挂过去就成环。
+		if cyc {
 			return domain.ErrCycle
 		}
 		// 记下当前时刻，这一笔里的时间都用它。
@@ -454,30 +473,32 @@ func fsNodeTx(tx *gorm.DB, id uuid.UUID) (FSNode, error) {
 	return fsFromRow(row), nil
 }
 
-// fsIsAncestorTx 向上走父链，判断会不会成环。
-func fsIsAncestorTx(tx *gorm.DB, nodeID, ancestorID uuid.UUID) bool {
-	// 从当前节点出发，沿父链看会不会成环。
-	cur := nodeID
-	// 沿父链最多走六十四层，防止坏数据死循环。
-	for i := 0; i < 64; i++ {
-		// 准备接住库里的那一行，没有再另作处理。
-		var row fsNodeRow
-		// 取不到或库出错先停住，再区分没有还是故障。
-		if err := tx.Select("id", "parent_id").First(&row, "id = ?", cur).Error; err != nil {
-			return false
-		}
-		// 这一层没有父节点，说明还没走到要避开的那个。
-		if row.ParentID == nil {
-			return false
-		}
-		// 父节点就是要避开的那个，再挂就会成环。
-		if *row.ParentID == ancestorID {
-			return true
-		}
-		// 继续往父节点走，直到根或发现成环。
-		cur = *row.ParentID
+// fsIsAncestorTx 递归走完整父链，判断 ancestorID 是否 nodeID 的祖先；库错误照实交回。
+func fsIsAncestorTx(tx *gorm.DB, nodeID, ancestorID uuid.UUID) (bool, error) {
+	// 准备接住父链里有没有这个祖先。
+	var found bool
+	// 沿父指针往上递归，UNION 去重让坏链也不会死循环。
+	err := tx.Raw(`
+		WITH RECURSIVE up(id, parent_id) AS (
+			SELECT id, parent_id FROM asset_fs_nodes WHERE id = ?
+			UNION
+			SELECT n.id, n.parent_id FROM asset_fs_nodes n JOIN up ON n.id = up.parent_id
+		)
+		SELECT EXISTS (SELECT 1 FROM up WHERE parent_id = ?)`, nodeID, ancestorID).Scan(&found).Error
+	return found, err
+}
+
+// lockFSTreeTx 按种类、树层级和主人取事务级咨询锁，同一棵树改父级排队。
+func lockFSTreeTx(tx *gorm.DB, assetKind, treeLevel string, ownerID *uuid.UUID) error {
+	// 平台树没有主人，锁键里主人段留空。
+	owner := ""
+	// 带主人的树按主人分开锁，互不等待。
+	if ownerID != nil {
+		// 锁键带上主人身份，只和同一人的树排队。
+		owner = ownerID.String()
 	}
-	return false
+	// 事务结束自动放锁，不用另外解。
+	return tx.Exec("SELECT pg_advisory_xact_lock(hashtext(?))", "asset_fs:"+assetKind+":"+treeLevel+":"+owner).Error
 }
 
 // ownerEq 两个可空主人是否同一人。

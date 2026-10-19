@@ -202,8 +202,8 @@ func (s *Factories) DeleteFactory(ctx context.Context, token string, factoryID u
 	}
 	// 已认领或已注销只改注销，历史与绑定保留。
 	if fac.EnrolledAt != nil || fac.Status == FactoryRetired {
-		// 改成新值，失败就不能继续。
-		out, err := s.store.SetFactoryStatus(ctx, factoryID, FactoryRetired)
+		// 改成新值，失败就不能继续；注销一律踢会话，用不到原状态。
+		out, _, err := s.store.SetFactoryStatus(ctx, factoryID, FactoryRetired)
 		// 不合法或写失败就拒绝。
 		if err != nil {
 			// 注销被拒就留审计。
@@ -224,8 +224,8 @@ func (s *Factories) DeleteFactory(ctx context.Context, token string, factoryID u
 	if err := s.store.DeleteUnclaimedFactory(ctx, factoryID); err != nil {
 		// 仍被引用则拒绝删除，避免拆掉还在用的。
 		if errors.Is(err, domain.ErrReferenced) {
-			// 已有绑定则改为注销，不硬删。
-			out, err := s.store.SetFactoryStatus(ctx, factoryID, FactoryRetired)
+			// 已有绑定则改为注销，不硬删；注销一律踢会话，用不到原状态。
+			out, _, err := s.store.SetFactoryStatus(ctx, factoryID, FactoryRetired)
 			// 不合法或写失败就拒绝。
 			if err != nil {
 				// 注销被拒就留审计。
@@ -265,16 +265,8 @@ func (s *Factories) setStatus(ctx context.Context, token string, factoryID uuid.
 		_ = s.audit(ctx, nil, nil, &factoryID, action, factoryID.String(), audit.Deny)
 		return Factory{}, err
 	}
-	// 先读出原状态，只有停用转有效才要踢会话补发。
-	prev, err := s.store.FactoryByID(ctx, factoryID)
-	// 没有这家厂或库出错就拒绝，不往下改状态。
-	if err != nil {
-		// 被拒绝时留审计，不写口令或正文。
-		_ = s.audit(ctx, &admin.ID, nil, &factoryID, action, factoryID.String(), audit.Deny)
-		return Factory{}, err
-	}
-	// 写入治理状态并升高修订；厂端只接受更高修订。
-	out, err := s.store.SetFactoryStatus(ctx, factoryID, status)
+	// 写入治理状态并升高修订，原状态取行锁下读到的，并发启停不判错。
+	out, prev, err := s.store.SetFactoryStatus(ctx, factoryID, status)
 	// 不合法或写失败就拒绝。
 	if err != nil {
 		// 被拒绝时留审计，不写口令或正文。
@@ -288,7 +280,7 @@ func (s *Factories) setStatus(ctx context.Context, token string, factoryID uuid.
 	// 通知厂端治理状态变了。
 	s.notifyLifecycle(out)
 	// 停用期间的撤回没进会话，转回有效时要逼厂端重拉全量。
-	if prev.Status == FactoryDisabled && out.Status == FactoryActive {
+	if prev == FactoryDisabled && out.Status == FactoryActive {
 		// 踢掉会话，厂端重连后按全量索引补齐漏掉的变更。
 		s.dropFactory(factoryID)
 	}

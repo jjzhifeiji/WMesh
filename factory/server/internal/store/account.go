@@ -469,10 +469,65 @@ func (s *Store) SetPersonStatus(ctx context.Context, personID uuid.UUID, status 
 	return nil
 }
 
-// DisablePerson 同一事务改成停用并作废此人全部会话，再启用也不复活旧令牌。
-func (s *Store) DisablePerson(ctx context.Context, personID uuid.UUID) error {
+// adminEntryLockKey 有效超管入口的库内 advisory lock 键；停用账号和收超管角色都排这一把。
+const adminEntryLockKey int64 = 0x574d5341646d
+
+// lockAdminEntry 在事务里取有效超管入口锁，事务结束自动放开。
+func lockAdminEntry(tx *gorm.DB) error {
+	// 停用和收角色在本厂库里排成一队，后到的等前面提交后再重数。
+	return tx.Exec("SELECT pg_advisory_xact_lock(?)", adminEntryLockKey).Error
+}
+
+// keepLastAdmin 在已拿入口锁的事务里重数有效超管；只剩一名就拒绝去掉它。
+func keepLastAdmin(tx *gorm.DB) error {
+	// 拿锁后重数，读到的是前一个改动已提交的结果。
+	n, err := activeFactorySACount(tx)
+	// 计数失败就拒绝，以免关掉最后入口。
+	if err != nil {
+		return err
+	}
+	// 有效超管入口只剩这一个，不能再去掉。
+	if n <= 1 {
+		return domain.ErrLastAdmin
+	}
+	return nil
+}
+
+// DisablePersonKeepAdmin 同一事务改成停用并作废此人全部会话，再启用也不复活旧令牌。
+// 拿入口锁后重读此人并重数有效超管，会去掉最后一名有效厂级超管就拒绝，并发互停也只成一个。
+func (s *Store) DisablePersonKeepAdmin(ctx context.Context, personID uuid.UUID) error {
 	// 放进同一事务，停了用却没清会话就整单回滚。
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// 先拿入口锁，计数和改状态之间不让别的停用或收角色插进来。
+		if err := lockAdminEntry(tx); err != nil {
+			return err
+		}
+		// 准备承接拿锁后重读的目标人。
+		var p Person
+		// 拿锁后重读目标人，状态以此刻为准。
+		if err := tx.First(&p, "id = ?", personID).Error; err != nil {
+			// 没有这一行就当成不存在。
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return domain.ErrNotFound
+			}
+			return err
+		}
+		// 只有有效账号才算超管入口，待启用和已停用停了也不少入口。
+		if p.Status == StatusActive {
+			// 看此人此刻是否仍握着有效厂级超管角色。
+			isSA, err := personIsActiveFactorySA(tx, personID)
+			// 读角色失败就拒绝，不猜他是不是超管。
+			if err != nil {
+				return err
+			}
+			// 是有效超管才要数还剩几名。
+			if isSA {
+				// 只剩他一名就拒绝停用。
+				if err := keepLastAdmin(tx); err != nil {
+					return err
+				}
+			}
+		}
 		// 只改状态一列，避免把别的字段写成零值。
 		res := tx.Model(&Person{}).Where("id = ?", personID).Update("status", StatusDisabled)
 		// 更新失败则交回库错误，事务随之回滚。

@@ -274,8 +274,8 @@ func (s *Updates) PublishSoftware(ctx context.Context, token, kind, versionName 
 	}
 	// 按内容算摘要，失败就不能继续。
 	sum := digest.Sum(body)
-	// 处理软件包的版本或对象。
-	key := store.SoftwareObjectKey(kind, version)
+	// 对象键带上摘要，同版本并发传不同包各写各处，不换掉已发布原件。
+	key := store.SoftwareObjectKey(kind, version, sum)
 	// 包字节进对象存根，库只留摘要。
 	if err := s.blobs.Put(ctx, key, body); err != nil {
 		// 发布安装包被拒就留审计。
@@ -290,9 +290,19 @@ func (s *Updates) PublishSoftware(ctx context.Context, token, kind, versionName 
 	})
 	// 这一步失败就停，避免留下半截。
 	if err != nil {
+		// 库里没记上这份，刚写的对象没人用就删掉。
+		s.dropUnusedSoftwareBlob(ctx, kind, version, key)
 		// 发布安装包被拒就留审计。
 		_ = s.audit(ctx, &admin.ID, nil, nil, "publish_software", target, audit.Deny)
 		return SoftwareRelease{}, err
+	}
+	// 并发下别人先发了这一版另一包，库里摘要不是本次的就拒绝。
+	if subtle.ConstantTimeCompare(row.Digest, sum) != 1 {
+		// 本次对象没进库，删掉免得留下孤儿。
+		s.dropUnusedSoftwareBlob(ctx, kind, version, key)
+		// 发布安装包被拒就留审计。
+		_ = s.audit(ctx, &admin.ID, nil, nil, "publish_software", target, audit.Deny)
+		return SoftwareRelease{}, domain.ErrIntegrity
 	}
 	// 审计没记下则中止，不当这次已经成功。
 	if err := s.audit(ctx, &admin.ID, nil, nil, "publish_software", target, audit.Allow); err != nil {
@@ -301,6 +311,26 @@ func (s *Updates) PublishSoftware(ctx context.Context, token, kind, versionName 
 	// 有效厂立刻去拉厂服务包或 APK，正文仍走 HTTPS。
 	s.notifyFactoryPack(ctx, row)
 	return row, nil
+}
+
+// 发布没成时删掉本次写的对象；库里这一版正用着同一键就留着。
+func (s *Updates) dropUnusedSoftwareBlob(ctx context.Context, kind string, version int64, key string) {
+	// 请求断了也要收尾，不然对象一直占着。
+	ctx = context.WithoutCancel(ctx)
+	// 回读库里这一版现在指向哪个对象。
+	cur, err := s.store.SoftwareRelease(ctx, kind, version)
+	// 同摘要的另一路已用这个键入库，删了厂就拉不下来。
+	if err == nil && cur.ObjectKey == key {
+		return
+	}
+	// 读库出错就不删，宁留孤儿对象也不误删在用的。
+	if err != nil && !errors.Is(err, domain.ErrNotFound) {
+		return
+	}
+	// 删不掉只留个孤儿对象，不挡这次的报错。
+	_ = s.blobs.Delete(ctx, key)
+	// 对象已删，核对记录跟着作废。
+	s.forgetBlob(key)
 }
 
 // ListSoftwareReleases 给管理台列已发布版本；kind 空则三类都给。

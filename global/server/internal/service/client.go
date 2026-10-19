@@ -71,6 +71,15 @@ func (s *Clients) RegisterClient(ctx context.Context, token, name string, client
 		// 做一个新的实例。
 		clientID = id.New()
 	}
+	// 当场指定工厂就先核对目标厂，免得建了档绑不上留下孤行。
+	if factoryID != uuid.Nil {
+		// 目标厂不在名录或已注销就拒绝，库里不落新行。
+		if err := s.assertFactoryAssignable(ctx, factoryID); err != nil {
+			// 登记设备被拒就留审计。
+			_ = s.audit(ctx, &admin.ID, nil, &factoryID, "register_client", clientID.String(), audit.Deny)
+			return Client{}, err
+		}
+	}
 	// 写入名录；公钥可空，识别号已规范化。
 	c, err := s.store.CreateClient(ctx, clientID, name, publicKey, serial)
 	// 新建失败就停，避免留下半截记录。
@@ -115,8 +124,8 @@ func (s *Clients) BindClient(ctx context.Context, token string, clientID, factor
 		_ = s.audit(ctx, &admin.ID, nil, nil, "bind_client", clientID.String(), audit.Deny)
 		return Client{}, domain.ErrNotFound
 	}
-	// 工厂必须已在名录。
-	if _, err := s.store.FactoryByID(ctx, factoryID); err != nil {
+	// 工厂必须已在名录且未注销，先核对再建档，不留孤行。
+	if err := s.assertFactoryAssignable(ctx, factoryID); err != nil {
 		// 分厂被拒就留审计。
 		_ = s.audit(ctx, &admin.ID, nil, &factoryID, "bind_client", clientID.String(), audit.Deny)
 		return Client{}, err
@@ -202,6 +211,21 @@ func (s *Clients) assignLocked(ctx context.Context, adminID uuid.UUID, c Client,
 	return bound, nil
 }
 
+// assertFactoryAssignable 目标厂须在名录且未注销；停用的厂照常可分。
+func (s *Clients) assertFactoryAssignable(ctx context.Context, factoryID uuid.UUID) error {
+	// 读出目标厂，不在名录按不存在拒绝。
+	fac, err := s.store.FactoryByID(ctx, factoryID)
+	// 读不到或库出错就停，不往下建档或分厂。
+	if err != nil {
+		return err
+	}
+	// 已注销的厂不再收设备，分过去哪个厂都用不了。
+	if fac.Status == FactoryRetired {
+		return domain.ErrFactoryRetired
+	}
+	return nil
+}
+
 // AssignClient 把已建档、尚未分厂的节点分给一厂。
 func (s *Clients) AssignClient(ctx context.Context, token string, clientID, factoryID uuid.UUID) (Client, error) {
 	// 只有 WAN 管理员能分厂。失败一律记拒绝。
@@ -210,6 +234,12 @@ func (s *Clients) AssignClient(ctx context.Context, token string, clientID, fact
 	if err != nil {
 		// 分厂被拒就留审计。
 		_ = s.audit(ctx, nil, nil, &factoryID, "bind_client", clientID.String(), audit.Deny)
+		return Client{}, err
+	}
+	// 目标厂不在名录或已注销就拒绝，停用的照常可分。
+	if err := s.assertFactoryAssignable(ctx, factoryID); err != nil {
+		// 分厂被拒就留审计。
+		_ = s.audit(ctx, &admin.ID, nil, &factoryID, "bind_client", clientID.String(), audit.Deny)
 		return Client{}, err
 	}
 	// 按现场设备处理。
@@ -280,10 +310,14 @@ func (s *Clients) RebindClient(ctx context.Context, token string, clientID, fact
 		_ = s.audit(ctx, nil, nil, &factoryID, "rebind_client", clientID.String(), audit.Deny)
 		return Client{}, err
 	}
-	// 按现场设备处理。
-	prev, _ := s.store.ClientByID(ctx, clientID)
-	// 已绑定才能改到另一厂，修订必须升高。
-	bound, err := s.store.RebindClient(ctx, clientID, factoryID)
+	// 改到已注销的厂设备哪都用不了，先拒绝；停用的照常可改。
+	if err := s.assertFactoryAssignable(ctx, factoryID); err != nil {
+		// 改绑被拒就留审计。
+		_ = s.audit(ctx, &admin.ID, nil, &factoryID, "rebind_client", clientID.String(), audit.Deny)
+		return Client{}, err
+	}
+	// 已绑定才能改到另一厂，修订必须升高；原厂取行锁下读到的，并发改绑不作废错厂。
+	bound, from, err := s.store.RebindClient(ctx, clientID, factoryID)
 	// 原来没有绑定就拒绝。
 	if err != nil {
 		// 改绑被拒就留审计。
@@ -294,8 +328,8 @@ func (s *Clients) RebindClient(ctx context.Context, token string, clientID, fact
 	if err := s.audit(ctx, &admin.ID, nil, &factoryID, "rebind_client", clientID.String()+" "+factoryID.String(), audit.Allow); err != nil {
 		return Client{}, err
 	}
-	// 通知厂端设备绑定有变。
-	s.notifyClient(bound, prev.FactoryID)
+	// 先叫锁内读到的原厂作废，再通知新厂绑定。
+	s.notifyClient(bound, &from)
 	return bound, nil
 }
 

@@ -454,15 +454,15 @@ func (s *Auth) DisableAccount(ctx context.Context, token string, targetID uuid.U
 		_ = s.audit(ctx, &acc.ID, nil, "disable_account", targetID.String(), audit.Deny)
 		return err
 	}
-	// 激活后必须至少留一个「有效账号 + 厂级超管角色」。
+	// 激活后必须至少留一个「有效账号 + 厂级超管角色」；这里先快速预检。
 	if err := s.guardLastAdminOnDisable(ctx, targetID); err != nil {
 		// 会去掉最后一名有效超管，记下停用账号被拒绝，写失败不改变结果
 		_ = s.audit(ctx, &acc.ID, nil, "disable_account", targetID.String(), audit.Deny)
 		return err
 	}
-	// 改停用并清全部会话，再启用后旧令牌也不复活。
-	if err := s.store.DisablePerson(ctx, targetID); err != nil {
-		// 账号已停用，记下停用账号被拒绝，写失败不改变结果
+	// 拿入口锁重数后改停用并清全部会话，两名超管互停也只成一个。
+	if err := s.store.DisablePersonKeepAdmin(ctx, targetID); err != nil {
+		// 停用失败或会去掉最后一名超管，记下停用账号被拒绝，写失败不改变结果
 		_ = s.audit(ctx, &acc.ID, nil, "disable_account", targetID.String(), audit.Deny)
 		return err
 	}

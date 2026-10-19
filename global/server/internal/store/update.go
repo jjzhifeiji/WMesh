@@ -75,10 +75,10 @@ type softwareDistRow struct {
 // 软件下发记录落这张表，按厂和版本区分。
 func (softwareDistRow) TableName() string { return "software_distributions" }
 
-// SoftwareObjectKey 按种类和版本生成对象键。
-func SoftwareObjectKey(kind string, version int64) string {
-	// 对象键按种类和版本拼死，同一版永远同一处。
-	return fmt.Sprintf("software/%s/%d", kind, version)
+// SoftwareObjectKey 按种类、版本和包摘要生成对象键；已发布旧行的键照库里存的用。
+func SoftwareObjectKey(kind string, version int64, sum []byte) string {
+	// 键里带上摘要，同版本并发传不同包各写各的，不覆盖已发布原件。
+	return fmt.Sprintf("software/%s/%d-%x", kind, version, sum)
 }
 
 // PutWANSigningKey 写入云端唯一的下行指令签名钥；已有则拒绝。
@@ -124,6 +124,7 @@ func releaseFromRow(row softwareReleaseRow) SoftwareRelease {
 }
 
 // InsertSoftwareRelease 写入一条发布；同种类同版本同摘要则原样返回。
+// 并发撞唯一键时交回库里已有那一行，调用方须再核摘要是不是本次的。
 func (s *Store) InsertSoftwareRelease(ctx context.Context, in SoftwareRelease) (SoftwareRelease, error) {
 	// 摘要不是完整的三十二字节就停。
 	if err := assertAssetDigest(in.Digest); err != nil {
@@ -150,9 +151,9 @@ func (s *Store) InsertSoftwareRelease(ctx context.Context, in SoftwareRelease) (
 	}
 	// 写入失败先停住，再看是重复还是约束没过。
 	if err := s.db.WithContext(ctx).Create(&row).Error; err != nil {
-		// 已经有同一份就交回原行，不插第二份。
+		// 别人已先写下这一版，不插第二份。
 		if domain.IsUniqueViolation(err) {
-			// 并发下已经写下，交回库里那一条发布。
+			// 交回库里那一条，摘要可能不是本次的，由调用方核。
 			return s.SoftwareRelease(ctx, in.Kind, in.Version)
 		}
 		// 名字不合格，不把库检查原文抛出去。

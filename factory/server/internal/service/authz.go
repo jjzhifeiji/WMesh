@@ -205,6 +205,7 @@ func (s *kernel) canGrant(ctx context.Context, acc Account, role, scopeKind stri
 }
 
 // guardLastAdminOnDisable 在激活后生效；待启用超管不计入有效管理入口。
+// 只是不拿锁的快速预检，并发下以 store.DisablePersonKeepAdmin 在锁内重数为准。
 func (s *kernel) guardLastAdminOnDisable(ctx context.Context, personID uuid.UUID) error {
 	// 按稳定身份读人员，改名也不变
 	p, err := s.store.PersonByID(ctx, personID)
@@ -240,6 +241,7 @@ func (s *kernel) guardLastAdminOnDisable(ctx context.Context, personID uuid.UUID
 }
 
 // guardLastAdminOnRevoke 收回厂级超管时，至少留一名有效超管入口。
+// 只是不拿锁的快速预检，并发下以 store.RevokeRoleKeepAdmin 在锁内重数为准。
 func (s *kernel) guardLastAdminOnRevoke(ctx context.Context, g RoleGrant) error {
 	// 不是有效状态则拒绝，待启用和停用都不能做
 	if g.Status != StatusActive || g.Role != RoleFactorySuperAdmin || g.ScopeKind != ScopeFactory {

@@ -236,8 +236,10 @@ func TestOpenSoftwareVerifiesOnce(t *testing.T) {
 		// 打开次数不对说明核了不止一次。
 		t.Fatalf("opens %d", n)
 	}
+	// 对象键带摘要，按发布时的字节算出原件那一处。
+	sum := sha256.Sum256([]byte("pack-v1-body"))
 	// 换掉对象内容和长度，模拟存储里的包坏了。
-	if err := blobs.Put(ctx, store.SoftwareObjectKey(service.SoftwareFactoryService, 1), []byte("tampered")); err != nil {
+	if err := blobs.Put(ctx, store.SoftwareObjectKey(service.SoftwareFactoryService, 1, sum[:]), []byte("tampered")); err != nil {
 		// 换不掉就不能继续，以免误判通过。
 		t.Fatal(err)
 	}

@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"wmesh/global/internal/platform/domain"
 )
@@ -153,22 +154,26 @@ func (s *Store) ListFactories(ctx context.Context) ([]Factory, error) {
 	return rows, err
 }
 
-// SetFactoryStatus 写入治理状态并升高修订；相同状态不升修订。
-func (s *Store) SetFactoryStatus(ctx context.Context, factoryID uuid.UUID, status string) (Factory, error) {
+// SetFactoryStatus 写入治理状态并升高修订；相同状态不升修订。另交回行锁下读到的原状态。
+func (s *Store) SetFactoryStatus(ctx context.Context, factoryID uuid.UUID, status string) (Factory, string, error) {
 	// 记下当前时刻，这一笔里的时间都用它。
 	now := time.Now().UTC()
 	// 准备接住改完的名录行，事务外再补在线。
 	var out Factory
+	// 行锁下读到的原状态，调用方据此判断是否停用转有效。
+	var prev string
 	// 改状态并升高修订放在同一事务里。
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// 取不到或库出错先停住，再区分没有还是故障。
-		if err := tx.First(&out, "id = ?", factoryID).Error; err != nil {
+		// 行锁读出当前行，相反操作排队，修订不会分叉。
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&out, "id = ?", factoryID).Error; err != nil {
 			// 没有这一行就按不存在交回，不当成库故障。
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return domain.ErrNotFound
 			}
 			return err
 		}
+		// 记下锁内读到的原状态，并发启停时判断才不会过时。
+		prev = out.Status
 		// 相同状态不升修订，避免厂端被无意义推送。
 		if out.Status == status {
 			return nil
@@ -177,8 +182,8 @@ func (s *Store) SetFactoryStatus(ctx context.Context, factoryID uuid.UUID, statu
 		if out.Status == FactoryRetired && status != FactoryRetired {
 			return domain.ErrFactoryRetired
 		}
-		// 写入新状态，并把生命周期修订加一。
-		res := tx.Model(&Factory{}).Where("id = ?", factoryID).Updates(map[string]any{
+		// 只改仍是刚读到修订的那行，并把生命周期修订加一。
+		res := tx.Model(&Factory{}).Where("id = ? AND lifecycle_revision = ?", factoryID, out.LifecycleRevision).Updates(map[string]any{
 			"status":             status,
 			"lifecycle_revision": out.LifecycleRevision + 1,
 			"status_changed_at":  now,
@@ -187,16 +192,20 @@ func (s *Store) SetFactoryStatus(ctx context.Context, factoryID uuid.UUID, statu
 		if res.Error != nil {
 			return res.Error
 		}
+		// 修订已被别人升过，不能拿旧值覆盖。
+		if res.RowsAffected == 0 {
+			return domain.ErrStaleRevision
+		}
 		// 状态写完再读出当前行，修订以库为准。
 		return tx.First(&out, "id = ?", factoryID).Error
 	})
 	// 事务没提交就停，调用方拿不到新状态。
 	if err != nil {
-		return Factory{}, err
+		return Factory{}, "", err
 	}
 	// 按连接时间补是否在线，离线清掉版本。
 	out.fillPresence()
-	return out, nil
+	return out, prev, nil
 }
 
 // DeleteUnclaimedFactory 尚未认领的工厂从名录拿掉；已认领的不能走这条。

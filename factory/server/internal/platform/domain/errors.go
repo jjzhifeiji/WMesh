@@ -58,6 +58,7 @@ var (
 	ErrTemplateInvalid       = errors.New("content template is invalid")            // 字段表不合法
 	ErrAssetCodeMissing      = errors.New("asset origin code is not assigned")      // 未齐创建端短码，不得新建
 	ErrAssetCodeConflict     = errors.New("asset code already exists")              // 同号不同身份，或同身份编号不一致
+	ErrAssetSourceTaken      = errors.New("asset source already promoted")          // 同一升档源已有厂级；并发升档撞上时回读那条
 	ErrOriginCodeExhausted   = errors.New("origin code exhausted")                  // 短码用尽或编号序号溢出
 	ErrSoftwareInstallFailed = errors.New("software install failed")                // 确认后安装失败，旧版本继续跑
 	ErrSoftwareApplying      = errors.New("software update is applying")            // 上一包还在换、没出结果，不能再确认

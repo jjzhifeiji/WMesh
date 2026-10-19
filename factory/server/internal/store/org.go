@@ -261,10 +261,60 @@ func (s *Store) GrantRole(ctx context.Context, personID uuid.UUID, role, scopeKi
 
 // RevokeRole 收回有效授予：只改状态不删行。
 func (s *Store) RevokeRole(ctx context.Context, grantID uuid.UUID) error {
+	// 不看超管入口，直接收回这一条。
+	return revokeGrant(s.db.WithContext(ctx), grantID)
+}
+
+// RevokeRoleKeepAdmin 收回有效授予；拿入口锁后重读授予和持有人并重数有效超管。
+// 收的是最后一名有效厂级超管就拒绝，并发互收也只成一个。
+func (s *Store) RevokeRoleKeepAdmin(ctx context.Context, grantID uuid.UUID) error {
+	// 放进同一事务，计数和收回之间不放锁。
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// 先拿入口锁，计数和收回之间不让别的停用或收角色插进来。
+		if err := lockAdminEntry(tx); err != nil {
+			return err
+		}
+		// 准备承接拿锁后重读的授予。
+		var g RoleGrant
+		// 拿锁后重读授予，状态以此刻为准。
+		if err := tx.First(&g, "id = ?", grantID).Error; err != nil {
+			// 没有这一行就当成不存在。
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return domain.ErrNotFound
+			}
+			return err
+		}
+		// 只有仍有效的厂级超管授予才关系到管理入口。
+		if g.Status == StatusActive && g.Role == RoleFactorySuperAdmin && g.ScopeKind == ScopeFactory {
+			// 准备承接拿锁后重读的持有人。
+			var p Person
+			// 拿锁后重读持有人，待启用或停用的不算入口。
+			if err := tx.First(&p, "id = ?", g.PersonID).Error; err != nil {
+				// 没有这一行就当成不存在。
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					return domain.ErrNotFound
+				}
+				return err
+			}
+			// 持有人有效才算入口，只剩这一名就拒绝收回。
+			if p.Status == StatusActive {
+				// 重数后只剩一名就拒绝。
+				if err := keepLastAdmin(tx); err != nil {
+					return err
+				}
+			}
+		}
+		// 守住入口后再在同一事务里收回。
+		return revokeGrant(tx, grantID)
+	})
+}
+
+// revokeGrant 在给定连接或事务上收回一条有效授予：只改状态不删行。
+func revokeGrant(db *gorm.DB, grantID uuid.UUID) error {
 	// 取当前时刻，时间列和租约用同一个时钟。
 	now := time.Now().UTC()
 	// 收回只改状态不删行。
-	res := s.db.WithContext(ctx).Model(&RoleGrant{}).
+	res := db.Model(&RoleGrant{}).
 		Where("id = ? AND status = ?", grantID, StatusActive).
 		Updates(map[string]any{"status": StatusRevoked, "revoked_at": now})
 	// 更新失败则交回库错误，不能当成已经改完。
@@ -450,10 +500,16 @@ func (s *Store) GrantByID(ctx context.Context, grantID uuid.UUID) (RoleGrant, er
 
 // ActiveFactorySuperAdminCount 只数「有效账号 + 有效厂级超管角色」，待启用不计。
 func (s *Store) ActiveFactorySuperAdminCount(ctx context.Context) (int64, error) {
+	// 走库连接数，口径与事务内重数一致。
+	return activeFactorySACount(s.db.WithContext(ctx))
+}
+
+// activeFactorySACount 在给定连接或事务上数「有效账号 + 有效厂级超管角色」。
+func activeFactorySACount(db *gorm.DB) (int64, error) {
 	// 准备承接计数，用来判断有没有匹配行。
 	var n int64
 	// 先走手写查询，结果留给紧跟着的判断。
-	err := s.db.WithContext(ctx).Raw(`
+	err := db.Raw(`
 		SELECT COUNT(*) FROM people p
 		INNER JOIN role_grants g ON g.person_id = p.id
 		WHERE p.status = ? AND g.status = ? AND g.role = ? AND g.scope_kind = ?`,
@@ -464,10 +520,16 @@ func (s *Store) ActiveFactorySuperAdminCount(ctx context.Context) (int64, error)
 
 // PersonIsActiveFactorySA 是否仍握着有效厂级超管角色。
 func (s *Store) PersonIsActiveFactorySA(ctx context.Context, personID uuid.UUID) (bool, error) {
+	// 走库连接查，口径与事务内重查一致。
+	return personIsActiveFactorySA(s.db.WithContext(ctx), personID)
+}
+
+// personIsActiveFactorySA 在给定连接或事务上看此人是否仍握着有效厂级超管角色。
+func personIsActiveFactorySA(db *gorm.DB, personID uuid.UUID) (bool, error) {
 	// 准备承接计数，用来判断有没有匹配行。
 	var n int64
 	// 先接上要操作的表，结果留给紧跟着的判断。
-	err := s.db.WithContext(ctx).Model(&RoleGrant{}).
+	err := db.Model(&RoleGrant{}).
 		Where("person_id = ? AND status = ? AND role = ? AND scope_kind = ?", personID, StatusActive, RoleFactorySuperAdmin, ScopeFactory).
 		Count(&n).Error
 	return n > 0, err
