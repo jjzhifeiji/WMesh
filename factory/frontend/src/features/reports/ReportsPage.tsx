@@ -3,6 +3,7 @@ import type { Dayjs } from "dayjs";
 import dayjs from "dayjs";
 import { useMemo, useState } from "react";
 import { useIsSuperAdmin } from "@/features/catalog/api";
+import { useHealth } from "@/features/dashboard/api";
 import { PageHeader } from "@/shared/ui/PageHeader";
 import { errorMessage } from "@/shared/api/client";
 import {
@@ -80,6 +81,9 @@ function GroupRuns({ tab, row, from, to, filter }: { tab: WeldGroup; row: WeldRe
 export function ReportsPage() {
   const { message } = App.useApp();
   const isSA = useIsSuperAdmin();
+  const health = useHealth();
+  // 只开发版放开演示焊次；生产探活报假，按钮不露出。
+  const showDemoSeed = isSA && health.data?.demoData === true;
   const [range, setRange] = useState<[Dayjs, Dayjs]>(defaultRange);
   const [tab, setTab] = useState<WeldGroup>("project");
   const [personFilter, setPersonFilter] = useState<string>();
@@ -170,7 +174,7 @@ export function ReportsPage() {
                 }
               }}
             />
-            {isSA ? (
+            {showDemoSeed ? (
               <Button
                 onClick={() =>
                   seed.mutate(undefined, {

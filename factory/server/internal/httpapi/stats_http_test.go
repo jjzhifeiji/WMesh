@@ -35,14 +35,23 @@ func TestWeldFactsHTTP(t *testing.T) {
 		// 关掉枢纽，释放测试占用的连接。
 		h.Close()
 	})
+	// 按开发版打开演示焊次，须在建厂打开厂库之前挂上。
+	h.SetDemoData(true)
 	// 拉起临时服务，测完由清理关掉。
 	srv := httptest.NewServer(httpapi.New(h, "boot-secret", "").Router())
 	// 测完关闭临时服务，把端口让出来。
 	t.Cleanup(srv.Close)
 	// 拼出本厂前缀，后面的路径都接在后面。
 	base := "/v1/factories/" + fid.String()
+	// 探活应报演示开关已开，页面据此露出入口。
+	code, body := do(t, srv, "GET", "/healthz", "", "")
+	// 不是成功，或没报演示开关已开则失败。
+	if code != http.StatusOK || !strings.Contains(body, `"demoData":true`) {
+		// 与预期不符就停测，避免后面连环误判。
+		t.Fatalf("healthz demo on %d %s", code, body)
+	}
 	// 用共享密码建厂，激活码只出现在回包。
-	code, body := do(t, srv, "POST", "/internal/bootstrap", "boot-secret", `{"factoryId":"`+fid.String()+`","saLogin":"sa","saDisplay":"超管"}`)
+	code, body = do(t, srv, "POST", "/internal/bootstrap", "boot-secret", `{"factoryId":"`+fid.String()+`","saLogin":"sa","saDisplay":"超管"}`)
 	// 不是已创建则本测失败。
 	if code != http.StatusCreated {
 		// 与预期不符就停测，避免后面连环误判。

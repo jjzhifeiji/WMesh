@@ -158,7 +158,7 @@ func TestMatrix(t *testing.T) {
 	// 17.3：登录拿会话应被拒为口令不对，放行或错类都算没拦住。
 	run("17.3", func(t *testing.T) {
 		// 修改口令失败就停，口令改不了旧票失效验不成。
-		if err := h.WAN.ChangePassword(ctx, wanTok, "wan-secret-2"); err != nil {
+		if err := h.WAN.ChangePassword(ctx, wanTok, wanPass, "wan-secret-2"); err != nil {
 			// 不符即停：修改口令失败。
 			t.Fatal(err)
 		}

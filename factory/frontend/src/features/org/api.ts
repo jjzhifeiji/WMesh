@@ -18,7 +18,7 @@ export function useEnableOrgUnit() {
   return useCatalogMutation((unitId: string) => http.post<void>(fpath(`/org-units/${unitId}/enable`)));
 }
 
-// 零引用才物理删除；有下级、当前人员、有效角色或历史事实会被拒绝。
+// 零引用才物理删除；有下级、分配或角色记录（含已结束、已收回）或历史事实会被拒绝，只能停用。
 export function useDeleteOrgUnit() {
   return useCatalogMutation((unitId: string) => http.del<void>(fpath(`/org-units/${unitId}`)));
 }

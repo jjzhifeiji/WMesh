@@ -38,9 +38,10 @@ type activateReq struct {
 	Password        string `json:"password"`        // 持有者自设日常密码
 }
 
-// 新的日常口令，不能写进审计。
+// 当前口令和新的日常口令，都不能写进审计。
 type passwordReq struct {
-	Password string `json:"password"` // 新日常密码，不进审计
+	CurrentPassword string `json:"currentPassword"` // 当前日常密码；网页必填，示教器暂不带
+	Password        string `json:"password"`        // 新日常密码，不进审计
 }
 
 // 校验密码开会话。
@@ -127,7 +128,7 @@ func (h *Handler) me(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) changePassword(w http.ResponseWriter, r *http.Request) {
 	// 只修改自己的口令，未登录则拒绝。
 	h.withFactory(w, r, func(svc *service.Service) {
-		// 承接新口令，不能写进审计。
+		// 承接当前口令和新口令，都不能写进审计。
 		var req passwordReq
 		// 正文无法解析则拒绝，不进入业务。
 		if err := decodeJSON(r, &req); err != nil {
@@ -136,7 +137,7 @@ func (h *Handler) changePassword(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// 被拒绝则停止，不继续写成功响应。
-		if err := svc.Auth.ChangePassword(r.Context(), bearer(r), req.Password); err != nil {
+		if err := svc.Auth.ChangePassword(r.Context(), bearer(r), req.CurrentPassword, req.Password); err != nil {
 			// 把失败译成状态回给调用方，不写成功。
 			writeErr(w, err)
 			return

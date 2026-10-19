@@ -60,7 +60,7 @@ func TestProjectProcessRefs(t *testing.T) {
 	// 准备这段正文字节，读回对不上说明没写进去。
 	stale := []byte(`{"root":"array","templates":[{"id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","kind":"corner","name":"包角","extra":true}]}`)
 	// 写模版副本失败就停，否则后面没有可靠结果。
-	if _, err := fac.Store().InsertTemplateReplica(ctx, factory.ContentTemplate{
+	if _, _, err := fac.Store().InsertTemplateReplica(ctx, factory.ContentTemplate{
 		// 新取一个编号，撞号会让两条记录分不清。
 		ID: id.New(), Kind: factory.KindProject, Revision: 1, Schema: stale, Digest: digest.Sum(stale),
 	}); err != nil {

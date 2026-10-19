@@ -105,7 +105,7 @@ func TestAuthCircle(t *testing.T) {
 		t.Fatalf("18.2: %v", err)
 	}
 	// 修改口令失败就停，口令改不了旧票失效验不成。
-	if err := h.WAN.ChangePassword(ctx, wanTok, "wan-pass-2"); err != nil {
+	if err := h.WAN.ChangePassword(ctx, wanTok, wanPass, "wan-pass-2"); err != nil {
 		// 不符即停：修改口令失败。
 		t.Fatalf("change password: %v", err)
 	}
@@ -182,5 +182,102 @@ func TestAuthCircle(t *testing.T) {
 	if !audit.HasResult(wanAudit, "create_factory", audit.Allow) {
 		// 不符即停：审计必须记下这一笔。
 		t.Fatalf("2.1 no allow audit")
+	}
+}
+
+// 改密须核当前密码：错了或没带都拒且口令不变，成功后只留当前会话。
+func TestChangePasswordChecksCurrent(t *testing.T) {
+	// 准备本测上下文，没有它库和服务都开不了。
+	ctx := context.Background()
+	// 起云端库和服务，每例新建，互不影响。
+	h := New(t)
+	// 立唯一管理员，后面才有账号可改密。
+	if err := h.WAN.BootstrapAdmin(ctx, "w", "cp-pass-1"); err != nil {
+		// 立管理员失败就停，后面没有账号可登。
+		t.Fatalf("bootstrap: %v", err)
+	}
+	// 当前会话，改密要凭它发起。
+	cur, err := h.WAN.Login(ctx, "w", "cp-pass-1")
+	// 登录失败就停，没有票后面接口都进不去。
+	if err != nil {
+		// 不符即停：登录拿会话失败。
+		t.Fatalf("login cur: %v", err)
+	}
+	// 同一管理员的另一条会话，模拟没退出被捡到的那条。
+	other, err := h.WAN.Login(ctx, "w", "cp-pass-1")
+	// 登录失败就停，没有第二条会话就验不了作废。
+	if err != nil {
+		// 不符即停：登录拿会话失败。
+		t.Fatalf("login other: %v", err)
+	}
+	// 旧密码填错或没带，都应按当前密码不对拒绝。
+	for _, bad := range []string{"bad-pass", ""} {
+		// 放行说明捡到会话就能改密接管。
+		if err := h.WAN.ChangePassword(ctx, cur, bad, "cp-pass-2"); !errors.Is(err, domain.ErrWrongCurrentPassword) {
+			// 不符即停：带上这次的旧密码。
+			t.Fatalf("current %q: %v", bad, err)
+		}
+	}
+	// 被拒后新口令不该生效，登录应按凭证不对拒绝。
+	if _, err := h.WAN.Login(ctx, "w", "cp-pass-2"); !errors.Is(err, domain.ErrInvalidCredentials) {
+		// 能登上说明被拒的请求仍改了哈希。
+		t.Fatalf("hash changed after deny: %v", err)
+	}
+	// 被拒不该作废别的会话，另一条仍应有效。
+	if _, err := h.WAN.RequireAdmin(ctx, other); err != nil {
+		// 失效说明被拒的请求也清了会话。
+		t.Fatalf("other after deny: %v", err)
+	}
+	// 旧密码对就应改成功。
+	if err := h.WAN.ChangePassword(ctx, cur, "cp-pass-1", "cp-pass-2"); err != nil {
+		// 改不成说明正确旧密码也被拒。
+		t.Fatalf("change: %v", err)
+	}
+	// 当前会话应保留，改完不必重登。
+	if _, err := h.WAN.RequireAdmin(ctx, cur); err != nil {
+		// 失效说明连当前会话也清掉了。
+		t.Fatalf("current after change: %v", err)
+	}
+	// 另一条会话应已作废，泄露的令牌不能再用。
+	if _, err := h.WAN.RequireAdmin(ctx, other); !errors.Is(err, domain.ErrUnauthorized) {
+		// 仍有效说明改密没作废其它会话。
+		t.Fatalf("other after change: %v", err)
+	}
+	// 旧口令应登不上。
+	if _, err := h.WAN.Login(ctx, "w", "cp-pass-1"); !errors.Is(err, domain.ErrInvalidCredentials) {
+		// 能登上说明哈希没换。
+		t.Fatalf("old pass after change: %v", err)
+	}
+	// 新口令应能登录。
+	if _, err := h.WAN.Login(ctx, "w", "cp-pass-2"); err != nil {
+		// 登不上说明新哈希没落库。
+		t.Fatalf("new pass after change: %v", err)
+	}
+	// 读审计，核对被拒的改密留了痕。
+	rows, err := h.WAN.ListAudit(ctx)
+	// 读审计失败就停，读不到就无法核对。
+	if err != nil {
+		// 不符即停：读审计失败。
+		t.Fatal(err)
+	}
+	// 数出改密拒绝的条数。
+	denies := 0
+	// 逐行看审计，只数改密拒绝。
+	for _, row := range rows {
+		// 改密且拒绝的才算进来。
+		if row.Action == "change_password" && row.Result == audit.Deny {
+			// 再记一条改密拒绝。
+			denies++
+		}
+	}
+	// 错旧密码和没带各一次，应有两条拒绝。
+	if denies != 2 {
+		// 条数不对说明被拒的改密没留审计。
+		t.Fatalf("change_password deny rows %d", denies)
+	}
+	// 审计里不能出现口令原文。
+	if audit.ContainsAny(audit.Dump(rows), "cp-pass-1", "cp-pass-2", "bad-pass") {
+		// 出现即泄密。
+		t.Fatal("password leaked in audit")
 	}
 }

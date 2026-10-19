@@ -124,7 +124,7 @@ func TestMatrix(t *testing.T) {
 	// 验收激活改密登录成功且审计无秘密，泄密即失败
 	run("17.3", func(t *testing.T) {
 		// 修改密码失败就停，避免带着错误继续验
-		if err := facA.ChangePassword(ctx, saA, "sa-pass-2"); err != nil {
+		if err := facA.ChangePassword(ctx, saA, "sa-pass", "sa-pass-2"); err != nil {
 			// 修改密码失败就把原因打出并停掉本例
 			t.Fatal(err)
 		}

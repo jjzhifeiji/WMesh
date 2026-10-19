@@ -59,9 +59,9 @@ export function AccountPage() {
               form={form}
               layout="vertical"
               requiredMark={false}
-              onFinish={({ password }) =>
+              onFinish={({ currentPassword, password }) =>
                 change.mutate(
-                  { password },
+                  { currentPassword, password },
                   {
                     onSuccess: () => {
                       message.success("密码已更新");
@@ -72,6 +72,9 @@ export function AccountPage() {
                 )
               }
             >
+              <Form.Item name="currentPassword" label="当前密码" rules={[{ required: true, message: "请输入当前密码" }]}>
+                <Input.Password prefix={<LockOutlined />} autoComplete="current-password" />
+              </Form.Item>
               <Form.Item
                 name="password"
                 label="新密码"

@@ -121,6 +121,7 @@ type healthResp struct {
 	Build       string `json:"build"`       // 构建串
 	DB          string `json:"db"`          // ok 或 down
 	OSS         string `json:"oss"`         // ok / down / off（未配置）
+	DemoData    bool   `json:"demoData"`    // 开发版放开演示焊次入口；生产恒为假，页面据此藏按钮
 }
 
 // healthz 库不通回 503 让编排判定不健康；OSS 掉线只标 degraded，不影响账号管理继续服务。
@@ -130,7 +131,7 @@ func (h *Handler) healthz(w http.ResponseWriter, r *http.Request) {
 	// 离开时取消限时，避免计时器一直留着。
 	defer cancel()
 	// 先按全健康填写，库或存储失败再降级。
-	resp := healthResp{Status: "ok", Version: h.VersionCode, VersionName: h.VersionName, Build: h.Version, DB: "ok", OSS: "off"}
+	resp := healthResp{Status: "ok", Version: h.VersionCode, VersionName: h.VersionName, Build: h.Version, DB: "ok", OSS: "off", DemoData: h.Hub.DemoData()}
 	// 默认按正常返回，库探活失败再改。
 	code := http.StatusOK
 	// 被拒绝则停止，不继续写成功响应。

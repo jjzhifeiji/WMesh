@@ -297,7 +297,7 @@ func TestHasTemplateDelivery(t *testing.T) {
 	// 拼一条旧工程模版行，当年落库时没带名称。
 	noName := store.ContentTemplate{ID: id.New(), Kind: factory.KindProject, Revision: 1, Schema: schema, Digest: digest.Sum(schema)}
 	// 写入无名工程模版失败就停。
-	if _, err := fac.Store().InsertTemplateReplica(ctx, noName); err != nil {
+	if _, _, err := fac.Store().InsertTemplateReplica(ctx, noName); err != nil {
 		// 把写模版的错误打出来并停住。
 		t.Fatal(err)
 	}
@@ -309,7 +309,7 @@ func TestHasTemplateDelivery(t *testing.T) {
 	// 同修订带上名称再收一次，补上名称。
 	noName.Name = "工程明细"
 	// 补名失败就停。
-	if _, err := fac.Store().InsertTemplateReplica(ctx, noName); err != nil {
+	if _, _, err := fac.Store().InsertTemplateReplica(ctx, noName); err != nil {
 		// 把补名的错误打出来并停住。
 		t.Fatal(err)
 	}

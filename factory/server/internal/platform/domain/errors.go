@@ -46,6 +46,7 @@ var (
 	ErrAssetDependency       = errors.New("asset dependency missing or mismatched") // 工程依赖缺失或错配
 	ErrInvalidWeldKind       = errors.New("invalid weld kind")                      // 作业类型只能是单层/多层/T排
 	ErrWeldKindMismatch      = errors.New("weld kind mismatch")                     // 工程与工艺作业类型必须相同
+	ErrWeldKindInUse         = errors.New("process weld kind in use")               // 工艺仍被工程钉着，不能改作业类型
 	ErrClosureIncomplete     = errors.New("closure is incomplete")                  // 组包缺成员或读不到钉死修订
 	ErrClosureMismatch       = errors.New("closure revision mismatch")              // 组包串版：身份或修订被顶替
 	ErrClientCacheFull       = errors.New("client cache is full")                   // 工程份已达缓存上限
@@ -63,4 +64,5 @@ var (
 	ErrTooManyAttempts       = errors.New("too many attempts")                      // 激活码试得太勤，稍后再试
 	ErrTooManyRequests       = errors.New("too many requests")                      // WAN 按来源限频，稍后再试
 	ErrWANSignatureRejected  = errors.New("wan rejected factory signature")         // WAN 不认本厂签名：钟偏出时间窗或厂钥没登记
+	ErrWrongCurrentPassword  = errors.New("wrong current password")                 // 改密时当前密码没带或不对，会话仍有效
 )

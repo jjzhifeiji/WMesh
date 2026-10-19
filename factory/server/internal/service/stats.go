@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"math"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -46,7 +47,14 @@ type WeldWANPoster interface {
 
 // Stats 管焊长时长汇聚与厂端报表。
 type Stats struct {
-	*kernel // 共用本厂库、审计和在线计数
+	*kernel                 // 共用本厂库、审计和在线计数
+	demoEnabled atomic.Bool // 只开发版打开：放开写入演示焊次；默认关，生产一条都不写
+}
+
+// SetDemoData 开发版放开写入演示焊次；生产保持关，关着时入口当作不存在。
+func (s *Stats) SetDemoData(on bool) {
+	// 原子记下开关，请求并发读时不会读到半截
+	s.demoEnabled.Store(on)
 }
 
 // WeldWANSummary 是上送 WAN 的一粒，不含人员组织。
@@ -430,8 +438,14 @@ func (s *Stats) ListWeldRuns(ctx context.Context, token string, q WeldRunQuery) 
 	return out, s.audit(ctx, &acc.ID, nil, "list_weld_runs", "runs", audit.Allow)
 }
 
-// SeedWeldDemo 超管写入固定身份的演示焊次，已有则跳过。
+// SeedWeldDemo 开发版开关打开时，超管写入固定身份的演示焊次，已有则跳过；开关关着回找不到。
 func (s *Stats) SeedWeldDemo(ctx context.Context, token string) (WeldDemoResult, error) {
+	// 生产没开演示数据就当没有这个入口，假焊次一条都不写
+	if !s.demoEnabled.Load() {
+		// 记下写入演示焊次被拒绝，写失败不改变结果
+		_ = s.audit(ctx, nil, nil, "seed_weld_demo", "demo", audit.Deny)
+		return WeldDemoResult{}, domain.ErrNotFound
+	}
 	// 先确认会话仍有效，过期或停用直接拒绝
 	acc, err := s.RequireActive(ctx, token)
 	// 会话无效或账号已停用，拒绝继续

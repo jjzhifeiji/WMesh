@@ -330,13 +330,8 @@ func TestPlatformWeldKindKeepsCustomRefs(t *testing.T) {
 		// 不符即停：读平台正文失败。
 		t.Fatal(err)
 	}
-	// 在用工艺先改成单层，工程改单层时它能留下。
-	used, err = h.WAN.SetPlatformWeldKind(ctx, tok, used.ID, used.Revision, store.WeldKindSingle)
-	// 改工艺作业类型失败就停。
-	if err != nil {
-		// 不符即停：改在用工艺作业类型失败。
-		t.Fatal(err)
-	}
+	// 在用工艺直接在库里改成单层，模拟旧数据，工程改单层时它能留下。
+	forcePlatformWeldKind(t, ctx, h, used.ID, store.WeldKindSingle)
 	// 工程改单层，只有备用工艺被筛掉。
 	proj, err = h.WAN.SetPlatformWeldKind(ctx, tok, proj.ID, proj.Revision, store.WeldKindSingle)
 	// 改作业类型失败或依赖不是只剩在用工艺就停。
@@ -351,13 +346,8 @@ func TestPlatformWeldKindKeepsCustomRefs(t *testing.T) {
 		// 不符即停：引用未被筛掉却清了正文。
 		t.Fatalf("partial drop body %s %v", kept, err)
 	}
-	// 在用工艺再改成 T 排，工程跟着改时一条都不筛。
-	used, err = h.WAN.SetPlatformWeldKind(ctx, tok, used.ID, used.Revision, store.WeldKindTBar)
-	// 改工艺作业类型失败就停。
-	if err != nil {
-		// 不符即停：改在用工艺作业类型失败。
-		t.Fatal(err)
-	}
+	// 在用工艺再直接在库里改成 T 排，工程跟着改时一条都不筛。
+	forcePlatformWeldKind(t, ctx, h, used.ID, store.WeldKindTBar)
 	// 工程改 T 排，依赖全部留下。
 	proj, err = h.WAN.SetPlatformWeldKind(ctx, tok, proj.ID, proj.Revision, store.WeldKindTBar)
 	// 改作业类型失败或依赖变了就停。
@@ -371,5 +361,67 @@ func TestPlatformWeldKindKeepsCustomRefs(t *testing.T) {
 	if err != nil || !bytes.Equal(same, before) {
 		// 不符即停：没有依赖被筛掉却清了正文。
 		t.Fatalf("no drop body %s %v", same, err)
+	}
+}
+
+// forcePlatformWeldKind 绕过服务层直接在库里改工艺作业类型，摆出旧数据里类型对不上的情形。
+func forcePlatformWeldKind(t *testing.T, ctx context.Context, h *Harness, assetID uuid.UUID, weld string) {
+	// 失败栈指到用例，避免停在夹具里面。
+	t.Helper()
+	// 只改作业类型这一列，修订和正文都不动。
+	if err := h.DB.WithContext(ctx).Exec("UPDATE assets SET weld_kind = ? WHERE id = ?", weld, assetID).Error; err != nil {
+		// 不符即停：改库失败，旧数据情形摆不出来。
+		t.Fatal(err)
+	}
+}
+
+// 工艺仍被平台工程钉着时不许换作业类型；同类型不拦，没人钉着的照常能改。
+func TestPlatformWeldKindInUse(t *testing.T) {
+	// 准备本测上下文，没有它库和服务都开不了。
+	ctx := context.Background()
+	// 起云端库和服务，起不来整段验收作废。
+	h := New(t)
+	// 立超管并登录，自定义模版这里用不上。
+	tok, _ := weldRefWAN(t, ctx, h)
+	// 建一条可用的多层工艺，给工程钉住。
+	pinned := weldRefProcess(t, ctx, h, tok, "在用工艺", store.WeldKindMultilayer)
+	// 再建一条没人钉的多层工艺，验没被引用时能改。
+	spare := weldRefProcess(t, ctx, h, tok, "空闲工艺", store.WeldKindMultilayer)
+	// 准备多层模版正文，和钉住的工艺同类型。
+	multiBody := []byte(`[{"templateId":"` + contenttpl.SeedTplMulti + `","name":"多层"}]`)
+	// 按当前修订钉住在用工艺。
+	deps := []global.AssetDep{{ID: pinned.ID, Revision: pinned.Revision, Digest: pinned.Digest}}
+	// 建多层工程钉住在用工艺，失败则没有引用可验。
+	proj, err := h.WAN.CreatePlatformProject(ctx, tok, "钉工艺工程", multiBody, deps, store.WeldKindMultilayer)
+	// 建工程失败或依赖没钉上就停。
+	if err != nil || len(proj.Deps) != 1 || proj.Deps[0].ID != pinned.ID {
+		// 不符即停：工程没钉上在用工艺，后面验不了拦截。
+		t.Fatalf("create %+v %v", proj, err)
+	}
+	// 在用工艺改成单层应被拒为工艺在用、不能改类型。
+	if _, err := h.WAN.SetPlatformWeldKind(ctx, tok, pinned.ID, pinned.Revision, store.WeldKindSingle); !errors.Is(err, domain.ErrWeldKindInUse) {
+		// 不符即停：放行了说明钉着它的工程会和它类型对不上。
+		t.Fatalf("in use: %v", err)
+	}
+	// 读回在用工艺，看拒绝后类型和修订是否原样。
+	kept, err := h.WAN.GetPlatformAsset(ctx, tok, pinned.ID)
+	// 读失败、类型变了或修订升了就停。
+	if err != nil || kept.WeldKind != store.WeldKindMultilayer || kept.Revision != pinned.Revision {
+		// 不符即停：被拒的改类型还是落了库。
+		t.Fatalf("after reject %+v %v", kept, err)
+	}
+	// 用别名改成同一类型，类型没变不该被拦。
+	same, err := h.WAN.SetPlatformWeldKind(ctx, tok, pinned.ID, pinned.Revision, "multi")
+	// 被拒或类型变了就停，说明同类型也被误拦。
+	if err != nil || same.WeldKind != store.WeldKindMultilayer {
+		// 不符即停：同类型保存不该看引用。
+		t.Fatalf("same kind %+v %v", same, err)
+	}
+	// 没人钉的工艺改成单层应照常成功。
+	free, err := h.WAN.SetPlatformWeldKind(ctx, tok, spare.ID, spare.Revision, store.WeldKindSingle)
+	// 失败或类型没改成单层就停。
+	if err != nil || free.WeldKind != store.WeldKindSingle {
+		// 不符即停：没被引用的工艺也被拦了。
+		t.Fatalf("unreferenced %+v %v", free, err)
 	}
 }

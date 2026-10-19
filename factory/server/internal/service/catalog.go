@@ -4,8 +4,6 @@ import (
 	"context"
 
 	"github.com/google/uuid"
-
-	"wmesh/factory/internal/platform/audit"
 )
 
 // Catalog 是厂内名册快照，不含密码或激活码。
@@ -55,10 +53,9 @@ func (s *Org) Catalog(ctx context.Context, token string) (Catalog, error) {
 	}
 	// 补最近一次带设备的登录现场
 	markLastDevice(&out.Me, devices)
-	// 不是工厂超管，拒绝这次账号或策略操作
+	// 不是工厂超管，看不到全厂名册，只交自己那份
 	if err := s.can(ctx, acc, permManageAccount, nil); err != nil {
-		// 看不到全厂名册，只记下查看了自己
-		_ = s.audit(ctx, &acc.ID, nil, "catalog", "self", audit.Allow)
+		// 名册是前端每 5 秒的轮询读，成功不记允许，免得撑大审计表
 		return out, nil
 	}
 	// 超管才看全厂名册，不含秘密。
@@ -90,10 +87,7 @@ func (s *Org) Catalog(ctx context.Context, token string) (Catalog, error) {
 	if out.RoleGrants, err = s.store.ListRoleGrants(ctx); err != nil {
 		return Catalog{}, err
 	}
-	// 审计没写下则整次不算完成
-	if err := s.audit(ctx, &acc.ID, nil, "catalog", s.store.FactoryID().String(), audit.Allow); err != nil {
-		return Catalog{}, err
-	}
+	// 名册是前端每 5 秒的轮询读，成功不记允许，免得撑大审计表
 	return out, nil
 }
 

@@ -68,8 +68,8 @@ func DecodeFactoryFS(raw []byte) ([]FactoryFSNode, error) {
 
 // ListFS 列出该种类平台目录；没有根则建。
 func (s *Assets) ListFS(ctx context.Context, token, kind string) ([]FSNodeView, error) {
-	// 核对当前管理员会话。
-	admin, err := s.RequireAdmin(ctx, token)
+	// 核对当前管理员会话，只读轮询用不到管理员身份。
+	_, err := s.RequireAdmin(ctx, token)
 	// 无效就不能继续，不当已经登录。
 	if err != nil {
 		return nil, err
@@ -88,11 +88,7 @@ func (s *Assets) ListFS(ctx context.Context, token, kind string) ([]FSNodeView, 
 	if err != nil {
 		return nil, err
 	}
-	// 审计没记下则中止，不当这次已经成功。
-	if err := s.audit(ctx, &admin.ID, nil, nil, "list_fs", kind, audit.Allow); err != nil {
-		return nil, err
-	}
-	// 补上给人看的名字或元数据。
+	// 补上给人看的名字或元数据；目录页轮询读，成功不记允许。
 	return s.decorateFS(ctx, nodes)
 }
 

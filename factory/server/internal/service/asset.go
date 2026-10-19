@@ -1207,7 +1207,7 @@ func (s *Assets) SetAssetCopyable(ctx context.Context, token string, assetID uui
 	})
 }
 
-// SetAssetWeldKind 未停用的本厂工艺或工程可改作业类型；工程正文对不上时换成空焊道。
+// SetAssetWeldKind 未停用的本厂工艺或工程可改作业类型；在用工艺不许换，工程正文对不上时换成空焊道。
 func (s *Assets) SetAssetWeldKind(ctx context.Context, token string, assetID uuid.UUID, expected int64, weldKind string) (Asset, error) {
 	// 核对登录仍有效，后面的操作都靠这次会话。
 	acc, err := s.RequireActive(ctx, token)
@@ -1230,6 +1230,19 @@ func (s *Assets) SetAssetWeldKind(ctx context.Context, token string, assetID uui
 		// 作业类型不合法则拒绝保存。
 		if err != nil {
 			return store.AssetWrite{}, err
+		}
+		// 工艺真要换类型时，先看有没有工程还钉着它。
+		if cur.Kind == KindProcess && kind != cur.WeldKind {
+			// 查工程依赖里是否还钉着这条工艺。
+			used, err := s.store.AssetIsReferenced(ctx, cur.ID)
+			// 引用关系查不清就先不改类型。
+			if err != nil {
+				return store.AssetWrite{}, err
+			}
+			// 仍被工程钉着则拒绝，免得那些工程类型对不上。
+			if used {
+				return store.AssetWrite{}, domain.ErrWeldKindInUse
+			}
 		}
 		// 先按新作业类型准备写入，正文默认不动。
 		write := store.AssetWrite{Name: cur.Name, Digest: cur.Digest, Copyable: cur.Copyable, Status: cur.Status, Deps: cur.Deps, WeldKind: kind, KeepContent: true}

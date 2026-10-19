@@ -75,13 +75,27 @@ func (s *Auth) Login(ctx context.Context, loginName, password string) (string, e
 	return token, nil
 }
 
-// ChangePassword 改自己的日常密码，稳定身份不变，审计不写密码原文。
-func (s *Auth) ChangePassword(ctx context.Context, token, newPassword string) error {
+// ChangePassword 核对当前密码后改密并作废其它会话；核错与登录共用失败总闸，审计不写原文。
+func (s *Auth) ChangePassword(ctx context.Context, token, currentPassword, newPassword string) error {
 	// 只能改自己的日常密码。
 	admin, err := s.RequireAdmin(ctx, token)
 	// 无效就不能继续，不当已经登录。
 	if err != nil {
 		return err
+	}
+	// 和登录共用失败总闸，没余量就先拒，捡到会话也不能借改密爆破。
+	if s.loginFails.Tokens() < 1 {
+		// 被总闸挡下也记拒绝，不写口令。
+		_ = s.audit(ctx, &admin.ID, &admin.LoginName, nil, "change_password", admin.ID.String(), audit.Deny)
+		return domain.ErrTooManyAttempts
+	}
+	// 当前密码不对就拒绝，捡到的会话不能改密接管。
+	if !secret.VerifyPassword(admin.PasswordHash, currentPassword) {
+		// 核对失败和登录失败一样扣总闸一个名额。
+		s.loginFails.Allow()
+		// 改密被拒也留审计，不写口令。
+		_ = s.audit(ctx, &admin.ID, &admin.LoginName, nil, "change_password", admin.ID.String(), audit.Deny)
+		return domain.ErrWrongCurrentPassword
 	}
 	// 只存新哈希，不落原文。
 	hash, err := secret.HashPassword(newPassword)
@@ -89,8 +103,8 @@ func (s *Auth) ChangePassword(ctx context.Context, token, newPassword string) er
 	if err != nil {
 		return err
 	}
-	// 不合法或写失败就拒绝。
-	if err := s.store.SetAdminPassword(ctx, admin.ID, hash); err != nil {
+	// 换口令并作废其它会话同一事务，泄露的旧令牌随之失效。
+	if err := s.store.ReplaceAdminPasswordKeepSession(ctx, admin.ID, hash, secret.TokenHash(token)); err != nil {
 		return err
 	}
 	// 改密成功才记允许。

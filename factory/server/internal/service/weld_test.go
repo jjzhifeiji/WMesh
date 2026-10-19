@@ -332,11 +332,8 @@ func TestFactoryWeldKind(t *testing.T) {
 		t.Fatalf("pad multi ref %+v %v", applied, err)
 	}
 
-	// 把已钉的多层工艺改成单层，模拟工艺类型事后被改。
-	if _, err := fac.SetAssetWeldKind(ctx, pe.tok, pub.ID, pub.Revision, store.WeldKindSingle); err != nil {
-		// 把改焊类的错误打出来并停住，避免继续往下验。
-		t.Fatal(err)
-	}
+	// 在用工艺服务层已改不了类型，直接改库模拟旧数据里类型已对不上。
+	forceWeldKind(t, ctx, fac, pub, store.WeldKindSingle)
 	// 只改点坐标再盖回，旧依赖不在这里拦，应能盖上。
 	moved, err := fac.ApplyAppContent(ctx, sa, padProj.ID, refBody(pub.ID.String(), 2))
 	// 盖回失败或依赖变了就停，说明旧依赖被误核。
@@ -478,13 +475,8 @@ func TestFactoryWeldKindKeepsCustomRefs(t *testing.T) {
 		// 把读正文的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
-	// 在用工艺先改成单层，工程改单层时它能留下。
-	used, err = fac.SetAssetWeldKind(ctx, pe.tok, used.ID, used.Revision, store.WeldKindSingle)
-	// 改工艺作业类型失败就停。
-	if err != nil {
-		// 把改焊类的错误打出来并停住，避免继续往下验。
-		t.Fatal(err)
-	}
+	// 在用工艺直接在库里改成单层，模拟旧数据，工程改单层时它能留下。
+	used = forceWeldKind(t, ctx, fac, used, store.WeldKindSingle)
 	// 工程改单层，只有备用工艺被筛掉。
 	proj, err = fac.SetAssetWeldKind(ctx, pe.tok, proj.ID, proj.Revision, store.WeldKindSingle)
 	// 改作业类型失败或依赖不是只剩在用工艺就停。
@@ -499,13 +491,8 @@ func TestFactoryWeldKindKeepsCustomRefs(t *testing.T) {
 		// 引用未被筛掉却清了正文。
 		t.Fatalf("partial drop body %s %v", kept, err)
 	}
-	// 在用工艺再改成 T 排，工程跟着改时一条都不筛。
-	used, err = fac.SetAssetWeldKind(ctx, pe.tok, used.ID, used.Revision, store.WeldKindTBar)
-	// 改工艺作业类型失败就停。
-	if err != nil {
-		// 把改焊类的错误打出来并停住，避免继续往下验。
-		t.Fatal(err)
-	}
+	// 在用工艺再直接在库里改成 T 排，工程跟着改时一条都不筛。
+	used = forceWeldKind(t, ctx, fac, used, store.WeldKindTBar)
 	// 工程改 T 排，依赖全部留下。
 	proj, err = fac.SetAssetWeldKind(ctx, pe.tok, proj.ID, proj.Revision, store.WeldKindTBar)
 	// 改作业类型失败或依赖变了就停。
@@ -519,5 +506,70 @@ func TestFactoryWeldKindKeepsCustomRefs(t *testing.T) {
 	if err != nil || !bytes.Equal(same, before) {
 		// 没有依赖被筛掉却清了正文。
 		t.Fatalf("no drop body %s %v", same, err)
+	}
+}
+
+// forceWeldKind 绕过服务层直接在库里改工艺作业类型，摆出旧数据里类型对不上的情形。
+func forceWeldKind(t *testing.T, ctx context.Context, fac *factory.Service, a factory.Asset, weld string) factory.Asset {
+	// 标成辅助函数，失败栈落到调用方。
+	t.Helper()
+	// 只改作业类型，名称、摘要、状态和正文都照旧。
+	out, err := fac.Store().UpdateGovernedAsset(ctx, a.ID, a.Revision, store.AssetWrite{
+		Name: a.Name, Digest: a.Digest, Copyable: a.Copyable, Status: a.Status, WeldKind: weld, KeepContent: true,
+	})
+	// 改库失败就停，后面的旧数据情形摆不出来。
+	if err != nil {
+		// 把改库的错误打出来并停住，避免继续往下验。
+		t.Fatal(err)
+	}
+	return out
+}
+
+// 工艺仍被工程钉着时不许换作业类型；同类型不拦，没人钉着的照常能改。
+func TestFactoryWeldKindInUse(t *testing.T) {
+	// 准备无取消的上下文，后面每次调用都挂在上面。
+	ctx := context.Background()
+	// 开厂建人，自定义模版这里用不上。
+	fac, pe, _ := weldRefFactory(t, ctx)
+	// 建一条可用的多层工艺，给工程钉住。
+	pinned := weldRefProcess(t, ctx, fac, pe.tok, "在用工艺", store.WeldKindMultilayer)
+	// 再建一条没人钉的多层工艺，验没被引用时能改。
+	spare := weldRefProcess(t, ctx, fac, pe.tok, "空闲工艺", store.WeldKindMultilayer)
+	// 准备多层模版正文，和钉住的工艺同类型。
+	multiBody := []byte(`[{"templateId":"` + contenttpl.SeedTplMulti + `","name":"多层"}]`)
+	// 按当前修订钉住在用工艺。
+	deps := []factory.AssetDep{{ID: pinned.ID, Revision: pinned.Revision, Digest: pinned.Digest}}
+	// 建多层工程钉住在用工艺，失败则没有引用可验。
+	proj, err := fac.CreateFactoryProject(ctx, pe.tok, factory.WorkContext{Direct: true}, "钉工艺工程", multiBody, deps, store.WeldKindMultilayer)
+	// 建工程失败或依赖没钉上就停。
+	if err != nil || len(proj.Deps) != 1 || proj.Deps[0].ID != pinned.ID {
+		// 工程没钉上在用工艺，后面验不了拦截。
+		t.Fatalf("create %+v %v", proj, err)
+	}
+	// 在用工艺改成单层应被拒为工艺在用、不能改类型。
+	if _, err := fac.SetAssetWeldKind(ctx, pe.tok, pinned.ID, pinned.Revision, store.WeldKindSingle); !errors.Is(err, domain.ErrWeldKindInUse) {
+		// 放行了说明钉着它的工程会和它类型对不上。
+		t.Fatalf("in use: %v", err)
+	}
+	// 读回在用工艺，看拒绝后类型和修订是否原样。
+	kept, err := fac.GetAsset(ctx, pe.tok, pinned.ID)
+	// 读失败、类型变了或修订升了就停。
+	if err != nil || kept.WeldKind != store.WeldKindMultilayer || kept.Revision != pinned.Revision {
+		// 被拒的改类型还是落了库。
+		t.Fatalf("after reject %+v %v", kept, err)
+	}
+	// 用别名改成同一类型，类型没变不该被拦。
+	same, err := fac.SetAssetWeldKind(ctx, pe.tok, pinned.ID, pinned.Revision, "multi")
+	// 被拒或类型变了就停，说明同类型也被误拦。
+	if err != nil || same.WeldKind != store.WeldKindMultilayer {
+		// 同类型保存不该看引用。
+		t.Fatalf("same kind %+v %v", same, err)
+	}
+	// 没人钉的工艺改成单层应照常成功。
+	free, err := fac.SetAssetWeldKind(ctx, pe.tok, spare.ID, spare.Revision, store.WeldKindSingle)
+	// 失败或类型没改成单层就停。
+	if err != nil || free.WeldKind != store.WeldKindSingle {
+		// 没被引用的工艺也被拦了。
+		t.Fatalf("unreferenced %+v %v", free, err)
 	}
 }

@@ -89,13 +89,20 @@ func (h *Handler) me(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, meResp{ID: admin.ID.String(), LoginName: admin.LoginName})
 }
 
-// 管理员改自己的日常密码，不进审计。
+// 管理员改自己的日常密码，当前和新密码都不进审计。
 type passwordReq struct {
-	Password string `json:"password"` // 新日常密码，不进审计
+	CurrentPassword string `json:"currentPassword"` // 当前日常密码，必填，不进审计
+	Password        string `json:"password"`        // 新日常密码，不进审计
 }
 
 // 改自己的日常密码。
 func (h *Handler) changePassword(w http.ResponseWriter, r *http.Request) {
+	// 要核当前密码，和登录一样按来源限速，读正文前就挡。
+	if !h.loginGate.allow(r) {
+		// 回请求过多，访问日志留来源地址。
+		writeErr(w, domain.ErrTooManyAttempts)
+		return
+	}
 	// 接住请求体，解析失败再拒绝。
 	var req passwordReq
 	// 未知字段或坏 JSON 按坏请求拒绝。
@@ -105,7 +112,7 @@ func (h *Handler) changePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// 改自己的日常密码，未登录拒绝。
-	if err := h.svc.Auth.ChangePassword(r.Context(), bearer(r), req.Password); err != nil {
+	if err := h.svc.Auth.ChangePassword(r.Context(), bearer(r), req.CurrentPassword, req.Password); err != nil {
 		// 按业务错误回写，内部细节不出网。
 		writeErr(w, err)
 		return

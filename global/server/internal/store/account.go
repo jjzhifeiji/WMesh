@@ -164,6 +164,25 @@ func (s *Store) SetAdminPassword(ctx context.Context, adminID uuid.UUID, passwor
 	return nil
 }
 
+// ReplaceAdminPasswordKeepSession 同一事务换口令哈希，并作废除当前令牌外的会话。
+func (s *Store) ReplaceAdminPasswordKeepSession(ctx context.Context, adminID uuid.UUID, passwordHash, keepTokenHash string) error {
+	// 放进同一事务，换了口令却没清别的会话就整单回滚。
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// 只改密码哈希，登录名保持不动。
+		res := tx.Model(&Admin{}).Where("id = ?", adminID).Update("password_hash", passwordHash)
+		// 写库报错就停，事务随之回滚。
+		if res.Error != nil {
+			return res.Error
+		}
+		// 一行都没碰到，按不存在拒绝。
+		if res.RowsAffected == 0 {
+			return domain.ErrNotFound
+		}
+		// 删掉除当前令牌外的会话，泄露出去的旧令牌立刻失效。
+		return tx.Where("admin_id = ? AND token_hash <> ?", adminID, keepTokenHash).Delete(&Session{}).Error
+	})
+}
+
 // DeleteSessionsForAdmin 作废该管理员全部在线会话；没有会话不算错。
 func (s *Store) DeleteSessionsForAdmin(ctx context.Context, adminID uuid.UUID) error {
 	// 作废该管理员的全部会话，没有会话也不算错。

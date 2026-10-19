@@ -8,6 +8,7 @@ export type Health = {
   build: string; // 构建串
   db: "ok" | "down";
   oss: "ok" | "down" | "off";
+  demoData?: boolean; // 只开发版为真：放开「写入演示焊次」；生产恒为假
 };
 
 // 探活不需要会话；每 30 秒刷一次给概览页看。

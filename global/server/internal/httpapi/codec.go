@@ -150,7 +150,7 @@ func statusOf(err error) int {
 		errors.Is(err, domain.ErrRevisionConflict), errors.Is(err, domain.ErrFactoryKeyExists),
 		errors.Is(err, domain.ErrReferenced), errors.Is(err, domain.ErrDeviceSerialTaken),
 		errors.Is(err, domain.ErrSoftwareInstallFailed), errors.Is(err, domain.ErrDuplicateName),
-		errors.Is(err, domain.ErrSoftwareApplying):
+		errors.Is(err, domain.ErrSoftwareApplying), errors.Is(err, domain.ErrWeldKindInUse):
 		return http.StatusConflict
 	// 建厂引导失败当上游故障，细节只进日志。
 	case errors.Is(err, domain.ErrFactoryBootstrap):
@@ -161,9 +161,10 @@ func statusOf(err error) int {
 	// 登录或匿名入口超频，回请求过多。
 	case errors.Is(err, domain.ErrTooManyAttempts), errors.Is(err, domain.ErrTooManyRequests):
 		return http.StatusTooManyRequests
-	// 参数或钥不合法，以及校验失败，一律坏请求。
+	// 参数或钥不合法、校验失败或改密时当前密码不对，一律坏请求，免得踢回登录页。
 	case errors.Is(err, domain.ErrInvalidKey), errors.Is(err, domain.ErrUnbound),
 		errors.Is(err, domain.ErrInvalidName), errors.Is(err, domain.ErrDeviceSerialRequired),
+		errors.Is(err, domain.ErrWrongCurrentPassword),
 		isDomain(err), errors.Is(err, errInvalidID):
 		return http.StatusBadRequest
 	// 对不上的错误当内部故障，不把原文抛出。

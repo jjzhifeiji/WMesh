@@ -322,6 +322,106 @@ func TestImportLegacyMissingKeepsProcess(t *testing.T) {
 	}
 }
 
+// T 排工程缺间隙带且本批没有缝隙目录工艺时整份拒绝；自带间隙带或同批带上工艺的照旧入库。
+func TestImportLegacyTBarNeedsGapBands(t *testing.T) {
+	// 准备无取消的上下文，后面每次调用都挂在上面。
+	ctx := context.Background()
+	// 拉起隔离厂库，起不来说明测试库还没就绪。
+	h := New(t)
+	// 建厂并签发超管激活码，失败则没有厂可测。
+	seed, fac, err := h.Provision(ctx, "sa", "超管")
+	// 建厂失败就停，否则后面没有可靠结果。
+	if err != nil {
+		// 把建厂的错误打出来并停住，避免继续往下验。
+		t.Fatal(err)
+	}
+	// 开通失败就停，否则后面没有可靠结果。
+	if err := fac.Activate(ctx, "sa", seed.ActivationToken, "sa-pass"); err != nil {
+		// 把开通的错误打出来并停住，避免继续往下验。
+		t.Fatal(err)
+	}
+	// 登录并取出令牌，失败说明账号没有开通成功。
+	saTok := mustLogin(t, ctx, fac, "sa", "sa-pass")
+	// 不带间隙带的 T 排工程，只能靠本批缝隙目录补带。
+	tbar := factory.LegacyFile{Path: "tbar/对接/project_data.json", Content: []byte(`[{"id":"t1","name":"T","points":[{"id":"a","type":"GROOVE_A_LOWER"}]}]`)}
+	// 正文自带间隙带的 T 排工程，不靠目录补。
+	own := factory.LegacyFile{Path: "tbar/自带/project_data.json", Content: []byte(`[{"id":"t2","name":"T","points":[{"id":"a","type":"GROOVE_A_LOWER"}],"gapBands":[{"minGap":3,"maxGap":4,"layer":1,"rootProcessId":"","capProcessId":""}]}]`)}
+	// 带了空间隙带的 T 排工程，和没带一样要靠本批缝隙目录补。
+	empty := factory.LegacyFile{Path: "tbar/空带/project_data.json", Content: []byte(`[{"id":"t3","name":"T","points":[{"id":"a","type":"GROOVE_A_LOWER"}],"gapBands":[]}]`)}
+	// 本批只有一份普通工艺，没有缝隙目录。
+	plain := factory.LegacyFile{Path: "1焊角.json", Content: []byte(`{"name":"角焊","current":170}`)}
+	// 引用普通工艺的单层工程，核对别的工程不受牵连。
+	single := factory.LegacyFile{Path: "single_layer/平焊/project_data.json", Content: []byte(`[{"id":"w1","processPath":"1焊角.json","points":[]}]`)}
+	// 先导工艺和工程，但不带缝隙目录那几份工艺。
+	first, err := fac.ImportLegacy(ctx, saTok, factory.LegacyImport{Processes: []factory.LegacyFile{plain}, Projects: []factory.LegacyFile{tbar, empty, own, single}})
+	// 导入报错或条数不对就停，缺带和空带的两份 T 排应被拒。
+	if err != nil || len(first.Processes) != 1 || len(first.Projects) != 2 || len(first.Rejected) != 2 {
+		// 断言没通过就停，结果和这条用例的预期不一致。
+		t.Fatalf("first %+v %v", first, err)
+	}
+	// 按路径收起被拒的份，后面逐份核对原因。
+	rejected := map[string]string{}
+	// 逐条收路径和原因。
+	for _, r := range first.Rejected {
+		// 路径对到原因，后面按路径查。
+		rejected[r.Path] = r.Reason
+	}
+	// 被拒的应是缺带和空带那两份，原因提示把工艺和工程一起导入。
+	for _, path := range []string{tbar.Path, empty.Path} {
+		// 没被拒或原因不对就停，空带不能算自带。
+		if !strings.HasPrefix(rejected[path], "tbar gap bands missing") {
+			// 断言没通过就停，结果和这条用例的预期不一致。
+			t.Fatalf("rejected %s %+v", path, first.Rejected)
+		}
+	}
+	// 读出本厂全部资产，核对缺带和空带两份都没有入库。
+	rows, err := fac.Store().ListGovernedAssets(ctx)
+	// 读资产失败就停，否则没法确认没入库。
+	if err != nil {
+		// 把读资产的错误打出来并停住，避免继续往下验。
+		t.Fatal(err)
+	}
+	// 逐条找被拒两份的名字，找到说明拒绝了还入了库。
+	for _, a := range rows {
+		// 工程里出现「对接」或「空带」说明被拒那份落了库。
+		if a.Kind == factory.KindProject && (a.Name == "对接" || a.Name == "空带") {
+			// 断言没通过就停，拒绝的工程不该入库。
+			t.Fatalf("rejected project stored %+v", a)
+		}
+	}
+	// 缝隙目录里的打底和盖面。
+	gaps := []factory.LegacyFile{
+		{Path: "Standard/T排立对接/1H-3-4/打底.json", Content: []byte(`{"name":"打底","current":160}`)},
+		{Path: "Standard/T排立对接/1H-3-4/盖面.json", Content: []byte(`{"name":"盖面","current":180}`)},
+	}
+	// 缝隙目录工艺和缺带、空带工程一起导入，应照旧成功。
+	second, err := fac.ImportLegacy(ctx, saTok, factory.LegacyImport{Processes: gaps, Projects: []factory.LegacyFile{tbar, empty}})
+	// 导入报错或条数不对就停，同批带上工艺不该再拒。
+	if err != nil || len(second.Processes) != 2 || len(second.Projects) != 2 || len(second.Rejected) != 0 {
+		// 断言没通过就停，结果和这条用例的预期不一致。
+		t.Fatalf("second %+v %v", second, err)
+	}
+	// 按名字收起本批工艺身份，后面核对缝隙带。
+	ids := map[string]string{}
+	// 逐条收名字和身份。
+	for _, p := range second.Processes {
+		// 名字对到身份文本。
+		ids[p.Name] = p.ID.String()
+	}
+	// 逐份读回 T 排工程正文，缺带和空带的都该补上缝隙带。
+	for _, p := range second.Projects {
+		// 读回这份工程正文。
+		body, err := fac.ReadAssetContent(ctx, saTok, p.ID)
+		// 读正文失败就停，否则后面没有可靠结果。
+		if err != nil {
+			// 断言没通过就停，结果和这条用例的预期不一致。
+			t.Fatal(err)
+		}
+		// 缝隙带应钉上同批那份打底和盖面，空带不能原样留下。
+		assertLegacyBands(t, body, []string{ids["打底"], ids["盖面"]})
+	}
+}
+
 // 同名再导入应另立新稿，不能把原来那条覆盖掉。
 func TestImportLegacySameName(t *testing.T) {
 	// 准备无取消的上下文，后面每次调用都挂在上面。

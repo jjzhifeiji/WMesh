@@ -278,7 +278,7 @@ func (s *Store) RevokeRole(ctx context.Context, grantID uuid.UUID) error {
 	return nil
 }
 
-// DeleteOrgUnit 没有下级、当前人员、有效角色、事实或资产才物理删除。
+// DeleteOrgUnit 没有下级、任何分配或角色记录、事实或资产才物理删除。
 func (s *Store) DeleteOrgUnit(ctx context.Context, unitID uuid.UUID) error {
 	// 读取组织节点失败就停，避免带着错误继续。
 	if _, err := s.getUnit(ctx, unitID); err != nil {
@@ -290,12 +290,13 @@ func (s *Store) DeleteOrgUnit(ctx context.Context, unitID uuid.UUID) error {
 		checks := []struct {
 			model any    // 要查是否仍被引用的表
 			query string // 引用是否还在的条件
-			args  []any  // 条件里的身份和状态
+			args  []any  // 条件里的节点身份
 		}{
 			{&OrgUnit{}, "parent_id = ?", []any{unitID}},
-			{&Assignment{}, "org_unit_id = ? AND status = ?", []any{unitID, StatusActive}},
-			{&RoleGrant{}, "org_unit_id = ? AND status = ?", []any{unitID, StatusActive}},
+			{&Assignment{}, "org_unit_id = ?", []any{unitID}},
+			{&RoleGrant{}, "org_unit_id = ?", []any{unitID}},
 			{&factRow{}, "org_unit_id = ?", []any{unitID}},
+			{&weldFactRow{}, "org_unit_id = ?", []any{unitID}},
 			{&assetRow{}, "org_unit_id = ?", []any{unitID}},
 			{&governedAssetRow{}, "org_unit_id = ?", []any{unitID}},
 		}
@@ -321,14 +322,6 @@ func (s *Store) DeleteOrgUnit(ctx context.Context, unitID uuid.UUID) error {
 		// 还有引用就不能物理删除。
 		if ok {
 			return domain.ErrReferenced
-		}
-		// 已取消的分配、已收回的角色不再挡删除，但外键还在，先清掉。
-		if err := tx.Where("org_unit_id = ?", unitID).Delete(&Assignment{}).Error; err != nil {
-			return err
-		}
-		// 删除匹配行失败就停，避免带着错误继续。
-		if err := tx.Where("org_unit_id = ?", unitID).Delete(&RoleGrant{}).Error; err != nil {
-			return err
 		}
 		// 删掉匹配行，没有行交给后面判断。
 		res := tx.Where("id = ?", unitID).Delete(&OrgUnit{})

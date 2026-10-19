@@ -8,6 +8,7 @@ import (
 	"errors"
 	"testing"
 
+	"wmesh/factory/internal/platform/audit"
 	"wmesh/factory/internal/platform/contenttpl"
 	"wmesh/factory/internal/platform/digest"
 	"wmesh/factory/internal/platform/domain"
@@ -276,7 +277,7 @@ func TestListProjectTemplates(t *testing.T) {
 	// 准备这段正文字节，读回对不上说明没写进去。
 	stale := []byte(`{"root":"array","templates":[{"id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","kind":"corner","name":"包角","extra":true}]}`)
 	// 写模版副本失败就停，否则后面没有可靠结果。
-	if _, err := fac.Store().InsertTemplateReplica(ctx, factory.ContentTemplate{
+	if _, _, err := fac.Store().InsertTemplateReplica(ctx, factory.ContentTemplate{
 		// 新取一个编号，撞号会让两条记录分不清。
 		ID: id.New(), Kind: factory.KindProject, Revision: 9, Schema: stale, Digest: digest.Sum(stale),
 	}); err != nil {
@@ -288,5 +289,84 @@ func TestListProjectTemplates(t *testing.T) {
 	if err != nil || len(rows) != 2 {
 		// 旧修订盖住了新稿，说明先后比较写反了。
 		t.Fatalf("stale catalog %+v %v", rows, err)
+	}
+}
+
+// 读模版不留允许、同修订重送只记一次收下，被拒的读仍留拒绝。
+func TestTemplateReadAndRedeliveryAudit(t *testing.T) {
+	// 准备无取消的上下文，后面每次调用都挂在上面。
+	ctx := context.Background()
+	// 拉起隔离厂库，起不来说明测试库还没就绪。
+	h := New(t)
+	// 建厂并签发超管激活码，失败则没有厂可测。
+	seed, fac, err := h.Provision(ctx, "sa", "超管")
+	// 建厂失败就停，否则后面没有可靠结果。
+	if err != nil {
+		// 把建厂的错误打出来并停住，避免继续往下验。
+		t.Fatal(err)
+	}
+	// 开通失败就停，否则后面没有可靠结果。
+	if err := fac.Activate(ctx, "sa", seed.ActivationToken, "sa-pass"); err != nil {
+		// 把开通的错误打出来并停住，避免继续往下验。
+		t.Fatal(err)
+	}
+	// 登录并取出令牌，失败说明账号没有开通成功。
+	sa := mustLogin(t, ctx, fac, "sa", "sa-pass")
+	// 编出默认工艺字段表，后面拿它当送达正文。
+	schema, err := contenttpl.Marshal(contenttpl.Default(contenttpl.KindProcess))
+	// 编字段表失败就停，否则没有可送的模版。
+	if err != nil {
+		// 把编字段表的错误打出来并停住。
+		t.Fatal(err)
+	}
+	// 留下工厂编号，送达快照要指明收件厂。
+	fid := seed.ID
+	// 拼一份工艺模版快照，两次送达用同一份。
+	snap := factory.TemplateSnapshot{
+		ID: id.New(), Kind: factory.KindProcess, Revision: 1,
+		Schema: json.RawMessage(schema), Digest: digest.Sum(schema), TargetFactoryID: &fid,
+	}
+	// 同一修订连送两次，模拟通道重推。
+	for i := 0; i < 2; i++ {
+		// 收模版失败就停，重送不该被拒。
+		if err := fac.AcceptTemplateDelivery(ctx, snap); err != nil {
+			// 把第几次收模版的错误打出来并停住。
+			t.Fatalf("deliver #%d: %v", i+1, err)
+		}
+	}
+	// 同修订同摘要只该记一条收下，多了说明重送也在写审计。
+	if got := softwareAudit(t, ctx, fac, "accept_template", audit.Allow); len(got) != 1 {
+		// 条数不对就停，把实际条数打出来。
+		t.Fatalf("accept_template allow rows %d want 1", len(got))
+	}
+	// 记下读模版前的审计全量，事后核对没有新增。
+	before := auditIDs(t, ctx, fac)
+	// 像前端轮询那样连读两轮工艺和工程模版。
+	for i := 0; i < 2; i++ {
+		// 读工艺模版失败就停，轮询读不该出错。
+		if _, err := fac.GetTemplate(ctx, sa, factory.KindProcess); err != nil {
+			// 把读工艺模版的错误打出来并停住。
+			t.Fatalf("get template #%d: %v", i+1, err)
+		}
+		// 列工程模版失败就停，轮询读不该出错。
+		if _, err := fac.ListProjectTemplates(ctx, sa); err != nil {
+			// 把列工程模版的错误打出来并停住。
+			t.Fatalf("list project templates #%d: %v", i+1, err)
+		}
+	}
+	// 读完后审计条数应不变，多了说明轮询读仍在记允许。
+	if after := auditIDs(t, ctx, fac); len(after) != len(before) {
+		// 条数变了就停，把前后条数打出来。
+		t.Fatalf("audit rows %d -> %d after reads", len(before), len(after))
+	}
+	// 读不存在的模版种类应被拒。
+	if _, err := fac.GetTemplate(ctx, sa, "bogus"); !errors.Is(err, domain.ErrNotFound) {
+		// 没被拒就停，种类检查失效了。
+		t.Fatalf("bogus kind: %v", err)
+	}
+	// 被拒的读仍要留拒绝，少了说明把拒绝也一并去掉了。
+	if got := softwareAudit(t, ctx, fac, "get_template", audit.Deny); len(got) != 1 {
+		// 拒绝条数不对就停，把实际条数打出来。
+		t.Fatalf("get_template deny rows %d want 1", len(got))
 	}
 }

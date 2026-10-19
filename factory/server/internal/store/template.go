@@ -57,11 +57,12 @@ func templateFromRow(row contentTemplateReplicaRow) ContentTemplate {
 	}
 }
 
-// InsertTemplateReplica 写入一份模版修订；同身份修订且摘要相同则补名称后返回。
-func (s *Store) InsertTemplateReplica(ctx context.Context, in ContentTemplate) (ContentTemplate, error) {
+// InsertTemplateReplica 写入一份模版修订；同身份修订且摘要相同则补名称后返回，
+// 第二个返回值标明这次是否新建了一行，重复送达为假，调用方据此省掉重复审计。
+func (s *Store) InsertTemplateReplica(ctx context.Context, in ContentTemplate) (ContentTemplate, bool, error) {
 	// 摘要必须是三十二字节，否则拒绝写入。
 	if err := assertAssetDigest(in.Digest); err != nil {
-		return ContentTemplate{}, err
+		return ContentTemplate{}, false, err
 	}
 	// 按入参组装要写入的行。
 	row := contentTemplateReplicaRow{
@@ -77,11 +78,11 @@ func (s *Store) InsertTemplateReplica(ctx context.Context, in ContentTemplate) (
 			got, getErr := s.TemplateReplicaByIDRev(ctx, in.ID, in.Revision)
 			// 按修订读模版失败就停，避免带着错误继续。
 			if getErr != nil {
-				return ContentTemplate{}, getErr
+				return ContentTemplate{}, false, getErr
 			}
 			// 同身份修订摘要必须相同，否则当损坏。
 			if !bytes.Equal(got.Digest, in.Digest) {
-				return ContentTemplate{}, domain.ErrIntegrity
+				return ContentTemplate{}, false, domain.ErrIntegrity
 			}
 			// 同一修订补上名称；摘要未变不当新修订。
 			if in.Name != "" && got.Name != in.Name {
@@ -89,17 +90,18 @@ func (s *Store) InsertTemplateReplica(ctx context.Context, in ContentTemplate) (
 				if err := s.db.WithContext(ctx).Model(&contentTemplateReplicaRow{}).
 					Where("id = ? AND revision = ?", in.ID, in.Revision).
 					Update("name", in.Name).Error; err != nil {
-					return ContentTemplate{}, err
+					return ContentTemplate{}, false, err
 				}
 				// 把改好的值放进内存行，随后随保存写入。
 				got.Name = in.Name
 			}
-			return got, nil
+			// 同修订同摘要是重复送达，标成未新建。
+			return got, false, nil
 		}
-		return ContentTemplate{}, err
+		return ContentTemplate{}, false, err
 	}
-	// 库行收成对外结果再交回。
-	return templateFromRow(row), nil
+	// 库行收成对外结果再交回，标成这次新建。
+	return templateFromRow(row), true, nil
 }
 
 // TemplateReplicaByIDRev 按身份和修订读模版副本。

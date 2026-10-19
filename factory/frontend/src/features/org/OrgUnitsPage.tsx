@@ -85,7 +85,7 @@ export function OrgUnitsPage() {
           )}
           <Popconfirm
             title={`删除「${u.name}」？`}
-            description="有下级、当前人员、有效角色或历史事实时会拒绝。删除后不能恢复。"
+            description="有下级、分配或角色记录（含已结束、已收回）或历史事实时会拒绝，只能停用。删除后不能恢复。"
             onConfirm={() =>
               remove.mutate(u.id, {
                 onSuccess: () => message.success("已删除"),

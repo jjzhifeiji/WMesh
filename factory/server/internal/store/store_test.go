@@ -336,7 +336,7 @@ func TestDeleteOrgWhenUnreferenced(t *testing.T) {
 	}
 }
 
-// 摘掉分配和角色之后才允许删除。
+// 摘掉分配和角色后仍拒删，历史行留着，只能停用。
 func TestDeleteOrgAfterUnassignAndRevoke(t *testing.T) {
 	// 测试没有取消信号，用空白上下文即可。
 	ctx := context.Background()
@@ -385,10 +385,36 @@ func TestDeleteOrgAfterUnassignAndRevoke(t *testing.T) {
 		// 收回角色不符合预期就停测。
 		t.Fatal(err)
 	}
-	// 删除节点失败就停测，避免后面没有前提。
-	if err := s.DeleteOrgUnit(ctx, u.ID); err != nil {
-		// 分配结束且角色收回后应能删除。
+	// 只剩已结束分配和已收回角色，删除也必须被拒。
+	if err := s.DeleteOrgUnit(ctx, u.ID); err != domain.ErrReferenced {
+		// 有过分配或角色的节点不能物理删除。
 		t.Fatalf("after end/revoke: %v", err)
+	}
+	// 准备承接已结束分配的行数。
+	var ended int64
+	// 数一下这个节点上已结束的分配，确认没被清掉。
+	if err := facDB.Model(&store.Assignment{}).Where("org_unit_id = ? AND status = ?", u.ID, store.StatusEnded).Count(&ended).Error; err != nil || ended != 1 {
+		// 拒删之后分配历史必须原样留着。
+		t.Fatalf("ended assignments: n=%d err=%v", ended, err)
+	}
+	// 准备承接已收回角色的行数。
+	var revoked int64
+	// 数一下这个节点上已收回的角色，确认没被清掉。
+	if err := facDB.Model(&store.RoleGrant{}).Where("org_unit_id = ? AND status = ?", u.ID, store.StatusRevoked).Count(&revoked).Error; err != nil || revoked != 1 {
+		// 拒删之后角色历史必须原样留着。
+		t.Fatalf("revoked grants: n=%d err=%v", revoked, err)
+	}
+	// 有历史的节点改走停用，停用必须成功。
+	if err := s.DisableOrgUnit(ctx, u.ID); err != nil {
+		// 停用失败说明替代路径不通。
+		t.Fatalf("disable: %v", err)
+	}
+	// 准备承接停用后的节点状态。
+	var status string
+	// 读回节点状态，确认确实已停用。
+	if err := facDB.Raw("SELECT status FROM org_units WHERE id = ?", u.ID).Scan(&status).Error; err != nil || status != store.StatusDisabled {
+		// 节点应留在库里且已停用。
+		t.Fatalf("status after disable: %q err=%v", status, err)
 	}
 }
 

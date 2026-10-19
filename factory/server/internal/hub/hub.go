@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 
 	"github.com/google/uuid"
 	"gorm.io/driver/postgres"
@@ -60,6 +61,7 @@ type Hub struct {
 	blobs       blob.Store                                // 软件包字节；空则各厂用内存
 	clientMu    sync.Mutex                                // 护着本厂 Client Broker
 	clientBus   clientBroker                              // 厂→Client MQTT；未起则为空
+	demoData    atomic.Bool                               // 只开发版打开：放开写入演示焊次；默认关
 }
 
 // New 连维护库（用来建厂库），不预先打开任何厂库。
@@ -101,6 +103,18 @@ func (h *Hub) SetBlobs(store blob.Store) {
 	defer h.mu.Unlock()
 	// 记下对象存储，打开厂库之前必须已经挂上。
 	h.blobs = store
+}
+
+// SetDemoData 开发版放开写入演示焊次；须在打开厂库之前调用。
+func (h *Hub) SetDemoData(on bool) {
+	// 记下开关，之后打开的厂按它放开或拒绝演示焊次。
+	h.demoData.Store(on)
+}
+
+// DemoData 交回演示焊次开关，探活据此告诉页面要不要露入口。
+func (h *Hub) DemoData() bool {
+	// 原子读开关，探活不必去抢厂库锁。
+	return h.demoData.Load()
 }
 
 // Ping 只确认维护库连接可用，给探活用；不打开任何厂库。
@@ -196,6 +210,8 @@ func (h *Hub) ensure(factoryID uuid.UUID) (*service.Service, error) {
 	svc := service.NewService(store.Open(db, factoryID))
 	// 正在跑的版本算已装基线，新装厂不被提示装回同版或旧版。
 	svc.Updates.SetRunningSoftware(release.Code, release.Name)
+	// 演示焊次开关跟进程配置走，生产关着就一条都写不进。
+	svc.Stats.SetDemoData(h.demoData.Load())
 	// 已经挂了对象存储才交给这家厂。
 	if h.blobs != nil {
 		// 软件包字节走对象存储，不进进程内存。

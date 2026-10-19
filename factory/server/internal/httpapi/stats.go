@@ -188,7 +188,7 @@ func (h *Handler) listWeldRuns(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// 超管写入演示焊次，已有则跳过。
+// 超管写入演示焊次，已有则跳过；只开发版放开，生产回找不到。
 func (h *Handler) seedWeldDemo(w http.ResponseWriter, r *http.Request) {
 	// 超管写入演示焊次，已有则跳过。
 	h.withFactory(w, r, func(svc *service.Service) {

@@ -188,10 +188,7 @@ func (s *Templates) GetTemplate(ctx context.Context, token, kind string) (Conten
 		_ = s.audit(ctx, &acc.ID, nil, "get_template", kind, audit.Deny)
 		return ContentTemplate{}, err
 	}
-	// 审计没写下则整次不算完成
-	if err := s.audit(ctx, &acc.ID, nil, "get_template", templateTarget(t.Kind, t.Revision), audit.Allow); err != nil {
-		return ContentTemplate{}, err
-	}
+	// 读成功不记允许：前端每 8 秒轮询，记了会把审计表撑大
 	return t, nil
 }
 
@@ -224,10 +221,7 @@ func (s *Templates) ListProjectTemplates(ctx context.Context, token string) ([]C
 		// 把这一条收进结果，漏了清单就不齐
 		out = append(out, row)
 	}
-	// 审计没写下则整次不算完成
-	if err := s.audit(ctx, &acc.ID, nil, "get_template", KindProject, audit.Allow); err != nil {
-		return nil, err
-	}
+	// 读成功不记允许：前端每 8 秒轮询，记了会把审计表撑大
 	return out, nil
 }
 
@@ -277,14 +271,21 @@ func (s *Closure) AcceptTemplateDelivery(ctx context.Context, snap TemplateSnaps
 		_ = s.audit(ctx, nil, nil, "accept_template", snap.Kind, audit.Deny)
 		return domain.ErrTemplateInvalid
 	}
-	// 只读副本，不改已有正文。
-	if _, err := s.store.InsertTemplateReplica(ctx, ContentTemplate{
+	// 只读副本，不改已有正文；同修订同摘要重送只回旧行。
+	_, created, err := s.store.InsertTemplateReplica(ctx, ContentTemplate{
 		// 记下身份、类型和修订，正文不在这行
 		ID: snap.ID, Kind: snap.Kind, Name: snap.Name, Revision: snap.Revision,
 		Schema: []byte(snap.Schema), Digest: snap.Digest,
-	}); err != nil {
+	})
+	// 写副本失败或同修订摘要不符，记拒绝后交回
+	if err != nil {
+		// 记下收下模版被拒绝，写失败不改变结果
 		_ = s.audit(ctx, nil, nil, "accept_template", templateTarget(snap.Kind, snap.Revision), audit.Deny)
 		return err
+	}
+	// 同修订同摘要的重复送达不再记审计，免得重推撑大审计表
+	if !created {
+		return nil
 	}
 	// 收下模版成功后记审计，再把结果交回
 	return s.audit(ctx, nil, nil, "accept_template", templateTarget(snap.Kind, snap.Revision), audit.Allow)

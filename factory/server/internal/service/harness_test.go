@@ -109,7 +109,7 @@ func mustAdoptPassword(t *testing.T, ctx context.Context, fac *service.Service, 
 		return tok
 	}
 	// 改口令失败就停，否则后面没有可靠结果。
-	if err := fac.ChangePassword(ctx, tok, pass); err != nil {
+	if err := fac.ChangePassword(ctx, tok, personPass(login), pass); err != nil {
 		// 断言没通过就停，结果和这条用例的预期不一致。
 		t.Fatalf("set pass %s: %v", login, err)
 	}

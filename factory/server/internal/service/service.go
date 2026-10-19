@@ -170,7 +170,7 @@ func NewService(st *Store) *Service {
 		Closure:   &Closure{k},
 		Sync:      &Sync{k},
 		Updates:   &Updates{k},
-		Stats:     &Stats{k},
+		Stats:     &Stats{kernel: k},
 	}
 }
 

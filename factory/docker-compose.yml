@@ -28,6 +28,8 @@ services:
       # 确认只落盘；本机 updater 换 app。库和 OSS 卷不动。
       WMESH_DOCKER_UPDATE_DIR: /var/lib/wmesh/update
       WMESH_LOG_LEVEL: ${WMESH_LOG_LEVEL:-info}
+      # 开发联调才设 1，开放「写入演示焊次」；默认空即关，生产别开
+      WMESH_DEMO_DATA: ${WMESH_DEMO_DATA:-}
     volumes:
       - update:/var/lib/wmesh/update
       # 放 wan-ca.pem 的目录只认宿主机绝对路径（updater 里相对路径会落到不存在的 /work）；没配挂空卷。

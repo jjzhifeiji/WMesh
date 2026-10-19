@@ -12,6 +12,7 @@ import (
 	"wmesh/factory/internal/platform/audit"
 	"wmesh/factory/internal/platform/domain"
 	"wmesh/factory/internal/platform/secret"
+	"wmesh/factory/internal/store"
 )
 
 const sessionTTL = 12 * time.Hour // 网页会话有效期；示教器另按登录时效
@@ -367,13 +368,35 @@ func (s *kernel) RequireActive(ctx context.Context, token string) (Account, erro
 	return accountOf(p), nil
 }
 
-// ChangePassword 改日常密码，稳定身份不变，审计不写密码原文。
-func (s *Auth) ChangePassword(ctx context.Context, token, newPassword string) error {
+// ChangePassword 改日常密码并作废本人其它会话；网页会话须核对当前密码，审计不写原文。
+// 示教器暂时没有旧密码框，app 会话不带当前密码也放行，带了照样核对。
+func (s *Auth) ChangePassword(ctx context.Context, token, currentPassword, newPassword string) error {
 	// 先确认会话仍有效，过期或停用直接拒绝
 	acc, err := s.RequireActive(ctx, token)
 	// 会话无效或账号已停用，拒绝继续
 	if err != nil {
 		return err
+	}
+	// 再取当前会话，分清是网页还是示教器
+	sess, err := s.store.SessionByTokenHash(ctx, secret.TokenHash(token))
+	// 刚核过的会话又对不上，按未登录拒绝
+	if err != nil {
+		return domain.ErrUnauthorized
+	}
+	// 按稳定身份读人员，拿到现有口令哈希
+	p, err := s.store.PersonByID(ctx, acc.ID)
+	// 人员读不到，拒绝这次改密
+	if err != nil {
+		return err
+	}
+	// 网页会话必须核旧密码；示教器带了才核
+	if sess.Kind != store.SessionKindApp || currentPassword != "" {
+		// 没有口令或当前密码不对，捡到的会话不能接管账号
+		if p.PasswordHash == nil || !secret.VerifyPassword(*p.PasswordHash, currentPassword) {
+			// 记下改密被拒绝，写失败不改变结果
+			_ = s.audit(ctx, &acc.ID, &acc.LoginName, "change_password", acc.ID.String(), audit.Deny)
+			return domain.ErrWrongCurrentPassword
+		}
 	}
 	// 日常密码只存哈希，不写原文。
 	hash, err := secret.HashPassword(newPassword)
@@ -381,8 +404,8 @@ func (s *Auth) ChangePassword(ctx context.Context, token, newPassword string) er
 	if err != nil {
 		return err
 	}
-	// 新口令写不进去，保持原口令
-	if err := s.store.SetPasswordHash(ctx, acc.ID, hash); err != nil {
+	// 换口令并作废其它会话同一事务，泄露的旧令牌随之失效
+	if err := s.store.ReplacePasswordKeepSession(ctx, acc.ID, hash, secret.TokenHash(token)); err != nil {
 		return err
 	}
 	// 改口令成功后记审计，再把结果交回

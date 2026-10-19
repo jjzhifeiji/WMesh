@@ -336,7 +336,7 @@ func (s *Org) ViewOrg(ctx context.Context, token string, unitID uuid.UUID) error
 	return s.audit(ctx, &acc.ID, nil, "view_org", unitID.String(), audit.Allow)
 }
 
-// DeleteOrgUnit 无引用才删；有下级、当前人员、有效角色或历史事实就拒绝。
+// DeleteOrgUnit 无引用才删；有下级、分配或角色记录（含已结束、已收回）、事实就拒绝，只能停用。
 func (s *Org) DeleteOrgUnit(ctx context.Context, token string, unitID uuid.UUID) error {
 	// 先确认会话仍有效，过期或停用直接拒绝
 	acc, err := s.RequireActive(ctx, token)
@@ -350,7 +350,7 @@ func (s *Org) DeleteOrgUnit(ctx context.Context, token string, unitID uuid.UUID)
 		_ = s.audit(ctx, &acc.ID, nil, "delete_org_unit", unitID.String(), audit.Deny)
 		return err
 	}
-	// 无引用才删；有下级或历史事实就拒绝。
+	// 无引用才删；有过分配、角色或事实就拒绝，留住历史。
 	if err := s.store.DeleteOrgUnit(ctx, unitID); err != nil {
 		// 记下删除组织被拒绝，写失败不改变结果
 		_ = s.audit(ctx, &acc.ID, nil, "delete_org_unit", unitID.String(), audit.Deny)

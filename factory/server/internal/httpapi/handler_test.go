@@ -53,7 +53,7 @@ func TestFactoryHTTP(t *testing.T) {
 	// 先探活，库不通则这次测试不能继续。
 	code, body := do(t, srv, "GET", "/healthz", "", "")
 	// 不是成功，或正文与预期不符则失败。
-	if code != http.StatusOK || gjson(t, body, "db") != "ok" || gjson(t, body, "oss") != "off" || gjson(t, body, "version") != strconv.FormatInt(release.Code, 10) || gjson(t, body, "versionName") != release.Name {
+	if code != http.StatusOK || gjson(t, body, "db") != "ok" || gjson(t, body, "oss") != "off" || gjson(t, body, "version") != strconv.FormatInt(release.Code, 10) || gjson(t, body, "versionName") != release.Name || !strings.Contains(body, `"demoData":false`) {
 		// 与预期不符就停测，避免后面连环误判。
 		t.Fatalf("healthz %d %s", code, body)
 	}
@@ -151,6 +151,13 @@ func TestFactoryHTTP(t *testing.T) {
 	}
 	// 取出会话令牌，后面的请求要带上。
 	tok := gjson(t, body, "token")
+	// 演示开关默认关，超管写入演示焊次也应回找不到。
+	code, body = do(t, srv, "POST", base+"/weld-reports/demo", tok, "")
+	// 不是找不到则本测失败，说明生产也能写假焊次。
+	if code != http.StatusNotFound {
+		// 与预期不符就停测，避免后面连环误判。
+		t.Fatalf("demo off %d %s", code, body)
+	}
 	// 列出已经收到的工程模版。
 	code, body = do(t, srv, "GET", base+"/project-templates", tok, "")
 	// 不是成功，或正文与预期不符则失败。

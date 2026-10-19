@@ -64,6 +64,13 @@ func run(ctx context.Context, log *slog.Logger) error {
 	defer h.Close()
 	// 确认只把 tar 落到更新目录；真正换容器由本机 updater 做。
 	h.SetPendingSink(appupdate.Dir(cfg.DockerUpdateDir))
+	// 演示焊次只在开发版放开；须在打开厂库之前挂上。
+	h.SetDemoData(cfg.DemoData)
+	// 打开了演示焊次就提醒，生产误开时日志里一眼能看到。
+	if cfg.DemoData {
+		// 只警告不拦，开发和联调就是要用它。
+		log.Warn("demo weld data enabled, do not use in production", "env", "WMESH_DEMO_DATA")
+	}
 	// 先留空对象存储，启用时再接上。
 	var ossStore *oss.Client
 	// 对象存储打开才接桶，关掉则软件包不走外存。

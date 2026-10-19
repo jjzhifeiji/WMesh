@@ -29,6 +29,7 @@ type Config struct {
 	DockerUpdate    bool           // 超管确认后由帮手 docker load 换本容器
 	DockerHost      string         // Docker 套接字，默认 unix:///var/run/docker.sock
 	DockerUpdateDir string         // 与帮手共用的 tar 目录
+	DemoData        bool           // 只开发版打开：放开写入演示焊次；生产默认关，免得假数据记到真人名下
 }
 
 // OSS 是 S3 兼容对象存储的接入参数；Endpoint 为空表示本厂暂未接 OSS。
@@ -69,6 +70,7 @@ func Load() (Config, error) {
 		DockerUpdate:    envTruthy("WMESH_DOCKER_UPDATE"),
 		DockerHost:      envOr("WMESH_DOCKER_HOST", "unix:///var/run/docker.sock"),
 		DockerUpdateDir: envOr("WMESH_DOCKER_UPDATE_DIR", "/var/lib/wmesh/update"),
+		DemoData:        envTruthy("WMESH_DEMO_DATA"),
 	}
 	// 环境指定了退出等待就解析成一段时间。
 	if v := os.Getenv("WMESH_SHUTDOWN_TIMEOUT"); v != "" {

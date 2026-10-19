@@ -25,6 +25,9 @@ var gapFolderRe = regexp.MustCompile(`^(\d+)H-(\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)`) 
 
 var importSerialRe = regexp.MustCompile(`^(.+) \(\d+\)$`) // 另起名时加在末尾的「 (序号)」
 
+// errTBarGapBandsMissing T 排元素没带间隙带、本批又没有缝隙目录工艺可补，只作这份工程的拒绝原因。
+var errTBarGapBandsMissing = errors.New("tbar gap bands missing: import gap folder processes together with the project")
+
 // LegacyFile 是一次导入里的一份旧 JSON，路径相对工艺/工程根。
 type LegacyFile struct {
 	Path      string // 相对路径，如 Standard/1T1.2/1K.json
@@ -907,13 +910,10 @@ func scanLegacyUses(procs, projects []LegacyFile) map[string][]string {
 					markLegacyUse(used, target, contenttpl.WeldKindOfItem(kind))
 				}
 			}
-			// T 排元素没带缝隙带时，导入会按目录补带。
-			if obj, _ := el.(map[string]any); kind == contenttpl.ItemTBar && obj != nil {
-				// 正文里没有缝隙带才会补目录里的。
-				if _, ok := obj["gapBands"]; !ok {
-					// 记下要补带，收进带里的工艺算 T 排。
-					needBands = true
-				}
+			// T 排元素没带缝隙带或带是空的，导入会按目录补带。
+			if obj, _ := el.(map[string]any); obj != nil && tbarNeedsBands(obj, kind) {
+				// 记下要补带，收进带里的工艺算 T 排。
+				needBands = true
 			}
 		}
 	}
@@ -1279,6 +1279,10 @@ func rewriteLegacyProject(raw []byte, filePath string, idx *pathIndex, bands []a
 		if obj == nil {
 			continue
 		}
+		// T 排元素缺间隙带又无带可补，入库也焊不了，整份拒绝。
+		if tbarNeedsBands(obj, kind) && len(bands) == 0 {
+			return nil, errTBarGapBandsMissing
+		}
 		// 按种类钉上模版身份，T 排再补间隙带。
 		stampTemplate(obj, kind, bands)
 	}
@@ -1289,6 +1293,24 @@ func rewriteLegacyProject(raw []byte, filePath string, idx *pathIndex, bands []a
 		return nil, err
 	}
 	return out, nil
+}
+
+// tbarNeedsBands 这条是 T 排且正文没带或只带了空的间隙带，要靠本批缝隙目录补。
+func tbarNeedsBands(obj map[string]any, kind string) bool {
+	// 不是 T 排就不需要间隙带。
+	if kind != contenttpl.ItemTBar {
+		return false
+	}
+	// 正文自带非空间隙带的照旧，不靠目录补。
+	return !hasGapBands(obj)
+}
+
+// hasGapBands 正文至少带一条间隙带才算自带；空数组和没这个键一样要补。
+func hasGapBands(obj map[string]any) bool {
+	// 取出间隙带，不是数组的按没带算。
+	arr, _ := obj["gapBands"].([]any)
+	// 至少一条才算自带，空数组照样要补。
+	return len(arr) > 0
 }
 
 // stampTemplate 按种类钉空库模版身份；T 排补上当时间隙带。
@@ -1307,9 +1329,9 @@ func stampTemplate(obj map[string]any, kind string, bands []any) {
 		obj["templateId"] = contenttpl.SeedTplTBar
 		// 这条标成 T 排，避免和多层混。
 		obj["kind"] = contenttpl.ItemTBar
-		// 对不上就跳过或拒绝，避免用错那一条。
-		if _, ok := obj["gapBands"]; !ok {
-			// 把缝隙带写进工程，缺文件的可以是空。
+		// 正文没带或只带了空的间隙带时，用目录里收来的补上。
+		if !hasGapBands(obj) {
+			// 把缝隙带写进工程，缺文件的带可以留空引用。
 			obj["gapBands"] = bands
 		}
 	// 其余情况走这里，避免漏掉一种状态。

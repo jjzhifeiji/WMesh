@@ -307,8 +307,8 @@ func (s *Clients) ClientByID(ctx context.Context, clientID uuid.UUID) (Client, e
 
 // ListClients 列出 WAN 已登记的现场设备，不含私钥。
 func (s *Clients) ListClients(ctx context.Context, token string) ([]Client, error) {
-	// 核对当前管理员会话。
-	admin, err := s.RequireAdmin(ctx, token)
+	// 核对当前管理员会话，只读轮询用不到管理员身份。
+	_, err := s.RequireAdmin(ctx, token)
 	// 无效就不能继续，不当已经登录。
 	if err != nil {
 		return nil, err
@@ -319,8 +319,8 @@ func (s *Clients) ListClients(ctx context.Context, token string) ([]Client, erro
 	if err != nil {
 		return nil, err
 	}
-	// 列出后才记允许。
-	return rows, s.audit(ctx, &admin.ID, nil, nil, "list_clients", "clients", audit.Allow)
+	// 设备列表是前端每 5 秒的轮询读，成功不记允许，免得撑大审计表。
+	return rows, nil
 }
 
 // ListPersonOfflineGrants 从 WAN 查厂内人员，一律拒绝。

@@ -57,14 +57,20 @@ func WeldKindOfItem(kind string) string {
 
 // InferWeldKind 按工程正文第一条能认的模版/种类推断作业类型；认不出当单层。
 func InferWeldKind(content []byte) string {
-	// 准备接工程正文里的各份。
-	var items []map[string]any
+	// 先按通用数组接，混进非对象元素也不会整份解不开。
+	var items []any
 	// 不是数组就认不出，按单层。
 	if err := json.Unmarshal(content, &items); err != nil {
 		return WeldSingle
 	}
 	// 从第一条能认的份开始推断。
-	for _, it := range items {
+	for _, el := range items {
+		// 取成对象，不是对象的元素认不出作业类型。
+		it, ok := el.(map[string]any)
+		// 非对象元素跳过，接着看后面能认的份。
+		if !ok {
+			continue
+		}
 		// 有模版身份就先按模版认。
 		if id, _ := it["templateId"].(string); id != "" {
 			// 空库三份一对一，认到就停。
@@ -84,14 +90,20 @@ func InferWeldKind(content []byte) string {
 
 // ContentMatchesWeldKind 工程正文里能认的模版/种类必须和作业类型一致；认不出的自定义份放过。
 func ContentMatchesWeldKind(weldKind string, content []byte) bool {
-	// 准备接工程正文里的各份。
-	var items []map[string]any
+	// 先按通用数组接，混进非对象元素也不会整份放行。
+	var items []any
 	// 不是数组就无法核对，先放过。
 	if err := json.Unmarshal(content, &items); err != nil {
 		return true
 	}
 	// 每一份能认的都要和作业类型一致。
-	for _, it := range items {
+	for _, el := range items {
+		// 取成对象，不是对象的元素没有模版与种类可核。
+		it, ok := el.(map[string]any)
+		// 非对象元素跳过，其余各份照样逐一核对。
+		if !ok {
+			continue
+		}
 		// 取出模版身份，没有就跳过这一判。
 		id, _ := it["templateId"].(string)
 		// 模版认得出却对不上，整篇不一致。

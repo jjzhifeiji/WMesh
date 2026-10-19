@@ -1,6 +1,7 @@
 // 服务端只回英文业务错误码，这里统一翻成给人看的话；没收录的原样显示。
 const zh: Record<string, string> = {
   "invalid credentials": "登录名或密码不对",
+  "wrong current password": "当前密码不对",
   unauthorized: "会话已失效，请重新登录",
   forbidden: "没有这项许可：WAN 不代管厂内人员、组织和角色",
   "not found": "找不到这个对象",
@@ -30,6 +31,7 @@ const zh: Record<string, string> = {
   "asset is not copyable": "不可复制，不能升档或放宽",
   "invalid weld kind": "作业类型只能是单层焊道、多层焊缝或 T排对接",
   "weld kind mismatch": "工程和工艺必须是同一作业类型",
+  "process weld kind in use": "工艺仍被工程引用，不能改作业类型",
   "asset dependency missing or mismatched": "依赖的工艺不存在、未发布、修订对不上，或焊道引用了未声明的工艺",
 	"factory channel is offline": "厂端通道不在线，连不上不能拉升档",
   "content template is invalid": "内容模版字段不合法",

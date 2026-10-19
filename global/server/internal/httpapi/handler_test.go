@@ -76,7 +76,14 @@ func TestWANHTTP(t *testing.T) {
 	// 取出字段供后面使用，缺了就停测。
 	tok := gjson(t, body, "token")
 	// 发出请求并记下状态，对不上就停测。
-	code, body = do(t, srv, "POST", "/v1/me/password", tok, `{"password":"wan-secret-2"}`)
+	code, body = do(t, srv, "POST", "/v1/me/password", tok, `{"currentPassword":"bad","password":"wan-secret-2"}`)
+	// 当前密码不对应回 400，回 401 会把前端踢回登录页。
+	if code != http.StatusBadRequest || gjson(t, body, "error") != "wrong current password" {
+		// 旧密码错没按坏请求拒绝，带上现场停测。
+		t.Fatalf("change password wrong current %d %s", code, body)
+	}
+	// 发出请求并记下状态，对不上就停测。
+	code, body = do(t, srv, "POST", "/v1/me/password", tok, `{"currentPassword":"wan-secret","password":"wan-secret-2"}`)
 	// 成功却不是无正文，调用方会误判。
 	if code != http.StatusNoContent {
 		// 改密没成功，带上现场停测。

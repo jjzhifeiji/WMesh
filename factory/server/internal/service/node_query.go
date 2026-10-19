@@ -139,8 +139,8 @@ func (s *Node) ListClients(ctx context.Context, token string) ([]ClientView, err
 		// 把这一条收进结果，漏了清单就不齐
 		out = append(out, view)
 	}
-	// 列出设备成功后记审计，再把结果交回
-	return out, s.audit(ctx, &acc.ID, nil, "list_clients", "clients", audit.Allow)
+	// 设备名录是前端每 5 秒的轮询读，成功不记允许，免得撑大审计表
+	return out, nil
 }
 
 // ListRuntimeGrants 每台 Client 只回最高修订，不含声明原文和签名。
@@ -181,6 +181,6 @@ func (s *Node) ListRuntimeGrants(ctx context.Context, token string) ([]RuntimeGr
 			NotBefore: r.NotBefore, NotAfter: r.NotAfter, CreatedAt: r.CreatedAt,
 		})
 	}
-	// 列出运行凭证成功后记审计，再把结果交回
-	return out, s.audit(ctx, &acc.ID, nil, "list_runtime", "runtime", audit.Allow)
+	// 凭证摘要是只读查询，成功不记允许，免得轮询撑大审计表
+	return out, nil
 }

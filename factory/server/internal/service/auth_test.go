@@ -6,10 +6,14 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/google/uuid"
 
 	"wmesh/factory/internal/platform/audit"
 	"wmesh/factory/internal/platform/domain"
 	"wmesh/factory/internal/platform/id"
+	"wmesh/factory/internal/platform/secret"
 	"wmesh/factory/internal/platform/testpg"
 	"wmesh/factory/internal/service"
 	"wmesh/factory/internal/store"
@@ -95,7 +99,7 @@ func TestAuthCircle(t *testing.T) {
 		t.Fatalf("17.2 unknown: %v", err)
 	}
 	// 改口令失败就停，否则后面没有可靠结果。
-	if err := facA.ChangePassword(ctx, saTok, "sa-pass-2"); err != nil {
+	if err := facA.ChangePassword(ctx, saTok, "sa-pass", "sa-pass-2"); err != nil {
 		// 条目 17.3 没对上，这一条矩阵行为偏了。
 		t.Fatalf("17.3 change pass: %v", err)
 	}
@@ -523,4 +527,165 @@ func TestAcceptEnrollmentTrimLogin(t *testing.T) {
 		// 空名也能认领，说明去空白后没判空。
 		t.Fatalf("claim blank: %v", err)
 	}
+}
+
+// 网页改密须核旧密码：错了或没带都拒且口令不变，成功后只留当前会话。
+func TestChangePasswordChecksCurrent(t *testing.T) {
+	// 准备无取消的上下文，后面每次调用都挂在上面。
+	ctx := context.Background()
+	// 拉起隔离厂库，起不来说明测试库还没就绪。
+	h := New(t)
+	// 建厂并签发超管激活码，失败则没有厂可测。
+	created, fac, err := h.Provision(ctx, "sa-cp", "改密超管")
+	// 建厂失败就停，否则后面没有可靠结果。
+	if err != nil {
+		// 断言没通过就停，结果和这条用例的预期不一致。
+		t.Fatalf("bootstrap: %v", err)
+	}
+	// 开通失败就停，否则后面没有可靠结果。
+	if err := fac.Activate(ctx, "sa-cp", created.ActivationToken, "cp-pass-1"); err != nil {
+		// 把开通的错误打出来并停住，避免继续往下验。
+		t.Fatal(err)
+	}
+	// 当前网页会话，改密要凭它发起。
+	cur := mustLogin(t, ctx, fac, "sa-cp", "cp-pass-1")
+	// 同一人的另一条网页会话，模拟没退出被捡到的那条。
+	other := mustLogin(t, ctx, fac, "sa-cp", "cp-pass-1")
+	// 旧密码填错应按当前密码不对拒绝。
+	if err := fac.ChangePassword(ctx, cur, "bad-pass", "cp-pass-2"); !errors.Is(err, domain.ErrWrongCurrentPassword) {
+		// 放行说明捡到会话就能改密接管。
+		t.Fatalf("wrong current: %v", err)
+	}
+	// 网页会话不带旧密码也应拒绝。
+	if err := fac.ChangePassword(ctx, cur, "", "cp-pass-2"); !errors.Is(err, domain.ErrWrongCurrentPassword) {
+		// 放行说明网页会话能跳过旧密码。
+		t.Fatalf("web without current: %v", err)
+	}
+	// 被拒后新口令不该生效，登录应按凭证不对拒绝。
+	if _, err := fac.Login(ctx, "sa-cp", "cp-pass-2"); !errors.Is(err, domain.ErrInvalidCredentials) {
+		// 能登上说明被拒的请求仍改了哈希。
+		t.Fatalf("hash changed after deny: %v", err)
+	}
+	// 被拒后旧口令仍能登录，说明哈希没动。
+	mustLogin(t, ctx, fac, "sa-cp", "cp-pass-1")
+	// 被拒不该作废别的会话，另一条仍应有效。
+	if _, err := fac.RequireActive(ctx, other); err != nil {
+		// 失效说明被拒的请求也清了会话。
+		t.Fatalf("other after deny: %v", err)
+	}
+	// 旧密码对就应改成功。
+	if err := fac.ChangePassword(ctx, cur, "cp-pass-1", "cp-pass-2"); err != nil {
+		// 改不成说明正确旧密码也被拒。
+		t.Fatalf("change: %v", err)
+	}
+	// 当前会话应保留，改完不必重登。
+	if _, err := fac.RequireActive(ctx, cur); err != nil {
+		// 失效说明连当前会话也清掉了。
+		t.Fatalf("current after change: %v", err)
+	}
+	// 另一条会话应已作废，泄露的令牌不能再用。
+	if _, err := fac.RequireActive(ctx, other); !errors.Is(err, domain.ErrUnauthorized) {
+		// 仍有效说明改密没作废其它会话。
+		t.Fatalf("other after change: %v", err)
+	}
+	// 旧口令应登不上。
+	if _, err := fac.Login(ctx, "sa-cp", "cp-pass-1"); !errors.Is(err, domain.ErrInvalidCredentials) {
+		// 能登上说明哈希没换。
+		t.Fatalf("old pass after change: %v", err)
+	}
+	// 拉出审计流水，核对被拒的改密留了痕。
+	rows, err := fac.ListAudit(ctx)
+	// 拉审计失败就停，否则后面没有可靠结果。
+	if err != nil {
+		// 把拉审计的错误打出来并停住，避免继续往下验。
+		t.Fatal(err)
+	}
+	// 数出改密拒绝的条数。
+	denies := 0
+	// 逐行看审计，只数改密拒绝。
+	for _, r := range rows {
+		// 改密且拒绝的才算进来。
+		if r.Action == "change_password" && r.Result == audit.Deny {
+			// 再记一条改密拒绝。
+			denies++
+		}
+	}
+	// 错旧密码和没带各一次，应有两条拒绝。
+	if denies != 2 {
+		// 条数不对说明被拒的改密没留审计。
+		t.Fatalf("change_password deny rows %d", denies)
+	}
+	// 审计里不能出现口令原文。
+	if audit.ContainsAny(audit.Dump(rows), "cp-pass-1", "cp-pass-2", "bad-pass") {
+		// 出现即泄密。
+		t.Fatal("password leaked in audit")
+	}
+}
+
+// 示教器会话暂不带旧密码也能改，改完照样作废本人网页和其它会话。
+func TestChangePasswordAppSession(t *testing.T) {
+	// 准备无取消的上下文，后面每次调用都挂在上面。
+	ctx := context.Background()
+	// 拉起隔离厂库，起不来说明测试库还没就绪。
+	h := New(t)
+	// 建厂并签发超管激活码，失败则没有厂可测。
+	created, fac, err := h.Provision(ctx, "sa-ap", "示教器超管")
+	// 建厂失败就停，否则后面没有可靠结果。
+	if err != nil {
+		// 断言没通过就停，结果和这条用例的预期不一致。
+		t.Fatalf("bootstrap: %v", err)
+	}
+	// 开通失败就停，否则后面没有可靠结果。
+	if err := fac.Activate(ctx, "sa-ap", created.ActivationToken, "ap-pass-1"); err != nil {
+		// 把开通的错误打出来并停住，避免继续往下验。
+		t.Fatal(err)
+	}
+	// 同一人的网页会话，示教器改密后应失效。
+	web := mustLogin(t, ctx, fac, "sa-ap", "ap-pass-1")
+	// 当前示教器会话和另一台示教器会话。
+	app, appOther := mustAppSession(t, ctx, fac, created.SuperAdminID), mustAppSession(t, ctx, fac, created.SuperAdminID)
+	// 示教器带了错的旧密码也应拒绝。
+	if err := fac.ChangePassword(ctx, app, "bad-pass", "ap-pass-2"); !errors.Is(err, domain.ErrWrongCurrentPassword) {
+		// 放行说明带了旧密码也没核。
+		t.Fatalf("app wrong current: %v", err)
+	}
+	// 示教器只发新密码，按旧接口应能改成。
+	if err := fac.ChangePassword(ctx, app, "", "ap-pass-2"); err != nil {
+		// 改不成说明示教器改密被这次收紧弄坏了。
+		t.Fatalf("app change: %v", err)
+	}
+	// 当前示教器会话应保留。
+	if _, err := fac.RequireActive(ctx, app); err != nil {
+		// 失效说明连当前会话也清掉了。
+		t.Fatalf("app after change: %v", err)
+	}
+	// 网页会话和另一台示教器会话都应作废。
+	for _, tok := range []string{web, appOther} {
+		// 仍有效说明改密没作废其它会话。
+		if _, err := fac.RequireActive(ctx, tok); !errors.Is(err, domain.ErrUnauthorized) {
+			// 带上错误停住，旧令牌还活着。
+			t.Fatalf("other after app change: %v", err)
+		}
+	}
+	// 新口令应能登录网页。
+	mustLogin(t, ctx, fac, "sa-ap", "ap-pass-2")
+}
+
+// mustAppSession 直接写一条示教器会话，省掉设备登记与签票。
+func mustAppSession(t *testing.T, ctx context.Context, fac *service.Service, personID uuid.UUID) string {
+	// 标成辅助步骤，失败时行号指向真正的用例。
+	t.Helper()
+	// 随机出令牌原文，库里只存它的摘要。
+	tok, err := secret.RandomToken()
+	// 令牌生成失败就停，后面没有会话可用。
+	if err != nil {
+		// 把生成令牌的错误打出来并停住。
+		t.Fatal(err)
+	}
+	// 按示教器种类落会话，改密要据此放行不带旧密码。
+	if _, err := fac.Store().CreateAppSession(ctx, personID, secret.TokenHash(tok), time.Now().UTC().Add(time.Hour)); err != nil {
+		// 写会话失败就停，后面没有示教器会话可验。
+		t.Fatalf("app session: %v", err)
+	}
+	return tok
 }

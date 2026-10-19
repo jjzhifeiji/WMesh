@@ -146,8 +146,8 @@ func (s *kernel) denyFactoryManage(ctx context.Context, token string, factoryID 
 
 // Directory 只返回工厂名录和初始超管身份，不含厂内扩展明细。
 func (s *Factories) Directory(ctx context.Context, token string) (Directory, error) {
-	// 只有 WAN 管理员能读名录。
-	admin, err := s.RequireAdmin(ctx, token)
+	// 只有 WAN 管理员能读名录，只读轮询用不到管理员身份。
+	_, err := s.RequireAdmin(ctx, token)
 	// 无效就不能继续，不当已经登录。
 	if err != nil {
 		// 读名录被拒就留审计。
@@ -166,10 +166,7 @@ func (s *Factories) Directory(ctx context.Context, token string) (Directory, err
 	if err != nil {
 		return Directory{}, err
 	}
-	// 读名录成功才记允许。
-	if err := s.audit(ctx, &admin.ID, nil, nil, "read_directory", "wan", audit.Allow); err != nil {
-		return Directory{}, err
-	}
+	// 名录是前端每 5 秒的轮询读，成功不记允许，免得撑大审计表。
 	return Directory{Factories: facs, Initials: initials}, nil
 }
 

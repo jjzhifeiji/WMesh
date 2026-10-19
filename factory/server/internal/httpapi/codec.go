@@ -176,14 +176,15 @@ func statusOf(err error) int {
 		errors.Is(err, domain.ErrDuplicateRoleGrant), errors.Is(err, domain.ErrDuplicateSession),
 		errors.Is(err, domain.ErrReferenced), errors.Is(err, domain.ErrRevisionConflict),
 		errors.Is(err, domain.ErrSigningKeyExists), errors.Is(err, domain.ErrSoftwareInstallFailed),
-		errors.Is(err, domain.ErrSoftwareApplying),
+		errors.Is(err, domain.ErrSoftwareApplying), errors.Is(err, domain.ErrWeldKindInUse),
 		errors.Is(err, domain.ErrDeviceSerialTaken), errors.Is(err, domain.ErrDuplicateName):
 		return http.StatusConflict
-	// 修订过期或参数不合法时回非法请求。
+	// 修订过期、参数不合法或改密时当前密码不对，回非法请求而非 401 免得踢回登录页。
 	case errors.Is(err, domain.ErrStaleRevision), errors.Is(err, domain.ErrBindingVoid),
 		errors.Is(err, domain.ErrInvalidKey), errors.Is(err, domain.ErrClientKeyMismatch),
 		errors.Is(err, domain.ErrInvalidName), errors.Is(err, domain.ErrInvalidGrantDays),
 		errors.Is(err, domain.ErrDeviceSerialRequired), errors.Is(err, domain.ErrDeviceSerialMismatch),
+		errors.Is(err, domain.ErrWrongCurrentPassword),
 		isDomain(err), errors.Is(err, errInvalidID):
 		return http.StatusBadRequest
 	// 对不上的错误一律当成内部故障。

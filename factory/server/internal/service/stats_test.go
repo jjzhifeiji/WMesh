@@ -16,6 +16,7 @@ import (
 	"gorm.io/gorm"
 
 	"wmesh/factory/internal/platform/assetcode"
+	"wmesh/factory/internal/platform/audit"
 	"wmesh/factory/internal/platform/domain"
 	"wmesh/factory/internal/platform/id"
 	"wmesh/factory/internal/platform/testpg"
@@ -287,6 +288,42 @@ func TestWeldDemoSeed(t *testing.T) {
 	}
 	// 把默认口令改成测试口令，失败说明改密被拒。
 	opTok := mustAdoptPassword(t, ctx, fac, "op-d", "op-pass")
+	// 开关默认关着，超管灌演示数据也应回找不到，放行说明生产也能写假数据。
+	if _, err := fac.SeedWeldDemo(ctx, saTok); !errors.Is(err, domain.ErrNotFound) {
+		// 断言没通过就停，结果和这条用例的预期不一致。
+		t.Fatalf("seed with demo off: %v", err)
+	}
+	// 关着时查全厂焊次，应一条演示焊次都没有。
+	off, err := fac.ListWeldRuns(ctx, saTok, factory.WeldRunQuery{})
+	// 查焊次失败，或关着也写进了焊次，就说明开关没拦住。
+	if err != nil || off.Total != 0 || len(off.Items) != 0 {
+		// 断言没通过就停，结果和这条用例的预期不一致。
+		t.Fatalf("runs with demo off: %d %v", off.Total, err)
+	}
+	// 读审计，关着被拒也要留下拒绝记录。
+	rows, err := fac.ListAudit(ctx)
+	// 审计读不出就停，否则后面没有可靠结果。
+	if err != nil {
+		// 把读审计的错误打出来并停住，避免继续往下验。
+		t.Fatal(err)
+	}
+	// 先当没找到拒绝记录，逐行看到再改。
+	denied := false
+	// 逐行找写入演示焊次的拒绝记录。
+	for _, r := range rows {
+		// 动作和结果都对上才算留下了拒绝记录。
+		if r.Action == "seed_weld_demo" && r.Result == audit.Deny {
+			// 找到拒绝记录，记下即可。
+			denied = true
+		}
+	}
+	// 没找到拒绝记录就停，关着被拒也该留痕。
+	if !denied {
+		// 断言没通过就停，结果和这条用例的预期不一致。
+		t.Fatal("seed with demo off not audited as deny")
+	}
+	// 打开演示开关，模拟开发版配置，后面照旧写入。
+	fac.SetDemoData(true)
 	// 灌演示数据应因越权被拒绝，放行说明没拦住。
 	if _, err := fac.SeedWeldDemo(ctx, opTok); !errors.Is(err, domain.ErrForbidden) {
 		// 断言没通过就停，结果和这条用例的预期不一致。

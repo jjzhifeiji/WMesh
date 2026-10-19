@@ -68,11 +68,7 @@ func (s *Assets) ListFS(ctx context.Context, token, kind string) ([]FSNodeView, 
 		// 当前人能看见的节点放进结果。
 		visible = append(visible, n)
 	}
-	// 成功必须记上审计，没记上则本次不算做成。
-	if err := s.audit(ctx, &acc.ID, nil, "list_fs", kind, audit.Allow); err != nil {
-		return nil, err
-	}
-	// 补主人名和文件元数据，不含正文。
+	// 补主人名和文件元数据，不含正文；目录页每 8 秒轮询，成功不记允许。
 	return s.decorateFS(ctx, visible)
 }
 
@@ -101,11 +97,7 @@ func (s *Assets) ListFSForChannel(ctx context.Context, kind string) ([]ChannelFS
 	if err != nil {
 		return nil, err
 	}
-	// 成功必须记上审计，没记上则本次不算做成。
-	if err := s.audit(ctx, nil, nil, "list_fs", kind, audit.Allow); err != nil {
-		return nil, err
-	}
-	// 只交结构和文件元数据，人员名册不出厂。
+	// 只交结构和文件元数据，人员名册不出厂；只读查询成功不记允许。
 	return s.channelFS(ctx, nodes), nil
 }
 

@@ -222,6 +222,104 @@ func TestImportLegacy(t *testing.T) {
 	}
 }
 
+// T 排工程缺间隙带且本批没有缝隙目录工艺时整份拒绝；自带间隙带或同批带上工艺的照旧入库。
+func TestImportLegacyTBarNeedsGapBands(t *testing.T) {
+	// 准备本测上下文，没有它库和服务都开不了。
+	ctx := context.Background()
+	// 起云端库和服务，起不来整段验收作废。
+	h := New(t)
+	// 立云端超管失败就停，立不住后面没有人能登录。
+	if err := h.WAN.BootstrapAdmin(ctx, "w", "wan-secret"); err != nil {
+		// 不符即停：立云端超管失败。
+		t.Fatal(err)
+	}
+	// 登录拿会话，没有票后面接口都进不去。
+	tok, err := h.WAN.Login(ctx, "w", "wan-secret")
+	// 登录拿会话失败就停，没有票后面接口都进不去。
+	if err != nil {
+		// 不符即停：登录拿会话失败。
+		t.Fatal(err)
+	}
+	// 不带间隙带的 T 排工程，只能靠本批缝隙目录补带。
+	tbar := service.LegacyFile{Path: "tbar/对接/project_data.json", Content: []byte(`[{"id":"t1","name":"T","points":[{"id":"a","type":"GROOVE_A_LOWER"}]}]`)}
+	// 正文自带间隙带的 T 排工程，不靠目录补。
+	own := service.LegacyFile{Path: "tbar/自带/project_data.json", Content: []byte(`[{"id":"t2","name":"T","points":[{"id":"a","type":"GROOVE_A_LOWER"}],"gapBands":[{"minGap":3,"maxGap":4,"layer":1,"rootProcessId":"","capProcessId":""}]}]`)}
+	// 带了空间隙带的 T 排工程，和没带一样要靠本批缝隙目录补。
+	empty := service.LegacyFile{Path: "tbar/空带/project_data.json", Content: []byte(`[{"id":"t3","name":"T","points":[{"id":"a","type":"GROOVE_A_LOWER"}],"gapBands":[]}]`)}
+	// 本批只有一份普通工艺，没有缝隙目录。
+	plain := service.LegacyFile{Path: "1焊角.json", Content: []byte(`{"name":"角焊","current":170}`)}
+	// 引用普通工艺的单层工程，核对别的工程不受牵连。
+	single := service.LegacyFile{Path: "single_layer/平焊/project_data.json", Content: []byte(`[{"id":"w1","processPath":"1焊角.json","points":[]}]`)}
+	// 先导工艺和工程，但不带缝隙目录那几份工艺。
+	first, err := h.WAN.ImportLegacy(ctx, tok, service.LegacyImport{Processes: []service.LegacyFile{plain}, Projects: []service.LegacyFile{tbar, empty, own, single}})
+	// 导入报错或条数不对就停，缺带和空带的两份 T 排应被拒。
+	if err != nil || len(first.Processes) != 1 || len(first.Projects) != 2 || len(first.Rejected) != 2 {
+		// 不符即停：缺带和空带的 T 排没被单独拒掉。
+		t.Fatalf("first %+v %v", first, err)
+	}
+	// 按路径收起被拒的份，后面逐份核对原因。
+	rejected := map[string]string{}
+	// 逐条收路径和原因。
+	for _, r := range first.Rejected {
+		// 路径对到原因，后面按路径查。
+		rejected[r.Path] = r.Reason
+	}
+	// 被拒的应是缺带和空带那两份，原因提示把工艺和工程一起导入。
+	for _, path := range []string{tbar.Path, empty.Path} {
+		// 没被拒或原因不对就停，空带不能算自带。
+		if !strings.HasPrefix(rejected[path], "tbar gap bands missing") {
+			// 不符即停：拒绝的路径或原因不对。
+			t.Fatalf("rejected %s %+v", path, first.Rejected)
+		}
+	}
+	// 列出平台级工程，核对缺带和空带两份都没有入库。
+	list, err := h.WAN.ListPlatformAssets(ctx, tok, service.KindProject)
+	// 列工程失败就停，否则没法确认没入库。
+	if err != nil {
+		// 不符即停：列平台级工程失败。
+		t.Fatal(err)
+	}
+	// 逐条找被拒两份的名字，找到说明拒绝了还入了库。
+	for _, a := range list {
+		// 出现「对接」或「空带」说明被拒那份落了库。
+		if a.Name == "对接" || a.Name == "空带" {
+			// 不符即停：拒绝的工程不该入库。
+			t.Fatalf("rejected project stored %+v", a)
+		}
+	}
+	// 缝隙目录里的打底和盖面。
+	gaps := []service.LegacyFile{
+		{Path: "Standard/T排立对接/1H-3-4/打底.json", Content: []byte(`{"name":"打底","current":160}`)},
+		{Path: "Standard/T排立对接/1H-3-4/盖面.json", Content: []byte(`{"name":"盖面","current":180}`)},
+	}
+	// 缝隙目录工艺和缺带、空带工程一起导入，应照旧成功。
+	second, err := h.WAN.ImportLegacy(ctx, tok, service.LegacyImport{Processes: gaps, Projects: []service.LegacyFile{tbar, empty}})
+	// 导入报错或条数不对就停，同批带上工艺不该再拒。
+	if err != nil || len(second.Processes) != 2 || len(second.Projects) != 2 || len(second.Rejected) != 0 {
+		// 不符即停：同批带上工艺仍没导进来。
+		t.Fatalf("second %+v %v", second, err)
+	}
+	// 按名字收起本批工艺身份，后面核对缝隙带。
+	ids := map[string]string{}
+	// 逐条收名字和身份。
+	for _, p := range second.Processes {
+		// 名字对到身份文本。
+		ids[p.Name] = p.ID.String()
+	}
+	// 逐份读回 T 排工程正文，缺带和空带的都该补上缝隙带。
+	for _, p := range second.Projects {
+		// 读回这份工程正文。
+		body, err := h.WAN.ReadPlatformAssetContent(ctx, tok, p.ID)
+		// 读正文失败就停，否则后面没有可靠结果。
+		if err != nil {
+			// 不符即停：读平台正文失败。
+			t.Fatal(err)
+		}
+		// 缝隙带应钉上同批那份打底和盖面，空带不能原样留下。
+		assertLegacyBands(t, body, []string{ids["打底"], ids["盖面"]})
+	}
+}
+
 // 同名再导入时跳过或覆盖，依赖仍钉住原工艺。
 func TestImportLegacySameName(t *testing.T) {
 	// 准备本测上下文，没有它库和服务都开不了。

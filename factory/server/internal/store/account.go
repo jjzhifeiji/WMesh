@@ -380,19 +380,23 @@ func (s *Store) SetActivationHash(ctx context.Context, personID uuid.UUID, hash 
 	return nil
 }
 
-// SetPasswordHash 只改日常密码哈希，不改登录名。
-func (s *Store) SetPasswordHash(ctx context.Context, personID uuid.UUID, passwordHash string) error {
-	// 只改点名的列，避免把别的字段写成零值。
-	res := s.db.WithContext(ctx).Model(&Person{}).Where("id = ?", personID).Update("password_hash", passwordHash)
-	// 更新失败则交回库错误，不能当成已经改完。
-	if res.Error != nil {
-		return res.Error
-	}
-	// 没有改到行就当目标不存在。
-	if res.RowsAffected == 0 {
-		return domain.ErrNotFound
-	}
-	return nil
+// ReplacePasswordKeepSession 同一事务换口令哈希，并作废此人除当前令牌外的会话。
+func (s *Store) ReplacePasswordKeepSession(ctx context.Context, personID uuid.UUID, passwordHash, keepTokenHash string) error {
+	// 放进同一事务，换了口令却没清别的会话就整单回滚。
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// 只改密码哈希一列，避免把别的字段写成零值。
+		res := tx.Model(&Person{}).Where("id = ?", personID).Update("password_hash", passwordHash)
+		// 更新失败则交回库错误，事务随之回滚。
+		if res.Error != nil {
+			return res.Error
+		}
+		// 没有改到行就当目标不存在。
+		if res.RowsAffected == 0 {
+			return domain.ErrNotFound
+		}
+		// 删掉此人除当前令牌外的会话，泄露出去的旧令牌立刻失效。
+		return tx.Where("person_id = ? AND token_hash <> ?", personID, keepTokenHash).Delete(&Session{}).Error
+	})
 }
 
 // ReplacePasswordDropSessions 同一事务换日常密码哈希并作废此人全部会话；任一步失败都不改。
