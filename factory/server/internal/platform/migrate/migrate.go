@@ -20,8 +20,31 @@ var (
 	flywaySQLName = regexp.MustCompile(`^V(\d+)__(.+)\.sql$`)   // V0001__init.sql
 )
 
+// lockKey 迁移锁的 advisory lock 键；PG 的这种锁按库区分，不同厂库互不等待。
+const lockKey int64 = 0x574d657368
+
 // Up 按版本顺序套用尚未成功记录的 SQL；每个文件一个事务，失败不记历史，重启可重试。
+// 同一库的多路迁移（多进程、多实例或并行测试）凭库内迁移锁排队，后到的等前面迁完再看历史。
 func Up(db *gorm.DB, fsys fs.FS, dir string) error {
+	// 钉住一条连接，取锁、迁移、放锁都走它，会话级的锁才对得上。
+	return db.Connection(func(conn *gorm.DB) error {
+		// 取不到迁移锁就停，不能不排队就去改库。
+		if err := conn.Exec("SELECT pg_advisory_lock(?)", lockKey).Error; err != nil {
+			return err
+		}
+		// 拿着锁套用尚未记录的脚本。
+		err := apply(conn, fsys, dir)
+		// 迁完放锁；迁移本身成功而放锁失败，就交回放锁的错，让调用方关池连锁一起放掉。
+		if uerr := conn.Exec("SELECT pg_advisory_unlock(?)", lockKey).Error; err == nil {
+			// 迁移成功时改交放锁的结果。
+			err = uerr
+		}
+		return err
+	})
+}
+
+// apply 拿着迁移锁逐个套用尚未记录的脚本。
+func apply(db *gorm.DB, fsys fs.FS, dir string) error {
 	// 没能保证历史，再交给后面就停，避免带着残缺继续。
 	if err := ensureHistory(db); err != nil {
 		return err

@@ -2,6 +2,7 @@
 package migrate_test
 
 import (
+	"io/fs"
 	"net/url"
 	"os"
 	"strings"
@@ -177,6 +178,57 @@ func TestAppliesEmbeddedSQL(t *testing.T) {
 	if err := migrate.Up(db, migrations.FS, "."); err != nil {
 		// 没能把库结构迁到当前版本就停住本用例。
 		t.Fatal(err)
+	}
+}
+
+// 多路同时迁同一个新库（如两个进程同时首次打开厂库），要排队套用，不能撞历史主键。
+func TestConcurrentUpSameDB(t *testing.T) {
+	// 打开一个测完就删的临时库，各路共用这一池，每路各占一条连接。
+	db := openTemp(t)
+	// 数出嵌进程序的脚本，迁完历史应正好这么多条。
+	scripts, err := fs.Glob(migrations.FS, "*.sql")
+	// 列不出脚本就停，后面没有底数。
+	if err != nil {
+		// 把列脚本的错误打出来并停住。
+		t.Fatal(err)
+	}
+	// 同时起跑的路数，够撞出排号竞争即可。
+	const ways = 4
+	// 各路把结果送回来，收齐再判。
+	errs := make(chan error, ways)
+	// 发令枪，各路就位后一起开跑，尽量叠在一起。
+	gate := make(chan struct{})
+	// 逐路起协程，都等发令再迁。
+	for i := 0; i < ways; i++ {
+		// 这一路等发令后迁库，结果送回。
+		go func() {
+			// 等发令，别先跑完一路。
+			<-gate
+			// 迁完把结果送回，成败都要送。
+			errs <- migrate.Up(db, migrations.FS, ".")
+		}()
+	}
+	// 发令，各路同时开迁。
+	close(gate)
+	// 逐路收结果，有一路失败就停。
+	for i := 0; i < ways; i++ {
+		// 某一路迁库失败就停，说明并发没排上队。
+		if err := <-errs; err != nil {
+			// 把失败那一路的错误打出来并停住。
+			t.Fatalf("concurrent up: %v", err)
+		}
+	}
+	// 准备承接历史条数、去重后的脚本数和最大排号。
+	var rows, distinct, maxRank int64
+	// 一次读出三个数，读不出就停。
+	if err := db.Raw("SELECT COUNT(*), COUNT(DISTINCT script), COALESCE(MAX(installed_rank), 0) FROM flyway_schema_history").Row().Scan(&rows, &distinct, &maxRank); err != nil {
+		// 把读历史的错误打出来并停住。
+		t.Fatal(err)
+	}
+	// 每个脚本只记一次、排号连续，才说明没有重复套用。
+	if rows != int64(len(scripts)) || distinct != rows || maxRank != rows {
+		// 把三个数和脚本数打出来便于对照。
+		t.Fatalf("history rows=%d distinct=%d maxRank=%d scripts=%d", rows, distinct, maxRank, len(scripts))
 	}
 }
 

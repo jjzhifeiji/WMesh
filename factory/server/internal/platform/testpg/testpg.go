@@ -67,8 +67,8 @@ func Open(t *testing.T) *gorm.DB {
 func CreateDB(t *testing.T, admin *gorm.DB, prefix string) (name, dsn string) {
 	// 标成辅助函数，失败算到调用方。
 	t.Helper()
-	// 收成普通文本再拿去比较或拼接。
-	name = prefix + "_" + strings.ReplaceAll(id.New().String(), "-", "")
+	// 库名夹上 _test_，不与厂库名同形，别包测试列厂（discover）时不会把它当厂库打开再迁一遍。
+	name = prefix + "_test_" + strings.ReplaceAll(id.New().String(), "-", "")
 	// 没能库名当标识符引用，避免被拆开就停，避免带着残缺继续。
 	if err := admin.Exec("CREATE DATABASE " + quoteIdent(name)).Error; err != nil {
 		// 临时库没建成就停住。
