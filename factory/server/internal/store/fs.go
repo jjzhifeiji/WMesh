@@ -561,6 +561,16 @@ func fsNodeTx(tx *gorm.DB, id uuid.UUID) (FSNode, error) {
 	return fsFromRow(row), nil
 }
 
+// FSIsWithin 节点就是 ancestorID 本身或在它下面；沿完整父链递归查，不限层数，库错误照实交回。
+func (s *Store) FSIsWithin(ctx context.Context, nodeID, ancestorID uuid.UUID) (bool, error) {
+	// 就是它本身也算在里面，粘进自己同样成环。
+	if nodeID == ancestorID {
+		return true, nil
+	}
+	// 沿完整父链往上查，层级再深也不漏。
+	return fsIsAncestorTx(s.db.WithContext(ctx), nodeID, ancestorID)
+}
+
 // fsIsAncestorTx 递归走完整父链，判断 ancestorID 是否 nodeID 的祖先；库错误照实交回。
 func fsIsAncestorTx(tx *gorm.DB, nodeID, ancestorID uuid.UUID) (bool, error) {
 	// 准备承接父链里有没有这个祖先。

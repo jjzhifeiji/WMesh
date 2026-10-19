@@ -332,8 +332,16 @@ func (s *Assets) CopyFSNode(ctx context.Context, token string, nodeID, destID uu
 		_ = s.audit(ctx, &acc.ID, nil, "copy_fs", nodeID.String(), audit.Deny)
 		return FSNode{}, err
 	}
+	// 沿完整父链查目标是不是在源里面，层级再深也不放行。
+	inside, err := s.store.FSIsWithin(ctx, dest.ID, src.ID)
+	// 父链查不清就记拒绝，库错误不能当成不在里面。
+	if err != nil {
+		// 复制被拒时补记审计，原件保持不动。
+		_ = s.audit(ctx, &acc.ID, nil, "copy_fs", nodeID.String(), audit.Deny)
+		return FSNode{}, err
+	}
 	// 目标在源里面会成环，拒绝粘贴。
-	if destInside(ctx, s.store, src.ID, dest.ID) {
+	if inside {
 		// 复制被拒时补记审计，原件保持不动。
 		_ = s.audit(ctx, &acc.ID, nil, "copy_fs", nodeID.String(), audit.Deny)
 		return FSNode{}, domain.ErrCycle
@@ -563,36 +571,6 @@ func ownerEqPtr(a, b *uuid.UUID) bool {
 		return false
 	}
 	return *a == *b
-}
-
-// destInside 目标在源文件夹里面，粘贴会成环。
-func destInside(ctx context.Context, st *Store, srcID, destID uuid.UUID) bool {
-	// 从目标往上爬，看会不会爬进源文件夹。
-	cur := destID
-	// 记下已经数过或走过的身份，避免重复。
-	seen := map[uuid.UUID]struct{}{}
-	// 顺着父级往上走，走到源就说明会成环。
-	for i := 0; i < 64; i++ {
-		// 爬到源文件夹就说明目标在源里面，会成环。
-		if cur == srcID {
-			return true
-		}
-		// 父链绕回来了就当不会成环，避免死循环。
-		if _, ok := seen[cur]; ok {
-			return false
-		}
-		// 这个节点走过了，防止父链绕圈。
-		seen[cur] = struct{}{}
-		// 读出目录节点，没有则不能改。
-		n, err := st.FSNodeByID(ctx, cur)
-		// 节点读不到就当不会成环，避免误判。
-		if err != nil || n.ParentID == nil {
-			return false
-		}
-		// 继续看父级，直到根或碰到源。
-		cur = *n.ParentID
-	}
-	return false
 }
 
 // DeleteFSNode 删文件夹（先整体预检再递归）或本厂原件文件；平台级副本不能从目录删。

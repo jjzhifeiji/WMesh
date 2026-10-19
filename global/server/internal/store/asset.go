@@ -138,8 +138,8 @@ func (s *Store) InsertAssetInto(ctx context.Context, in Asset, parentID uuid.UUI
 	var row assetRow
 	// 编号、正文和目录挂点同一事务提交，失败一起回滚。
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// 依赖行先上共享锁，并发删除要等这笔提交；已删的就拒绝。
-		if err := lockAssetDepsTx(tx, in.Deps, nil); err != nil {
+		// 依赖行先上共享锁，并发删除和改作业类型要等这笔提交；已删或类型对不上就拒绝。
+		if err := lockAssetDepsTx(tx, weldKind, in.Deps, nil); err != nil {
 			return err
 		}
 		// 行锁取出下一个平台编号，避免并发重号。
@@ -224,8 +224,23 @@ func (s *Store) UpdateAsset(ctx context.Context, assetID uuid.UUID, expected int
 		if err != nil {
 			return err
 		}
-		// 新钉的依赖行上共享锁，并发删除要等这笔提交；已删的就拒绝。
-		if err := lockAssetDepsTx(tx, w.Deps, unmarshalAssetDeps(row.Deps)); err != nil {
+		// 这笔写完后的作业类型：带了就用新的，空着沿用库里的。
+		weldKind := row.WeldKind
+		// 这次带了作业类型才换成新值。
+		if w.WeldKind != "" {
+			// 作业类型先收成规范值，别名和现值相同不算换。
+			weldKind, err = NormalizeWeldKind(w.WeldKind)
+			// 作业类型不认就停，脏值不能入库。
+			if err != nil {
+				return err
+			}
+		}
+		// 工艺要换作业类型时锁行并在事务里复查引用，仍被工程钉着就拒绝。
+		if err := guardProcessWeldKindTx(tx, row, weldKind); err != nil {
+			return err
+		}
+		// 新钉的依赖行上共享锁，并发删除和改作业类型要等这笔提交；已删或类型对不上就拒绝。
+		if err := lockAssetDepsTx(tx, weldKind, w.Deps, unmarshalAssetDeps(row.Deps)); err != nil {
 			return err
 		}
 		// 先组好要改的列，修订在期望值上加一。
@@ -241,14 +256,8 @@ func (s *Store) UpdateAsset(ctx context.Context, assetID uuid.UUID, expected int
 		}
 		// 这次带了作业类型才改，空着就保持原样。
 		if w.WeldKind != "" {
-			// 作业类型先收成规范值，空的当单层。
-			kind, err := NormalizeWeldKind(w.WeldKind)
-			// 作业类型不认就停，脏值不能入库。
-			if err != nil {
-				return err
-			}
 			// 作业类型收成规范值后再写入。
-			updates["weld_kind"] = kind
+			updates["weld_kind"] = weldKind
 		}
 		// 升档覆盖时才改源修订，平时不动来源。
 		if w.SourceRevision != nil {
@@ -386,9 +395,39 @@ func assetReferencedTx(db *gorm.DB, assetID uuid.UUID) (bool, error) {
 	return n > 0, nil
 }
 
-// lockAssetDepsTx 对新钉的依赖行加共享锁，并发删除须等本笔提交；缺一条就拒绝。
-// kept 是当前行已有的依赖，删除那边复查引用看得到它们，不必再锁。
-func lockAssetDepsTx(tx *gorm.DB, deps, kept []AssetDep) error {
+// guardProcessWeldKindTx 工艺要换作业类型时排他锁住本行，再在事务里复查有没有工程钉着它。
+// 和绑依赖的共享锁互斥：先绑的提交后这里看得到引用，后绑的等这里提交后读到新类型。
+func guardProcessWeldKindTx(tx *gorm.DB, row assetRow, weldKind string) error {
+	// 不是工艺或类型没变，不涉及钉着它的工程。
+	if row.Kind != KindProcess || weldKind == row.WeldKind {
+		return nil
+	}
+	// 只取身份，锁行用不着正文。
+	var locked assetRow
+	// 排他锁住这条工艺，正在绑它的事务提交后才往下查。
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Select("id").First(&locked, "id = ?", row.ID).Error; err != nil {
+		// 没有这一行就按不存在交回，不当成库故障。
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return domain.ErrNotFound
+		}
+		return err
+	}
+	// 锁住后在事务里复查引用，并发刚绑上的也看得到。
+	used, err := assetReferencedTx(tx, row.ID)
+	// 引用查不清就不改类型，不能当没被引用。
+	if err != nil {
+		return err
+	}
+	// 仍被工程钉着就拒绝，免得那些工程类型对不上。
+	if used {
+		return domain.ErrWeldKindInUse
+	}
+	return nil
+}
+
+// lockAssetDepsTx 对新钉的依赖行加共享锁，并发删除和改作业类型须等本笔提交；缺一条或类型对不上就拒绝。
+// kept 是当前行已有的依赖，删除和改类型那边复查引用看得到它们，不必再锁。
+func lockAssetDepsTx(tx *gorm.DB, weldKind string, deps, kept []AssetDep) error {
 	// 已有依赖和已收过的身份都记在这里，免得重复去锁。
 	seen := make(map[uuid.UUID]struct{}, len(kept)+len(deps))
 	// 逐条记下当前行已有的依赖。
@@ -413,15 +452,24 @@ func lockAssetDepsTx(tx *gorm.DB, deps, kept []AssetDep) error {
 	if len(ids) == 0 {
 		return nil
 	}
-	// 准备接住锁到的身份，少了就是被删了。
-	var got []uuid.UUID
-	// 共享锁住依赖行；正在删的要等它提交，删掉的取不到。
-	if err := tx.Model(&assetRow{}).Clauses(clause.Locking{Strength: "SHARE"}).Where("id IN ?", ids).Pluck("id", &got).Error; err != nil {
+	// 准备接住锁到的身份和作业类型，少了就是被删了。
+	var got []assetRow
+	// 共享锁住依赖行；正在删或改类型的要等它提交，删掉的取不到，改过的读到新类型。
+	if err := tx.Model(&assetRow{}).Clauses(clause.Locking{Strength: "SHARE"}).Select("id", "weld_kind").Where("id IN ?", ids).Find(&got).Error; err != nil {
 		return err
 	}
 	// 锁到的比要钉的少，说明有依赖已不在，按依赖缺失拒绝。
 	if len(got) < len(ids) {
 		return domain.ErrAssetDependency
+	}
+	// 逐条核锁后读到的作业类型，事务外核过之后被改了也挡得住。
+	for _, d := range got {
+		// 收成单层、多层或 T 排再比。
+		kind, err := NormalizeWeldKind(d.WeldKind)
+		// 类型不认或和工程不同就拒绝，工程和工艺必须同类型。
+		if err != nil || kind != weldKind {
+			return domain.ErrWeldKindMismatch
+		}
 	}
 	return nil
 }

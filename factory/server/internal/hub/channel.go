@@ -238,10 +238,8 @@ func (h *Hub) keepLease(ctx context.Context, factoryID uuid.UUID) {
 	defer svc.Store().SetContentChannelOnline(false)
 	// 按点续租，失败退避，注销或取消才返回。
 	err := wanchannel.KeepLease(ctx, wanURL, factoryID, priv, func(l wanchannel.Lease) error { // 领到的钥放进内存，解开本厂正文。
-		// 经 HTTPS 领到租约即算在线，厂钟快了也收下这把。
-		svc.Store().SetContentChannelOnline(true)
-		// 把解包钥放进内存，解开本厂 MK。
-		return svc.ApplyContentLease(ctx, l.Key, l.NotAfter)
+		// 和 MQTT 那路首轮补拉同一口径：先标在线再落地。
+		return applyHTTPSLease(ctx, svc, l)
 	})
 	// 不是注销就到此为止，取消时通道已在停。
 	if !errors.Is(err, domain.ErrFactoryRetired) {
@@ -249,13 +247,56 @@ func (h *Hub) keepLease(ctx context.Context, factoryID uuid.UUID) {
 	}
 	// 记下续租时平台说已注销，通道随之停掉。
 	slog.Info("factory retired on lease, stop wan channel", "factory", factoryID)
-	// 注销落到本厂库，登录立即关掉。
-	if closeErr := svc.Auth.CloseFromWAN(ctx); closeErr != nil {
-		// 落不上只记下，MQTT 那路回连时还会再落。
-		slog.Warn("close factory from wan", "factory", factoryID, "err", closeErr)
+	// 注销落到本厂库才停通道；落不上按退避重落，取消了就交给停通道的那一方。
+	if !retryCloseFromWAN(ctx, factoryID, svc.Auth.CloseFromWAN, time.Second) {
+		return
 	}
 	// 停掉这条出站，注销后不再拨也不再续。
 	h.stopChannel(factoryID)
+}
+
+// applyHTTPSLease 经 HTTPS 领到的租约先标在线再落地；续租循环和 MQTT 那路首轮、整轮补拉共用。
+func applyHTTPSLease(ctx context.Context, svc *service.Service, l wanchannel.Lease) error {
+	// 通道已在停就不再标在线，免得停后又被标回去。
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	// 经 HTTPS 领到租约即算在线，厂钟快了也收下这把。
+	svc.Store().SetContentChannelOnline(true)
+	// 把解包钥放进内存，解开本厂 MK。
+	return svc.ApplyContentLease(ctx, l.Key, l.NotAfter)
+}
+
+// retryCloseFromWAN 把注销落到本厂库，落不上按退避重试；落上交回 true，取消交回 false。
+// 注销由续租那路先看到时，通道要等注销落库后才停，免得停了通道却没人再落。
+func retryCloseFromWAN(ctx context.Context, factoryID uuid.UUID, closeFn func(context.Context) error, base time.Duration) bool {
+	// 第一次落不上先等起步时长再落。
+	wait := base
+	// 落上为止，取消才离开。
+	for {
+		// 把注销落到本厂库，登录立即关掉。
+		err := closeFn(ctx)
+		// 落上了就交回，调用方随后停通道。
+		if err == nil {
+			return true
+		}
+		// 已经取消就不再重落，停通道的那一方会收尾。
+		if ctx.Err() != nil {
+			return false
+		}
+		// 记下这次没落上和下次等待，库恢复后会再落。
+		slog.Warn("close factory from wan, will retry", "factory", factoryID, "wait", wait, "err", err)
+		// 等到取消或退避结束。
+		select {
+		// 取消了就不再重落。
+		case <-ctx.Done():
+			return false
+		// 退避到点再落一次。
+		case <-time.After(wait):
+		}
+		// 退避翻倍，封顶半分钟。
+		wait = min(wait*2, 30*time.Second)
+	}
 }
 
 // 取续租要用的服务、平台地址和签发钥；库暂时打不开就退避再取，没钥或已取消交回 false。
@@ -483,9 +524,9 @@ func (h *Hub) dialHold(ctx context.Context, factoryID uuid.UUID) error {
 		}
 		// 对不齐就交回：内容坏的通道只记日志，库错等按种类补拉。
 		return svc.Assets.ApplyPlatformFSLayout(ctx, layout)
-	}, func(lease wanchannel.Lease) error { // 把解包钥放进内存，用来解开本厂正文。
-		// 把 WAN 发来的解包钥放进内存，解开本厂 MK。
-		return svc.ApplyContentLease(ctx, lease.Key, lease.NotAfter)
+	}, func(lease wanchannel.Lease) error { // 首轮和整轮补拉经 HTTPS 领到的钥，先标在线再放进内存。
+		// 和续租循环同一口径：续租还没成过一次，厂钟偏快也收下这把。
+		return applyHTTPSLease(ctx, svc, lease)
 	}, func(typ, _, kind, assetID string) (json.RawMessage, json.RawMessage, error) { // 升档问询交给本厂回答，失败不断开去重试。
 		// 按问询类型回清单或快照，失败则这问失败。
 		return h.answerAsset(ctx, svc, typ, kind, assetID)

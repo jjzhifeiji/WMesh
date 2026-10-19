@@ -513,13 +513,16 @@ func TestFactoryWeldKindKeepsCustomRefs(t *testing.T) {
 func forceWeldKind(t *testing.T, ctx context.Context, fac *factory.Service, a factory.Asset, weld string) factory.Asset {
 	// 标成辅助函数，失败栈落到调用方。
 	t.Helper()
-	// 只改作业类型，名称、摘要、状态和正文都照旧。
-	out, err := fac.Store().UpdateGovernedAsset(ctx, a.ID, a.Revision, store.AssetWrite{
-		Name: a.Name, Digest: a.Digest, Copyable: a.Copyable, Status: a.Status, WeldKind: weld, KeepContent: true,
-	})
-	// 改库失败就停，后面的旧数据情形摆不出来。
-	if err != nil {
+	// 只改作业类型这一列，修订和正文都不动；在用工艺走正常写入会被拒。
+	if err := fac.Store().TamperAssetWeldKind(ctx, a.ID, weld); err != nil {
 		// 把改库的错误打出来并停住，避免继续往下验。
+		t.Fatal(err)
+	}
+	// 读回改后的元数据交给调用方。
+	out, err := fac.Store().GovernedAssetMetaByID(ctx, a.ID)
+	// 读回失败就停，后面拿不到当前行。
+	if err != nil {
+		// 把读回的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
 	return out

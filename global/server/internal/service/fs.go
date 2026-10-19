@@ -251,8 +251,16 @@ func (s *Assets) CopyFSNode(ctx context.Context, token string, nodeID, destID uu
 		_ = s.audit(ctx, &admin.ID, nil, nil, "copy_fs", nodeID.String(), audit.Deny)
 		return FSNode{}, domain.ErrForbidden
 	}
+	// 沿完整父链查目标是不是在源里面，层级再深也不放行。
+	inside, err := s.store.FSIsWithin(ctx, dest.ID, src.ID)
+	// 父链查不清就留审计并拒绝，库错误不能当成不在里面。
+	if err != nil {
+		// 复制目录被拒就留审计。
+		_ = s.audit(ctx, &admin.ID, nil, nil, "copy_fs", nodeID.String(), audit.Deny)
+		return FSNode{}, err
+	}
 	// 目标在源里面会成环，粘贴必须拒绝。
-	if destInside(ctx, s.store, src.ID, dest.ID) {
+	if inside {
 		// 复制目录被拒就留审计。
 		_ = s.audit(ctx, &admin.ID, nil, nil, "copy_fs", nodeID.String(), audit.Deny)
 		return FSNode{}, domain.ErrCycle
@@ -422,36 +430,6 @@ func (s *Assets) uniqueFSName(ctx context.Context, parentID uuid.UUID, wanted st
 	}
 	// 一百个候选真的都被占了，才按同名拒绝。
 	return "", domain.ErrDuplicateName
-}
-
-// destInside 目标在源文件夹里面，粘贴会成环。
-func destInside(ctx context.Context, st *Store, srcID, destID uuid.UUID) bool {
-	// 从目标往父级走，看会不会走进源里面。
-	cur := destID
-	// 用来挡住同一键被写两次。
-	seen := map[uuid.UUID]struct{}{}
-	// 沿父链向上找，超过层数就当不在里面。
-	for i := 0; i < 64; i++ {
-		// 条件不满足则拒绝，避免把错状态写进去。
-		if cur == srcID {
-			return true
-		}
-		// 同一键已经见过则拒绝，防止写两遍。
-		if _, ok := seen[cur]; ok {
-			return false
-		}
-		// 记下走过的节点，父链成环就停。
-		seen[cur] = struct{}{}
-		// 按目录节点处理。
-		n, err := st.FSNodeByID(ctx, cur)
-		// 没有父节点或已经在目标下，就不用再挪。
-		if err != nil || n.ParentID == nil {
-			return false
-		}
-		// 再往上一层，直到根或发现成环。
-		cur = *n.ParentID
-	}
-	return false
 }
 
 // DeleteFSNode 删文件夹（先整体预检再递归）或文件（走删资产）。

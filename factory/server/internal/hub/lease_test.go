@@ -14,6 +14,7 @@ import (
 	"wmesh/factory/internal/platform/domain"
 	"wmesh/factory/internal/platform/id"
 	"wmesh/factory/internal/store"
+	"wmesh/factory/internal/wanchannel"
 )
 
 // MQTT 拨不通时续租照样经 HTTPS 落地；墙钟已过期的租约也按在线给满窗，通道停后回到离线。
@@ -147,6 +148,117 @@ func TestLeaseRetiredClosesFactoryAndStopsChannel(t *testing.T) {
 	if after.Status != store.FactoryRetired {
 		// 停了通道却没落注销就停测。
 		t.Fatalf("status %q, want %q", after.Status, store.FactoryRetired)
+	}
+}
+
+// MQTT 那路首轮补拉领到的租约也先标在线：续租还没成过一次时，墙钟已过期的钥照样收下。
+func TestHoldLeaseMarksOnline(t *testing.T) {
+	// 为本测单独分配工厂身份，避免和别的库串。
+	fid := id.New()
+	// 平台发的租约钥，长度要合解包钥。
+	key := bytes.Repeat([]byte{9}, contentcrypt.KeySize)
+	// 到期写成一小时前，模拟厂钟比平台快。
+	past := time.Now().Add(-time.Hour)
+	// 不拉起出站，平台地址只要非空即可。
+	h := claimHub(t, "http://127.0.0.1:1", fid)
+	// 建出这家厂的库，像认领那样组装服务。
+	svc, err := h.ensure(fid)
+	// 厂库建不开就停测。
+	if err != nil {
+		// 与预期不符就停测，避免后面连环误判。
+		t.Fatalf("ensure: %v", err)
+	}
+	// 起点离线：直接落过期租约应被拒，确认前提成立。
+	if err := svc.ApplyContentLease(context.Background(), key, past); !errors.Is(err, domain.ErrContentLeaseExpired) {
+		// 起点不是离线，后面的断言没有意义。
+		t.Fatalf("offline apply: %v", err)
+	}
+	// 已取消的通道不再标在线，也不落钥。
+	gone, cancel := context.WithCancel(context.Background())
+	// 先取消，模拟通道正在停。
+	cancel()
+	// 取消后交回取消原因，不落钥。
+	if err := applyHTTPSLease(gone, svc, wanchannel.Lease{Key: key, NotAfter: past}); !errors.Is(err, context.Canceled) {
+		// 取消了还往下落就停测。
+		t.Fatalf("cancelled apply: %v", err)
+	}
+	// 取消那次不该把通道标成在线，过期租约仍应被拒。
+	if err := svc.ApplyContentLease(context.Background(), key, past); !errors.Is(err, domain.ErrContentLeaseExpired) {
+		// 取消后仍被标在线就停测。
+		t.Fatalf("online after cancelled apply: %v", err)
+	}
+	// 走 Hold 回调用的同一函数，过期租约应被收下。
+	if err := applyHTTPSLease(context.Background(), svc, wanchannel.Lease{Key: key, NotAfter: past}); err != nil {
+		// 首轮补拉的钥被拒，厂钟偏快时要等续租先成一次。
+		t.Fatalf("hold apply: %v", err)
+	}
+	// 取当前过站钥，确认就是平台那把。
+	got, err := svc.Store().TransitKey()
+	// 没取到或不是平台那把就停测。
+	if err != nil || !bytes.Equal(got, key) {
+		// 钥没落进内存就停测。
+		t.Fatalf("transit key %x %v", got, err)
+	}
+}
+
+// 续租那路撞上注销时落库失败要按退避重落，落上才交回真；取消就交回假。
+func TestRetryCloseFromWAN(t *testing.T) {
+	// 为日志分配一个工厂身份。
+	fid := id.New()
+	// 数落注销被调了几次。
+	var calls atomic.Int32
+	// 前两次模拟厂库瞬时出错，第三次落上。
+	flaky := func(context.Context) error {
+		// 前两次交回库错误。
+		if calls.Add(1) <= 2 {
+			// 模拟厂库瞬时出错。
+			return errors.New("db down")
+		}
+		return nil
+	}
+	// 起步等十毫秒，测试不必等满一秒。
+	if !retryCloseFromWAN(context.Background(), fid, flaky, 10*time.Millisecond) {
+		// 落上了却交回假，调用方不会停通道。
+		t.Fatal("want landed")
+	}
+	// 应正好落了三次：两次失败、一次落上。
+	if calls.Load() != 3 {
+		// 次数不对说明没有重试或多落了。
+		t.Fatalf("calls %d", calls.Load())
+	}
+	// 一直落不上的情形，取消后要尽快离开。
+	ctx, cancel := context.WithCancel(context.Background())
+	// 测完放掉取消函数。
+	defer cancel()
+	// 一直落不上，模拟库长时间不可用。
+	down := func(context.Context) error {
+		// 每次都交回库错误。
+		return errors.New("db down")
+	}
+	// 收重试的结果，主协程等它离开。
+	done := make(chan bool, 1)
+	// 后台重试，主协程稍后取消。
+	go func() {
+		// 交回是否落上。
+		done <- retryCloseFromWAN(ctx, fid, down, 10*time.Millisecond)
+	}()
+	// 稍等让它重试几轮。
+	time.Sleep(50 * time.Millisecond)
+	// 取消，模拟通道正被别处停掉。
+	cancel()
+	// 等它离开，给足时间。
+	select {
+	// 取消后应交回假。
+	case landed := <-done:
+		// 没落上却交回真就停测。
+		if landed {
+			// 取消后不该算落上。
+			t.Fatal("want not landed after cancel")
+		}
+	// 一秒内没离开就停测。
+	case <-time.After(time.Second):
+		// 取消后还在重试就停测。
+		t.Fatal("retry did not stop after cancel")
 	}
 }
 

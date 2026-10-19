@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"wmesh/factory/internal/platform/domain"
 	"wmesh/factory/internal/platform/id"
@@ -169,6 +170,10 @@ func (s *Store) InsertGovernedAssetInto(ctx context.Context, in Asset, parentID 
 	var row governedAssetRow
 	// 放进同一事务，中途失败就整单回滚。
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// 依赖行上共享锁，并发改作业类型要等这笔提交；锁后类型对不上就拒绝。
+		if err := lockAssetDepsTx(tx, weldKind, in.Deps, nil); err != nil {
+			return err
+		}
 		// 先接调用方带来的编号，空的再现发。
 		code := in.Code
 		// 带了身份或编号就是示教器新建，先核身份和号段。
@@ -287,6 +292,25 @@ func (s *Store) UpdateGovernedAsset(ctx context.Context, assetID uuid.UUID, expe
 		if err != nil {
 			return err
 		}
+		// 这笔写完后的作业类型：带了就用新的，空着沿用库里的。
+		weldKind := row.WeldKind
+		// 这次带了作业类型才换成新值。
+		if w.WeldKind != "" {
+			// 先规范作业类型，别名和现值相同不算换。
+			weldKind, err = NormalizeWeldKind(w.WeldKind)
+			// 规范作业类型失败就停，避免带着错误继续。
+			if err != nil {
+				return err
+			}
+		}
+		// 工艺要换作业类型时锁行并在事务里复查引用，仍被工程钉着就拒绝。
+		if err := guardProcessWeldKindTx(tx, row, weldKind); err != nil {
+			return err
+		}
+		// 新钉的依赖行上共享锁，并发改作业类型要等这笔提交；锁后类型对不上就拒绝。
+		if err := lockAssetDepsTx(tx, weldKind, w.Deps, unmarshalAssetDeps(row.Deps)); err != nil {
+			return err
+		}
 		// 只收集这次要改的列，避免整行覆盖。
 		updates := map[string]any{
 			"name":       w.Name,
@@ -317,14 +341,8 @@ func (s *Store) UpdateGovernedAsset(ctx context.Context, assetID uuid.UUID, expe
 		}
 		// 带了作业类型才改，空着表示保持原样。
 		if w.WeldKind != "" {
-			// 先规范作业类型，结果留给紧跟着的判断。
-			kind, err := NormalizeWeldKind(w.WeldKind)
-			// 规范作业类型失败就停，避免带着错误继续。
-			if err != nil {
-				return err
-			}
-			// 把这一列放进本次更新。
-			updates["weld_kind"] = kind
+			// 把规范过的作业类型放进本次更新。
+			updates["weld_kind"] = weldKind
 		}
 		// 带了源修订才覆盖，避免把升档来源抹掉。
 		if w.SourceRevision != nil {
@@ -449,6 +467,12 @@ func (s *Store) GovernedAssetBySourceID(ctx context.Context, sourceID uuid.UUID)
 
 // AssetIsReferenced 是否仍被某条工程的 deps 引用。
 func (s *Store) AssetIsReferenced(ctx context.Context, assetID uuid.UUID) (bool, error) {
+	// 事务外直接查一次，供业务层快速拒绝。
+	return assetReferencedTx(s.db.WithContext(ctx), assetID)
+}
+
+// assetReferencedTx 在给定连接上查有没有工程 deps 钉着这条，事务内外共用。
+func assetReferencedTx(db *gorm.DB, assetID uuid.UUID) (bool, error) {
 	// 收成正文再往下用，避免半截结构落库。
 	raw, err := json.Marshal([]map[string]string{{"id": assetID.String()}})
 	// 收成正文失败就停，避免带着错误继续。
@@ -458,10 +482,85 @@ func (s *Store) AssetIsReferenced(ctx context.Context, assetID uuid.UUID) (bool,
 	// 准备承接计数，用来判断有没有匹配行。
 	var n int64
 	// 计数失败就停，避免带着错误继续。
-	if err := s.db.WithContext(ctx).Model(&governedAssetRow{}).Where("deps @> ?", raw).Count(&n).Error; err != nil {
+	if err := db.Model(&governedAssetRow{}).Where("deps @> ?", raw).Count(&n).Error; err != nil {
 		return false, err
 	}
 	return n > 0, nil
+}
+
+// guardProcessWeldKindTx 工艺要换作业类型时排他锁住本行，再在事务里复查有没有工程钉着它。
+// 和绑依赖的共享锁互斥：先绑的提交后这里看得到引用，后绑的等这里提交后读到新类型。
+func guardProcessWeldKindTx(tx *gorm.DB, row governedAssetRow, weldKind string) error {
+	// 不是工艺或类型没变，不涉及钉着它的工程。
+	if row.Kind != KindProcess || weldKind == row.WeldKind {
+		return nil
+	}
+	// 只取身份，锁行用不着正文。
+	var locked governedAssetRow
+	// 排他锁住这条工艺，正在绑它的事务提交后才往下查。
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Select("id").First(&locked, "id = ?", row.ID).Error; err != nil {
+		// 没有这一行就当成不存在。
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return domain.ErrNotFound
+		}
+		return err
+	}
+	// 锁住后在事务里复查引用，并发刚绑上的也看得到。
+	used, err := assetReferencedTx(tx, row.ID)
+	// 引用查不清就不改类型，不能当没被引用。
+	if err != nil {
+		return err
+	}
+	// 仍被工程钉着就拒绝，免得那些工程类型对不上。
+	if used {
+		return domain.ErrWeldKindInUse
+	}
+	return nil
+}
+
+// lockAssetDepsTx 对新钉且在本厂原件表里的依赖行加共享锁，并发改作业类型须等本笔提交；锁后类型对不上就拒绝。
+// kept 是当前行已有的依赖，改类型那边复查引用看得到它们，不必再锁；已收平台副本不在这张表，本厂改不了它的类型。
+func lockAssetDepsTx(tx *gorm.DB, weldKind string, deps, kept []AssetDep) error {
+	// 已有依赖和已收过的身份都记在这里，免得重复去锁。
+	seen := make(map[uuid.UUID]struct{}, len(kept)+len(deps))
+	// 逐条记下当前行已有的依赖。
+	for _, d := range kept {
+		// 记下这条已有依赖，后面跳过它。
+		seen[d.ID] = struct{}{}
+	}
+	// 按数量先准备要锁的身份。
+	ids := make([]uuid.UUID, 0, len(deps))
+	// 逐条挑出新钉的依赖身份。
+	for _, d := range deps {
+		// 已有或已收过就跳过，不重复锁。
+		if _, ok := seen[d.ID]; ok {
+			continue
+		}
+		// 记下这个身份，同一条只锁一次。
+		seen[d.ID] = struct{}{}
+		// 把新钉的身份放进待锁清单。
+		ids = append(ids, d.ID)
+	}
+	// 没有新钉的依赖就不用锁。
+	if len(ids) == 0 {
+		return nil
+	}
+	// 准备承接锁到的身份和作业类型。
+	var got []governedAssetRow
+	// 共享锁住依赖行；正在改类型的要等它提交，改过的读到新类型。
+	if err := tx.Model(&governedAssetRow{}).Clauses(clause.Locking{Strength: "SHARE"}).Select("id", "weld_kind").Where("id IN ?", ids).Find(&got).Error; err != nil {
+		return err
+	}
+	// 逐条核锁后读到的作业类型，事务外核过之后被改了也挡得住。
+	for _, d := range got {
+		// 收成单层、多层或T排再比。
+		kind, err := NormalizeWeldKind(d.WeldKind)
+		// 类型不认或和工程不同就拒绝，工程和工艺必须同类型。
+		if err != nil || kind != weldKind {
+			return domain.ErrWeldKindMismatch
+		}
+	}
+	return nil
 }
 
 // DeleteGovernedAsset 物理删除本厂一条；调用方须先确认未被依赖。
@@ -644,6 +743,27 @@ func (s *Store) TamperAssetDeps(ctx context.Context, assetID uuid.UUID, deps []A
 	}
 	// 只改点名的列，避免把别的字段写成零值。
 	res := s.db.WithContext(ctx).Model(&governedAssetRow{}).Where("id = ?", assetID).Update("deps", raw)
+	// 更新失败则交回库错误，不能当成已经改完。
+	if res.Error != nil {
+		return res.Error
+	}
+	// 没有改到行就当目标不存在。
+	if res.RowsAffected == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}
+
+// TamperAssetWeldKind 只改作业类型不升修订、不看引用，供旧数据类型对不上的夹具使用。
+func (s *Store) TamperAssetWeldKind(ctx context.Context, assetID uuid.UUID, weldKind string) error {
+	// 先规范作业类型，脏值连夹具也不写。
+	kind, err := NormalizeWeldKind(weldKind)
+	// 规范作业类型失败就停，避免带着错误继续。
+	if err != nil {
+		return err
+	}
+	// 只改点名的列，避免把别的字段写成零值。
+	res := s.db.WithContext(ctx).Model(&governedAssetRow{}).Where("id = ?", assetID).Update("weld_kind", kind)
 	// 更新失败则交回库错误，不能当成已经改完。
 	if res.Error != nil {
 		return res.Error
