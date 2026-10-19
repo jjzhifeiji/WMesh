@@ -23,11 +23,17 @@ type Hooks struct {
 
 // Broker 是厂进程内给本厂 Client 用的 MQTT 服务。
 type Broker struct {
-	server  *mqtt.Server         // 内嵌的消息服务，只给本厂设备连。
-	addr    string               // 实际监听地址，占住端口之后才知道。
-	hooks   Hooks                // 鉴权和回执交给外面的应用服务。
-	mu      sync.Mutex           // 挡住并发，避免两路同时改这份状态。
-	persons map[string]uuid.UUID // MQTT ClientIdentifier → 登录人
+	server  *mqtt.Server                // 内嵌的消息服务，只给本厂设备连。
+	addr    string                      // 实际监听地址，占住端口之后才知道。
+	hooks   Hooks                       // 鉴权和回执交给外面的应用服务。
+	mu      sync.Mutex                  // 挡住并发，避免两路同时改这份状态。
+	persons map[*mqtt.Client]connPerson // 按每条连接记登录人，同号抢占时不串人。
+}
+
+// 一条连接鉴权时认下的登录人，以及它是否已报过上线。
+type connPerson struct {
+	person uuid.UUID // 这条连接鉴权时认下的登录人。
+	online bool      // 已报上线，之后由它自己的断开回调来删。
 }
 
 // DownTopic 仅该 Client 可订的下行 Topic。
@@ -56,7 +62,7 @@ func Listen(addr string, hooks Hooks) (*Broker, error) {
 		return nil, err
 	}
 	// 收成普通文本再拿去比较或拼接。
-	b := &Broker{addr: ln.Addr().String(), hooks: hooks, persons: map[string]uuid.UUID{}}
+	b := &Broker{addr: ln.Addr().String(), hooks: hooks, persons: map[*mqtt.Client]connPerson{}}
 	// 建内嵌消息服务，日志先丢掉。
 	server := mqtt.New(&mqtt.Options{
 		InlineClient: true,
@@ -157,8 +163,8 @@ func (h *clientHook) OnConnectAuthenticate(cl *mqtt.Client, pk packets.Packet) b
 		slog.Warn("client mqtt auth failed", "factory", fid, "client", cid, "err", err)
 		return false
 	}
-	// 人员，再交给后面，再交给后面。
-	h.broker.rememberPerson(cl.ID, personID)
+	// 按这条连接记下登录人，同号旧连接各记各的。
+	h.broker.rememberPerson(cl, personID)
 	return true
 }
 
@@ -174,8 +180,8 @@ func (h *clientHook) OnSessionEstablished(cl *mqtt.Client, _ packets.Packet) {
 	if !ok {
 		return
 	}
-	// 查出这条连接对应的登录人。
-	personID := h.broker.personOf(cl.ID)
+	// 取出这条连接的登录人，并标成已上线。
+	personID := h.broker.markOnline(cl)
 	// 已经有值就按有内容处理，不要覆盖成空。
 	if h.broker.hooks.Online != nil && personID != uuid.Nil {
 		// 上线，再交给后面，再交给后面。
@@ -197,8 +203,8 @@ func (h *clientHook) OnDisconnect(cl *mqtt.Client, _ error, _ bool) {
 	if !ok {
 		return
 	}
-	// 人员，再交给后面，再交给后面。
-	personID := h.broker.forgetPerson(cl.ID)
+	// 只删这条连接自己的项，离线记到它自己的登录人。
+	personID := h.broker.forgetPerson(cl)
 	// 已经有值就按有内容处理，不要覆盖成空。
 	if h.broker.hooks.Offline != nil && personID != uuid.Nil {
 		// 下线，再交给后面，再交给后面。
@@ -242,30 +248,38 @@ func (h *clientHook) OnPublished(cl *mqtt.Client, pk packets.Packet) {
 		return
 	}
 	// 查出这条连接对应的登录人。
-	h.broker.hooks.Up(fid, cid, h.broker.personOf(cl.ID), pk.Payload)
+	h.broker.hooks.Up(fid, cid, h.broker.personOf(cl), pk.Payload)
 }
 
-// 记住这条 MQTT 会话对应的登录人。
-func (b *Broker) rememberPerson(mqttClientID string, personID uuid.UUID) {
+// 记住这条连接对应的登录人，顺带清掉同号的残留项。
+func (b *Broker) rememberPerson(cl *mqtt.Client, personID uuid.UUID) {
 	// 对象还是空的就直接返回，避免碰到空指针。
-	if b == nil {
+	if b == nil || cl == nil {
 		return
 	}
 	// 先占住锁，避免并发写乱。
 	b.mu.Lock()
+	// 离开时放开锁，免得把别人堵住。
+	defer b.mu.Unlock()
 	// 是空的就换一路，避免空着往下用。
 	if b.persons == nil {
-		// 定下这一段，再交给后面。
-		b.persons = map[string]uuid.UUID{}
+		// 新建空表，再往里记。
+		b.persons = map[*mqtt.Client]connPerson{}
 	}
-	// 定下这一段，再交给后面。
-	b.persons[mqttClientID] = personID
-	// 放开锁，别挡住后面的人。
-	b.mu.Unlock()
+	// 逐条看旧项，鉴权后没走到上线就断的不会再有断开回调。
+	for old, p := range b.persons {
+		// 同号、没上线、已关掉的才清；已上线的等它自己的断开回调。
+		if old != cl && old.ID == cl.ID && !p.online && old.Closed() {
+			// 删掉这条残留，免得同号反复重连越积越多。
+			delete(b.persons, old)
+		}
+	}
+	// 按连接记下登录人，等会话建好再标上线。
+	b.persons[cl] = connPerson{person: personID}
 }
 
-// 取出这条 MQTT 会话对应的登录人。
-func (b *Broker) personOf(mqttClientID string) uuid.UUID {
+// 取出这条连接的登录人并标成已上线，之后由它自己报离线。
+func (b *Broker) markOnline(cl *mqtt.Client) uuid.UUID {
 	// 对象还是空的就直接返回，避免碰到空指针。
 	if b == nil {
 		return uuid.Nil
@@ -274,11 +288,21 @@ func (b *Broker) personOf(mqttClientID string) uuid.UUID {
 	b.mu.Lock()
 	// 离开时放开锁，免得把别人堵住。
 	defer b.mu.Unlock()
-	return b.persons[mqttClientID]
+	// 取出这条连接记下的那一项。
+	p, ok := b.persons[cl]
+	// 已被当残留清掉就不补，免得多报一次上线。
+	if !ok {
+		return uuid.Nil
+	}
+	// 标成已上线，同号新连接鉴权时不会把它清掉。
+	p.online = true
+	// 写回表里，让上线标记生效。
+	b.persons[cl] = p
+	return p.person
 }
 
-// 会话结束时忘掉登录人。
-func (b *Broker) forgetPerson(mqttClientID string) uuid.UUID {
+// 取出这条连接对应的登录人。
+func (b *Broker) personOf(cl *mqtt.Client) uuid.UUID {
 	// 对象还是空的就直接返回，避免碰到空指针。
 	if b == nil {
 		return uuid.Nil
@@ -287,11 +311,24 @@ func (b *Broker) forgetPerson(mqttClientID string) uuid.UUID {
 	b.mu.Lock()
 	// 离开时放开锁，免得把别人堵住。
 	defer b.mu.Unlock()
-	// 定下身份，再交给后面。
-	id := b.persons[mqttClientID]
-	// 连接断开就把登录人从表里去掉。
-	delete(b.persons, mqttClientID)
-	return id
+	return b.persons[cl].person
+}
+
+// 连接断开时只忘掉它自己的登录人。
+func (b *Broker) forgetPerson(cl *mqtt.Client) uuid.UUID {
+	// 对象还是空的就直接返回，避免碰到空指针。
+	if b == nil {
+		return uuid.Nil
+	}
+	// 先占住锁，避免并发写乱。
+	b.mu.Lock()
+	// 离开时放开锁，免得把别人堵住。
+	defer b.mu.Unlock()
+	// 取出这条连接自己记下的那一项。
+	p := b.persons[cl]
+	// 只删这条连接的项，同号新连接的不动。
+	delete(b.persons, cl)
+	return p.person
 }
 
 // 会话钉死的厂和本机身份；自报字段一律忽略。

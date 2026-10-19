@@ -17,10 +17,14 @@ import {
   weldKindLabel,
   type WeldGroup,
   type WeldReportRow,
+  type WeldRunFilter,
   type WeldRunRow,
 } from "./api";
 
 const { RangePicker } = DatePicker;
+
+const RUN_PAGE_SIZE = 20; // 明细每页条数，服务端分页
+const GROUP_RUN_PAGE_SIZE = 10; // 展开分组行时每页条数
 
 function defaultRange(): [Dayjs, Dayjs] {
   return [dayjs().subtract(29, "day").startOf("day"), dayjs().startOf("day")];
@@ -38,6 +42,40 @@ function runColumns(): TableColumnsType<WeldRunRow> {
   ];
 }
 
+// 工程筛选值：有身份用身份，没身份记 none，和 /weld-runs 的 projectId 口径一致；不带工程的行没有值。
+function projectKey(r: { projectId?: string | null; projectName?: string }) {
+  if (r.projectId) return r.projectId;
+  return r.projectName === undefined ? undefined : "none";
+}
+
+// 展开分组行时按这一行的维度单独取下钻，叠上页面的人员和工程筛选，分页由服务端做。
+function GroupRuns({ tab, row, from, to, filter }: { tab: WeldGroup; row: WeldReportRow; from: string; to: string; filter: WeldRunFilter }) {
+  const [page, setPage] = useState(1);
+  const f: WeldRunFilter = { ...filter };
+  let rangeFrom = from;
+  let rangeTo = to;
+  if (tab === "project") f.projectId = row.projectId ?? "none";
+  if (tab === "person") f.personId = row.personId;
+  if (tab === "org") f.orgUnitId = row.orgUnitId ?? "direct";
+  if (tab === "day" && row.day) {
+    // 按日行取浏览器当地这一天，和报表切日的时区一致。
+    rangeFrom = dayjs(row.day).startOf("day").toISOString();
+    rangeTo = dayjs(row.day).add(1, "day").startOf("day").toISOString();
+  }
+  const q = useWeldRuns(rangeFrom, rangeTo, f, GROUP_RUN_PAGE_SIZE, (page - 1) * GROUP_RUN_PAGE_SIZE);
+  if (q.error) return <p>{errorMessage(q.error)}</p>;
+  return (
+    <Table
+      rowKey="id"
+      size="small"
+      columns={runColumns()}
+      dataSource={q.data?.items ?? []}
+      loading={q.isFetching}
+      pagination={{ current: page, pageSize: GROUP_RUN_PAGE_SIZE, total: q.data?.total ?? 0, hideOnSinglePage: true, showSizeChanger: false, onChange: setPage }}
+    />
+  );
+}
+
 // 本厂焊长时长：按工程 / 人 / 组织 / 日查看，可下钻每次起停。
 export function ReportsPage() {
   const { message } = App.useApp();
@@ -46,46 +84,40 @@ export function ReportsPage() {
   const [tab, setTab] = useState<WeldGroup>("project");
   const [personFilter, setPersonFilter] = useState<string>();
   const [projectFilter, setProjectFilter] = useState<string>();
+  const [page, setPage] = useState(1);
   const from = range[0].startOf("day").toISOString();
   const to = range[1].add(1, "day").startOf("day").toISOString();
   const grouped = useWeldReports(tab === "person-day" ? "person" : tab, from, to, tab !== "person-day");
-  const runsQ = useWeldRuns(from, to);
+  const personReport = useWeldReports("person", from, to);
+  const projectReport = useWeldReports("project", from, to);
+  const runFilter: WeldRunFilter = { personId: personFilter, projectId: projectFilter };
+  // 明细和统计卡共用这一页：筛选走服务端，合计按全部命中的行算。
+  const runsQ = useWeldRuns(from, to, runFilter, RUN_PAGE_SIZE, (page - 1) * RUN_PAGE_SIZE);
   const seed = useSeedWeldDemo();
-  const runs = useMemo(() => {
-    let rows = runsQ.data ?? [];
-    if (personFilter) rows = rows.filter((r) => r.personId === personFilter);
-    if (projectFilter) rows = rows.filter((r) => (r.projectId ?? "") === projectFilter || r.projectName === projectFilter);
-    return rows;
-  }, [runsQ.data, personFilter, projectFilter]);
   const reportRows = useMemo(() => {
     let rows = grouped.data ?? [];
     if (personFilter) rows = rows.filter((r) => r.personId === personFilter);
-    if (projectFilter) rows = rows.filter((r) => (r.projectId ?? "") === projectFilter || r.projectName === projectFilter);
+    if (projectFilter) rows = rows.filter((r) => projectKey(r) === projectFilter);
     return rows;
   }, [grouped.data, personFilter, projectFilter]);
-  const totals = useMemo(
-    () =>
-      runs.reduce(
-        (acc, r) => {
-          acc.lengthMm += r.lengthMm;
-          acc.durationSec += r.durationSec;
-          acc.runCount += 1;
-          return acc;
-        },
-        { lengthMm: 0, durationSec: 0, runCount: 0 },
-      ),
-    [runs],
-  );
+  const totals = {
+    lengthMm: runsQ.data?.lengthMm ?? 0,
+    durationSec: runsQ.data?.durationSec ?? 0,
+    runCount: runsQ.data?.total ?? 0,
+  };
   const people = useMemo(() => {
     const map = new Map<string, string>();
-    for (const r of runsQ.data ?? []) map.set(r.personId, personLabel(r));
+    for (const r of personReport.data ?? []) if (r.personId) map.set(r.personId, personLabel(r));
     return [...map.entries()].map(([value, label]) => ({ value, label }));
-  }, [runsQ.data]);
+  }, [personReport.data]);
   const projects = useMemo(() => {
     const map = new Map<string, string>();
-    for (const r of runsQ.data ?? []) map.set(r.projectId ?? r.projectName, r.projectName);
+    for (const r of projectReport.data ?? []) {
+      const key = projectKey(r);
+      if (key && !map.has(key)) map.set(key, r.projectName ?? "");
+    }
     return [...map.entries()].map(([value, label]) => ({ value, label }));
-  }, [runsQ.data]);
+  }, [projectReport.data]);
 
   const groupColumns: TableColumnsType<WeldReportRow> = [
     ...(tab === "project" ? [{ title: "工程", dataIndex: "projectName" } satisfies TableColumnsType<WeldReportRow>[number]] : []),
@@ -99,15 +131,6 @@ export function ReportsPage() {
     { title: "次均时长", key: "adur", width: 110, render: (_: unknown, r: WeldReportRow) => formatDuration(avg(r.durationSec, r.runCount)) },
   ];
 
-  const runsFor = (row: WeldReportRow) =>
-    runs.filter((r) => {
-      if (tab === "project") return (row.projectId && r.projectId === row.projectId) || r.projectName === row.projectName;
-      if (tab === "person") return r.personId === row.personId;
-      if (tab === "org") return (r.orgUnitId ?? "direct") === (row.orgUnitId ?? "direct");
-      if (tab === "day") return dayjs(r.occurredAt).format("YYYY-MM-DD") === row.day;
-      return true;
-    });
-
   return (
     <>
       <PageHeader
@@ -115,13 +138,36 @@ export function ReportsPage() {
         description="按当时工程、登录人和组织路径归集；可下钻每次起停。换人、调动、改工程名不改历史。"
         extra={
           <>
-            <Select allowClear placeholder="人员" style={{ width: 180 }} options={people} value={personFilter} onChange={setPersonFilter} />
-            <Select allowClear placeholder="工程" style={{ width: 200 }} options={projects} value={projectFilter} onChange={setProjectFilter} />
+            <Select
+              allowClear
+              placeholder="人员"
+              style={{ width: 180 }}
+              options={people}
+              value={personFilter}
+              onChange={(v) => {
+                setPersonFilter(v);
+                setPage(1);
+              }}
+            />
+            <Select
+              allowClear
+              placeholder="工程"
+              style={{ width: 200 }}
+              options={projects}
+              value={projectFilter}
+              onChange={(v) => {
+                setProjectFilter(v);
+                setPage(1);
+              }}
+            />
             <RangePicker
               allowClear={false}
               value={range}
               onChange={(v) => {
-                if (v?.[0] && v[1]) setRange([v[0].startOf("day"), v[1].startOf("day")]);
+                if (v?.[0] && v[1]) {
+                  setRange([v[0].startOf("day"), v[1].startOf("day")]);
+                  setPage(1);
+                }
               }}
             />
             {isSA ? (
@@ -176,7 +222,13 @@ export function ReportsPage() {
         ]}
       />
       {tab === "person-day" ? (
-        <Table rowKey="id" columns={runColumns()} dataSource={runs} loading={runsQ.isLoading} pagination={{ pageSize: 20 }} />
+        <Table
+          rowKey="id"
+          columns={runColumns()}
+          dataSource={runsQ.data?.items ?? []}
+          loading={runsQ.isFetching}
+          pagination={{ current: page, pageSize: RUN_PAGE_SIZE, total: runsQ.data?.total ?? 0, showSizeChanger: false, onChange: setPage }}
+        />
       ) : (
         <Table
           rowKey={(r, i) => `${r.personId ?? ""}-${r.projectId ?? r.projectName ?? ""}-${r.orgUnitId ?? ""}-${r.day ?? ""}-${i}`}
@@ -186,7 +238,7 @@ export function ReportsPage() {
           pagination={{ pageSize: 20 }}
           expandable={{
             expandedRowRender: (row) => (
-              <Table rowKey="id" size="small" columns={runColumns()} dataSource={runsFor(row)} pagination={false} />
+              <GroupRuns key={`${from}|${to}|${personFilter ?? ""}|${projectFilter ?? ""}`} tab={tab} row={row} from={from} to={to} filter={runFilter} />
             ),
           }}
         />

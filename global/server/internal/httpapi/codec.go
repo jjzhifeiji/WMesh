@@ -22,8 +22,8 @@ var errBodyTooLarge = errors.New("request body too large") // 正文超过本入
 const (
 	maxJSONBody     = 1 << 20  // 普通接口一兆，最大单份工程约 67KB
 	maxBulkJSONBody = 32 << 20 // 旧文件导入，验过管理员才按此读
-	// 焊汇总上限：5000 行×每行最坏约 1.4KB≈6.8MB，取 8MiB。
-	maxWeldSummaryBody = 8 << 20
+	// 焊汇总整表上送不限行数，只按 64MiB 挡异常包。
+	maxWeldSummaryBody = 64 << 20
 	bulkReadWindow     = 5 * time.Minute // 验过身份的大正文放宽读时限
 )
 

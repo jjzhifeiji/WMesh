@@ -26,6 +26,9 @@ type kernel struct {
 	imageJanitor   ImageJanitor             // 请 updater 清无用镜像；测试可空
 	clientDown     ClientDown               // 厂→Client MQTT；空则只留下发记录
 	wanWeld        WeldWANPoster            // 把无人员组织的焊汇总交给 WAN；空则不上送
+	weldDirty      chan struct{}            // 焊汇总已变的信号，容量 1，多次变化合并成一次上送
+	wanRetryMin    time.Duration            // 后台上送退避起点，连续失败才加倍
+	wanRetryMax    time.Duration            // 后台上送退避封顶，WAN 久断也不拖太久
 	mqttMu         sync.Mutex               // 护着示教器在线计数，避免并发写乱
 	mqttOnline     map[uuid.UUID]int        // 本厂示教器 MQTT 连接数；>0 才算在线
 	softwareMu     sync.Mutex               // 护着同版本拉包单飞
@@ -141,8 +144,11 @@ func (k *kernel) SetBlobs(store blob.Store) {
 
 // NewService 组装厂内应用服务；调用方先打开这一家厂库。
 func NewService(st *Store) *Service {
-	// 正文先放内存，生产再换对象存储
-	k := &kernel{store: st, blobs: blob.NewMemory()}
+	// 正文先放内存，生产再换对象存储；焊汇总信号留一格，后台上送按默认退避
+	k := &kernel{
+		store: st, blobs: blob.NewMemory(), weldDirty: make(chan struct{}, 1),
+		wanRetryMin: wanPushRetryMin, wanRetryMax: wanPushRetryMax,
+	}
 	return &Service{
 		kernel:    k,
 		Auth:      &Auth{kernel: k, activateGates: map[uuid.UUID]*rate.Limiter{}},

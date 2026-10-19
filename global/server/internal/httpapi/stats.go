@@ -10,7 +10,7 @@ import (
 
 // mountStats 挂厂端焊汇总上送和 WAN 管理员跨厂报表。
 func (h *Handler) mountStats(mux *http.ServeMux) {
-	// 厂端上送当前焊汇总，整表替换。
+	// 厂端上送当前焊汇总，整表替换，回执列出跳过的行。
 	mux.HandleFunc("POST /v1/channel/weld-summaries", h.putWeldSummaries)
 	// 管理员读跨厂焊汇总，不含人员。
 	mux.HandleFunc("GET /v1/weld-reports", h.listWeldReports)
@@ -31,7 +31,7 @@ type weldSummariesBody struct {
 	Rows []weldSummaryIn `json:"rows"` // 该厂当前全量汇总
 }
 
-// 收下该厂当前焊汇总并整表替换；请求体不得带人员或组织字段。
+// 收下该厂当前焊汇总并整表替换，回执列出跳过的行；请求体不得带人员或组织字段。
 func (h *Handler) putWeldSummaries(w http.ResponseWriter, r *http.Request) {
 	// 留下厂或资产身份，后面用来认领或升档。
 	fid, err := h.factoryProof(r)
@@ -61,14 +61,16 @@ func (h *Handler) putWeldSummaries(w http.ResponseWriter, r *http.Request) {
 			RunCount: row.RunCount, LengthMM: row.LengthMM, DurationSec: row.DurationSec,
 		})
 	}
-	// 用这份汇总替换该厂全表，带人员则拒绝。
-	if err := h.svc.Stats.PutFromFactory(r.Context(), fid, items); err != nil {
+	// 用这份汇总替换该厂全表，坏行只跳过并列进回执。
+	receipt, err := h.svc.Stats.PutFromFactoryReport(r.Context(), fid, items)
+	// 没成功就按业务错误回写，不假装完成。
+	if err != nil {
 		// 按业务错误回写，内部细节不出网。
 		writeErr(w, err)
 		return
 	}
-	// 成功无正文，调用方不要当成失败。
-	w.WriteHeader(http.StatusNoContent)
+	// 回执交回跳过的行和总数，厂端据此记日志。
+	writeJSON(w, http.StatusOK, receipt)
 }
 
 // 跨厂焊汇总，不含人员组织。

@@ -252,7 +252,7 @@ func auditDenies(t *testing.T, svc *service.Service, action string) int {
 	return n
 }
 
-// 焊汇总两兆照收，超过八兆回 413。
+// 焊汇总两兆照收，超过六十四兆回 413。
 func TestWeldSummaryBodyLimitHTTP(t *testing.T) {
 	// 起库和服务，拿到管理员会话。
 	svc, tok := limitService(t)
@@ -300,13 +300,13 @@ func TestWeldSummaryBodyLimitHTTP(t *testing.T) {
 	}
 	// 用厂钥上送，应整表收下。
 	code, raw := doFactory(t, srv, created.Factory.ID, priv, "POST", "/v1/channel/weld-summaries", b.String())
-	// 成功却不是无正文，调用方会误判。
-	if code != http.StatusNoContent {
+	// 成功应回 200 带回执，状态不对就是被拦了。
+	if code != http.StatusOK {
 		// 两兆汇总被拦，带上现场停测。
 		t.Fatalf("2MiB summaries %d %.200s", code, raw)
 	}
-	// 超过八兆的正文，应直接回 413。
-	huge := strings.Repeat(" ", 8<<20+1) + `{"rows":[]}`
+	// 超过六十四兆的正文，应直接回 413。
+	huge := strings.Repeat(" ", 64<<20+1) + `{"rows":[]}`
 	// 用厂钥上送超大正文。
 	code, raw = doFactory(t, srv, created.Factory.ID, priv, "POST", "/v1/channel/weld-summaries", huge)
 	// 状态或错误句不对就停测。

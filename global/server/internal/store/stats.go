@@ -17,6 +17,8 @@ const (
 	WeldUnsetProject   = "未关联工程"      // 未打开工程时的汇总名
 )
 
+const weldSummaryInsertBatch = 1000 // 整表替换时每批写入的行数
+
 // WeldSummary 是一家厂按日、工程名、模式上送的焊汇总，不含人员组织。
 type WeldSummary struct {
 	FactoryID   uuid.UUID // 上送工厂
@@ -76,24 +78,31 @@ func (s *Store) ReplaceWeldSummaries(ctx context.Context, factoryID uuid.UUID, r
 	now := time.Now().UTC()
 	// 先删这家厂的旧汇总再写入全量，失败则旧数据还在。
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// 按厂取事务级咨询锁，同厂并发上送排队，免得撞唯一索引或两批混写。
+		if err := tx.Exec("SELECT pg_advisory_xact_lock(hashtext(?))", "weld_summaries:"+factoryID.String()).Error; err != nil {
+			return err
+		}
 		// 删除失败就停，不能当成已经清掉。
 		if err := tx.Where("factory_id = ?", factoryID).Delete(&weldSummaryRow{}).Error; err != nil {
 			return err
 		}
-		// 旧汇总已删，按这次上送逐条写回。
+		// 这次上送是空表，删完就算替换好了。
+		if len(rows) == 0 {
+			return nil
+		}
+		// 按行数预留库行，整表一次组好再分批写。
+		batch := make([]weldSummaryRow, 0, len(rows))
+		// 旧汇总已删，按这次上送组好全部库行。
 		for _, in := range rows {
 			// 组一条汇总，身份现发，时间用这一次的。
-			row := weldSummaryRow{
+			batch = append(batch, weldSummaryRow{
 				ID: id.New(), FactoryID: factoryID, Day: in.Day, ProjectName: in.ProjectName,
 				WeldKind: in.WeldKind, RunCount: in.RunCount, LengthMM: in.LengthMM,
 				DurationSec: in.DurationSec, UpdatedAt: now,
-			}
-			// 这一行没写进去就停，不能当成已经落库。
-			if err := tx.Create(&row).Error; err != nil {
-				return err
-			}
+			})
 		}
-		return nil
+		// 每批一千行写入，整表大也不逐条往返，参数个数也不超限。
+		return tx.CreateInBatches(&batch, weldSummaryInsertBatch).Error
 	})
 }
 

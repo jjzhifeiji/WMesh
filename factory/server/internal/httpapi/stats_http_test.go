@@ -209,12 +209,62 @@ func TestWeldFactsHTTP(t *testing.T) {
 		// 与预期不符就停测，避免后面连环误判。
 		t.Fatalf("bad tz %d %s", code, body)
 	}
+	// 再送一条厂直属焊，下钻按 direct 要能单独取出。
+	idC := id.New().String()
+	// 厂直属不带节点，路径为空。
+	directPayload, _ := json.Marshal(map[string]any{
+		"facts": []map[string]any{{
+			"id": idC, "creatorId": pa.ID.String(), "orgPath": []map[string]string{},
+			"lengthMm": 100, "durationSec": 5,
+			"occurredAt": time.Date(2026, 9, 16, 2, 0, 0, 0, time.UTC).Format(time.RFC3339),
+		}},
+	})
+	// 上报这条厂直属焊，应当收下。
+	code, body = do(t, srv, "POST", base+"/pad/weld-facts", bTok, string(directPayload))
+	// 不是成功，或回包里没有这条则失败。
+	if code != http.StatusOK || !strings.Contains(body, idC) {
+		// 与预期不符就停测，避免后面连环误判。
+		t.Fatalf("direct flush %d %s", code, body)
+	}
 	// 按条件查看每次起停。
 	code, body = do(t, srv, "GET", base+"/weld-runs", saTok, "")
 	// 不是成功，或正文与预期不符则失败。
 	if code != http.StatusOK || !strings.Contains(body, "op-a") || !strings.Contains(body, "op-b") {
 		// 与预期不符就停测，避免后面连环误判。
 		t.Fatalf("runs %d %s", code, body)
+	}
+	// 合计按全部三条算，不受分页影响。
+	if gjson(t, body, "total") != "3" || gjson(t, body, "lengthMm") != "2000" || gjson(t, body, "durationSec") != "115" {
+		// 与预期不符就停测，避免后面连环误判。
+		t.Fatalf("runs totals %s", body)
+	}
+	// 每页一条，总数仍是三条。
+	code, body = do(t, srv, "GET", base+"/weld-runs?limit=1&offset=1", saTok, "")
+	// 解开下钻页，看本页条数和总数。
+	page := decodeRunPage(t, body)
+	// 不是成功，或本页不是一条、总数不是三条则失败。
+	if code != http.StatusOK || len(page.Items) != 1 || page.Total != 3 {
+		// 与预期不符就停测，避免后面连环误判。
+		t.Fatalf("runs page %d %s", code, body)
+	}
+	// 只要厂直属，应只有刚送的那条。
+	code, body = do(t, srv, "GET", base+"/weld-runs?orgUnitId=direct", saTok, "")
+	// 解开下钻页，看是不是只有厂直属那条。
+	page = decodeRunPage(t, body)
+	// 不是成功，或混进了有节点的焊则失败。
+	if code != http.StatusOK || page.Total != 1 || len(page.Items) != 1 || page.Items[0].ID != idC || page.LengthMM != 100 {
+		// 与预期不符就停测，避免后面连环误判。
+		t.Fatalf("runs direct %d %s", code, body)
+	}
+	// 分页参数和组织编号不合法，都应当回非法请求。
+	for _, q := range []string{"limit=-1", "limit=abc", "offset=-5", "orgUnitId=bad"} {
+		// 带着坏参数查下钻。
+		code, body = do(t, srv, "GET", base+"/weld-runs?"+q, saTok, "")
+		// 不是非法请求则本测失败。
+		if code != http.StatusBadRequest {
+			// 与预期不符就停测，避免后面连环误判。
+			t.Fatalf("runs %s %d %s", q, code, body)
+		}
 	}
 	// 写入演示焊次，已经有了应当跳过。
 	code, body = do(t, srv, "POST", base+"/weld-reports/demo", bTok, "")
@@ -230,12 +280,12 @@ func TestWeldFactsHTTP(t *testing.T) {
 		// 与预期不符就停测，避免后面连环误判。
 		t.Fatalf("demo %d %s", code, body)
 	}
-	// 积压一大批：工程名拉长，凑出两兆多正文，超过普通一兆上限。
-	name := strings.Repeat("工程", 170)
-	// 一千六百条，约两兆多，核对既不限字节到一兆也不限条数。
-	facts := make([]map[string]any, 0, 1600)
+	// 积压一大批：工程名拉到 200 字上限，凑出两兆多正文，超过普通一兆上限。
+	name := strings.Repeat("工程", 100)
+	// 两千六百条，约两兆多，核对既不限字节到一兆也不限条数。
+	facts := make([]map[string]any, 0, 2600)
 	// 逐条拼出合法焊事实，创建人都是焊工A。
-	for i := 0; i < 1600; i++ {
+	for i := 0; i < 2600; i++ {
 		// 每条新身份，避免和前面的事实撞上。
 		facts = append(facts, map[string]any{
 			"id": id.New().String(), "creatorId": pa.ID.String(), "orgUnitId": shop.ID.String(),
@@ -273,6 +323,32 @@ func TestWeldFactsHTTP(t *testing.T) {
 		// 与预期不符就停测，避免后面连环误判。
 		t.Fatalf("big flush accepted %d rejected %d", len(flushed.Accepted), len(flushed.Rejected))
 	}
+}
+
+// 下钻回包里的一次起停，只看身份。
+type runPageItem struct {
+	ID string `json:"id"` // 事实身份
+}
+
+// 下钻回包里测试要看的几项。
+type runPageBody struct {
+	Items    []runPageItem `json:"items"`    // 本页起停
+	Total    int64         `json:"total"`    // 同条件总条数
+	LengthMM int64         `json:"lengthMm"` // 同条件焊长合计
+}
+
+// 解开下钻回包，解不开就停测。
+func decodeRunPage(t *testing.T, body string) runPageBody {
+	// 标成辅助函数，失败时栈指向真正的用例。
+	t.Helper()
+	// 准备承接下钻页。
+	var page runPageBody
+	// 回包解不开则停测。
+	if err := json.Unmarshal([]byte(body), &page); err != nil {
+		// 与预期不符就停测，避免后面连环误判。
+		t.Fatalf("run page %s: %v", body, err)
+	}
+	return page
 }
 
 // 登录网页并带回会话，失败则停测。

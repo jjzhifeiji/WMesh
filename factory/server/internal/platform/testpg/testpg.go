@@ -46,6 +46,11 @@ func Open(t *testing.T) *gorm.DB {
 		// 查库失败就停住，再继续处理。
 		t.Fatalf("sql db: %v", err)
 	}
+	// 用例结束关掉维护库连接池，免得连接越攒越多撞上库的连接上限。
+	t.Cleanup(func() {
+		// 关池失败不影响用例结论，忽略即可。
+		_ = sqlDB.Close()
+	})
 	// 拿出不会被取消的上下文。
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	// 用完就取消限时，避免上下文一直占着。

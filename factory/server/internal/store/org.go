@@ -523,6 +523,41 @@ func (s *Store) InSubtree(ctx context.Context, root, node uuid.UUID) (bool, erro
 	}
 }
 
+// 递归求子树时承接一个节点身份。
+type orgIDScan struct {
+	ID uuid.UUID `gorm:"column:id"` // 子树里的节点身份
+}
+
+// OrgSubtreeIDs 递归求这些节点及其当前子树的全部节点；不按状态裁，UNION 去重防组织环。
+func (s *Store) OrgSubtreeIDs(ctx context.Context, roots []uuid.UUID) ([]uuid.UUID, error) {
+	// 没有根就没有子树，不必查库。
+	if len(roots) == 0 {
+		return []uuid.UUID{}, nil
+	}
+	// 准备承接子树里的节点。
+	var rows []orgIDScan
+	// 沿父指针往下递归，UNION 遇到走过的节点就不再展开。
+	err := s.db.WithContext(ctx).Raw(`
+		WITH RECURSIVE sub(id) AS (
+			SELECT id FROM org_units WHERE id IN ?
+			UNION
+			SELECT u.id FROM org_units u JOIN sub ON u.parent_id = sub.id
+		)
+		SELECT id FROM sub`, roots).Scan(&rows).Error
+	// 查库失败就停，不交残缺的子树。
+	if err != nil {
+		return nil, err
+	}
+	// 按需要预留位置，避免后面反复扩容。
+	out := make([]uuid.UUID, 0, len(rows))
+	// 逐个收下节点身份。
+	for _, r := range rows {
+		// 收进结果，顺序不影响可见判定。
+		out = append(out, r.ID)
+	}
+	return out, nil
+}
+
 // TryDeleteOrgUnit 仅用于验收「被引用不得物理删除」；业务路径不提供删除。
 func (s *Store) TryDeleteOrgUnit(ctx context.Context, unitID uuid.UUID) error {
 	// 把库操作的错误原样交回，好让调用方处理。

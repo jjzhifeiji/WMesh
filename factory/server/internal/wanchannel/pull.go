@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -123,7 +124,7 @@ func (p *puller) post(ctx context.Context, path string, dst any) error {
 	return nil
 }
 
-// 带厂钥签名 POST JSON 正文。
+// 带厂钥签名 POST JSON 正文；2xx 即算收下，回执可有可无。
 func (p *puller) postJSON(ctx context.Context, path string, payload, dst any) error {
 	// 编出正文，编不出就不发，避免残缺上送。
 	raw, err := json.Marshal(payload)
@@ -155,18 +156,23 @@ func (p *puller) postJSON(ctx context.Context, path string, payload, dst any) er
 	if err != nil {
 		return domain.ErrWANUnreachable
 	}
+	// 平台 5xx 是暂时故障，收成不可达，上送方会退避重试。
+	if res.StatusCode >= http.StatusInternalServerError {
+		return domain.ErrWANUnreachable
+	}
 	// 平台拒绝就把状态收成业务错误。
 	if res.StatusCode >= 300 {
 		// 按状态和英文原因交回，调用方不要当成功。
 		return mapHTTPStatus(res.StatusCode, body)
 	}
-	// 调用方不要正文就到此为止。
-	if dst == nil {
+	// 调用方不要回执，或平台回 204、空正文，都当没有回执。
+	if dst == nil || res.StatusCode == http.StatusNoContent || len(bytes.TrimSpace(body)) == 0 {
 		return nil
 	}
-	// 回执解不开就当不可达，避免当成已收下。
+	// 回执解不开只记告警；平台已 2xx 收下，不能当失败重送。
 	if err := json.Unmarshal(body, dst); err != nil {
-		return domain.ErrWANUnreachable
+		// 记下路径和原因，不当上送失败。
+		slog.Warn("wan receipt undecodable", "path", path, "err", err)
 	}
 	return nil
 }

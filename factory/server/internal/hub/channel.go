@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"time"
@@ -292,18 +293,8 @@ func (h *Hub) dialHold(ctx context.Context, factoryID uuid.UUID) error {
 	svc.Store().SetContentChannelOnline(true)
 	// 离开时标成离线，没通道就不再解正文。
 	defer svc.Store().SetContentChannelOnline(false)
-	// 连上后补送焊汇总，失败只记日志。
-	go func() {
-		// 补送焊汇总限时，避免堵住通道建立。
-		pctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
-		// 补送结束就释放这次超时。
-		defer cancel()
-		// 补送焊汇总失败只记日志，不断开通道。
-		if err := svc.Stats.PushWANSummaries(pctx); err != nil {
-			// 记下汇总没送上，下一轮连接再试。
-			slog.Warn("push weld summaries", "factory", factoryID, "err", err)
-		}
-	}()
+	// 连通道时请后台补送焊汇总，和汇聚共用一条串行循环。
+	svc.Stats.RequestWANPush()
 	// 把平台推来的治理状态落到本厂库。
 	err = wanchannel.Hold(ctx, mqttURL, wanURL, factoryID, priv, func(st wanchannel.State) error {
 		// 平台给了短码才更新，空的不去清掉已有短码。
@@ -528,9 +519,14 @@ func (h *Hub) PostWeldSummaries(ctx context.Context, factoryID uuid.UUID, rows [
 	}
 	// 读取签发钥，没有钥就不能签名上送。
 	k, err := t.svc.Store().SigningKey(ctx)
-	// 读不到签发钥就交回，这次汇总不送。
-	if err != nil {
+	// 还没有签发钥就交回，重试也签不了，等下次信号。
+	if errors.Is(err, domain.ErrNotFound) {
 		return err
+	}
+	// 读钥时库出错算暂时送不出，后台上送会退避重试。
+	if err != nil {
+		// 套上不可达再交回，原错误仍留在链里便于排查。
+		return fmt.Errorf("%w: signing key: %w", domain.ErrWANUnreachable, err)
 	}
 	// 按条数预留上送行，人员组织不在里面。
 	out := make([]wanchannel.WeldSummaryRow, 0, len(rows))

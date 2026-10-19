@@ -2754,3 +2754,81 @@ func (w *warnLog) WithAttrs([]slog.Attr) slog.Handler { return w }
 
 // WithGroup 替身不管分组，原样交回。
 func (w *warnLog) WithGroup(string) slog.Handler { return w }
+
+// 焊汇总回执：204 空正文、带跳过的 200、坏 JSON 的 200 都算上送成功，跳过和坏回执只记告警。
+func TestPostWeldSummariesReceipt(t *testing.T) {
+	// 时差是包级状态，测前测后都清零。
+	resetClock(t)
+	// 换上告警替身，数跳过和坏回执的告警。
+	warns := captureWarn(t)
+	// 生成本厂签发钥，上送时用来签名。
+	_, priv, err := nodekey.Generate()
+	// 签发钥生不出来就停测，后面无法签名。
+	if err != nil {
+		// 这一步失败就停测，避免后面断言失真。
+		t.Fatal(err)
+	}
+	// 逐种回执看是否都算成功、告警是否对得上。
+	for _, tc := range []struct {
+		name    string // 用例名，失败时好认
+		code    int    // 替身回的状态码
+		body    string // 替身回的正文，空则不带
+		skipped int    // 应记的跳过告警条数
+		bad     int    // 应记的坏回执告警条数
+	}{
+		{"old wan 204", http.StatusNoContent, "", 0, 0},
+		{"empty 200", http.StatusOK, "", 0, 0},
+		{"no skips", http.StatusOK, `{"skipped":[],"skippedCount":0}`, 0, 0},
+		{"with skips", http.StatusOK, `{"skipped":[{"index":3,"reason":"invalid day"}],"skippedCount":7}`, 1, 0},
+		{"bad json", http.StatusOK, `{"skipped":`, 0, 1},
+	} {
+		// 记下这一轮之前的告警数，只看本轮新增。
+		skipBefore, badBefore := warns.count("wan skipped weld summary rows"), warns.count("wan receipt undecodable")
+		// 替身只回这一种状态码和正文。
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			// 先写状态码，模拟新旧版平台的回执。
+			w.WriteHeader(tc.code)
+			// 写回执正文，空串则不带正文。
+			_, _ = w.Write([]byte(tc.body))
+		}))
+		// 上送一行汇总，平台按这一种回执回。
+		err := PostWeldSummaries(context.Background(), srv.URL, uuid.New(), priv, []WeldSummaryRow{
+			{Day: "2026-09-18", ProjectName: "工程A", WeldKind: "single", RunCount: 1, LengthMM: 1, DurationSec: 1},
+		})
+		// 用完就关掉替身，避免端口一直占住。
+		srv.Close()
+		// 平台已 2xx 收下，报错就是把回执当成了失败。
+		if err != nil {
+			// 带上用例名和错误便于定位。
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		// 跳过告警条数不对，说明跳过的行没记或误记。
+		if got := warns.count("wan skipped weld summary rows") - skipBefore; got != tc.skipped {
+			// 带上用例名和实际条数。
+			t.Fatalf("%s: skipped warns %d want %d", tc.name, got, tc.skipped)
+		}
+		// 坏回执告警条数不对，说明解析失败没记或误记。
+		if got := warns.count("wan receipt undecodable") - badBefore; got != tc.bad {
+			// 带上用例名和实际条数。
+			t.Fatalf("%s: undecodable warns %d want %d", tc.name, got, tc.bad)
+		}
+	}
+}
+
+// 跳过原因只带前几条，拼成「序号:原因」。
+func TestFirstWeldSkips(t *testing.T) {
+	// 造七条跳过，超过告警里带的条数。
+	skips := make([]weldSummarySkip, 0, 7)
+	// 逐条造跳过的行，序号各不相同。
+	for i := range 7 {
+		// 原因都写日期坏，只看序号和条数。
+		skips = append(skips, weldSummarySkip{Index: i, Reason: "invalid day"})
+	}
+	// 收成告警用的文本。
+	got := firstWeldSkips(skips)
+	// 条数超出上限或首条格式不对就停测。
+	if len(got) != weldSkipsLogged || got[0] != "0:invalid day" {
+		// 带上实际结果便于定位。
+		t.Fatalf("first skips %v", got)
+	}
+}

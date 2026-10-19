@@ -23,8 +23,24 @@ import (
 
 // 一家厂已打开的库和应用服务。
 type tenant struct {
-	db  *gorm.DB         // 这家厂已经打开的库连接。
-	svc *service.Service // 这家厂已经组装好的应用服务。
+	db       *gorm.DB           // 这家厂已经打开的库连接。
+	svc      *service.Service   // 这家厂已经组装好的应用服务。
+	stopPush context.CancelFunc // 停掉这家厂的焊汇总上送循环。
+	pushDone chan struct{}      // 上送循环退出时关闭，关库前要等它。
+}
+
+// close 先停焊汇总上送循环并等它退出，再关库，免得循环拿着已关的库。
+// 调用方不要占着 h.mu：循环上送时要取这把锁。
+func (t *tenant) close() {
+	// 叫停上送循环，正在推的请求随之取消。
+	t.stopPush()
+	// 等循环真正退出，之后不会再碰这家厂的库。
+	<-t.pushDone
+	// 取出底层连接，能关才关。
+	if sqlDB, err := t.db.DB(); err == nil {
+		// 关掉这家厂的库连接。
+		_ = sqlDB.Close()
+	}
 }
 
 // Hub 按工厂稳定身份选库；没有库就当作工厂还不存在。
@@ -214,8 +230,19 @@ func (h *Hub) ensure(factoryID uuid.UUID) (*service.Service, error) {
 	svc.SetClientDown(h)
 	// 让这家厂能把焊汇总送到平台。
 	svc.SetWeldWANPoster(h)
+	// 上送循环跟着这家厂的库走，不跟 h.run：没配 WAN 时 h.run 一直是空。
+	pushCtx, stopPush := context.WithCancel(context.Background())
+	// 循环退出时关闭，关库方据此等它。
+	pushDone := make(chan struct{})
+	// 后台串行上送焊汇总，汇聚接口不必等 WAN。
+	go func() {
+		// 循环退出就通知关库方。
+		defer close(pushDone)
+		// 收到「已变」信号才推，关库前被取消。
+		svc.Stats.RunWANPush(pushCtx)
+	}()
 	// 记下来，下次按身份直接复用这份服务。
-	h.tenants[factoryID] = &tenant{db: db, svc: svc}
+	h.tenants[factoryID] = &tenant{db: db, svc: svc, stopPush: stopPush, pushDone: pushDone}
 	return svc, nil
 }
 
@@ -354,20 +381,19 @@ func (h *Hub) signingMaterial(ctx context.Context, svc *service.Service) (pub, p
 func (h *Hub) Drop(factoryID uuid.UUID) error {
 	// 先停出站，避免删库时还在重连。
 	h.stopChannel(factoryID)
-	// 占住厂库表，再关连接和登记。
+	// 占住厂库表，取出并摘掉这家的登记。
 	h.mu.Lock()
-	// 内存里开过就先关掉这家的连接。
-	if t, ok := h.tenants[factoryID]; ok {
-		// 取出底层连接，能关才关。
-		if sqlDB, err := t.db.DB(); err == nil {
-			// 关掉这家厂的库连接。
-			_ = sqlDB.Close()
-		}
-		// 从内存拿掉，避免还能访问已删的库。
-		delete(h.tenants, factoryID)
-	}
-	// 登记清完就放开厂库锁。
+	// 取出这家厂，内存里没开过就不用关。
+	t, ok := h.tenants[factoryID]
+	// 从内存拿掉，避免还能访问已删的库。
+	delete(h.tenants, factoryID)
+	// 登记清完就放开厂库锁，上送循环退出时还要取它。
 	h.mu.Unlock()
+	// 内存里开过就先停上送循环，再关这家的连接。
+	if ok {
+		// 停循环、等它退出，再关库。
+		t.close()
+	}
 	// 删掉厂库，只在测试回收时使用。
 	return provision.Drop(h.admin, provision.DBName(factoryID))
 }
@@ -396,20 +422,28 @@ func (h *Hub) Close() {
 	}
 	// 关完就放开设备通道锁。
 	h.clientMu.Unlock()
-	// 占住厂库表，逐家关掉数据库连接。
+	// 占住厂库表，先把各家摘下来。
 	h.mu.Lock()
-	// 全部关完再放开厂库锁。
-	defer h.mu.Unlock()
-	// 关掉每家已经打开的厂库。
+	// 按家数预留，摘下来的放锁外再关。
+	open := make([]*tenant, 0, len(h.tenants))
+	// 逐家摘掉登记，进程里不再留这家厂。
 	for id, t := range h.tenants {
-		// 取出这家厂的底层连接。
-		if sqlDB, err := t.db.DB(); err == nil {
-			// 关掉这家厂的库连接。
-			_ = sqlDB.Close()
-		}
+		// 收下这家，放锁后再停循环关库。
+		open = append(open, t)
 		// 从内存拿掉，进程里不再留这家厂。
 		delete(h.tenants, id)
 	}
+	// 放开厂库锁，上送循环退出时还要取它。
+	h.mu.Unlock()
+	// 逐家停上送循环再关库。
+	for _, t := range open {
+		// 停循环、等它退出，再关这家厂的库连接。
+		t.close()
+	}
+	// 再占住厂库表，关维护库。
+	h.mu.Lock()
+	// 关完维护库再放开厂库锁。
+	defer h.mu.Unlock()
 	// 维护库还在就关掉，避免连接泄漏。
 	if h.admin != nil {
 		// 取出维护库的底层连接。

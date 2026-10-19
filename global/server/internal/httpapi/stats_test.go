@@ -21,7 +21,7 @@ import (
 	"wmesh/global/internal/store"
 )
 
-// 厂钥上送汇总，管理员能读，带人员则拒绝。
+// 厂钥上送汇总，坏行进回执，管理员能读，带人员则拒绝。
 func TestWeldSummaryHTTP(t *testing.T) {
 	// 打开测试库管理员，用来建一块独立库。
 	admin := testpg.Open(t)
@@ -65,18 +65,19 @@ func TestWeldSummaryHTTP(t *testing.T) {
 	// 测完关掉临时服务，避免端口占着。
 	t.Cleanup(srv.Close)
 
-	// 留下正文供后面断言，读失败就停测。
-	body := `{"rows":[{"day":"2026-09-17","projectName":"单层-舷侧分段","weldKind":"single","runCount":5,"lengthMm":4000,"durationSec":200}]}`
+	// 一行好一行日期坏，好行入库，坏行只跳过。
+	body := `{"rows":[{"day":"2026-09-17","projectName":"单层-舷侧分段","weldKind":"single","runCount":5,"lengthMm":4000,"durationSec":200},{"day":"2026-13-01","projectName":"坏","weldKind":"single","runCount":1,"lengthMm":1,"durationSec":1}]}`
+	// 用厂钥上送，收下回执留着断言。
 	code, raw := doFactory(t, srv, created.Factory.ID, priv, "POST", "/v1/channel/weld-summaries", body)
-	// 成功却不是无正文，调用方会误判。
-	if code != http.StatusNoContent {
-		// 上送没被收下，带上现场停测。
+	// 应回 200，且回执里跳过一行、原因是日期坏。
+	if code != http.StatusOK || !strings.Contains(raw, `"skippedCount":1`) || !strings.Contains(raw, `{"index":1,"reason":"invalid day"}`) {
+		// 上送没被收下或回执不对，带上现场停测。
 		t.Fatalf("put %d %s", code, raw)
 	}
 	// 发出请求并记下状态，对不上就停测。
 	code, raw = do(t, srv, "GET", "/v1/weld-reports", tok, "")
 	// 这一步没成功就停测，避免误判通过。
-	if code != http.StatusOK || !strings.Contains(raw, `"projectName":"单层-舷侧分段"`) || strings.Contains(raw, "loginName") {
+	if code != http.StatusOK || !strings.Contains(raw, `"projectName":"单层-舷侧分段"`) || strings.Contains(raw, `"projectName":"坏"`) || strings.Contains(raw, "loginName") {
 		// 列表结果不对，带上现场停测。
 		t.Fatalf("list %d %s", code, raw)
 	}

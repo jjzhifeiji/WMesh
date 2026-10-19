@@ -3,6 +3,7 @@ package httpapi
 import (
 	"errors"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
@@ -11,6 +12,8 @@ import (
 )
 
 var errInvalidTZ = errors.New("invalid tz") // 报表时区名不认识，回 400
+
+var errInvalidPage = errors.New("invalid limit or offset") // 分页参数不是非负整数，回 400
 
 // mountStats 挂焊长时长汇聚、厂端报表和下钻。
 func (h *Handler) mountStats(mux *http.ServeMux) {
@@ -172,16 +175,16 @@ func (h *Handler) listWeldRuns(w http.ResponseWriter, r *http.Request) {
 			writeBadRequest(w, err)
 			return
 		}
-		// 按下钻条件返回每次起停，越权则拒绝。
-		rows, err := svc.Stats.ListWeldRuns(r.Context(), bearer(r), q)
+		// 按下钻条件返回一页起停和合计，越权的不在里面。
+		page, err := svc.Stats.ListWeldRuns(r.Context(), bearer(r), q)
 		// 上一步没通过则停止，不把失败写成成功。
 		if err != nil {
 			// 把失败译成状态回给调用方，不写成功。
 			writeErr(w, err)
 			return
 		}
-		// 通过之后把结果回给调用方。
-		writeJSON(w, http.StatusOK, rows)
+		// 通过之后把这一页和合计回给调用方。
+		writeJSON(w, http.StatusOK, page)
 	})
 }
 
@@ -330,14 +333,39 @@ func parseWeldRunQuery(r *http.Request) (service.WeldRunQuery, error) {
 		// 按指定工程收窄下钻结果。
 		q.ProjectID = proj
 	}
-	// 读取查询条件，空着表示这一项不限制。
-	org, err := parseOptUUIDQuery(r.URL.Query().Get("orgUnitId"))
+	// 读取组织筛选，特殊值表示只要厂直属。
+	orgRaw := r.URL.Query().Get("orgUnitId")
+	// 指定厂直属时，只看没有发生节点的焊次。
+	if orgRaw == "direct" {
+		// 只要厂直属的那些焊次。
+		q.DirectOnly = true
+		// 不是厂直属则按编号筛选，非法则拒绝。
+	} else {
+		// 解析可选编号，空着表示不按它筛选。
+		org, err := parseOptUUIDQuery(orgRaw)
+		// 解析失败则拒绝，不用这个残缺的值继续。
+		if err != nil {
+			return service.WeldRunQuery{}, err
+		}
+		// 按组织节点收窄下钻结果。
+		q.OrgUnitID = org
+	}
+	// 读取每页条数，空着按业务默认。
+	limit, err := parseCountQuery(r.URL.Query().Get("limit"))
 	// 解析失败则拒绝，不用这个残缺的值继续。
 	if err != nil {
 		return service.WeldRunQuery{}, err
 	}
-	// 按组织节点收窄下钻结果。
-	q.OrgUnitID = org
+	// 记下每页条数，上限由业务收住。
+	q.Limit = limit
+	// 读取跳过条数，空着从头取。
+	offset, err := parseCountQuery(r.URL.Query().Get("offset"))
+	// 解析失败则拒绝，不用这个残缺的值继续。
+	if err != nil {
+		return service.WeldRunQuery{}, err
+	}
+	// 记下跳过条数，翻页用。
+	q.Offset = offset
 	// 带了自然日才解析，格式不对则拒绝。
 	if dayRaw := r.URL.Query().Get("day"); dayRaw != "" {
 		// 按自然日解析，格式不对则拒绝整段查询。
@@ -365,6 +393,21 @@ func parseOptUUIDQuery(raw string) (*uuid.UUID, error) {
 		return nil, errInvalidID
 	}
 	return &id, nil
+}
+
+// parseCountQuery 读非负整数；空表示零，交给业务取默认。
+func parseCountQuery(raw string) (int, error) {
+	// 没带就当零，业务按默认处理。
+	if raw == "" {
+		return 0, nil
+	}
+	// 按十进制解析，不是数字则拒绝。
+	n, err := strconv.Atoi(raw)
+	// 解析失败或为负都拒绝，不悄悄改成默认。
+	if err != nil || n < 0 {
+		return 0, errInvalidPage
+	}
+	return n, nil
 }
 
 // parseTZQuery 读报表切日时区；空按 UTC，不认的 IANA 名拒绝。

@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { http } from "@/shared/api/client";
 import { fpath } from "@/shared/auth/session";
 
@@ -38,6 +38,20 @@ export type WeldRunRow = {
   occurredAt: string; // RFC3339
 };
 
+export type WeldRunPage = {
+  items: WeldRunRow[]; // 本页起停，新的在前
+  total: number; // 同条件总条数
+  lengthMm: number; // 同条件焊长合计毫米
+  durationSec: number; // 同条件时长合计秒
+};
+
+// 下钻筛选；projectId 传 none 表示未关联工程，orgUnitId 传 direct 表示厂直属。
+export type WeldRunFilter = {
+  personId?: string; // 当时登录人
+  projectId?: string; // 工程身份或 none
+  orgUnitId?: string; // 发生节点或 direct
+};
+
 export type WeldDemoResult = {
   created: number; // 本轮新写入
   total: number; // 演示焊次总数
@@ -45,7 +59,8 @@ export type WeldDemoResult = {
 
 export const weldReportKeys = {
   group: (group: WeldGroup, from: string, to: string, tz: string) => ["weld-reports", group, from, to, tz] as const,
-  runs: (from: string, to: string) => ["weld-runs", from, to] as const,
+  runs: (from: string, to: string, f: WeldRunFilter, limit: number, offset: number) =>
+    ["weld-runs", from, to, f.personId ?? "", f.projectId ?? "", f.orgUnitId ?? "", limit, offset] as const,
 };
 
 // 浏览器时区的 IANA 名，后端按它切日；取不到就不带，后端按 UTC。
@@ -72,10 +87,18 @@ export function useWeldReports(group: WeldGroup, from: string, to: string, enabl
   });
 }
 
-export function useWeldRuns(from: string, to: string) {
+// 服务端分页取下钻，合计按同一筛选在后端算；翻页时先留着上一页免得闪。
+export function useWeldRuns(from: string, to: string, filter: WeldRunFilter, limit: number, offset: number) {
   return useQuery({
-    queryKey: weldReportKeys.runs(from, to),
-    queryFn: ({ signal }) => http.get<WeldRunRow[]>(fpath(`/weld-runs?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`), signal),
+    queryKey: weldReportKeys.runs(from, to, filter, limit, offset),
+    queryFn: ({ signal }) => {
+      const qs = new URLSearchParams({ from, to, limit: String(limit), offset: String(offset) });
+      if (filter.personId) qs.set("personId", filter.personId);
+      if (filter.projectId) qs.set("projectId", filter.projectId);
+      if (filter.orgUnitId) qs.set("orgUnitId", filter.orgUnitId);
+      return http.get<WeldRunPage>(fpath(`/weld-runs?${qs.toString()}`), signal);
+    },
+    placeholderData: keepPreviousData,
   });
 }
 

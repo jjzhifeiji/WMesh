@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -16,12 +18,26 @@ import (
 
 const padRecentLimit = 100 // 示教器最近焊次条数上限
 
+const (
+	weldRunsDefaultLimit = 200  // 下钻不带条数时每页默认条数
+	weldRunsMaxLimit     = 1000 // 下钻每页最多条数，免得一次拖满库
+)
+
 // weldDemoNS 演示焊次的稳定命名空间，同一厂重复写入仍是原身份。
 var weldDemoNS = uuid.MustParse("7c2e1a90-6b4d-4f11-9c3a-0b8e5d2f1748")
 
 const weldDemoCount = 45 // 一次写入的演示焊次数
 
+const (
+	wanPushRetryMin = 5 * time.Second // 焊汇总上送失败后第一次等多久再推
+	wanPushRetryMax = 5 * time.Minute // 焊汇总上送退避封顶，WAN 久断也不拖太久
+)
+
+// errWeldLocalRead 标记读本厂焊汇总失败，后台上送据此退避重试。
+var errWeldLocalRead = errors.New("read local weld summaries")
+
 // WeldWANPoster 把无人员组织的焊汇总交给 WAN；测试可空。
+// 暂时送不出（连不上、5xx、读不到钥）交回 ErrWANUnreachable，后台会退避重试；其它错误不重试。
 type WeldWANPoster interface {
 	// 把不含人员组织的焊汇总交给广域侧
 	PostWeldSummaries(ctx context.Context, factoryID uuid.UUID, rows []WeldWANSummary) error
@@ -130,13 +146,24 @@ type WeldDemoResult struct {
 
 // WeldRunQuery 是下钻每次起停的查询窗。
 type WeldRunQuery struct {
-	From      *time.Time // 发生时间起，含
-	To        *time.Time // 发生时间止，不含
-	PersonID  *uuid.UUID // 当时登录人
-	ProjectID *uuid.UUID // 工程身份
-	NoProject bool       // 只取未打开工程
-	OrgUnitID *uuid.UUID // 发生节点
-	Day       *time.Time // UTC 日历日
+	From       *time.Time // 发生时间起，含
+	To         *time.Time // 发生时间止，不含
+	PersonID   *uuid.UUID // 当时登录人
+	ProjectID  *uuid.UUID // 工程身份
+	NoProject  bool       // 只取未打开工程
+	OrgUnitID  *uuid.UUID // 发生节点
+	DirectOnly bool       // 只取厂直属
+	Day        *time.Time // UTC 日历日
+	Limit      int        // 每页条数；0 取默认，超上限按上限
+	Offset     int        // 跳过前几条
+}
+
+// WeldRunPage 是下钻一页明细，带同条件下的总条数和合计。
+type WeldRunPage struct {
+	Items       []WeldRunRow `json:"items"`       // 本页起停，新的在前
+	Total       int64        `json:"total"`       // 同条件总条数
+	LengthMM    int64        `json:"lengthMm"`    // 同条件焊长合计毫米，已封顶
+	DurationSec int64        `json:"durationSec"` // 同条件时长合计秒，已封顶
 }
 
 // AuthorizeWeldFlush 汇聚前核对会话；不通过就留汇聚拒绝审计。
@@ -171,10 +198,16 @@ func (s *Stats) FlushWeldFacts(ctx context.Context, token string, items []WeldFa
 			out.Rejected = append(out.Rejected, WeldReject{ID: item.ID, Error: domain.ErrNotFound.Error()})
 			continue
 		}
-		// 焊长或时长为负，或作业类型不认识，拒绝这条
-		if item.LengthMM < 0 || item.DurationSec < 0 || !store.ValidWeldKind(item.WeldKind) {
+		// 焊长或时长为负、超出单条上限，或作业类型不认识，拒绝这条
+		if !store.ValidWeldAmounts(item.LengthMM, item.DurationSec) || !store.ValidWeldKind(item.WeldKind) {
 			// 取出失败原因放进拒绝行，不含口令
 			out.Rejected = append(out.Rejected, WeldReject{ID: item.ID, Error: domain.ErrForbidden.Error()})
+			continue
+		}
+		// 工程名去首尾空白后仍超长，拒绝这条，免得 WAN 整批拒收
+		if !store.ValidWeldProjectName(item.ProjectName) {
+			// 取出失败原因放进拒绝行，本机留着等改名
+			out.Rejected = append(out.Rejected, WeldReject{ID: item.ID, Error: domain.ErrInvalidName.Error()})
 			continue
 		}
 		// 焊长和时长都是零则拒绝，空跑不算一次焊
@@ -192,13 +225,10 @@ func (s *Stats) FlushWeldFacts(ctx context.Context, token string, items []WeldFa
 		// 把这一条收进结果，漏了清单就不齐
 		out.Accepted = append(out.Accepted, item.ID)
 	}
-	// 条数超过上限就停，避免把袋或报表撑满
+	// 有新收下的焊次，厂库汇总就变了
 	if len(out.Accepted) > 0 {
-		// 厂库已落后再上送无人员组织的汇总；WAN 不通不影响本厂。
-		if err := s.PushWANSummaries(ctx); err != nil {
-			// 只记告警，不打断主流程
-			slog.Warn("push weld summaries", "err", err)
-		}
+		// 只发信号由后台串行上送，平板不必等 WAN 回包
+		s.RequestWANPush()
 	}
 	// 汇聚焊次成功后记审计，再把结果交回
 	return out, s.audit(ctx, &acc.ID, nil, "flush_weld_facts", "batch", audit.Allow)
@@ -291,16 +321,22 @@ func (s *Stats) ListWeldReport(ctx context.Context, token, group string, from, t
 		_ = s.audit(ctx, &acc.ID, nil, "list_weld_report", group, audit.Deny)
 		return nil, domain.ErrForbidden
 	}
-	// 先按窗取再按作用域裁行
-	visible, err := s.visibleWeldFacts(ctx, acc, store.WeldFactFilter{From: from, To: to})
-	// 裁剪失败则不返回越权的焊次
+	// 每个请求只读一次角色，算出能看的范围
+	scope, err := s.weldScope(ctx, acc)
+	// 角色或子树读失败就拒绝，不当成看不到
 	if err != nil {
 		// 记下查看焊报表被拒绝，写失败不改变结果
 		_ = s.audit(ctx, &acc.ID, nil, "list_weld_report", "report", audit.Deny)
 		return nil, err
 	}
-	// 按维度归集焊长和时长，日期按调用方时区切
-	agg := store.AggregateWeldFacts(visible, group, loc)
+	// 在库里按维度归集，范围拼进条件，日期按调用方时区切
+	agg, err := s.store.ListWeldReport(ctx, store.WeldFactFilter{From: from, To: to, Scope: scope}, group, loc)
+	// 汇总查询失败则报表中止
+	if err != nil {
+		// 记下查看焊报表被拒绝，写失败不改变结果
+		_ = s.audit(ctx, &acc.ID, nil, "list_weld_report", "report", audit.Deny)
+		return nil, err
+	}
 	// 按条数决定是空、超限还是继续
 	out := make([]WeldReportRow, 0, len(agg))
 	// 逐条处理，某一条失败不把整批悄悄算成功
@@ -331,33 +367,57 @@ func (s *Stats) ListWeldReport(ctx context.Context, token, group string, from, t
 	return out, s.audit(ctx, &acc.ID, nil, "list_weld_report", group, audit.Allow)
 }
 
-// ListWeldRuns 列出调用方能看的每次起停。
-func (s *Stats) ListWeldRuns(ctx context.Context, token string, q WeldRunQuery) ([]WeldRunRow, error) {
+// ListWeldRuns 分页列出调用方能看的每次起停，带同条件的总条数和合计。
+func (s *Stats) ListWeldRuns(ctx context.Context, token string, q WeldRunQuery) (WeldRunPage, error) {
 	// 先确认会话仍有效，过期或停用直接拒绝
 	acc, err := s.RequireActive(ctx, token)
 	// 会话无效或账号已停用，拒绝继续
 	if err != nil {
 		// 记下查看每次起停被拒绝，写失败不改变结果
 		_ = s.audit(ctx, nil, nil, "list_weld_runs", "runs", audit.Deny)
-		return nil, err
+		return WeldRunPage{}, err
 	}
-	// 先按窗取再按作用域裁行
-	visible, err := s.visibleWeldFacts(ctx, acc, store.WeldFactFilter{
-		From: q.From, To: q.To, CreatorID: q.PersonID, ProjectID: q.ProjectID,
-		NoProject: q.NoProject, OrgUnitID: q.OrgUnitID, Day: q.Day,
-	})
-	// 裁剪失败则不返回越权的焊次
+	// 每个请求只读一次角色，算出能看的范围
+	scope, err := s.weldScope(ctx, acc)
+	// 角色或子树读失败就拒绝，不当成看不到
 	if err != nil {
 		// 记下查看每次起停被拒绝，写失败不改变结果
 		_ = s.audit(ctx, &acc.ID, nil, "list_weld_runs", "runs", audit.Deny)
-		return nil, err
+		return WeldRunPage{}, err
 	}
-	// 按条数决定是空、超限还是继续
-	out := make([]WeldRunRow, 0, len(visible))
-	// 逐行按调用方作用域裁，看不到的丢掉
-	for _, f := range visible {
+	// 下钻条件和可见范围收成同一个查询窗，明细和合计共用
+	filter := store.WeldFactFilter{
+		From: q.From, To: q.To, CreatorID: q.PersonID, ProjectID: q.ProjectID,
+		NoProject: q.NoProject, OrgUnitID: q.OrgUnitID, DirectOnly: q.DirectOnly, Day: q.Day,
+		Scope: scope,
+	}
+	// 合计不受分页影响，按同一窗在库里算
+	tot, err := s.store.WeldFactTotals(ctx, filter)
+	// 合计读失败则下钻中止
+	if err != nil {
+		// 记下查看每次起停被拒绝，写失败不改变结果
+		_ = s.audit(ctx, &acc.ID, nil, "list_weld_runs", "runs", audit.Deny)
+		return WeldRunPage{}, err
+	}
+	// 条数按默认和上限收住，再按页取明细
+	filter.Limit, filter.Offset = weldRunsPage(q.Limit, q.Offset)
+	// 按页取出明细，新的在前
+	facts, err := s.store.ListWeldFacts(ctx, filter)
+	// 明细读失败则下钻中止
+	if err != nil {
+		// 记下查看每次起停被拒绝，写失败不改变结果
+		_ = s.audit(ctx, &acc.ID, nil, "list_weld_runs", "runs", audit.Deny)
+		return WeldRunPage{}, err
+	}
+	// 先备好合计，本页明细后面逐条放
+	out := WeldRunPage{
+		Items: make([]WeldRunRow, 0, len(facts)),
+		Total: tot.RunCount, LengthMM: tot.LengthMM, DurationSec: tot.DurationSec,
+	}
+	// 逐条收成下钻行，范围已在库里裁过
+	for _, f := range facts {
 		// 把这一条收进结果，漏了清单就不齐
-		out = append(out, WeldRunRow{
+		out.Items = append(out.Items, WeldRunRow{
 			ID: f.ID, PersonID: f.CreatorID, LoginName: f.LoginName, DisplayName: f.DisplayName,
 			OrgUnitID: f.OrgUnitID, OrgPath: f.OrgPath, ProjectID: f.ProjectID,
 			ProjectName: store.ProjectLabel(f.ProjectName), WeldKind: f.WeldKind,
@@ -427,11 +487,8 @@ func (s *Stats) SeedWeldDemo(ctx context.Context, token string) (WeldDemoResult,
 	first := weldDemoID(fid, 0)
 	// 没有错误才采用这次结果，失败另走拒绝
 	if _, err := s.store.WeldFactByID(ctx, first); err == nil {
-		// 汇总或上送失败则本次不算送出
-		if err := s.PushWANSummaries(ctx); err != nil {
-			// 只记告警，不打断主流程
-			slog.Warn("push weld summaries", "err", err)
-		}
+		// 演示数据已在，也请后台补送一次，不在这里等 WAN
+		s.RequestWANPush()
 		// 写入演示焊次成功后记审计，再把结果交回
 		return WeldDemoResult{Created: 0, Total: weldDemoCount}, s.audit(ctx, &acc.ID, nil, "seed_weld_demo", "demo", audit.Allow)
 		// 不是没有记录，读取真失败必须停住
@@ -472,11 +529,8 @@ func (s *Stats) SeedWeldDemo(ctx context.Context, token string) (WeldDemoResult,
 		// 这条是新写的，计数加一
 		created++
 	}
-	// 汇总或上送失败则本次不算送出
-	if err := s.PushWANSummaries(ctx); err != nil {
-		// 只记告警，不打断主流程
-		slog.Warn("push weld summaries", "err", err)
-	}
+	// 演示焊次已落库，发信号由后台串行上送
+	s.RequestWANPush()
 	// 写入演示焊次成功后记审计，再把结果交回
 	return WeldDemoResult{Created: created, Total: weldDemoCount}, s.audit(ctx, &acc.ID, nil, "seed_weld_demo", "demo", audit.Allow)
 }
@@ -504,57 +558,68 @@ func (s *kernel) personWorkSnap(ctx context.Context, personID uuid.UUID) (PadWor
 	return PadWorkSnap{Direct: false, OrgUnitID: &unit, OrgPath: path}, nil
 }
 
-// canReadWeld 创建人可看自己；管理角色按发生节点作用域。
-func (s *kernel) canReadWeld(ctx context.Context, acc Account, creatorID uuid.UUID, unit *uuid.UUID) error {
-	// 创建人可以看自己的元数据或焊次
-	if acc.ID == creatorID {
-		return nil
-	}
+// weldScope 只读一次角色算焊事实可见范围；空指针表示全厂，否则本人加可见子树。
+// 只有超管和组织管理员、负责人、审计员能放宽，和只读查看同一套角色。
+func (s *kernel) weldScope(ctx context.Context, acc Account) (*store.WeldScope, error) {
 	// 只取当前有效角色，收回的不参与
 	grants, err := s.grantsOf(ctx, acc.ID)
 	// 角色读失败就无法判定，拒绝放行
 	if err != nil {
-		return err
+		return nil, err
 	}
 	// 持有厂级超管则盖住全厂，不必再查子树
 	if isFactorySA(grants) {
-		return nil
+		return nil, nil
 	}
-	// 分配到了节点就按该节点钉路径
-	if unit != nil {
-		// 按角色并集核对有没有这份许可，再交回调用方
-		return s.can(ctx, acc, permView, unit)
-	}
-	// 厂直属行：只给整厂作用域的只读角色。
+	// 收集节点作用域的根，后面一次求出子树
+	roots := make([]uuid.UUID, 0, len(grants))
+	// 只看三种只读管理角色，操作员等不放宽
 	for _, g := range withRoles(grants, RoleOrgAdmin, RoleOrgLead, RoleAuditor) {
-		// 整厂作用域盖住全部节点
+		// 整厂作用域盖住全部节点和厂直属
 		if g.ScopeKind == ScopeFactory {
-			return nil
+			return nil, nil
+		}
+		// 节点作用域记下根节点
+		if g.OrgUnitID != nil {
+			// 收进根列表，子树一起求
+			roots = append(roots, *g.OrgUnitID)
 		}
 	}
-	return domain.ErrForbidden
-}
-
-// visibleWeldFacts 先按窗取事实，再按调用方作用域裁行。
-func (s *Stats) visibleWeldFacts(ctx context.Context, acc Account, filter store.WeldFactFilter) ([]store.WeldFactView, error) {
-	// 按时间窗取出焊事实
-	facts, err := s.store.ListWeldFacts(ctx, filter)
-	// 事实读失败则报表中止
+	// 先备好只看本人的范围，有子树再补上
+	scope := &store.WeldScope{SelfID: acc.ID, OrgUnitIDs: []uuid.UUID{}}
+	// 没有节点作用域就只看本人
+	if len(roots) == 0 {
+		return scope, nil
+	}
+	// 递归求出这些根的当前子树，不按状态裁
+	units, err := s.store.OrgSubtreeIDs(ctx, roots)
+	// 子树读失败则拒绝，不猜是否覆盖
 	if err != nil {
 		return nil, err
 	}
-	// 按条数决定是空、超限还是继续
-	out := make([]store.WeldFactView, 0, len(facts))
-	// 逐行按调用方作用域裁，看不到的丢掉
-	for _, f := range facts {
-		// 看不到这条焊次，从结果里拿掉
-		if err := s.canReadWeld(ctx, acc, f.CreatorID, f.OrgUnitID); err != nil {
-			continue
-		}
-		// 把这一条收进结果，漏了清单就不齐
-		out = append(out, f)
+	// 可见节点就是这些子树
+	scope.OrgUnitIDs = units
+	return scope, nil
+}
+
+// weldRunsPage 收住下钻分页参数：条数不给按默认，超上限按上限，负跳过当零。
+func weldRunsPage(limit, offset int) (int, int) {
+	// 没给条数就按默认一页
+	if limit <= 0 {
+		// 取默认条数
+		limit = weldRunsDefaultLimit
 	}
-	return out, nil
+	// 超过上限就按上限，免得一次拖满库
+	if limit > weldRunsMaxLimit {
+		// 收到上限
+		limit = weldRunsMaxLimit
+	}
+	// 跳过条数为负就从头取
+	if offset < 0 {
+		// 从第一条开始
+		offset = 0
+	}
+	return limit, offset
 }
 
 // demoWork 优先用人当时分配，否则轮询有效组织，再不行厂直属。
@@ -591,7 +656,87 @@ func (s *Stats) demoWork(ctx context.Context, personID uuid.UUID, units []OrgUni
 	return nil, []PathNode{}
 }
 
-// PushWANSummaries 把本厂焊事实收成无人员组织的汇总交给 WAN。
+// RequestWANPush 发「焊汇总已变」信号；已有没取走的就合并，调用方不阻塞。
+func (s *Stats) RequestWANPush() {
+	// 信号格空着才放，满了说明后台还会再推一次
+	select {
+	// 放进信号，后台循环醒来重读库再推
+	case s.weldDirty <- struct{}{}:
+	// 已有信号在等，这次并进去不再重复
+	default:
+	}
+}
+
+// SetWANPushBackoff 调后台上送的退避起点和封顶；测试调小，须在起循环前设。
+func (s *Stats) SetWANPushBackoff(first, ceiling time.Duration) {
+	// 记下第一次失败后等多久
+	s.wanRetryMin = first
+	// 记下退避最多等多久
+	s.wanRetryMax = ceiling
+}
+
+// RunWANPush 后台串行上送焊汇总：一次只推一批，推送中来的信号合并成下一批；ctx 取消就退出。
+func (s *Stats) RunWANPush(ctx context.Context) {
+	// 一直等信号，直到这家厂关库或进程退出
+	for {
+		// 等「已变」信号或退出，没有变化就不推
+		select {
+		// 取消了就退出，关库方在等这里
+		case <-ctx.Done():
+			return
+		// 汇总变了，往下推一批
+		case <-s.weldDirty:
+		}
+		// 每批从退避起点开始，连续失败才加倍
+		wait := s.wanRetryMin
+		// 推这一批，可恢复的失败退避后重读再推
+		for {
+			// 重读本厂库并上送全量汇总
+			err := s.PushWANSummaries(ctx)
+			// 推送途中已取消就退出，不再重试
+			if ctx.Err() != nil {
+				return
+			}
+			// 推成功了就回去等下一个信号
+			if err == nil {
+				break
+			}
+			// 业务拒绝、没有钥或厂已注销，重试也没用
+			if !weldPushRetryable(err) {
+				// 只记一次告警，等下一个信号再推
+				slog.Warn("push weld summaries rejected", "factory", s.store.FactoryID(), "err", err)
+				break
+			}
+			// 记下这次没推上，退避后再推
+			slog.Warn("push weld summaries, will retry", "factory", s.store.FactoryID(), "wait", wait, "err", err)
+			// 等到退避结束或取消
+			select {
+			// 取消了就退出，不再重试
+			case <-ctx.Done():
+				return
+			// 退避到点再推，免得断网时打满
+			case <-time.After(wait):
+			}
+			// 下次失败等得更久，但不超过封顶
+			wait = min(wait*2, s.wanRetryMax)
+			// 重推会重读库，攒下的信号已被这次盖住
+			select {
+			// 收掉攒下的信号，免得推完又空推一遍
+			case <-s.weldDirty:
+			// 没有攒下的信号就直接重推
+			default:
+			}
+		}
+	}
+}
+
+// weldPushRetryable 只有连不上 WAN 和读本厂库失败才值得退避重试。
+func weldPushRetryable(err error) bool {
+	// 网络失败、5xx 和本厂库读失败可恢复，其它都是拒绝
+	return errors.Is(err, domain.ErrWANUnreachable) || errors.Is(err, errWeldLocalRead)
+}
+
+// PushWANSummaries 把本厂焊事实收成无人员组织的汇总交给 WAN；工程名按 WAN 口径规范，同键合并封顶。
 func (s *Stats) PushWANSummaries(ctx context.Context) error {
 	// 没有上送或下行通道则只在厂内记账
 	if s.wanWeld == nil {
@@ -599,22 +744,74 @@ func (s *Stats) PushWANSummaries(ctx context.Context) error {
 	}
 	// 取出待上送的无人员汇总
 	rows, err := s.store.ListWeldWANSummaries(ctx)
-	// 汇总读失败则不上送残缺
+	// 汇总读失败则不上送残缺，标成读本厂库失败好让后台重试
 	if err != nil {
-		return err
+		// 套上本厂读失败的标记再交回，原错误仍留在链里。
+		return fmt.Errorf("%w: %w", errWeldLocalRead, err)
 	}
-	// 按条数决定是空、超限还是继续
+	// 按条数预留，规范名字后同键合并只会更少
 	out := make([]WeldWANSummary, 0, len(rows))
-	// 逐行按调用方作用域裁，看不到的丢掉
+	// 记下日、工程名、模式在结果里的位置，同键并到一行
+	at := make(map[[3]string]int, len(rows))
+	// 逐行规范工程名，同键的行合并，免得 WAN 撞键拒收
 	for _, r := range rows {
-		// 把这一条收进结果，漏了清单就不齐
+		// 按 WAN 口径规范工程名，只差首尾空白的并成一个
+		name := wanProjectName(r.ProjectName)
+		// 日、工程名、模式三者一样才算同一粒
+		key := [3]string{r.Day, name, r.WeldKind}
+		// 这一粒已经有了就把合计加上去
+		if i, ok := at[key]; ok {
+			// 次数饱和相加，超过 int64 就封顶
+			out[i].RunCount = satAdd(out[i].RunCount, r.RunCount)
+			// 焊长饱和相加，超过 int64 就封顶
+			out[i].LengthMM = satAdd(out[i].LengthMM, r.LengthMM)
+			// 时长饱和相加，超过 int64 就封顶
+			out[i].DurationSec = satAdd(out[i].DurationSec, r.DurationSec)
+			continue
+		}
+		// 新的一粒，记下它在结果里的位置
+		at[key] = len(out)
+		// 把这一条收进结果，保持查询给的先后顺序
 		out = append(out, WeldWANSummary{
-			Day: r.Day, ProjectName: r.ProjectName, WeldKind: r.WeldKind,
+			Day: r.Day, ProjectName: name, WeldKind: r.WeldKind,
 			RunCount: r.RunCount, LengthMM: r.LengthMM, DurationSec: r.DurationSec,
 		})
 	}
 	// 取出本厂稳定身份，封包和审计都要用，再交回调用方
 	return s.wanWeld.PostWeldSummaries(ctx, s.store.FactoryID(), out)
+}
+
+// wanProjectName 按 WAN 口径规范工程名：去首尾空白，空归未关联，截到上限再去空白。
+func wanProjectName(name string) string {
+	// 先去首尾空白，制表符和全角空格一并去掉，和 WAN 一致
+	name = strings.TrimSpace(name)
+	// 去完是空的就归到未关联工程，不送空名
+	if name == "" {
+		return store.WeldUnsetProject
+	}
+	// 按字符拆开，截断时不切坏多字节字
+	runes := []rune(name)
+	// 超过上限就截到上限，WAN 不收更长的名字
+	if len(runes) > store.WeldMaxProjectName {
+		// 只留前面上限个字
+		name = string(runes[:store.WeldMaxProjectName])
+	}
+	// 截断处可能正好是空白，再去一次
+	return strings.TrimSpace(name)
+}
+
+// satAdd 饱和加法：越过 int64 上下限就封在边上，不回绕。
+func satAdd(a, b int64) int64 {
+	// 正数相加越过上限就封到上限
+	if b > 0 && a > math.MaxInt64-b {
+		return math.MaxInt64
+	}
+	// 负数相加越过下限就封到下限
+	if b < 0 && a < math.MinInt64-b {
+		return math.MinInt64
+	}
+	// 没越界就照常相加
+	return a + b
 }
 
 // validWeldGroup 报表维度是否认识。

@@ -1181,7 +1181,13 @@ func TestChannelFlapKeepsLease(t *testing.T) {
 }
 
 // 按日汇总要按报表时区切日，东八区早上八点前的焊不能记到前一天。
-func TestAggregateWeldFactsDayTZ(t *testing.T) {
+func TestWeldReportDayTZ(t *testing.T) {
+	// 测试没有取消信号，用空白上下文即可。
+	ctx := context.Background()
+	// 单独起一套厂库，按日汇总在库里算。
+	facDB, facID := testpg.Fresh(t)
+	// 按这家厂的稳定身份打开库。
+	s := store.Open(facDB, facID)
 	// 加载东八区，取不到时区库就停测。
 	sh, err := time.LoadLocation("Asia/Shanghai")
 	// 时区加载失败则停测，后面断言没有意义。
@@ -1189,30 +1195,97 @@ func TestAggregateWeldFactsDayTZ(t *testing.T) {
 		// 与预期不符就停测，避免后面连环误判。
 		t.Fatalf("load tz: %v", err)
 	}
-	// 同一个焊工，两条焊共用这个身份。
-	who := id.New()
+	// 同一个焊工，两条焊共用这个人。
+	who, err := s.CreatePerson(ctx, "op-tz", "焊工", false)
+	// 建账号失败就停测，避免后面没有前提。
+	if err != nil {
+		// 与预期不符就停测，避免后面连环误判。
+		t.Fatalf("person: %v", err)
+	}
 	// UTC 前一天深夜和次日上午，东八区都落在 10-18。
-	facts := []store.WeldFactView{
-		{WeldFact: store.WeldFact{ID: id.New(), CreatorID: who, LengthMM: 100, DurationSec: 10, OccurredAt: time.Date(2026, 10, 17, 23, 30, 0, 0, time.UTC)}},
-		{WeldFact: store.WeldFact{ID: id.New(), CreatorID: who, LengthMM: 200, DurationSec: 20, OccurredAt: time.Date(2026, 10, 18, 10, 0, 0, 0, time.UTC)}},
+	for _, at := range []time.Time{time.Date(2026, 10, 17, 23, 30, 0, 0, time.UTC), time.Date(2026, 10, 18, 10, 0, 0, 0, time.UTC)} {
+		// 写入一条厂直属焊，失败就停测。
+		if _, err := s.MergeWeldFact(ctx, store.WeldFact{ID: id.New(), CreatorID: who.ID, LengthMM: 100, DurationSec: 10, OccurredAt: at}); err != nil {
+			// 与预期不符就停测，避免后面连环误判。
+			t.Fatalf("merge: %v", err)
+		}
 	}
 	// 按东八区切日汇总，两条应并成一行。
-	local := store.AggregateWeldFacts(facts, store.WeldGroupDay, sh)
+	local, err := s.ListWeldReport(ctx, store.WeldFactFilter{}, store.WeldGroupDay, sh)
 	// 不是 10-18 一行两次，或零点不在东八区，则失败。
-	if len(local) != 1 || local[0].RunCount != 2 || !local[0].Day.Equal(time.Date(2026, 10, 18, 0, 0, 0, 0, sh)) || local[0].Day.Format("2006-01-02") != "2026-10-18" {
+	if err != nil || len(local) != 1 || local[0].RunCount != 2 || !local[0].Day.Equal(time.Date(2026, 10, 18, 0, 0, 0, 0, sh)) || local[0].Day.Format("2006-01-02") != "2026-10-18" {
 		// 与预期不符就停测，避免后面连环误判。
-		t.Fatalf("shanghai day rows: %+v", local)
+		t.Fatalf("shanghai day rows: %+v %v", local, err)
 	}
 	// 按 UTC 切日汇总，两条应分到两天。
-	utc := store.AggregateWeldFacts(facts, store.WeldGroupDay, time.UTC)
-	// 不是 10-17 和 10-18 各一行，则失败。
-	if len(utc) != 2 || utc[0].Day.Format("2006-01-02") != "2026-10-17" || utc[1].Day.Format("2006-01-02") != "2026-10-18" {
+	utc, err := s.ListWeldReport(ctx, store.WeldFactFilter{}, store.WeldGroupDay, time.UTC)
+	// 不是新的 10-18 在前、10-17 在后各一行，则失败。
+	if err != nil || len(utc) != 2 || utc[0].Day.Format("2006-01-02") != "2026-10-18" || utc[1].Day.Format("2006-01-02") != "2026-10-17" {
 		// 与预期不符就停测，避免后面连环误判。
-		t.Fatalf("utc day rows: %+v", utc)
+		t.Fatalf("utc day rows: %+v %v", utc, err)
 	}
 	// 不给时区时退回 UTC，结果应和按 UTC 一样分两行。
-	if got := store.AggregateWeldFacts(facts, store.WeldGroupDay, nil); len(got) != 2 {
+	if got, err := s.ListWeldReport(ctx, store.WeldFactFilter{}, store.WeldGroupDay, nil); err != nil || len(got) != 2 {
 		// 与预期不符就停测，避免后面连环误判。
-		t.Fatalf("nil tz rows: %+v", got)
+		t.Fatalf("nil tz rows: %+v %v", got, err)
+	}
+}
+
+// 递归求子树含停用节点，库里有环也能停下，不含兄弟分支。
+func TestOrgSubtreeIDs(t *testing.T) {
+	// 测试没有取消信号，用空白上下文即可。
+	ctx := context.Background()
+	// 单独起一套厂库，免得用例互相踩到。
+	facDB, facID := testpg.Fresh(t)
+	// 按这家厂的稳定身份打开库。
+	s := store.Open(facDB, facID)
+	// 建根节点，失败就停测。
+	root, err := s.CreateOrgUnit(ctx, "车间", nil)
+	// 建组织失败就停测，避免后面没有前提。
+	if err != nil {
+		// 与预期不符就停测，避免后面连环误判。
+		t.Fatalf("root: %v", err)
+	}
+	// 建子节点，失败就停测。
+	child, err := s.CreateOrgUnit(ctx, "班组", &root.ID)
+	// 建组织失败就停测，避免后面没有前提。
+	if err != nil {
+		// 与预期不符就停测，避免后面连环误判。
+		t.Fatalf("child: %v", err)
+	}
+	// 建兄弟分支，不该算进子树，建失败就停测。
+	if _, err := s.CreateOrgUnit(ctx, "另一车间", nil); err != nil {
+		// 与预期不符就停测，避免后面连环误判。
+		t.Fatalf("sibling: %v", err)
+	}
+	// 停用子节点，子树求法不按状态裁。
+	if err := s.DisableOrgUnit(ctx, child.ID); err != nil {
+		// 与预期不符就停测，避免后面连环误判。
+		t.Fatalf("disable: %v", err)
+	}
+	// 绕过业务把根挂到子节点下，造出组织环。
+	if err := facDB.Exec("UPDATE org_units SET parent_id = ? WHERE id = ?", child.ID, root.ID).Error; err != nil {
+		// 与预期不符就停测，避免后面连环误判。
+		t.Fatalf("make cycle: %v", err)
+	}
+	// 求根的子树，有环也要能停下。
+	ids, err := s.OrgSubtreeIDs(ctx, []uuid.UUID{root.ID})
+	// 报错或不是根和子两个节点，则失败。
+	if err != nil || len(ids) != 2 {
+		// 与预期不符就停测，避免后面连环误判。
+		t.Fatalf("subtree: %v %v", ids, err)
+	}
+	// 逐个核对，兄弟分支混进来就失败。
+	for _, got := range ids {
+		// 不是根也不是子，说明多算了。
+		if got != root.ID && got != child.ID {
+			// 与预期不符就停测，避免后面连环误判。
+			t.Fatalf("subtree has %s", got)
+		}
+	}
+	// 没有根时交回空，不查库。
+	if empty, err := s.OrgSubtreeIDs(ctx, nil); err != nil || len(empty) != 0 {
+		// 与预期不符就停测，避免后面连环误判。
+		t.Fatalf("empty roots: %v %v", empty, err)
 	}
 }
