@@ -53,8 +53,8 @@ func (s *Node) RecordAppLogin(ctx context.Context, personID uuid.UUID, snap Logi
 	return s.store.NotePersonApp(ctx, personID, snap.AppVersion, snap.AppVersionName)
 }
 
-// HandleAppUp 认示教器 presence；正文或其它 typ 交给闭包回执。
-func (s *Node) HandleAppUp(ctx context.Context, personID uuid.UUID, payload []byte) {
+// HandleAppUp 认示教器 presence；设备取会话里鉴权过的本机，不信载荷自报。
+func (s *Node) HandleAppUp(ctx context.Context, personID, clientID uuid.UUID, payload []byte) {
 	// 没有人员身份则跳过，避免记到空人
 	if personID == uuid.Nil || clientmqtt.HasBody(payload) {
 		return
@@ -69,7 +69,6 @@ func (s *Node) HandleAppUp(ctx context.Context, personID uuid.UUID, payload []by
 		DeviceManufacturer string `json:"deviceManufacturer"` // 设备厂商，只给人看
 		AndroidRelease     string `json:"androidRelease"`     // 系统版本，方便排障
 		NetworkName        string `json:"networkName"`        // 当时连接的网络名
-		ClientID           string `json:"clientId"`           // 本机身份，用来对上这台设备
 	}
 	// 种类不对则忽略，不当成在场或回执
 	if json.Unmarshal(payload, &cmd) != nil || cmd.Typ != clientmqtt.TypPresence {
@@ -86,10 +85,10 @@ func (s *Node) HandleAppUp(ctx context.Context, personID uuid.UUID, payload []by
 		AndroidRelease:     cmd.AndroidRelease,
 		NetworkName:        cmd.NetworkName,
 	}
-	// 没有错误才采用这次结果，失败另走拒绝
-	if id, err := uuid.Parse(cmd.ClientID); err == nil {
-		// 补上本机身份，现场才能对上设备
-		snap.ClientID = &id
+	// 会话里有本机身份才补上，没有则交给臂号对设备
+	if clientID != uuid.Nil {
+		// 用会话鉴权过的本机，载荷里的自报号不能改它
+		snap.ClientID = &clientID
 	}
 	// 记下示教器登录，回连没变则跳过，失败不打断当前返回
 	_ = s.RecordAppLogin(ctx, personID, snap)

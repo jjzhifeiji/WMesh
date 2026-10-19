@@ -62,6 +62,25 @@ func (s *Channel) ConfirmEnroll(ctx context.Context, factoryID uuid.UUID, public
 	return s.audit(ctx, nil, nil, &factoryID, "confirm_enroll", factoryID.String(), audit.Allow)
 }
 
+// FactoryClaim 认领应答里回给厂端的治理状态、修订和短码。
+type FactoryClaim struct {
+	Status    string // 工厂治理状态：active / disabled / retired
+	Revision  int64  // 治理修订，厂端只向前接收
+	ShortCode string // 本厂短码，供厂端展示和发编号
+}
+
+// ClaimView 读认领后厂档的治理状态、修订和短码，HTTP 不再直接读库。
+func (s *Channel) ClaimView(ctx context.Context, factoryID uuid.UUID) (FactoryClaim, error) {
+	// 按工厂名录读出厂档，状态以库里为准。
+	fac, err := s.store.FactoryByID(ctx, factoryID)
+	// 读不到就交回原因，由调用方决定怎么回。
+	if err != nil {
+		return FactoryClaim{}, err
+	}
+	// 只交回认领应答要的三项，不外带别的字段。
+	return FactoryClaim{Status: fac.Status, Revision: fac.LifecycleRevision, ShortCode: fac.ShortCode}, nil
+}
+
 // RequireFactoryKey 已认领且未注销；名录里没了或已注销都当注销。
 func (s *Channel) RequireFactoryKey(ctx context.Context, factoryID uuid.UUID) error {
 	// 已认领工厂才算有效；名录没了或已注销都拒绝。

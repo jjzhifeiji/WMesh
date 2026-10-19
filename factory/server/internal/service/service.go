@@ -6,6 +6,7 @@ package service
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -37,6 +38,7 @@ type kernel struct {
 	mqttOnline     map[uuid.UUID]int        // 本厂示教器 MQTT 连接数；>0 才算在线
 	softwareMu     sync.Mutex               // 护着同版本拉包单飞
 	softwareIn     map[string]*softwareWait // 正在拉的（种类/版本）
+	upRejects      atomic.Uint64            // 被拒或解不开的本机上行条数，只计数不写审计
 
 	blobMu      sync.Mutex           // 护着已核摘要表，收包、查包和下载会并发改
 	blobChecked map[string]blobCheck // 对象键到已核摘要和长度，每个对象只整包核一次

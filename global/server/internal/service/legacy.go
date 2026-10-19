@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"path"
 	"regexp"
 	"slices"
@@ -27,6 +28,24 @@ var importSerialRe = regexp.MustCompile(`^(.+) \(\d+\)$`) // 另起名时加在�
 
 // errTBarGapBandsMissing T 排元素没带间隙带、本批又没有缝隙目录工艺可补，只作这份工程的拒绝原因。
 var errTBarGapBandsMissing = errors.New("tbar gap bands missing: import gap folder processes together with the project")
+
+// rejectReason 单条拒绝原因：业务错误只给哨兵原话，与 writeErr 同规则；
+// 库连接中断、正文含 0x00 之类内部故障只进日志，对外一律 internal error。
+func rejectReason(err error) string {
+	// 认得出的业务错误给哨兵原话，包进去的细节不带出去。
+	if known := domain.Known(err); known != nil {
+		// 交回哨兵原话，前端和示教器照常按文字显示。
+		return known.Error()
+	}
+	// T 排缺间隙带是导入自己的拒绝原因，提示要一起导缝隙目录工艺。
+	if errors.Is(err, errTBarGapBandsMissing) {
+		// 交回这句固定提示，不含库或正文细节。
+		return errTBarGapBandsMissing.Error()
+	}
+	// 其余是内部故障，原文可能带 SQLSTATE、库用户名或内网地址，只记日志。
+	slog.Error("item rejected", "err", err)
+	return "internal error"
+}
 
 // LegacyFile 是一次导入里的一份旧 JSON，路径相对工艺/工程根。
 type LegacyFile struct {
@@ -213,7 +232,7 @@ func (s *Assets) ImportLegacy(ctx context.Context, token string, in LegacyImport
 		// 改不完就拒绝，避免还指向旧的。
 		if err != nil {
 			// 把这一项接进结果。
-			out.Rejected = append(out.Rejected, LegacyReject{Path: rel, Reason: err.Error()})
+			out.Rejected = append(out.Rejected, LegacyReject{Path: rel, Reason: rejectReason(err)})
 			continue
 		}
 		// 库里已有同名工程，走到这里就是允许覆盖。
@@ -223,7 +242,7 @@ func (s *Assets) ImportLegacy(ctx context.Context, token string, in LegacyImport
 			// 覆盖失败就拒绝，不能留半新正文。
 			if err != nil {
 				// 把这一项接进结果。
-				out.Rejected = append(out.Rejected, LegacyReject{Path: rel, Reason: err.Error()})
+				out.Rejected = append(out.Rejected, LegacyReject{Path: rel, Reason: rejectReason(err)})
 				continue
 			}
 			// 覆盖过的身份算本批占用，后面同名另起。
@@ -237,7 +256,7 @@ func (s *Assets) ImportLegacy(ctx context.Context, token string, in LegacyImport
 		// 落库失败就拒绝这个文件。
 		if err != nil {
 			// 把这一项接进结果。
-			out.Rejected = append(out.Rejected, LegacyReject{Path: rel, Reason: err.Error()})
+			out.Rejected = append(out.Rejected, LegacyReject{Path: rel, Reason: rejectReason(err)})
 			continue
 		}
 		// 发布给该收到的一方。
@@ -245,7 +264,7 @@ func (s *Assets) ImportLegacy(ctx context.Context, token string, in LegacyImport
 		// 没就绪就拒绝，避免对方以为可用。
 		if err != nil {
 			// 把这一项接进结果。
-			out.Rejected = append(out.Rejected, LegacyReject{Path: rel, Reason: err.Error()})
+			out.Rejected = append(out.Rejected, LegacyReject{Path: rel, Reason: rejectReason(err)})
 			continue
 		}
 		// 本批新建的身份立刻参与后面的同名判断。
@@ -352,7 +371,7 @@ func (s *Assets) importLegacyProcess(ctx context.Context, token string, book *im
 			// 覆盖失败就拒绝，不能留半新正文。
 			if err != nil {
 				// 把这一项接进结果。
-				out.Rejected = append(out.Rejected, p.reject(err.Error()))
+				out.Rejected = append(out.Rejected, p.reject(rejectReason(err)))
 				return
 			}
 			// 覆盖过的身份算本批占用，后面同名另起。
@@ -382,7 +401,7 @@ func (s *Assets) importLegacyProcess(ctx context.Context, token string, book *im
 	// 新建失败就停，避免留下半截记录。
 	if err != nil {
 		// 把这一项接进结果。
-		out.Rejected = append(out.Rejected, p.reject(err.Error()))
+		out.Rejected = append(out.Rejected, p.reject(rejectReason(err)))
 		return
 	}
 	// 发布给该收到的一方。
@@ -390,7 +409,7 @@ func (s *Assets) importLegacyProcess(ctx context.Context, token string, book *im
 	// 没就绪就拒绝，避免对方以为可用。
 	if err != nil {
 		// 把这一项接进结果。
-		out.Rejected = append(out.Rejected, p.reject(err.Error()))
+		out.Rejected = append(out.Rejected, p.reject(rejectReason(err)))
 		return
 	}
 	// 本批新建的身份立刻参与后面的同名判断。

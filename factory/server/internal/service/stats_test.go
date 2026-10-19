@@ -697,3 +697,65 @@ func insertRawWeld(t *testing.T, db *gorm.DB, facID, creator uuid.UUID, name, ki
 		t.Fatal(err)
 	}
 }
+
+// 焊事实写库报库错（工程名含 0x00）时拒绝行只写 internal error；业务冲突仍给原话。
+func TestWeldFlushHidesInternalError(t *testing.T) {
+	// 准备无取消的上下文，后面每次调用都挂在上面。
+	ctx := context.Background()
+	// 拉起隔离厂库，起不来说明测试库还没就绪。
+	h := New(t)
+	// 建厂并签发超管激活码，失败则没有厂可测。
+	created, fac, err := h.Provision(ctx, "sa-nul", "超管")
+	// 建厂失败就停，否则后面没有可靠结果。
+	if err != nil {
+		// 把建厂的错误打出来并停住，避免继续往下验。
+		t.Fatal(err)
+	}
+	// 开通失败就停，否则后面没有可靠结果。
+	if err := fac.Activate(ctx, "sa-nul", created.ActivationToken, "sa-pass"); err != nil {
+		// 把开通的错误打出来并停住，避免继续往下验。
+		t.Fatal(err)
+	}
+	// 登录换取会话令牌，失败说明口令或状态不对。
+	saTok, err := fac.Login(ctx, "sa-nul", "sa-pass")
+	// 登录失败就停，否则后面没有可靠结果。
+	if err != nil {
+		// 把登录的错误打出来并停住，避免继续往下验。
+		t.Fatal(err)
+	}
+	// 正常的一条，先收下，后面拿同身份改焊长造冲突。
+	good := factory.WeldFact{
+		ID: id.New(), CreatorID: created.SuperAdminID, OrgPath: []factory.PathNode{},
+		ProjectName: "工程A", WeldKind: "single", LengthMM: 10, DurationSec: 5,
+		OccurredAt: time.Date(2026, 9, 18, 8, 0, 0, 0, time.UTC),
+	}
+	// 另起身份的一条，工程名含 0x00，库会以编码错误拒写。
+	nul := good
+	// 换新身份，免得和正常那条撞上。
+	nul.ID = id.New()
+	// 名字中间夹 0x00，入口校验放行，写库才报错。
+	nul.ProjectName = "坏\x00名"
+	// 两条一起送，正常的收下，坏名那条拒收。
+	first, err := fac.FlushWeldFacts(ctx, saTok, []factory.WeldFact{good, nul})
+	// 汇聚口报错或收拒条数不对就停。
+	if err != nil || len(first.Accepted) != 1 || first.Accepted[0] != good.ID || len(first.Rejected) != 1 {
+		// 断言没通过就停，结果和这条用例的预期不一致。
+		t.Fatalf("first: %+v %v", first, err)
+	}
+	// 库错拒绝行只能是笼统原因，不带 SQLSTATE 等库原文。
+	if r := first.Rejected[0]; r.ID != nul.ID || r.Error != "internal error" {
+		// 断言没通过就停，库原文漏进了示教器拿到的拒绝行。
+		t.Fatalf("nul reject: %+v", r)
+	}
+	// 同身份改焊长再送一次，造出完整性冲突。
+	clash := good
+	// 焊长和库里那条不同，应按冲突拒收。
+	clash.LengthMM = 11
+	// 送冲突那条，看拒绝原因是不是业务原话。
+	second, err := fac.FlushWeldFacts(ctx, saTok, []factory.WeldFact{clash})
+	// 业务冲突应给原话，被改成笼统原因就停。
+	if err != nil || len(second.Rejected) != 1 || second.Rejected[0].Error != domain.ErrIntegrity.Error() {
+		// 断言没通过就停，业务错误原话不该被藏掉。
+		t.Fatalf("clash: %+v %v", second, err)
+	}
+}

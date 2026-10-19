@@ -6,11 +6,21 @@ import (
 	"log/slog"
 	"net"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 	mqtt "github.com/mochi-mqtt/server/v2"
 	"github.com/mochi-mqtt/server/v2/listeners"
 	"github.com/mochi-mqtt/server/v2/packets"
+	"golang.org/x/time/rate"
+)
+
+// 本机上行的包长和频率上限：示教器只发很小的在场回报。
+const (
+	maxPacketSize  = 16 << 10    // 单包上限，超了引擎直接断开这条连接。
+	upEvery        = time.Second // 每条连接每隔这么久补一个上行名额。
+	upBurst        = 10          // 每条连接最多攒这么多上行名额。
+	upDropLogEvery = 100         // 限速丢掉的条数每满这么多再打一条日志。
 )
 
 // Hooks 把鉴权和回执交给应用服务；Broker 自己不查库。
@@ -32,8 +42,10 @@ type Broker struct {
 
 // 一条连接鉴权时认下的登录人，以及它是否已报过上线。
 type connPerson struct {
-	person uuid.UUID // 这条连接鉴权时认下的登录人。
-	online bool      // 已报上线，之后由它自己的断开回调来删。
+	person  uuid.UUID     // 这条连接鉴权时认下的登录人。
+	online  bool          // 已报上线，之后由它自己的断开回调来删。
+	limit   *rate.Limiter // 这条连接的上行令牌桶，超出的不交给业务。
+	dropped uint64        // 这条连接被限速丢掉的上行条数，日志按它节流。
 }
 
 // DownTopic 仅该 Client 可订的下行 Topic。
@@ -63,9 +75,14 @@ func Listen(addr string, hooks Hooks) (*Broker, error) {
 	}
 	// 收成普通文本再拿去比较或拼接。
 	b := &Broker{addr: ln.Addr().String(), hooks: hooks, persons: map[*mqtt.Client]connPerson{}}
+	// 取引擎默认能力，只在上面收紧包长。
+	caps := mqtt.NewDefaultServerCapabilities()
+	// 超长包在读包头时就断开，不让任意字节灌进业务。
+	caps.MaximumPacketSize = maxPacketSize
 	// 建内嵌消息服务，日志先丢掉。
 	server := mqtt.New(&mqtt.Options{
 		InlineClient: true,
+		Capabilities: caps,
 		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
 	// 先当还没找到，找到再改成命中。
@@ -247,8 +264,19 @@ func (h *clientHook) OnPublished(cl *mqtt.Client, pk packets.Packet) {
 	if !ok {
 		return
 	}
-	// 查出这条连接对应的登录人。
-	h.broker.hooks.Up(fid, cid, h.broker.personOf(cl), pk.Payload)
+	// 按这条连接的令牌桶放行，超出的只计数不交业务。
+	personID, allowed, dropped := h.broker.admitUp(cl)
+	// 没有名额就丢掉这条，免得刷爆审计和厂库。
+	if !allowed {
+		// 头一条和每满一批才打日志，免得日志也被刷满。
+		if dropped == 1 || (dropped > 0 && dropped%upDropLogEvery == 0) {
+			// 记下哪台哪个人在超频上行，便于排查。
+			slog.Warn("client mqtt up throttled", "factory", fid, "client", cid, "person", personID, "dropped", dropped)
+		}
+		return
+	}
+	// 交给业务，登录人取这条连接鉴权时认下的。
+	h.broker.hooks.Up(fid, cid, personID, pk.Payload)
 }
 
 // 记住这条连接对应的登录人，顺带清掉同号的残留项。
@@ -274,8 +302,8 @@ func (b *Broker) rememberPerson(cl *mqtt.Client, personID uuid.UUID) {
 			delete(b.persons, old)
 		}
 	}
-	// 按连接记下登录人，等会话建好再标上线。
-	b.persons[cl] = connPerson{person: personID}
+	// 按连接记下登录人并配上自己的令牌桶，等会话建好再标上线。
+	b.persons[cl] = connPerson{person: personID, limit: rate.NewLimiter(rate.Every(upEvery), upBurst)}
 }
 
 // 取出这条连接的登录人并标成已上线，之后由它自己报离线。
@@ -312,6 +340,33 @@ func (b *Broker) personOf(cl *mqtt.Client) uuid.UUID {
 	// 离开时放开锁，免得把别人堵住。
 	defer b.mu.Unlock()
 	return b.persons[cl].person
+}
+
+// 取出这条连接的登录人，并按它的令牌桶决定这条上行收不收。
+func (b *Broker) admitUp(cl *mqtt.Client) (uuid.UUID, bool, uint64) {
+	// 对象还是空的就直接返回，避免碰到空指针。
+	if b == nil {
+		return uuid.Nil, false, 0
+	}
+	// 先占住锁，避免和鉴权、断开同时改表。
+	b.mu.Lock()
+	// 离开时放开锁，免得把别人堵住。
+	defer b.mu.Unlock()
+	// 取出这条连接鉴权时记下的那一项。
+	p, ok := b.persons[cl]
+	// 没鉴权记下的连接不认人，上行一律不交业务。
+	if !ok || p.limit == nil {
+		return uuid.Nil, false, 0
+	}
+	// 桶里还有名额就放行，交回登录人。
+	if p.limit.Allow() {
+		return p.person, true, 0
+	}
+	// 没名额就只累加这条连接的丢弃数。
+	p.dropped++
+	// 写回表里，下次日志节流按新数算。
+	b.persons[cl] = p
+	return p.person, false, p.dropped
 }
 
 // 连接断开时只忘掉它自己的登录人。

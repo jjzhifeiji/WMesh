@@ -68,3 +68,34 @@ var (
 	ErrTooManyRequests       = errors.New("too many requests")               // 匿名入口按来源超频，稍后再试
 	ErrWrongCurrentPassword  = errors.New("wrong current password")          // 改密时当前密码没带或不对，会话仍有效
 )
+
+// known 列出本包全部业务哨兵，Known 只认这些；新增哨兵须一并补进来，测试会核对。
+var known = []error{
+	ErrWANAdminExists, ErrInitialSAExists, ErrLoginNameTaken, ErrNotFound, ErrReferenced,
+	ErrCycle, ErrDisabledOrgType, ErrDisabledOrgUnit, ErrHasActiveUnits, ErrHasActiveChildren,
+	ErrDuplicateAssignment, ErrInvalidRoleScope, ErrDuplicateRoleGrant, ErrDuplicateSession, ErrUnauthorized,
+	ErrForbidden, ErrInvalidCredentials, ErrInvalidActivation, ErrAlreadyActivated, ErrAccountPending,
+	ErrAccountDisabled, ErrSessionExpired, ErrLastAdmin, ErrMultiParent, ErrWorkContext,
+	ErrFactoryBootstrap, ErrInvalidEnrollment, ErrFactoryDisabled, ErrFactoryRetired, ErrFactoryOffline,
+	ErrInvalidName, ErrDuplicateName, ErrInvalidKey, ErrClientKeyTaken, ErrFactoryKeyExists,
+	ErrSigningKeyExists, ErrClientBound, ErrUnbound, ErrDeviceSerialRequired, ErrDeviceSerialTaken,
+	ErrStaleRevision, ErrRevisionConflict, ErrIntegrity, ErrContentLeaseExpired, ErrAssetNotAvailable,
+	ErrAssetNotCopyable, ErrAssetDependency, ErrInvalidWeldKind, ErrWeldKindMismatch, ErrWeldKindInUse,
+	ErrClosureIncomplete, ErrClosureMismatch, ErrClientCacheFull, ErrTemplateInvalid, ErrAssetCodeMissing,
+	ErrAssetCodeConflict, ErrAssetSourceTaken, ErrOriginCodeExhausted, ErrSoftwareInstallFailed, ErrSoftwareApplying,
+	ErrTooManyAttempts, ErrTooManyRequests, ErrWrongCurrentPassword,
+}
+
+// Known 交回 err 包着的业务哨兵，不是业务错误就交回 nil。
+// 只交哨兵本身，外层包进去的库错或上游细节不随原因出网。
+func Known(err error) error {
+	// 逐个对照业务哨兵，包了几层也认得出。
+	for _, k := range known {
+		// 命中就交回哨兵本身，丢掉外层附带的细节。
+		if errors.Is(err, k) {
+			return k
+		}
+	}
+	// 哪个都对不上就不是业务错误，交调用方按内部故障处理。
+	return nil
+}

@@ -164,6 +164,55 @@ COMMENT ON COLUMN schema_migrations.applied_at IS '套用成功时间';
 	}
 }
 
+// 改过已套用的脚本要拒绝并报文件名；该行校验和记零的基线行不比，可以通过。
+func TestChecksumMismatch(t *testing.T) {
+	// 本例用一块全新的空库。
+	db := openTemp(t)
+	// 两支脚本：建表，再加一列。
+	fsys := fstest.MapFS{
+		"0001_init.up.sql": {Data: []byte("CREATE TABLE t (id INT);")},
+		"0002_next.up.sql": {Data: []byte("ALTER TABLE t ADD COLUMN n INT;")},
+	}
+	// 新库首次套用照常成功。
+	if err := migrate.Up(db, fsys, "."); err != nil {
+		// 首次套用失败就中止本用例。
+		t.Fatal(err)
+	}
+	// 改掉已套过的第二支正文，只加一行注释也算改过。
+	fsys["0002_next.up.sql"] = &fstest.MapFile{Data: []byte("-- 改过\nALTER TABLE t ADD COLUMN n INT;")}
+	// 再添一支新脚本，核对不过时它不该被套上。
+	fsys["0003_more.up.sql"] = &fstest.MapFile{Data: []byte("ALTER TABLE t ADD COLUMN m INT;")}
+	// 重跑应被拒绝。
+	err := migrate.Up(db, fsys, ".")
+	// 没报错，或错误里没有被改的文件名，都算没拦住。
+	if err == nil || !strings.Contains(err.Error(), "0002_next.up.sql") || !strings.Contains(err.Error(), "checksum mismatch") {
+		// 把实际拿到的错误打出来并中止。
+		t.Fatalf("want checksum mismatch on 0002_next.up.sql, got %v", err)
+	}
+	// 准备去数新列在不在。
+	var n int64
+	// 核对不过时一支都不该套，第三支的新列不该出现。
+	if err := db.Raw("SELECT COUNT(*) FROM information_schema.columns WHERE table_name = 't' AND column_name = 'm'").Scan(&n).Error; err != nil || n != 0 {
+		// 拒绝后仍套了新脚本就中止。
+		t.Fatalf("applied after mismatch %d %v", n, err)
+	}
+	// 把该行校验和记成零，当作读不到原文的基线行。
+	if err := db.Exec("UPDATE flyway_schema_history SET checksum = 0 WHERE script = '0002_next.up.sql'").Error; err != nil {
+		// 改不了历史就中止本用例。
+		t.Fatal(err)
+	}
+	// 记零的不比，重跑应通过。
+	if err := migrate.Up(db, fsys, "."); err != nil {
+		// 基线行仍被拦住就中止。
+		t.Fatal(err)
+	}
+	// 第三支这回应真的套上了。
+	if err := db.Raw("SELECT COUNT(*) FROM information_schema.columns WHERE table_name = 't' AND column_name = 'm'").Scan(&n).Error; err != nil || n != 1 {
+		// 新列没加上就中止本用例。
+		t.Fatalf("applied after baseline %d %v", n, err)
+	}
+}
+
 // 仓库里的向前脚本应能套上，再套一次仍成功。
 func TestAppliesEmbeddedSQL(t *testing.T) {
 	// 本例用一块全新的空库。

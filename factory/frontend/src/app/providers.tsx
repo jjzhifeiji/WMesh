@@ -3,7 +3,8 @@ import { App as AntdApp, ConfigProvider } from "antd";
 import zhCN from "antd/locale/zh_CN";
 import dayjs from "dayjs";
 import "dayjs/locale/zh-cn";
-import { useState, type PropsWithChildren } from "react";
+import { useEffect, useState, type PropsWithChildren } from "react";
+import { session } from "@/shared/auth/session";
 
 dayjs.locale("zh-cn");
 
@@ -19,6 +20,16 @@ function makeQueryClient() {
 // 全局上下文：antd 中文与主题、消息/弹窗上下文、查询缓存。
 export function AppProviders({ children }: PropsWithChildren) {
   const [queryClient] = useState(makeQueryClient);
+  // 查询键不含工厂和账号：令牌一变（401/停用被清、退出、换人或换厂登录）就清空缓存，旧会话的数据不留给新会话。
+  useEffect(() => {
+    let last = session.token;
+    return session.subscribe(() => {
+      // 只记工厂 ID 等不换令牌的变动不清缓存。
+      if (session.token === last) return;
+      last = session.token;
+      queryClient.clear();
+    });
+  }, [queryClient]);
   return (
     <ConfigProvider locale={zhCN} theme={{ token: { colorPrimary: "#1f4b3a", borderRadius: 6 } }}>
       <AntdApp>

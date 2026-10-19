@@ -69,10 +69,10 @@ func (h *Hub) StartClientBroker(addr string) error {
 			if err != nil {
 				return
 			}
-			// 先处理平板自己的上行。
-			svc.Node.HandleAppUp(context.Background(), personID, payload)
-			// 再处理设备上的控制回执。
-			svc.Closure.HandleClientUp(context.Background(), clientID, payload)
+			// 先处理平板自己的上行，设备用会话里鉴权过的本机。
+			svc.Node.HandleAppUp(context.Background(), personID, clientID, payload)
+			// 再处理设备上的控制回执，审计记到会话里的登录人。
+			svc.Closure.HandleClientUp(context.Background(), personID, clientID, payload)
 		},
 	})
 	// 设备通道起不来就交回，进程不要假装已经在听。

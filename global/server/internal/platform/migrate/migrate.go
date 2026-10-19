@@ -36,6 +36,10 @@ func Up(db *gorm.DB, fsys fs.FS, dir string) error {
 	if err != nil {
 		return err
 	}
+	// 先核对已套过的脚本没被改过，对不上就一支都不套。
+	if err := verifyChecksums(db, fsys, dir, names); err != nil {
+		return err
+	}
 	// 记下当前库用户，写进历史。
 	who, err := currentUser(db)
 	// 用户取不到就不套，历史不能空着操作者。
@@ -198,6 +202,50 @@ func baselineLegacy(db *gorm.DB, fsys fs.FS, dir string) error {
 		}
 		return nil
 	})
+}
+
+// verifyChecksums 核对已套用脚本的校验和，改过就报文件名拒绝，基线记零的不比。
+func verifyChecksums(db *gorm.DB, fsys fs.FS, dir string, names []string) error {
+	// 准备接成功历史里的脚本名和校验和。
+	var rows []struct {
+		// 已执行的 SQL 文件名。
+		Script string
+		// 套用时记下的校验和，空值按零算。
+		Checksum int
+	}
+	// 一次读出全部成功行，按顺序读让同名后记的盖住先记的。
+	if err := db.Raw("SELECT script, COALESCE(checksum, 0) AS checksum FROM flyway_schema_history WHERE success ORDER BY installed_rank").Scan(&rows).Error; err != nil {
+		return err
+	}
+	// 按文件名收好记下的校验和，逐支好查。
+	recorded := make(map[string]int, len(rows))
+	// 逐行收进表里。
+	for _, r := range rows {
+		// 同名多行时以后记的为准。
+		recorded[r.Script] = r.Checksum
+	}
+	// 只核对目录里现有、且历史里记过的脚本。
+	for _, name := range names {
+		// 取这支脚本当时记下的校验和。
+		want, ok := recorded[name]
+		// 没套过的留给后面套；记零的是读不到原文的基线行，没法比。
+		if !ok || want == 0 {
+			continue
+		}
+		// 把这支脚本现在的正文读出来。
+		body, err := fs.ReadFile(fsys, path.Join(dir, name))
+		// 读不到就没法核对，带上文件名交回。
+		if err != nil {
+			// 带上文件名交回，方便对是哪一支。
+			return fmt.Errorf("read %s: %w", name, err)
+		}
+		// 现在的正文与当时的对不上，说明改过已上线的脚本，新老库会分叉。
+		if got := checksumOf(body); got != want {
+			// 报出文件名和两边的值，拒绝继续迁移。
+			return fmt.Errorf("migration %s checksum mismatch: history %d, file %d", name, want, got)
+		}
+	}
+	return nil
 }
 
 // alreadyApplied 该脚本已成功套用则跳过。

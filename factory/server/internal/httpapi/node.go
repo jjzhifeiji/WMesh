@@ -173,7 +173,7 @@ func (h *Handler) loginOnClient(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, err)
 			return
 		}
-		// 先记下这次登录的设备，自报合法再替换。
+		// 记下路径里已核对过的设备，正文自报不再替换。
 		cid := clientID
 		// 补记现场，记失败也不推翻刚完成的登录。
 		_ = svc.Node.RecordAppLogin(r.Context(), sess.Account.ID, loginSnap(service.LoginKindClient, req.AppVersion, req.AppVersionName, req.DeviceSerial, req.DeviceModel, req.DeviceManufacturer, req.AndroidRelease, req.NetworkName, req.ClientID, &cid))
@@ -391,14 +391,14 @@ func (h *Handler) signingPublicKey(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// loginSnap 把示教器自报收成现场；非法 clientId 丢掉，不挡登录。
-func loginSnap(kind string, version int64, versionName, serial, model, mfr, android, wifi, clientRaw string, fallback *uuid.UUID) service.LoginSnap {
-	// 先用调用方给的设备，能解析再替换。
-	cid := fallback
-	// 自报的设备号能解析才采用，非法则保留。
-	if parsed := parseLooseUUID(clientRaw); parsed != nil {
-		// 改用解析出来的设备，非法的不会走到这。
-		cid = parsed
+// loginSnap 把示教器自报收成现场；已核设备优先，非法 clientId 丢掉。
+func loginSnap(kind string, version int64, versionName, serial, model, mfr, android, wifi, clientRaw string, verified *uuid.UUID) service.LoginSnap {
+	// 路径里已核对过的设备优先，自报号不能盖掉它。
+	cid := verified
+	// 没有已核设备才看自报，非法的当没传。
+	if cid == nil {
+		// 自报号能解析才采用，非法则仍留空。
+		cid = parseLooseUUID(clientRaw)
 	}
 	return service.LoginSnap{
 		Kind:               kind,

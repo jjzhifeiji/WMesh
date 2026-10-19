@@ -4,6 +4,7 @@ package service_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"strings"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"wmesh/global/internal/platform/domain"
 	"wmesh/global/internal/service"
 )
 
@@ -280,5 +282,25 @@ func TestWeldSummariesMergeTrimmedNames(t *testing.T) {
 	if b := byName["B"]; b.RunCount != math.MaxInt64 || b.LengthMM != math.MaxInt64 || b.DurationSec != math.MaxInt64 {
 		// 不符即停：B 没有封顶。
 		t.Fatalf("B %+v", b)
+	}
+}
+
+// 名录里没有的厂上送汇总按已注销拒绝，不写库。
+func TestWeldSummariesUnknownFactory(t *testing.T) {
+	// 准备本测上下文，上送用它。
+	ctx := context.Background()
+	// 起云端库和服务，名录里一家厂都没有。
+	h := New(t)
+	// 随手生成一个名录里没有的厂身份。
+	ghost := uuid.New()
+	// 用这个身份上送一行，应按已注销拒绝。
+	_, err := h.WAN.Stats.PutFromFactoryReport(ctx, ghost, []service.WeldSummaryIn{
+		// 一行合法汇总，拒绝只能是因为厂不在名录。
+		{Day: "2026-09-17", ProjectName: "A", WeldKind: "single", RunCount: 1, LengthMM: 10, DurationSec: 1},
+	})
+	// 没按已注销拒绝，说明还在放行未知厂。
+	if !errors.Is(err, domain.ErrFactoryRetired) {
+		// 不符即停：未知厂上送没被拒。
+		t.Fatalf("unknown factory put: %v", err)
 	}
 }

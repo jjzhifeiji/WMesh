@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 
 	"github.com/google/uuid"
 
@@ -263,29 +264,56 @@ func (s *Closure) PadPullClientClosure(ctx context.Context, token string, assetI
 }
 
 // HandleClientUp 收下本机回执；身份以 MQTT 会话为准，载荷里自报的不管。
-func (s *Closure) HandleClientUp(ctx context.Context, clientID uuid.UUID, payload []byte) {
-	// 带正文的上行交给闭包回执，这里只认在场
+func (s *Closure) HandleClientUp(ctx context.Context, personID, clientID uuid.UUID, payload []byte) {
+	// 带正文或解不开的上行只计数，不逐条写审计
 	if clientmqtt.HasBody(payload) {
-		// 记下本机回执被拒绝，写失败不改变结果
-		_ = s.audit(ctx, nil, nil, "client_ack", clientID.String(), audit.Deny)
+		// 累加被拒条数，按条数节流记日志
+		s.noteUpReject(personID, clientID)
 		return
 	}
 	// 准备接本机回执，种类不对就忽略
 	var rec clientmqtt.Receipt
+	// 字段类型对不上的上行同样只计数
+	if json.Unmarshal(payload, &rec) != nil {
+		// 累加被拒条数，按条数节流记日志
+		s.noteUpReject(personID, clientID)
+		return
+	}
 	// 种类不对则忽略，不当成在场或回执
-	if json.Unmarshal(payload, &rec) != nil || rec.Typ != clientmqtt.TypAck {
+	if rec.Typ != clientmqtt.TypAck {
 		return
 	}
 	// 收成文本身份，供审计或对账对准
 	target := clientID.String()
-	// 回执带了资产才补进审计对象，空的忽略
-	if rec.AssetID != "" {
-		// 审计对象补上回执里的资产，方便对上哪一包
-		target += " " + rec.AssetID
+	// 资产能按身份解析才补进审计对象，乱填的不拼
+	if asset, err := uuid.Parse(rec.AssetID); err == nil {
+		// 补上规范写法的资产身份，长度固定
+		target += " " + asset.String()
+	}
+	// 操作者记会话里鉴权过的登录人，空身份不记人
+	var actor *uuid.UUID
+	// 会话里有登录人才记到人头上
+	if personID != uuid.Nil {
+		// 取登录人的地址作操作者
+		actor = &personID
 	}
 	// 记下本机回执已允许，写失败不回滚已完成的事
-	_ = s.audit(ctx, nil, nil, "client_ack", target, audit.Allow)
+	_ = s.audit(ctx, actor, nil, "client_ack", target, audit.Allow)
 }
+
+// noteUpReject 累加被拒的本机上行，头一条和每满一批才记日志。
+func (s *Closure) noteUpReject(personID, clientID uuid.UUID) {
+	// 累加本厂被拒的上行条数
+	n := s.upRejects.Add(1)
+	// 头一条和每满一批才打日志，免得刷屏
+	if n == 1 || n%upRejectLogEvery == 0 {
+		// 记下哪台哪个人送了坏上行，便于排查
+		slog.Warn("client mqtt up rejected", "client", clientID, "person", personID, "rejected", n)
+	}
+}
+
+// upRejectLogEvery 被拒的本机上行每满这么多条再记一条日志。
+const upRejectLogEvery = 100
 
 // 当前登录人必须是这台已绑定本机的操作员。
 func (s *kernel) requireClientOperator(ctx context.Context, token string, clientID uuid.UUID) (Account, Client, error) {

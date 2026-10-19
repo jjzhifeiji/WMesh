@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 
 	"wmesh/global/internal/httpapi"
+	"wmesh/global/internal/platform/audit"
 	"wmesh/global/internal/platform/nodekey"
 	"wmesh/global/internal/platform/testpg"
 	"wmesh/global/internal/service"
@@ -94,6 +95,115 @@ func TestWeldSummaryHTTP(t *testing.T) {
 	if code != http.StatusUnauthorized {
 		// 匿名调用没被拒绝，带上现场停测。
 		t.Fatalf("anon %d", code)
+	}
+}
+
+// 注销后的厂用厂钥上送空表回 403，云端汇总不动并记拒绝；停用照常上送。
+func TestWeldSummaryRetiredFactory(t *testing.T) {
+	// 准备本测上下文，服务调用都用它。
+	ctx := context.Background()
+	// 打开测试库管理员，用来建一块独立库。
+	admin := testpg.Open(t)
+	// 建一块独立库，不碰别的测试数据。
+	_, dsn := testpg.CreateDB(t, admin, "wmesh_wan")
+	// 把库迁到当前结构，再交给服务。
+	svc := service.NewService(store.Open(testpg.OpenMigrated(t, dsn)))
+	// 立初始管理员，失败后面没人能注销厂。
+	if err := svc.BootstrapAdmin(ctx, "w", "wan-secret"); err != nil {
+		// 不符即停：立初始管理员失败。
+		t.Fatal(err)
+	}
+	// 用初始管理员登录，停用、注销和查汇总都要会话。
+	tok, err := svc.Login(ctx, "w", "wan-secret")
+	// 登录失败就停，没有会话后面做不了。
+	if err != nil {
+		// 不符即停：登录失败。
+		t.Fatal(err)
+	}
+	// 建一家厂，后面认领、上送和注销都指它。
+	created, err := svc.CreateFactory(ctx, tok, "厂A", "sa-a", "超管A")
+	// 建厂失败就停，没有厂可上送。
+	if err != nil {
+		// 不符即停：建厂失败。
+		t.Fatal(err)
+	}
+	// 记下这家厂，后面反复用。
+	fid := created.Factory.ID
+	// 生成厂钥，私钥只留在本测。
+	pub, priv, err := nodekey.Generate()
+	// 生成失败就停，没有钥签不了名。
+	if err != nil {
+		// 不符即停：生成厂钥失败。
+		t.Fatal(err)
+	}
+	// 交钥认领，注销时才走只改状态那条路。
+	if err := svc.ConfirmEnroll(ctx, fid, pub); err != nil {
+		// 不符即停：认领失败。
+		t.Fatal(err)
+	}
+	// 起临时云端，只在本测里访问。
+	srv := httptest.NewServer(httpapi.New(svc, "test").Router())
+	// 测完关掉临时服务，避免端口占着。
+	t.Cleanup(srv.Close)
+	// 先上送一行好汇总，作为注销前留在云端的历史。
+	code, raw := doFactory(t, srv, fid, priv, "POST", "/v1/channel/weld-summaries", `{"rows":[{"day":"2026-09-17","projectName":"单层-舷侧分段","weldKind":"single","runCount":5,"lengthMm":4000,"durationSec":200}]}`)
+	// 正常厂上送应回 200。
+	if code != http.StatusOK {
+		// 不符即停：正常上送没被收下。
+		t.Fatalf("put active %d %s", code, raw)
+	}
+	// 停用这家厂，停用仍应能上送。
+	if _, err := svc.DisableFactory(ctx, tok, fid); err != nil {
+		// 不符即停：停用失败。
+		t.Fatal(err)
+	}
+	// 停用后再送两行，应照常整表替换。
+	code, raw = doFactory(t, srv, fid, priv, "POST", "/v1/channel/weld-summaries", `{"rows":[{"day":"2026-09-17","projectName":"单层-舷侧分段","weldKind":"single","runCount":5,"lengthMm":4000,"durationSec":200},{"day":"2026-09-18","projectName":"多层-箱体","weldKind":"multilayer","runCount":1,"lengthMm":100,"durationSec":10}]}`)
+	// 停用厂上送应回 200。
+	if code != http.StatusOK {
+		// 不符即停：停用厂上送被拒。
+		t.Fatalf("put disabled %d %s", code, raw)
+	}
+	// 注销这家厂，已认领只改状态，历史保留。
+	if _, err := svc.DeleteFactory(ctx, tok, fid); err != nil {
+		// 不符即停：注销失败。
+		t.Fatal(err)
+	}
+	// 注销后上送空表，旧代码会借此清空历史。
+	code, raw = doFactory(t, srv, fid, priv, "POST", "/v1/channel/weld-summaries", `{"rows":[]}`)
+	// 已注销应回 403。
+	if code != http.StatusForbidden {
+		// 不符即停：注销厂上送没被拒。
+		t.Fatalf("put retired %d %s", code, raw)
+	}
+	// 查这家厂的汇总，应仍是停用时那两行。
+	rows, err := svc.Stats.ListWeldReports(ctx, tok, fid.String(), nil, nil)
+	// 查询失败或行数变了，说明空表还是覆盖了。
+	if err != nil || len(rows) != 2 {
+		// 不符即停：注销后云端汇总被改动。
+		t.Fatalf("rows after retired put %d %v", len(rows), err)
+	}
+	// 读审计，核对这次拒绝留了痕。
+	logs, err := svc.ListAudit(ctx)
+	// 读审计失败就停，读不到就无法核对。
+	if err != nil {
+		// 不符即停：读审计失败。
+		t.Fatal(err)
+	}
+	// 数出这家厂上送汇总被拒的条数。
+	denies := 0
+	// 逐行看审计，只数本厂的上送拒绝。
+	for _, row := range logs {
+		// 动作、结果和对象都对上才算这一条。
+		if row.Action == "put_weld_summaries" && row.Result == audit.Deny && row.Target == fid.String() {
+			// 对上就记一条。
+			denies++
+		}
+	}
+	// 只有注销后那一次被拒，应恰好一条。
+	if denies != 1 {
+		// 不符即停：拒绝审计条数不对。
+		t.Fatalf("put_weld_summaries deny audits %d, want 1", denies)
 	}
 }
 

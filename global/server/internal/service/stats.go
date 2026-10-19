@@ -71,7 +71,7 @@ func (s *Stats) PutFromFactory(ctx context.Context, factoryID uuid.UUID, rows []
 	return err
 }
 
-// PutFromFactoryReport 用该厂全量汇总覆盖云端旧行；坏行只跳过并列进回执。
+// PutFromFactoryReport 用该厂全量汇总覆盖云端旧行；已注销拒收，坏行只跳过并列进回执。
 func (s *Stats) PutFromFactoryReport(ctx context.Context, factoryID uuid.UUID, rows []WeldSummaryIn) (WeldSummaryReceipt, error) {
 	// 跳过列表先给空表，回执里不出现 null。
 	receipt := WeldSummaryReceipt{Skipped: []WeldSummarySkip{}}
@@ -80,6 +80,26 @@ func (s *Stats) PutFromFactoryReport(ctx context.Context, factoryID uuid.UUID, r
 		// 汇总被拒就留审计。
 		_ = s.audit(ctx, nil, nil, &factoryID, "put_weld_summaries", "factory", audit.Deny)
 		return receipt, domain.ErrUnauthorized
+	}
+	// 先读厂档，已注销的厂不能再覆盖云端汇总。
+	fac, err := s.store.FactoryByID(ctx, factoryID)
+	// 名录里没了就当已注销，和进门口径一致。
+	if errors.Is(err, domain.ErrNotFound) {
+		// 汇总被拒就留审计。
+		_ = s.audit(ctx, nil, nil, &factoryID, "put_weld_summaries", factoryID.String(), audit.Deny)
+		return receipt, domain.ErrFactoryRetired
+	}
+	// 读库出错就停，表不动。
+	if err != nil {
+		// 汇总被拒就留审计。
+		_ = s.audit(ctx, nil, nil, &factoryID, "put_weld_summaries", factoryID.String(), audit.Deny)
+		return receipt, err
+	}
+	// 已注销就拒绝，空表也清不掉历史；停用照常上送。
+	if fac.Status == FactoryRetired {
+		// 汇总被拒就留审计。
+		_ = s.audit(ctx, nil, nil, &factoryID, "put_weld_summaries", factoryID.String(), audit.Deny)
+		return receipt, domain.ErrFactoryRetired
 	}
 	// 按数量先准备容器。
 	clean := make([]store.WeldSummary, 0, len(rows))

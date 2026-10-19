@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 
 	"wmesh/global/internal/platform/audit"
+	"wmesh/global/internal/platform/contentcrypt"
 	"wmesh/global/internal/platform/contenttpl"
 	"wmesh/global/internal/platform/digest"
 	"wmesh/global/internal/platform/domain"
@@ -540,6 +541,32 @@ func (s *Assets) PromoteFromSnapshot(ctx context.Context, token string, snap Ass
 		_ = s.audit(ctx, nil, nil, &snap.SourceFactoryID, "promote_asset", snap.SourceID.String(), audit.Deny)
 		return Asset{}, err
 	}
+	// 管理员贴来的快照仍允许明文夹具，直接走升档主体。
+	return s.promoteSnapshot(ctx, admin, snap)
+}
+
+// PromoteFactorySnapshot 通道升档：快照须出自所问的厂和资产，正文须是过站信封。
+func (s *Assets) PromoteFactorySnapshot(ctx context.Context, token string, factoryID, assetID uuid.UUID, snap AssetSnapshot) (Asset, error) {
+	// 只有 WAN 管理员能升档。失败一律记拒绝。
+	admin, err := s.RequireAdmin(ctx, token)
+	// 无效就不能继续，不当已经登录。
+	if err != nil {
+		// 升档被拒就留审计，记所问的厂和资产。
+		_ = s.audit(ctx, nil, nil, &factoryID, "promote_asset", assetID.String(), audit.Deny)
+		return Asset{}, err
+	}
+	// 自报来源厂或资产与所问不符、正文不是过站信封，都当被篡改。
+	if snap.SourceFactoryID != factoryID || snap.SourceID != assetID || !contentcrypt.IsEnvelope(snap.Content) {
+		// 升档被拒就留审计，按所问的厂和资产记，不信快照自报。
+		_ = s.audit(ctx, &admin.ID, nil, &factoryID, "promote_asset", assetID.String(), audit.Deny)
+		return Asset{}, domain.ErrIntegrity
+	}
+	// 来源和信封都核过，再走与贴快照相同的升档主体。
+	return s.promoteSnapshot(ctx, admin, snap)
+}
+
+// promoteSnapshot 是升档主体，调用方已核过管理员；来源厂按快照自报。
+func (s *Assets) promoteSnapshot(ctx context.Context, admin Admin, snap AssetSnapshot) (Asset, error) {
 	// 记下工厂身份，授权和审计都按这家厂。
 	fid := snap.SourceFactoryID
 	// 厂级不分草稿/停用都可升平台；不可复制工艺仍拒绝，工程不看可复制。
@@ -650,6 +677,12 @@ func (s *Assets) PromoteFromSnapshot(ctx context.Context, token string, snap Ass
 		// 升档被拒就留审计。
 		_ = s.audit(ctx, &admin.ID, nil, &fid, "promote_asset", snap.SourceID.String(), audit.Deny)
 		return Asset{}, err
+	}
+	// 已升档件记着别的来源厂就拒绝，别家不能顶替覆盖。
+	if existing.SourceFactoryID != nil && *existing.SourceFactoryID != fid {
+		// 升档被拒就留审计。
+		_ = s.audit(ctx, &admin.ID, nil, &fid, "promote_asset", snap.SourceID.String(), audit.Deny)
+		return Asset{}, domain.ErrAssetSourceTaken
 	}
 	// 平台级已停用就拒绝，摘要相同也拒，停用件不得改内容或升档。
 	if existing.Status == AssetDisabled {

@@ -1187,3 +1187,55 @@ func assertLegacyBands(t *testing.T, body []byte, want []string) {
 		t.Fatalf("bands %v want %v", got, want)
 	}
 }
+
+// 单份被拒只给业务原话；库写不进（名字含 0x00）时对外只写 internal error，不带 SQLSTATE。
+func TestImportLegacyRejectReasonHidesInternal(t *testing.T) {
+	// 准备无取消的上下文，后面每次调用都挂在上面。
+	ctx := context.Background()
+	// 拉起隔离厂库，起不来说明测试库还没就绪。
+	h := New(t)
+	// 建厂并签发超管激活码，失败则没有厂可测。
+	seed, fac, err := h.Provision(ctx, "sa", "超管")
+	// 建厂失败就停，否则后面没有可靠结果。
+	if err != nil {
+		// 把建厂的错误打出来并停住，避免继续往下验。
+		t.Fatal(err)
+	}
+	// 开通失败就停，否则后面没有可靠结果。
+	if err := fac.Activate(ctx, "sa", seed.ActivationToken, "sa-pass"); err != nil {
+		// 把开通的错误打出来并停住，避免继续往下验。
+		t.Fatal(err)
+	}
+	// 登录并取出令牌，失败说明账号没有开通成功。
+	saTok := mustLogin(t, ctx, fac, "sa", "sa-pass")
+	// 名字含 0x00 的工艺，库会以编码错误拒写。
+	nulProc := factory.LegacyFile{Path: "nul.json", Name: "坏\x00艺", Content: []byte(`{"name":"坏","current":1}`)}
+	// 名字含 0x00 的工程，正文没问题，同样写不进库。
+	nulProj := factory.LegacyFile{Path: "nul/project_data.json", Name: "坏\x00程", Content: []byte(`[{"id":"w1","points":[]}]`)}
+	// 正文不是数组的工程，按业务拒绝。
+	notArr := factory.LegacyFile{Path: "obj/project_data.json", Content: []byte(`{}`)}
+	// 引用不存在工艺的工程，按依赖缺失拒绝。
+	gone := factory.LegacyFile{Path: "gone/project_data.json", Content: []byte(`[{"processPath":"missing.json"}]`)}
+	// 一批导入，四份都该被拒，整批不报错。
+	got, err := fac.ImportLegacy(ctx, saTok, factory.LegacyImport{Processes: []factory.LegacyFile{nulProc}, Projects: []factory.LegacyFile{nulProj, notArr, gone}})
+	// 导入报错或条数不对就停，单份库错不该连累整批。
+	if err != nil || len(got.Processes) != 0 || len(got.Projects) != 0 || len(got.Rejected) != 4 {
+		// 断言没通过就停，结果和这条用例的预期不一致。
+		t.Fatalf("%+v %v", got, err)
+	}
+	// 按路径记下期望原因：库错一律笼统，业务错误给原话。
+	want := map[string]string{
+		nulProc.Path: "internal error",
+		nulProj.Path: "internal error",
+		notArr.Path:  domain.ErrForbidden.Error(),
+		gone.Path:    domain.ErrAssetDependency.Error(),
+	}
+	// 逐份核对原因，库原文一个字都不能出现。
+	for _, r := range got.Rejected {
+		// 原因不符或带了 SQLSTATE 就停，说明内部错误漏到了响应里。
+		if r.Reason != want[r.Path] || strings.Contains(r.Reason, "SQLSTATE") {
+			// 断言没通过就停，结果和这条用例的预期不一致。
+			t.Fatalf("reject %s: %q want %q", r.Path, r.Reason, want[r.Path])
+		}
+	}
+}

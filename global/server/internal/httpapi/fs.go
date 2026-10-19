@@ -231,19 +231,13 @@ func (h *Handler) listFactoryFS(w http.ResponseWriter, r *http.Request) {
 		writeBadRequest(w, err)
 		return
 	}
-	// 厂已停用或注销，就不再问厂端。
-	if err := h.guardAskFactory(r.Context(), fid); err != nil {
-		// 按业务错误回写，内部细节不出网。
-		writeErr(w, err)
-		return
-	}
 	// 读取种类，空则由服务决定是否拒绝。
 	kind := r.URL.Query().Get("kind")
 	// 问厂端限时，超时就当厂不在线。
 	ctx, cancel := context.WithTimeout(r.Context(), channelAsk)
 	// 离开时取消限时，避免协程继续占着。
 	defer cancel()
-	// 向该厂要目录，超时就当不在线。
+	// 向该厂要目录；注销、停用、离线由服务拦下。
 	msg, err := h.svc.CallFactory(ctx, fid, service.Cmd{Typ: service.CmdFSList, Kind: kind})
 	// 没成功就按业务错误回写，不假装完成。
 	if err != nil {

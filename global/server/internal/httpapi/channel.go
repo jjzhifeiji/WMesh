@@ -129,16 +129,16 @@ func (h *Handler) channelClaim(w http.ResponseWriter, r *http.Request) {
 	}
 	// 先按在营组装，再改成库里的真实状态。
 	out := claimResp{FactoryID: offer.FactoryID.String(), Status: service.FactoryActive}
-	// 再读治理状态，读不到就不补展示字段。
-	fac, err := h.svc.Store().FactoryByID(r.Context(), offer.FactoryID)
+	// 经服务读治理状态，读不到就不补展示字段。
+	view, err := h.svc.ClaimView(r.Context(), offer.FactoryID)
 	// 读到厂档才补真实状态，读不到仍回认领结果。
 	if err == nil {
 		// 改用库里的治理状态，不信客户端自报。
-		out.Status = fac.Status
+		out.Status = view.Status
 		// 带回治理修订，厂端只向前接收。
-		out.Revision = fac.LifecycleRevision
+		out.Revision = view.Revision
 		// 带回本厂短码，供厂端展示。
-		out.FactoryShortCode = fac.ShortCode
+		out.FactoryShortCode = view.ShortCode
 	}
 	// 把结果交回调用方。
 	writeJSON(w, http.StatusOK, out)

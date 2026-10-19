@@ -84,13 +84,9 @@ func (s *Channel) HandleFactoryUp(ctx context.Context, factoryID uuid.UUID, payl
 	}
 }
 
-// CallFactory 经 MQTT 问该厂升档清单或快照。
+// CallFactory 经 MQTT 问该厂升档清单或快照；先拦已注销、停用，再判离线。
 func (s *Service) CallFactory(ctx context.Context, factoryID uuid.UUID, cmd Cmd) (Cmd, error) {
-	// 没挂指令总线就跳过推送，测试可以不挂。
-	if s.bus == nil {
-		return Cmd{}, domain.ErrFactoryOffline
-	}
-	// 按工厂名录处理。
+	// 先读名录，注销与停用不论有没有总线都先拦。
 	fac, err := s.store.FactoryByID(ctx, factoryID)
 	// 没有这家厂或状态不对就拒绝。
 	if err != nil {
@@ -103,6 +99,10 @@ func (s *Service) CallFactory(ctx context.Context, factoryID uuid.UUID, cmd Cmd)
 	// 停用的厂拒绝新操作，只能再被启用。
 	if fac.Status == FactoryDisabled {
 		return Cmd{}, domain.ErrFactoryDisabled
+	}
+	// 没挂指令总线就问不到厂，测试可以不挂。
+	if s.bus == nil {
+		return Cmd{}, domain.ErrFactoryOffline
 	}
 	// 厂端不在线就不能做这件要通道的事。
 	if !fac.ChannelOnline {

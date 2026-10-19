@@ -1261,3 +1261,53 @@ func TestImportLegacyPreUpgradeLongName(t *testing.T) {
 		t.Fatalf("over ids %s %s", over.Processes[0].ID, over.Projects[0].ID)
 	}
 }
+
+// 单份被拒只给业务原话；库写不进（名字含 0x00）时对外只写 internal error，不带 SQLSTATE。
+func TestImportLegacyRejectReasonHidesInternal(t *testing.T) {
+	// 准备本测上下文，没有它库和服务都开不了。
+	ctx := context.Background()
+	// 起云端库和服务，起不来整段验收作废。
+	h := New(t)
+	// 立云端超管失败就停，立不住后面没有人能登录。
+	if err := h.WAN.BootstrapAdmin(ctx, "w", "wan-secret"); err != nil {
+		// 不符即停：立云端超管失败。
+		t.Fatal(err)
+	}
+	// 登录拿会话，没有票后面接口都进不去。
+	tok, err := h.WAN.Login(ctx, "w", "wan-secret")
+	// 登录拿会话失败就停，没有票后面接口都进不去。
+	if err != nil {
+		// 不符即停：登录拿会话失败。
+		t.Fatal(err)
+	}
+	// 名字含 0x00 的工艺，库会以编码错误拒写。
+	nulProc := service.LegacyFile{Path: "nul.json", Name: "坏\x00艺", Content: []byte(`{"name":"坏","current":1}`)}
+	// 名字含 0x00 的工程，正文没问题，同样写不进库。
+	nulProj := service.LegacyFile{Path: "nul/project_data.json", Name: "坏\x00程", Content: []byte(`[{"id":"w1","points":[]}]`)}
+	// 正文不是数组的工程，按业务拒绝。
+	notArr := service.LegacyFile{Path: "obj/project_data.json", Content: []byte(`{}`)}
+	// 引用不存在工艺的工程，按依赖缺失拒绝。
+	gone := service.LegacyFile{Path: "gone/project_data.json", Content: []byte(`[{"processPath":"missing.json"}]`)}
+	// 一批导入，四份都该被拒，整批不报错。
+	got, err := h.WAN.ImportLegacy(ctx, tok, service.LegacyImport{Processes: []service.LegacyFile{nulProc}, Projects: []service.LegacyFile{nulProj, notArr, gone}})
+	// 导入报错或条数不对就停，单份库错不该连累整批。
+	if err != nil || len(got.Processes) != 0 || len(got.Projects) != 0 || len(got.Rejected) != 4 {
+		// 不符即停：被拒份数或整批结果不对。
+		t.Fatalf("%+v %v", got, err)
+	}
+	// 按路径记下期望原因：库错一律笼统，业务错误给原话。
+	want := map[string]string{
+		nulProc.Path: "internal error",
+		nulProj.Path: "internal error",
+		notArr.Path:  domain.ErrForbidden.Error(),
+		gone.Path:    domain.ErrAssetDependency.Error(),
+	}
+	// 逐份核对原因，库原文一个字都不能出现。
+	for _, r := range got.Rejected {
+		// 原因不符或带了 SQLSTATE 就停，说明内部错误漏到了响应里。
+		if r.Reason != want[r.Path] || strings.Contains(r.Reason, "SQLSTATE") {
+			// 不符即停：拒绝原因漏了库原文或业务原话变了。
+			t.Fatalf("reject %s: %q want %q", r.Path, r.Reason, want[r.Path])
+		}
+	}
+}

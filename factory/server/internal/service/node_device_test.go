@@ -497,7 +497,7 @@ func TestPadLoginMarksAppOnlineAndVersion(t *testing.T) {
 	// 把在线上报编成报文，编空则状态送不出去
 	raw, _ := json.Marshal(map[string]any{"typ": "presence", "version": 53, "versionName": "6.1.2"})
 	// 送上应用上报，送不进去则在线状态没记下
-	fac.HandleAppUp(ctx, op.acc.ID, raw)
+	fac.HandleAppUp(ctx, op.acc.ID, uuid.Nil, raw)
 	// 改通道在线标记，没改则名册状态对不上
 	fac.NoteAppMQTT(ctx, op.acc.ID, true)
 	// 改通道在线标记，没改则名册状态对不上
@@ -622,7 +622,7 @@ func TestPersonLoginLogsKeepDeviceAndWifi(t *testing.T) {
 		"networkName": "Factory-WiFi",
 	})
 	// 送上应用上报，送不进去则在线状态没记下
-	fac.HandleAppUp(ctx, op.acc.ID, raw)
+	fac.HandleAppUp(ctx, op.acc.ID, uuid.Nil, raw)
 	// 列出人员登录记录，失败则本步验收不能继续
 	rows, err = fac.ListPersonLogins(ctx, saTok, op.acc.ID)
 	// 列出人员登录记录失败就停，避免带着错误继续验
@@ -638,7 +638,7 @@ func TestPersonLoginLogsKeepDeviceAndWifi(t *testing.T) {
 		"androidRelease": "10", "networkName": "Factory-WiFi",
 	})
 	// 送上应用上报，送不进去则在线状态没记下
-	fac.HandleAppUp(ctx, op.acc.ID, raw)
+	fac.HandleAppUp(ctx, op.acc.ID, uuid.Nil, raw)
 	// 列出人员登录记录，失败则本步验收不能继续
 	rows, err = fac.ListPersonLogins(ctx, saTok, op.acc.ID)
 	// 列出人员登录记录失败就停，避免带着错误继续验
@@ -723,7 +723,7 @@ func TestPresenceWithWM2RecordsLogin(t *testing.T) {
 		"deviceSerial": "ARM-WM2", "networkName": "WM2-Line",
 	})
 	// 送上应用上报，被当成夹带就记不进登录
-	fac.HandleAppUp(ctx, op.acc.ID, raw)
+	fac.HandleAppUp(ctx, op.acc.ID, uuid.Nil, raw)
 	// 列出人员登录记录，失败则本步验收不能继续
 	rows, err := fac.ListPersonLogins(ctx, saTok, op.acc.ID)
 	// 没记成一条通道登录或网络名不对就失败

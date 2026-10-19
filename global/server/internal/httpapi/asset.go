@@ -599,19 +599,13 @@ func (h *Handler) listPromotable(w http.ResponseWriter, r *http.Request) {
 		writeBadRequest(w, err)
 		return
 	}
-	// 厂已停用或注销，就不再问厂端。
-	if err := h.guardAskFactory(r.Context(), fid); err != nil {
-		// 按业务错误回写，内部细节不出网。
-		writeErr(w, err)
-		return
-	}
 	// 读取种类，空则由服务决定是否拒绝。
 	kind := r.URL.Query().Get("kind")
 	// 问厂端限时，超时就当厂不在线。
 	ctx, cancel := context.WithTimeout(r.Context(), channelAsk)
 	// 离开时取消限时，避免协程继续占着。
 	defer cancel()
-	// 向该厂要可升档列表，不含正文。
+	// 向该厂要可升档列表；注销、停用、离线由服务拦下。
 	msg, err := h.svc.CallFactory(ctx, fid, service.Cmd{Typ: service.CmdAssetList, Kind: kind})
 	// 没成功就按业务错误回写，不假装完成。
 	if err != nil {
@@ -658,23 +652,19 @@ func (h *Handler) promoteFromFactory(w http.ResponseWriter, r *http.Request) {
 		writeBadRequest(w, errInvalidID)
 		return
 	}
+	// 解析所问的厂级身份，升档时要核对快照出自它。
+	aid, err := uuid.Parse(req.AssetID)
 	// 身份不是合法的稳定号，就拒绝。
-	if _, err := uuid.Parse(req.AssetID); err != nil {
+	if err != nil {
 		// 把不合法的原因回给调用方。
 		writeBadRequest(w, errInvalidID)
-		return
-	}
-	// 厂已停用或注销，就不再问厂端。
-	if err := h.guardAskFactory(r.Context(), fid); err != nil {
-		// 按业务错误回写，内部细节不出网。
-		writeErr(w, err)
 		return
 	}
 	// 问厂端限时，超时就当厂不在线。
 	ctx, cancel := context.WithTimeout(r.Context(), channelAsk)
 	// 离开时取消限时，避免协程继续占着。
 	defer cancel()
-	// 向该厂要快照，没有就不能升档。
+	// 向该厂要快照；注销、停用、离线由服务拦下。
 	msg, err := h.svc.CallFactory(ctx, fid, service.Cmd{Typ: service.CmdAssetSnapshot, AssetID: req.AssetID})
 	// 没成功就按业务错误回写，不假装完成。
 	if err != nil {
@@ -696,8 +686,8 @@ func (h *Handler) promoteFromFactory(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, domain.ErrNotFound)
 		return
 	}
-	// 用快照做成平台级草稿，不合格就拒绝。
-	row, err := h.svc.Assets.PromoteFromSnapshot(r.Context(), bearer(r), snap)
+	// 核对快照出自所问的厂和资产且是过站信封，再做成平台级草稿。
+	row, err := h.svc.Assets.PromoteFactorySnapshot(r.Context(), bearer(r), fid, aid, snap)
 	// 没成功就按业务错误回写，不假装完成。
 	if err != nil {
 		// 按业务错误回写，内部细节不出网。
@@ -706,25 +696,6 @@ func (h *Handler) promoteFromFactory(w http.ResponseWriter, r *http.Request) {
 	}
 	// 创建成功，把新记录交回调用方。
 	writeJSON(w, http.StatusCreated, row)
-}
-
-// 停用或注销的厂不再问升档。
-func (h *Handler) guardAskFactory(ctx context.Context, factoryID uuid.UUID) error {
-	// 再读治理状态，读不到就不补展示字段。
-	fac, err := h.svc.Store().FactoryByID(ctx, factoryID)
-	// 失败把原因交回去，避免留下残缺结果。
-	if err != nil {
-		return err
-	}
-	// 已注销的厂不再问，避免升档到无效厂。
-	if fac.Status == service.FactoryRetired {
-		return domain.ErrFactoryRetired
-	}
-	// 已停用的厂不再问，先启用才能升档。
-	if fac.Status == service.FactoryDisabled {
-		return domain.ErrFactoryDisabled
-	}
-	return nil
 }
 
 // 代建厂内原件，一律拒绝。

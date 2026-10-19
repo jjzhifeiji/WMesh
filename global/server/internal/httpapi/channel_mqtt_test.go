@@ -361,6 +361,20 @@ func TestPromoteViaChannel(t *testing.T) {
 	aid := fid
 	// 算出摘要，厂端回包要对得上。
 	sum := sha256.Sum256([]byte("from-fac"))
+	// 取该厂租约钥，模拟厂端像真厂那样封过站。
+	lease, err := svc.IssueContentLease(context.Background(), fid)
+	// 签不出租约就停测，封不了过站信封。
+	if err != nil {
+		// 这一步失败就不能继续，以免误判通过。
+		t.Fatal(err)
+	}
+	// 正文封成过站信封，通道升档只收信封。
+	env, err := contentcrypt.Seal(lease.Key, []byte("from-fac"), contentcrypt.TransitAAD(fid, aid, 1))
+	// 封不上就停测，没有快照可回。
+	if err != nil {
+		// 这一步失败就不能继续，以免误判通过。
+		t.Fatal(err)
+	}
 	// 用厂钥连上通道，失败就停测。
 	cli := connectMQTT(t, mqttAddr, fid, priv)
 	// 收下下行，坏包丢掉，缓冲满了就弃。
@@ -393,7 +407,7 @@ func TestPromoteViaChannel(t *testing.T) {
 			// 收成 JSON，编不出就不要发出去。
 			reply.Snapshot, _ = json.Marshal(map[string]any{
 				"sourceId": aid.String(), "sourceRevision": 1, "sourceFactoryId": fid.String(),
-				"kind": "process", "name": "厂级焊", "content": []byte("from-fac"), "digest": sum[:],
+				"kind": "process", "name": "厂级焊", "content": env, "digest": sum[:],
 				"copyable": true, "status": "available", "deps": []any{},
 			})
 		}
@@ -431,6 +445,13 @@ func TestPromoteViaChannel(t *testing.T) {
 	if code != http.StatusOK || !strings.Contains(resp, "厂级焊") {
 		// 列表结果不对，带上现场停测。
 		t.Fatalf("list %d %s", code, resp)
+	}
+	// 问别的资产，厂回的快照却自报 aid，应按篡改拒绝。
+	code, resp = do(t, srv, "POST", "/v1/assets/promote-from", tok, `{"factoryId":"`+fid.String()+`","assetId":"`+uuid.NewString()+`"}`)
+	// 身份对不上还放行或错回别的码，就停测。
+	if code != http.StatusBadRequest {
+		// 结果和预期不一致，带上现场停测。
+		t.Fatalf("promote-from mismatched asset %d %s", code, resp)
 	}
 	// 发出请求并记下状态，对不上就停测。
 	code, resp = do(t, srv, "POST", "/v1/assets/promote-from", tok, `{"factoryId":"`+fid.String()+`","assetId":"`+aid.String()+`"}`)

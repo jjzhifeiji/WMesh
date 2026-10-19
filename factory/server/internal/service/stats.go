@@ -227,8 +227,8 @@ func (s *Stats) FlushWeldFacts(ctx context.Context, token string, items []WeldFa
 		}
 		// 创建人必须是本厂人员；路径和工程按本机快照落，不按现分配改写。
 		if _, err := s.store.MergeWeldFact(ctx, item); err != nil {
-			// 取出失败原因放进拒绝行，不含口令
-			out.Rejected = append(out.Rejected, WeldReject{ID: item.ID, Error: err.Error()})
+			// 业务错误给原话，库错只进日志，拒绝行不带库原文
+			out.Rejected = append(out.Rejected, WeldReject{ID: item.ID, Error: rejectReason(err)})
 			continue
 		}
 		// 把这一条收进结果，漏了清单就不齐

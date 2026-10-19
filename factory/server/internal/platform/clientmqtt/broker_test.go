@@ -2,6 +2,7 @@ package clientmqtt
 
 import (
 	"encoding/json"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -297,6 +298,30 @@ func (l *presenceLog) waitCounts(t *testing.T, online, offline, up int) {
 	}
 }
 
+// 等到上行至少这么多条，补桶多放的几条留给调用方按容差核对。
+func (l *presenceLog) waitUpAtLeast(t *testing.T, up int) {
+	// 标成辅助函数，失败算到调用方。
+	t.Helper()
+	// 定下最晚等到什么时候。
+	deadline := time.Now().Add(5 * time.Second)
+	// 反复看记录，回调是异步跑的。
+	for {
+		// 拷出当前上行记录来数条数。
+		_, _, ups := l.snapshot()
+		// 条数够了就不再等，多出的不在这里判。
+		if len(ups) >= up {
+			return
+		}
+		// 超时还不够就停住，并打出当前条数。
+		if time.Now().After(deadline) {
+			// 上行一直不够，打出来便于看错在哪。
+			t.Fatalf("want up >= %d, got %d", up, len(ups))
+		}
+		// 稍等一下再看，别空转。
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
 // 同一台机器换人重连抢占，旧连接断开不能删掉新人。
 func TestBrokerTakeoverKeepsNewPerson(t *testing.T) {
 	// 新建厂、机器和两位登录人。
@@ -486,5 +511,99 @@ func TestRememberPersonSweepsOnlyStaleSameID(t *testing.T) {
 	if got := bus.personOf(next); got != p2 {
 		// 新连接被误删就停住。
 		t.Fatalf("next person = %v", got)
+	}
+}
+
+// 同一连接一口气连发，业务只收到桶容量那么多，连接不被断开。
+func TestBrokerThrottlesUpPerConnection(t *testing.T) {
+	// 新建厂、机器和登录人。
+	fid, cid, p1 := id.New(), id.New(), id.New()
+	// 准备记录上下线和上行的日志。
+	rec := &presenceLog{}
+	// 占住端口，只认这一张令牌。
+	bus, err := Listen("127.0.0.1:0", rec.hooks(fid, cid, map[string]uuid.UUID{"tok1": p1}))
+	// 代理起不来就停住本用例。
+	if err != nil {
+		// 代理起不来就停住本用例。
+		t.Fatal(err)
+	}
+	// 用例结束关掉代理，避免占着端口。
+	t.Cleanup(func() { _ = bus.Close() })
+	// 用这台机器连上。
+	cli := connect(t, bus.Addr(), fid, cid, "tok1")
+	// 等上线报到，再开始连发。
+	rec.waitCounts(t, 1, 0, 0)
+	// 记下开始连发的时刻，算补桶最多补了几个。
+	start := time.Now()
+	// 同一连接连发 50 条上行。
+	for i := 0; i < 50; i++ {
+		// 发一条自己的在场上行。
+		tok := cli.Publish(UpTopic(fid, cid), 1, false, []byte(`{"typ":"presence"}`))
+		// 上行没发出去就停住本用例。
+		if !tok.WaitTimeout(3*time.Second) || tok.Error() != nil {
+			// 打出第几条没发出去。
+			t.Fatalf("publish #%d: %v", i, tok.Error())
+		}
+	}
+	// 等业务至少收满桶容量，连发慢时补桶会多放几条。
+	rec.waitUpAtLeast(t, upBurst)
+	// 再稍等一下，确认超出的确实没交给业务。
+	time.Sleep(300 * time.Millisecond)
+	// 这段时间里最多能补回来的名额。
+	refill := int(time.Since(start) / upEvery)
+	// 拷出当前记录核对条数。
+	on, off, ups := rec.snapshot()
+	// 多出桶容量和补桶数就说明限速没生效。
+	if len(ups) < upBurst || len(ups) > upBurst+refill {
+		// 打出业务实际收到的条数。
+		t.Fatalf("up = %d, want %d (+%d refill)", len(ups), upBurst, refill)
+	}
+	// 限速只丢消息，不该把连接断掉。
+	if len(on) != 1 || len(off) != 0 || !cli.IsConnected() {
+		// 连接被断或多报上下线就停住。
+		t.Fatalf("online=%v offline=%v connected=%v", on, off, cli.IsConnected())
+	}
+}
+
+// 超过包长上限的上行在读包时就断开连接，不交给业务。
+func TestBrokerDropsOversizedPacket(t *testing.T) {
+	// 新建厂、机器和登录人。
+	fid, cid, p1 := id.New(), id.New(), id.New()
+	// 准备记录上下线和上行的日志。
+	rec := &presenceLog{}
+	// 占住端口，只认这一张令牌。
+	bus, err := Listen("127.0.0.1:0", rec.hooks(fid, cid, map[string]uuid.UUID{"tok1": p1}))
+	// 代理起不来就停住本用例。
+	if err != nil {
+		// 代理起不来就停住本用例。
+		t.Fatal(err)
+	}
+	// 用例结束关掉代理，避免占着端口。
+	t.Cleanup(func() { _ = bus.Close() })
+	// 用这台机器连上。
+	cli := connect(t, bus.Addr(), fid, cid, "tok1")
+	// 等上线报到，再开始发。
+	rec.waitCounts(t, 1, 0, 0)
+	// 先发一条正常大小的在场上行。
+	tok := cli.Publish(UpTopic(fid, cid), 1, false, []byte(`{"typ":"presence"}`))
+	// 正常上行没发出去就停住本用例。
+	if !tok.WaitTimeout(3*time.Second) || tok.Error() != nil {
+		// 正常上行没发出去就停住本用例。
+		t.Fatalf("publish small: %v", tok.Error())
+	}
+	// 正常的那条要交给业务。
+	rec.waitCounts(t, 1, 0, 1)
+	// 造一条正文本身就超过上限的上行。
+	big := []byte(`{"typ":"presence","pad":"` + strings.Repeat("x", maxPacketSize) + `"}`)
+	// 发出超长上行，代理应当断开连接。
+	_ = cli.Publish(UpTopic(fid, cid), 0, false, big)
+	// 等离线报到，说明连接被代理断开。
+	rec.waitCounts(t, 1, 1, 1)
+	// 拷出上行记录核对条数。
+	_, _, ups := rec.snapshot()
+	// 超长那条交给了业务就停住。
+	if len(ups) != 1 {
+		// 打出业务实际收到的条数。
+		t.Fatalf("up = %d, want 1", len(ups))
 	}
 }
