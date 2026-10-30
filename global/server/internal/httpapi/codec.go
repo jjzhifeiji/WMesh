@@ -182,7 +182,7 @@ func isDomain(err error) bool {
 		domain.ErrCycle, domain.ErrWorkContext, domain.ErrMultiParent, domain.ErrInvalidRoleScope,
 		domain.ErrDisabledOrgType, domain.ErrDisabledOrgUnit, domain.ErrHasActiveUnits, domain.ErrHasActiveChildren,
 		domain.ErrIntegrity, domain.ErrAssetNotAvailable, domain.ErrAssetNotCopyable, domain.ErrAssetDependency,
-		domain.ErrInvalidWeldKind, domain.ErrWeldKindMismatch,
+		domain.ErrInvalidWeldKind, domain.ErrWeldKindMismatch, domain.ErrCornerSlotMismatch,
 		domain.ErrTemplateInvalid, domain.ErrAssetCodeMissing, domain.ErrAssetCodeConflict, domain.ErrOriginCodeExhausted,
 		domain.ErrStaleRevision,
 	} {

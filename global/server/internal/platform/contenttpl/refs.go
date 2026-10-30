@@ -259,7 +259,7 @@ func walkRoot(s Schema, v any, fn func(string) (string, error)) error {
 		// 没有命名模版才看旧种类表。
 		if len(s.Kinds) > 0 {
 			// 旧种类按字段并集走。
-			return walkObjectList(SelectedFields(s.Kinds), v, fn)
+			return walkObjectList(mergeFields(SelectedFields(s.Kinds), []Field{cornerRefField()}), v, fn)
 		}
 		// 没有元素模版就没有可走的引用。
 		if s.Item == nil {
@@ -296,7 +296,7 @@ func walkProjectItems(s Schema, v any, fn func(string) (string, error)) error {
 		// 多层焊缝不带附加槽。
 		extra := tpl.Extra && tpl.Kind != ItemMulti
 		// 这一份的字段走失败就停。
-		if err := walkObject(ItemFields(tpl.Kind, extra), el, fn); err != nil {
+		if err := walkObject(mergeFields(ItemFields(tpl.Kind, extra), []Field{cornerRefField()}), el, fn); err != nil {
 			return err
 		}
 	}
@@ -350,8 +350,8 @@ func walkProjectItemList(items []ProjectItemSchema, v any, fn func(string) (stri
 			// 对不上就用并集，兼容旧正文。
 			fields = union
 		}
-		// 并上认得出的种类的标准工艺槽，单层带附加槽，模版漏声明也照收。
-		fields = mergeFields(fields, ItemFields(InferItemKind(obj), true))
+		// 并上认得出的种类的标准工艺槽和包角组工艺槽，单层带附加槽，模版漏声明也照收。
+		fields = mergeFields(fields, RefFields(InferItemKind(obj)))
 		// 这一份走失败就停。
 		if err := walkObject(fields, el, fn); err != nil {
 			return err

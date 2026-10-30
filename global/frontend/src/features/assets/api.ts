@@ -19,6 +19,7 @@ export type Asset = {
   status: AssetStatus; // draft / available / disabled
 	copyable: boolean; // 工艺可否被上一级复制；工程恒为是
   weldKind: string; // 作业类型：single / multilayer / tbar
+  corner?: boolean; // 包角工艺：正文顶层 kind 为 cornerGeometry；工程恒为否
   revision: number; // 当前修订
   digest: string; // SHA-256
   creatorId: string; // WAN 管理员

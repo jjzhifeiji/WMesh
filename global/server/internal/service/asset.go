@@ -270,6 +270,10 @@ func (s *Assets) UpdatePlatformAssetContent(ctx context.Context, token string, a
 			if err := assertProjectWeldKind(cur.WeldKind, content); err != nil {
 				return store.AssetWrite{}, err
 			}
+			// 工艺槽挂了包角工艺则拒绝保存。
+			if err := s.assertCornerSlots(ctx, content); err != nil {
+				return store.AssetWrite{}, err
+			}
 		}
 		// 按内容算摘要，失败就不能继续。
 		return store.AssetWrite{Name: cur.Name, Content: content, Digest: digest.Sum(content), Copyable: cur.Copyable, Status: cur.Status, Deps: cur.Deps}, nil
@@ -831,6 +835,12 @@ func (s *Assets) CreatePlatformProjectIn(ctx context.Context, token, name string
 	}
 	// 套完后焊道引用仍须落在已声明依赖里。
 	if err := s.assertProjectProcessIDs(ctx, content, deps); err != nil {
+		// 建资产被拒就留审计，不写正文。
+		_ = s.audit(ctx, &admin.ID, nil, nil, "create_asset", name, audit.Deny)
+		return Asset{}, err
+	}
+	// 工艺槽（含包角组）不挂包角工艺，免得示教器焊接时缺工艺。
+	if err := s.assertCornerSlots(ctx, content); err != nil {
 		// 建资产被拒就留审计，不写正文。
 		_ = s.audit(ctx, &admin.ID, nil, nil, "create_asset", name, audit.Deny)
 		return Asset{}, err

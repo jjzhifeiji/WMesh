@@ -10,6 +10,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	"wmesh/global/internal/platform/contenttpl"
 	"wmesh/global/internal/platform/domain"
 	"wmesh/global/internal/platform/id"
 )
@@ -57,6 +58,7 @@ type Asset struct {
 	Status            string     `json:"status"`         // draft / available / disabled
 	Copyable          bool       `json:"copyable"`       // 可否被上一级复制；新建默认为否
 	WeldKind          string     `json:"weldKind"`       // 作业类型：single / multilayer / tbar
+	Corner            bool       `json:"corner"`         // 包角工艺：正文顶层 kind 为 cornerGeometry；工程恒为否
 	Revision          int64      `json:"revision"`       // 当前修订
 	Content           []byte     `json:"-"`              // 正文；不进列表/元数据
 	Digest            []byte     `json:"digest"`         // SHA-256 32 字节
@@ -92,6 +94,7 @@ type assetRow struct {
 	Status          string     `gorm:"not null"`                  // draft / available / disabled
 	Copyable        bool       `gorm:"not null"`                  // 可复制
 	WeldKind        string     `gorm:"column:weld_kind;not null"` // 作业类型
+	Corner          bool       `gorm:"column:corner;not null"`    // 包角工艺；随正文算
 	Revision        int64      `gorm:"not null"`                  // 当前修订
 	Content         []byte     `gorm:"type:bytea;not null"`       // 正文
 	Digest          []byte     `gorm:"type:bytea;not null"`       // SHA-256
@@ -158,6 +161,7 @@ func (s *Store) InsertAssetInto(ctx context.Context, in Asset, parentID uuid.UUI
 			Status:          in.Status,
 			Copyable:        in.Copyable,
 			WeldKind:        weldKind,
+			Corner:          cornerOf(in.Kind, in.Content),
 			Revision:        1,
 			Content:         nonempty(in.Content),
 			Digest:          in.Digest,
@@ -247,6 +251,7 @@ func (s *Store) UpdateAsset(ctx context.Context, assetID uuid.UUID, expected int
 		updates := map[string]any{
 			"name":       w.Name,
 			"content":    nonempty(w.Content),
+			"corner":     cornerOf(row.Kind, w.Content),
 			"digest":     w.Digest,
 			"copyable":   w.Copyable,
 			"status":     w.Status,
@@ -631,6 +636,7 @@ func assetFromRow(row assetRow) Asset {
 		Status:          row.Status,
 		Copyable:        row.Copyable,
 		WeldKind:        row.WeldKind,
+		Corner:          row.Corner,
 		Revision:        row.Revision,
 		Content:         row.Content,
 		Digest:          row.Digest,
@@ -642,6 +648,12 @@ func assetFromRow(row assetRow) Asset {
 		CreatedAt:       row.CreatedAt,
 		UpdatedAt:       row.UpdatedAt,
 	}
+}
+
+// cornerOf 按正文判包角：只有工艺可能是包角，工程恒为否。
+func cornerOf(kind string, content []byte) bool {
+	// 工艺看正文顶层 kind，工程一律不是。
+	return kind == KindProcess && contenttpl.IsCornerProcess(content)
 }
 
 // TamperAssetContent 只改正文不改摘要，供完整性夹具使用。

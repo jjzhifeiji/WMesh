@@ -44,7 +44,7 @@ func assetCopyable(kind string, copyable bool) bool {
 func replicaAsAsset(r AssetReplica) Asset {
 	return Asset{
 		ID: r.ID, Kind: r.Kind, Level: AssetLevelPlatform, Name: r.Name, Code: r.Code,
-		Status: r.Status, Copyable: r.Copyable, WeldKind: r.WeldKind, Revision: r.Revision,
+		Status: r.Status, Copyable: r.Copyable, WeldKind: r.WeldKind, Corner: r.Corner, Revision: r.Revision,
 		Content: r.Content, Digest: r.Digest, Deps: r.Deps,
 		CreatedAt: r.ReceivedAt, UpdatedAt: r.ReceivedAt,
 	}
@@ -308,6 +308,12 @@ func (s *Assets) insertAuthored(ctx context.Context, acc Account, wc WorkContext
 		}
 		// 套完后工程引用须落在已声明依赖里。
 		if err := s.assertProjectProcessIDs(ctx, content, deps); err != nil {
+			// 创建被拒时补记审计，写失败仍维持拒绝。
+			_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny, unitID, path)
+			return Asset{}, err
+		}
+		// 工艺槽（含包角组）不挂包角工艺，免得示教器焊接时缺工艺。
+		if err := s.assertCornerSlots(ctx, content); err != nil {
 			// 创建被拒时补记审计，写失败仍维持拒绝。
 			_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny, unitID, path)
 			return Asset{}, err
@@ -991,6 +997,10 @@ func (s *Assets) UpdateAssetContent(ctx context.Context, token string, assetID u
 			}
 			// 焊道对不上则拒绝保存。
 			if err := assertProjectWeldKind(cur.WeldKind, content); err != nil {
+				return store.AssetWrite{}, err
+			}
+			// 工艺槽挂了包角工艺则拒绝保存。
+			if err := s.assertCornerSlots(ctx, content); err != nil {
 				return store.AssetWrite{}, err
 			}
 		}

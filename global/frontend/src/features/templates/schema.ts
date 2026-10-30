@@ -1,4 +1,4 @@
-import { inferItemKind, inferProjectKinds, isRootItem, itemFields, selectedFields, DEFAULT_TEMPLATES, itemExtra, lookupTemplate, templatesFromKinds, type ProjectItemTemplate } from "./projectKinds";
+import { cornerRefField, inferItemKind, inferProjectKinds, isRootItem, itemFields, refItemFields, selectedFields, DEFAULT_TEMPLATES, itemExtra, lookupTemplate, templatesFromKinds, type ProjectItemTemplate } from "./projectKinds";
 import { newId } from "@/shared/id";
 
 export type FieldType = "string" | "number" | "bool" | "object" | "array" | "process";
@@ -190,19 +190,19 @@ export function collectProcessIds(value: unknown, schema?: ContentSchema | null)
           value.forEach((el) => {
             const id = el && typeof el === "object" && !Array.isArray(el) ? String((el as Record<string, unknown>).templateId ?? "") : "";
             walkObject(byId.get(id) ?? union, el);
-            // 模版漏声明也照收：再按推断的种类走一遍标准工艺槽，单层带附加槽，重复的由 seen 去掉。
-            walkObject(itemFields(inferItemKind(el), true), el);
+            // 模版漏声明也照收：再按推断的种类走一遍标准工艺槽和包角工艺槽，单层带附加槽，重复的由 seen 去掉。
+            walkObject(refItemFields(inferItemKind(el)), el);
           });
         }
       } else if (Array.isArray(schema.templates)) {
         if (Array.isArray(value)) {
           value.forEach((el) => {
             const t = lookupTemplate(schema.templates, el);
-            if (t) walkObject(itemFields(t.kind, itemExtra(t)), el);
+            if (t) walkObject([...itemFields(t.kind, itemExtra(t)), cornerRefField()], el);
           });
         }
       } else if (schema.kinds?.length) {
-        const fields = selectedFields(schema.kinds);
+        const fields = [...selectedFields(schema.kinds), cornerRefField()];
         if (Array.isArray(value)) value.forEach((el) => walkObject(fields, el));
       } else {
         const item = schema.item ?? { key: "item", label: "项", type: "object" as const, fields: [] };
@@ -222,6 +222,11 @@ export function collectProcessIds(value: unknown, schema?: ContentSchema | null)
     for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
       if ((k === "processId" || k === "rootProcessId" || k === "capProcessId") && typeof val === "string") {
         add(val);
+        continue;
+      }
+      // 盖面 2、3… 存在数组里。
+      if (k === "capProcessIds" && Array.isArray(val)) {
+        val.forEach(add);
         continue;
       }
       walk(val);

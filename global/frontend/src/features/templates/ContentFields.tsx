@@ -6,7 +6,7 @@ import { defaultField, defaultItemFromFields, defaultValue, encodeContent, enumO
 import { itemExtra, itemFields, kindLabel, weldKindOfTemplate } from "./projectKinds";
 import type { ProjectItemTemplate } from "./projectKinds";
 
-export type ProcessOption = { value: string; label: string; disabled?: boolean }; // 焊道上选工艺
+export type ProcessOption = { value: string; label: string; disabled?: boolean; corner?: boolean }; // 焊道上选工艺；corner 包角工艺，工程槽不给选
 
 type FieldsProps = {
   schema: ContentSchema;
@@ -388,7 +388,7 @@ function FieldInput({
           showSearch
           optionFilterProp="label"
           value={cur}
-          options={processOptions ?? []}
+          options={(processOptions ?? []).filter((o) => !o.corner)}
           onChange={(v: string | undefined) => onChange(v ?? "")}
           disabled={disabled}
           placeholder="未选工艺"

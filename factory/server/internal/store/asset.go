@@ -10,6 +10,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	"wmesh/factory/internal/platform/contenttpl"
 	"wmesh/factory/internal/platform/domain"
 	"wmesh/factory/internal/platform/id"
 )
@@ -59,6 +60,7 @@ type Asset struct {
 	Status         string     `json:"status"`         // draft / available / disabled
 	Copyable       bool       `json:"copyable"`       // 可否升档
 	WeldKind       string     `json:"weldKind"`       // 作业类型：single / multilayer / tbar
+	Corner         bool       `json:"corner"`         // 包角工艺：正文顶层 kind 为 cornerGeometry；工程恒为否
 	Revision       int64      `json:"revision"`       // 当前修订
 	Content        []byte     `json:"-"`              // 不透明正文；不进列表/元数据
 	Digest         []byte     `json:"digest"`         // SHA-256 32 字节
@@ -96,6 +98,7 @@ type governedAssetRow struct {
 	Status         string     `gorm:"not null"`                  // draft / available / disabled
 	Copyable       bool       `gorm:"not null"`                  // 可否升档
 	WeldKind       string     `gorm:"column:weld_kind;not null"` // 作业类型
+	Corner         *bool      `gorm:"column:corner"`             // 包角工艺；空表示还没按正文判过
 	Revision       int64      `gorm:"not null"`                  // 当前修订
 	Content        []byte     `gorm:"type:bytea;not null"`       // 正文
 	Digest         []byte     `gorm:"type:bytea;not null"`       // SHA-256
@@ -216,6 +219,7 @@ func (s *Store) InsertGovernedAssetInto(ctx context.Context, in Asset, parentID 
 			Status:         in.Status,
 			Copyable:       in.Copyable,
 			WeldKind:       weldKind,
+			Corner:         cornerOf(in.Kind, in.Content),
 			Revision:       1,
 			Content:        env,
 			Digest:         in.Digest,
@@ -331,6 +335,8 @@ func (s *Store) UpdateGovernedAsset(ctx context.Context, assetID uuid.UUID, expe
 			}
 			// 把这一列放进本次更新。
 			updates["content"] = env
+			// 包角与否随新正文重算，网页选工艺靠它分开。
+			updates["corner"] = cornerOf(row.Kind, w.Content)
 			// 按新修订重封失败就回滚，不能留半截。
 		} else if env, changed, err := s.rewrapIfSealed(assetID, expected, expected+1, tableAssets, row.Content); err != nil {
 			return err
@@ -671,6 +677,13 @@ func mapAssetWriteErr(err error) error {
 	return err
 }
 
+// cornerOf 按明文正文判包角：只有工艺可能是包角，工程恒为否。
+func cornerOf(kind string, plain []byte) *bool {
+	// 工艺看正文顶层 kind，工程一律不是。
+	yes := kind == KindProcess && contenttpl.IsCornerProcess(plain)
+	return &yes
+}
+
 // valueOrNew 没给身份就现场发号。
 func valueOrNew(given uuid.UUID) uuid.UUID {
 	// 没有身份就不能当有效目标。
@@ -701,6 +714,7 @@ func assetFromGoverned(row governedAssetRow) Asset {
 		Status:         row.Status,
 		Copyable:       row.Copyable,
 		WeldKind:       row.WeldKind,
+		Corner:         row.Corner != nil && *row.Corner,
 		Revision:       row.Revision,
 		Content:        row.Content,
 		Digest:         row.Digest,

@@ -76,6 +76,14 @@ func TestAssetSourceUniqueMigration(t *testing.T) {
 		// 旧库迁不上就停，前提不成立。
 		t.Fatalf("migrate before: %v", err)
 	}
+	// 现行代码写资产要带包角列，旧库还没有：先借上这一列，摆完数据再拿掉，留给后面的迁移去加。
+	for _, table := range []string{"assets", "asset_replicas"} {
+		// 借不上列就停，后面插不进去。
+		if err := db.Exec("ALTER TABLE " + table + " ADD COLUMN corner BOOLEAN").Error; err != nil {
+			// 把借列的错误打出来并停住。
+			t.Fatalf("borrow corner: %v", err)
+		}
+	}
 	// 按一家新厂打开库。
 	s := store.Open(db, id.New())
 	// 夹具自签租约，才能把正文封进厂库。
@@ -137,6 +145,14 @@ func TestAssetSourceUniqueMigration(t *testing.T) {
 		if err := db.Exec("UPDATE assets SET updated_at = ? WHERE id = ?", c.at, c.assetID).Error; err != nil {
 			// 改不了时间就停，挑留哪条没有依据。
 			t.Fatalf("set updated_at %d: %v", i, err)
+		}
+	}
+	// 拿掉借来的包角列，还原成旧库再迁。
+	for _, table := range []string{"assets", "asset_replicas"} {
+		// 拿不掉就停，后面的迁移会撞列。
+		if err := db.Exec("ALTER TABLE " + table + " DROP COLUMN corner").Error; err != nil {
+			// 把拿列的错误打出来并停住。
+			t.Fatalf("drop borrowed corner: %v", err)
 		}
 	}
 	// 再整包套用，只会跑新迁移。

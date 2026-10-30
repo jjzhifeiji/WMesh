@@ -42,6 +42,23 @@ function num(v: unknown) {
   return Number.isFinite(n) ? n : 0;
 }
 
+// capIds 按示教器口径取盖面：盖面组非空就只用组里非空的那些，组是空的才用旧字段。
+function capIds(row: Weld): string[] {
+  const raw = asArr(row.capProcessIds);
+  if (raw.length) return raw.map((v) => str(v).trim()).filter(Boolean);
+  const one = str(row.capProcessId).trim();
+  return one ? [one] : [];
+}
+
+// withFirstCap 改第一道盖面：有盖面组时组里第一项一起改，清空就删掉这一道；旧字段跟着第一道。
+function withFirstCap(row: Weld, id: string): Weld {
+  if (!asArr(row.capProcessIds).length) return { ...row, capProcessId: id };
+  const ids = capIds(row);
+  if (id) ids[0] = id;
+  else ids.splice(0, 1);
+  return { ...row, capProcessIds: ids, capProcessId: ids[0] ?? "" };
+}
+
 function isOn(v: unknown) {
   return v === true || v === "是" || v === "true";
 }
@@ -202,8 +219,34 @@ export function parseWelds(raw: string | undefined): Weld[] {
   }
 }
 
+// slotOptions 照示教器：包角几何只在示教器本机选，工程里所有工艺槽（含包角组）都只给焊接工艺；已挂上的包角工艺留着但不能再选，标出来好改。
+function slotOptions(options: ProcessOption[] | undefined, value: string): ProcessOption[] {
+  const all = options ?? [];
+  const out = all.filter((o) => !o.corner);
+  const wrong = value ? all.find((o) => o.value === value && o.corner) : undefined;
+  if (wrong) out.push({ ...wrong, disabled: true, label: `${wrong.label} · 包角工艺，请改选` });
+  return out;
+}
+
+// processSelect 选一个工艺槽，只给焊接工艺。
 function processSelect(value: string, options: ProcessOption[] | undefined, disabled: boolean | undefined, onPick: (id: string) => void) {
-  return <ProcessTreeSelect value={value} options={options} disabled={disabled} onPick={onPick} />;
+  return <ProcessTreeSelect value={value} options={slotOptions(options, value)} disabled={disabled} onPick={onPick} />;
+}
+
+// withWeldProcess 改焊道工艺；带包角组的照示教器把同组焊道和组上 processId 一起改，两处始终是同一条底工艺。
+function withWeldProcess(welds: Weld[], i: number, id: string): Weld[] {
+  const own = welds[i];
+  if (!isObj(own.cornerGroupParams)) return welds.map((w, j) => (j === i ? { ...w, processId: id } : w));
+  const group = str(asObj(own.cornerGroupParams).groupId);
+  return welds.map((w, j) => {
+    const cg = asObj(w.cornerGroupParams);
+    const hit = j === i || (group !== "" && isObj(w.cornerGroupParams) && str(cg.groupId) === group);
+    return hit ? { ...w, processId: id, cornerGroupParams: { ...cg, processId: id } } : w;
+  });
+}
+
+function isObj(v: unknown) {
+  return Boolean(v) && typeof v === "object" && !Array.isArray(v);
 }
 
 // ProjectWeldEditor 工程改正文：焊道、工艺、点坐标；坐标 App 采集、后台手填。
@@ -386,7 +429,7 @@ export function ProjectWeldEditor({
                 {kind === WELD_TBAR ? null : (
                   <div>
                     <Typography.Text type="secondary">工艺</Typography.Text>
-                    {processSelect(str(current.processId), processOptions, disabled, (id) => patch(idx, { ...current, processId: id }))}
+                    {processSelect(str(current.processId), processOptions, disabled, (id) => emit(withWeldProcess(welds, idx, id)))}
                   </div>
                 )}
                 <PointSlots key={str(current.id)} kind={kind} weld={current} disabled={disabled} onChange={(next) => patch(idx, next)} />
@@ -883,7 +926,8 @@ function BandSlots({
           </div>
           <div style={{ marginTop: 4 }}>
             <Typography.Text type="secondary">盖面</Typography.Text>
-            {processSelect(str(row.capProcessId), processOptions, disabled, (id) => patch(i, { ...row, capProcessId: id }))}
+            {processSelect(capIds(row)[0] ?? "", processOptions, disabled, (id) => patch(i, withFirstCap(row, id)))}
+            {capIds(row).length > 1 ? <Typography.Text type="secondary">另有盖面 {capIds(row).length - 1} 道，在示教器上改</Typography.Text> : null}
           </div>
         </div>
       ))}

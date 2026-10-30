@@ -370,3 +370,118 @@ func TestMergedSlotRewrittenOnce(t *testing.T) {
 		t.Fatalf("rewrite once %v %s", ids, out)
 	}
 }
+
+// T 排盖面工艺组和包角组工艺都算引用，能收能改，模版没声明也照收。
+func TestCapListAndCornerRefs(t *testing.T) {
+	// 空库三份加一份不带工艺槽的自定义模版。
+	items := append(SeedProjectItems(), customItem())
+	// 盖面 2、3 写在数组里，包角组工艺挂在包角组上。
+	raw := []byte(`[
+		{"templateId":"` + SeedTplTBar + `","kind":"tbar","gapBands":[{"rootProcessId":"A","capProcessId":"B","capProcessIds":["B","C",""]}]},
+		{"templateId":"` + SeedTplSingle + `","kind":"single","processId":"D","cornerGroupParams":{"groupId":"g","isMaster":true,"processId":"E"}},
+		{"templateId":"` + customTplID + `","kind":"single","processId":"","cornerGroupParams":{"groupId":"g","processId":"F"}}
+	]`)
+	// 收集、改写、缺项报错一起核对。
+	assertStandardSlots(t, items, raw)
+	// 改写只换身份，包角组其它键要原样留下。
+	out, err := RewriteProcessIDsFromItems(items, raw, map[string]string{"A": "A", "B": "B", "C": "C", "D": "D", "E": "E2", "F": "F"})
+	// 没能改写就停住本用例。
+	if err != nil {
+		// 没能改写就停住本用例。
+		t.Fatal(err)
+	}
+	// 读回结构看包角组。
+	var got []map[string]any
+	// 读不回就停住本用例。
+	if err := json.Unmarshal(out, &got); err != nil {
+		// 读不回就停住本用例。
+		t.Fatal(err)
+	}
+	// 包角组要保留组身份，引用换成新身份。
+	g, _ := got[1]["cornerGroupParams"].(map[string]any)
+	// 组身份丢了或引用没换就失败。
+	if g["groupId"] != "g" || g["isMaster"] != true || g["processId"] != "E2" {
+		// 和预期不符就停住本用例。
+		t.Fatalf("corner %s", out)
+	}
+}
+
+// 套模版不给普通单层补包角组，T 排盖面组缺了补成空数组。
+func TestApplyKeepsCornerOff(t *testing.T) {
+	// 一条普通单层和一条没写盖面组的 T 排。
+	raw := []byte(`[
+		{"templateId":"` + SeedTplSingle + `","kind":"single","processId":"A"},
+		{"templateId":"` + SeedTplTBar + `","kind":"tbar","gapBands":[{"rootProcessId":"B","capProcessIds":["C","D"]},{"capProcessId":"E"}]}
+	]`)
+	// 按空库三份套正文。
+	out, err := ApplyProjectItems(SeedProjectItems(), raw)
+	// 套不上就停住本用例。
+	if err != nil {
+		// 套不上就停住本用例。
+		t.Fatal(err)
+	}
+	// 读回结构逐项看。
+	var got []map[string]any
+	// 读不回就停住本用例。
+	if err := json.Unmarshal(out, &got); err != nil {
+		// 读不回就停住本用例。
+		t.Fatal(err)
+	}
+	// 普通单层不该多出包角组。
+	if _, ok := got[0]["cornerGroupParams"]; ok {
+		// 多出包角组就失败。
+		t.Fatalf("single %s", out)
+	}
+	// 取出两条间隙带。
+	bands, _ := got[1]["gapBands"].([]any)
+	// 第一条带的盖面组。
+	first, _ := bands[0].(map[string]any)["capProcessIds"].([]any)
+	// 第二条带的盖面组。
+	second, _ := bands[1].(map[string]any)["capProcessIds"].([]any)
+	// 盖面组要原样留下，缺的补成空数组。
+	if len(first) != 2 || first[1] != "D" || second == nil || len(second) != 0 {
+		// 和预期不符就停住本用例。
+		t.Fatalf("tbar %s", out)
+	}
+}
+
+// 旧种类表也要收、改包角组上的工艺。
+func TestKindsCornerRefs(t *testing.T) {
+	// 只选单层的旧种类表。
+	sch, err := Marshal(Schema{Root: RootArray, Kinds: []string{ItemSingle}})
+	// 收不成字段表就停住本用例。
+	if err != nil {
+		// 收不成字段表就停住本用例。
+		t.Fatal(err)
+	}
+	// 包角组工艺挂在包角组上。
+	raw := []byte(`[{"processId":"A","cornerGroupParams":{"groupId":"g","isMaster":true,"processId":"B"}}]`)
+	// 按旧种类表收引用。
+	ids, err := CollectProcessIDs(sch, raw)
+	// 漏了包角组工艺就失败。
+	if err != nil || !slices.Equal(ids, []string{"A", "B"}) {
+		// 和预期不符就停住本用例。
+		t.Fatalf("%v %v", ids, err)
+	}
+	// 按对照表改写，包角组工艺换成新身份。
+	out, err := RewriteProcessIDs(sch, raw, map[string]string{"A": "A", "B": "B2"})
+	// 没能改写就停住本用例。
+	if err != nil {
+		// 没能改写就停住本用例。
+		t.Fatal(err)
+	}
+	// 读回结构看包角组。
+	var got []map[string]any
+	// 读不回就停住本用例。
+	if err := json.Unmarshal(out, &got); err != nil {
+		// 读不回就停住本用例。
+		t.Fatal(err)
+	}
+	// 包角组其它键原样留下，引用换成新身份。
+	g, _ := got[0]["cornerGroupParams"].(map[string]any)
+	// 组身份丢了或引用没换就失败。
+	if g["groupId"] != "g" || g["isMaster"] != true || g["processId"] != "B2" {
+		// 和预期不符就停住本用例。
+		t.Fatalf("corner %s", out)
+	}
+}

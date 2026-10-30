@@ -40,7 +40,7 @@ import {
   type FSNode,
 } from "./api";
 import { fsFolderOptions, ProcessExplorer } from "./ProcessExplorer";
-import { emptyWeld, ProjectWeldEditor } from "./ProjectWeldEditor";
+import { emptyWeld, ProjectWeldEditor, type ProcessOption } from "./ProjectWeldEditor";
 
 type CreateForm = {
   level: AssetLevel;
@@ -1062,13 +1062,13 @@ function canPinForProject(projectLevel: string | undefined, p: Asset, meId?: str
 function processPickerOptions(all: Asset[], pin: (p: Asset) => boolean, selected?: string[]) {
   const seen = new Set<string>();
   const selectedSet = new Set(selected ?? []);
-  const opts: { value: string; label: string; disabled?: boolean }[] = [];
+  const opts: ProcessOption[] = [];
   for (const p of all) {
     seen.add(p.id);
     const ok = pin(p);
     if (!ok && !selectedSet.has(p.id)) continue;
     const extra = ok ? "" : ` · ${statusLabel(p.status)}`;
-    opts.push({ value: p.id, label: processLabel(p) + extra, disabled: !ok });
+    opts.push({ value: p.id, label: processLabel(p) + extra, disabled: !ok, corner: Boolean(p.corner) });
   }
   for (const id of selected ?? []) {
     if (seen.has(id)) continue;
@@ -1079,12 +1079,12 @@ function processPickerOptions(all: Asset[], pin: (p: Asset) => boolean, selected
 
 function processSelectOptions(selected: string[] | undefined, pickable: Asset[], catalog: Asset[] = pickable) {
   const byId = new Map(catalog.map((p) => [p.id, p]));
-  const opts = pickable.map((p) => ({ value: p.id, label: processLabel(p) }));
+  const opts: ProcessOption[] = pickable.map((p) => ({ value: p.id, label: processLabel(p), corner: Boolean(p.corner) }));
   const seen = new Set(pickable.map((p) => p.id));
   for (const id of selected ?? []) {
     if (seen.has(id)) continue;
     const p = byId.get(id);
-    opts.push({ value: id, label: p ? processLabel(p) : id });
+    opts.push({ value: id, label: p ? processLabel(p) : id, corner: Boolean(p?.corner) });
     seen.add(id);
   }
   return opts;

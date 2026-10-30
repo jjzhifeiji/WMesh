@@ -259,7 +259,7 @@ func walkRoot(s Schema, v any, fn func(string) (string, error)) error {
 		// 点了种类才按种类去收字段。
 		if len(s.Kinds) > 0 {
 			// 交回选中字段，再交给后面的结果。
-			return walkObjectList(SelectedFields(s.Kinds), v, fn)
+			return walkObjectList(mergeFields(SelectedFields(s.Kinds), []Field{cornerRefField()}), v, fn)
 		}
 		// 解不开就当没有这份配置。
 		if s.Item == nil {
@@ -296,7 +296,7 @@ func walkProjectItems(s Schema, v any, fn func(string) (string, error)) error {
 		// 定下附加，再交给后面。
 		extra := tpl.Extra && tpl.Kind != ItemMulti
 		// 没能取出这种条目要用的字段就停，避免带着残缺继续。
-		if err := walkObject(ItemFields(tpl.Kind, extra), el, fn); err != nil {
+		if err := walkObject(mergeFields(ItemFields(tpl.Kind, extra), []Field{cornerRefField()}), el, fn); err != nil {
 			return err
 		}
 	}
@@ -350,8 +350,8 @@ func walkProjectItemList(items []ProjectItemSchema, v any, fn func(string) (stri
 			// 定下字段，再交给后面。
 			fields = union
 		}
-		// 并上认得出的种类的标准工艺槽，单层带附加槽，模版漏声明也照收。
-		fields = mergeFields(fields, ItemFields(InferItemKind(obj), true))
+		// 并上认得出的种类的标准工艺槽和包角组工艺槽，单层带附加槽，模版漏声明也照收。
+		fields = mergeFields(fields, RefFields(InferItemKind(obj)))
 		// 没能只顺着字段表里的键往下走就停，避免带着残缺继续。
 		if err := walkObject(fields, el, fn); err != nil {
 			return err

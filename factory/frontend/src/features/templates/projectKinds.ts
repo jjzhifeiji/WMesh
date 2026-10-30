@@ -139,6 +139,16 @@ export function itemFields(kind: string, extra: boolean): TemplateField[] {
   return [];
 }
 
+// refItemFields 收引用用：本种类标准槽再加包角工艺槽；包角组不进模版套用，免得给普通焊道补出空包角组。
+export function refItemFields(kind: string): TemplateField[] {
+  return [...itemFields(kind, true), cornerRefField()];
+}
+
+// cornerRefField 包角组上的底工艺引用：焊接工艺，和焊道 processId 相同。
+export function cornerRefField(): TemplateField {
+  return { key: "cornerGroupParams", label: "包角组", type: "object", fields: [procRef("processId", "包角组焊接工艺")] };
+}
+
 export function selectedFields(kinds: string[] | undefined): TemplateField[] {
   const extra = hasKind(kinds, ITEM_EXTRA);
   const out: TemplateField[] = [];
@@ -326,6 +336,7 @@ function itemTBar(): TemplateField[] {
       num("layer", "层", "", 1),
       procRef("rootProcessId", "打底工艺"),
       procRef("capProcessId", "盖面工艺"),
+      { key: "capProcessIds", label: "盖面工艺组", type: "array", items: { key: "cap", label: "盖面工艺", type: "process", default: "" } },
     ],
   };
   return [

@@ -58,6 +58,7 @@ type AssetReplica struct {
 	Status     string     `json:"status"`     // 送达时状态
 	Copyable   bool       `json:"copyable"`   // 与源相同
 	WeldKind   string     `json:"weldKind"`   // 作业类型：与源相同
+	Corner     bool       `json:"corner"`     // 包角工艺：按送达正文判；工程恒为否
 	Content    []byte     `json:"content"`    // 正文
 	Digest     []byte     `json:"digest"`     // SHA-256
 	Deps       []AssetDep `json:"deps"`       // 工艺必须空
@@ -98,6 +99,7 @@ type replicaRow struct {
 	Status     string    `gorm:"not null"`                  // 送达时状态
 	Copyable   bool      `gorm:"not null"`                  // 与源相同
 	WeldKind   string    `gorm:"column:weld_kind;not null"` // 作业类型
+	Corner     *bool     `gorm:"column:corner"`             // 包角工艺；空表示还没按正文判过
 	Content    []byte    `gorm:"type:bytea;not null"`       // 正文
 	Digest     []byte    `gorm:"type:bytea;not null"`       // SHA-256
 	Deps       []byte    `gorm:"type:jsonb;not null"`       // 依赖 JSON
@@ -181,7 +183,7 @@ func (s *Store) InsertReplica(ctx context.Context, in AssetReplica) (AssetReplic
 	// 组装要落库的行，编号和摘要已经核对。
 	row := replicaRow{
 		ID: in.ID, Revision: in.Revision, Kind: in.Kind, Level: AssetLevelPlatform,
-		Name: in.Name, Status: in.Status, Copyable: in.Copyable, WeldKind: weldKind, Content: env,
+		Name: in.Name, Status: in.Status, Copyable: in.Copyable, WeldKind: weldKind, Corner: cornerOf(in.Kind, in.Content), Content: env,
 		Digest: in.Digest, Deps: deps, ReceivedAt: time.Now().UTC(),
 	}
 	// 带来了编号才钉上，空着就让库保持空。
@@ -539,8 +541,8 @@ func replicaFromRow(row replicaRow) AssetReplica {
 	// 准备要交回的结果，后面逐条填。
 	out := AssetReplica{
 		ID: row.ID, Revision: row.Revision, Kind: row.Kind, Level: row.Level, Name: row.Name,
-		Status: row.Status, Copyable: row.Copyable, WeldKind: row.WeldKind, Content: row.Content, Digest: row.Digest,
-		Deps: unmarshalAssetDeps(row.Deps), ReceivedAt: row.ReceivedAt, Retracted: row.Retracted,
+		Status: row.Status, Copyable: row.Copyable, WeldKind: row.WeldKind, Corner: row.Corner != nil && *row.Corner,
+		Content: row.Content, Digest: row.Digest, Deps: unmarshalAssetDeps(row.Deps), ReceivedAt: row.ReceivedAt, Retracted: row.Retracted,
 	}
 	// 副本上有编号才抄出来，空的不填。
 	if row.Code != nil {

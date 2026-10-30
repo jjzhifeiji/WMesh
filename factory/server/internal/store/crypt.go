@@ -216,7 +216,11 @@ func (s *Store) ApplyContentLease(ctx context.Context, lease []byte, notAfter ti
 	// 锁已经放开，收尾不要再解一次。
 	unlocked = true
 	// 领到钥匙立刻把遗留明文就地封上，厂库不许明文过夜。
-	return s.sealPlainRows(ctx)
+	if err := s.sealPlainRows(ctx); err != nil {
+		return err
+	}
+	// 再把还没判过包角的工艺按正文补上，网页选工艺要靠它分开。
+	return s.fillCornerRows(ctx)
 }
 
 // SetContentChannelOnline 标记厂↔WAN 通道是否钉死；在线只看单调钟。
@@ -255,7 +259,11 @@ func (s *Store) GrantLocalLease(ctx context.Context) error {
 	// 租约还在就只去封遗留明文，不换钥。
 	if _, err := s.liveMK(); err == nil {
 		// 领到钥后把库里的明文就地封上。
-		return s.sealPlainRows(ctx)
+		if err := s.sealPlainRows(ctx); err != nil {
+			return err
+		}
+		// 再把还没判过包角的工艺补上。
+		return s.fillCornerRows(ctx)
 	}
 	// 准备密钥或摘要，后面套租约或写入要用。
 	l, err := contentcrypt.RandomKey()

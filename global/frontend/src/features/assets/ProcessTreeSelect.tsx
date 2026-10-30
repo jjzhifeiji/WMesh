@@ -4,7 +4,7 @@ import { useMemo } from "react";
 import { useFS, type FSNode } from "./api";
 import { fsNodeTitle } from "./ProcessExplorer";
 
-export type ProcessOption = { value: string; label: string; disabled?: boolean };
+export type ProcessOption = { value: string; label: string; disabled?: boolean; corner?: boolean }; // corner 包角工艺，工程工艺槽都不给选
 
 type TreeNode = NonNullable<TreeSelectProps["treeData"]>[number];
 

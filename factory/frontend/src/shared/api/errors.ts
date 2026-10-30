@@ -39,6 +39,7 @@ const zh: Record<string, string> = {
   "asset is not copyable": "不可复制，不能升档或放宽",
   "invalid weld kind": "作业类型只能是单层焊道、多层焊缝或 T排对接",
   "weld kind mismatch": "工程和工艺必须是同一作业类型",
+  "corner process slot mismatch": "工程工艺槽（含包角组）只能选焊接工艺，不能选包角工艺",
   "process weld kind in use": "工艺仍被工程引用，不能改作业类型",
   "asset dependency missing or mismatched": "依赖的工艺不存在、未发布或修订对不上",
   "client binding is void": "本厂绑定已作废，不能再签发",

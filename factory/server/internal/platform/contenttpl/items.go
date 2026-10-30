@@ -525,6 +525,7 @@ func itemTBar() []Field {
 		num("layer", "层", "", 1),
 		procRef("rootProcessId", "打底工艺"),
 		procRef("capProcessId", "盖面工艺"),
+		{Key: "capProcessIds", Label: "盖面工艺组", Type: TypeArray, Items: &Field{Type: TypeProcess, Label: "盖面工艺", Default: ""}},
 	}}
 	return []Field{
 		str("id", "身份", ""),
@@ -542,6 +543,16 @@ func extraProcessesField() Field {
 	return Field{Key: "extraProcesses", Label: "附加工艺", Type: TypeArray, Items: &Field{Type: TypeObject, Label: "附加", Fields: []Field{
 		str("id", "身份", ""), procRef("processId", "工艺"), flag("isEnabled", "启用", true),
 	}}}
+}
+
+// cornerRefField 包角组上的底工艺引用（焊接参数，和焊道 processId 相同）；只给收引用和改写用，不进模版套用，免得给普通焊道补出空包角组。
+func cornerRefField() Field {
+	return Field{Key: "cornerGroupParams", Label: "包角组", Type: TypeObject, Fields: []Field{procRef("processId", "包角组焊接工艺")}}
+}
+
+// RefFields 收引用用的字段：本种类标准槽（单层带附加槽）再并上包角组工艺槽。
+func RefFields(kind string) []Field {
+	return mergeFields(ItemFields(kind, true), []Field{cornerRefField()})
 }
 
 // ptr 给数组元素取地址。

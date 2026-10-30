@@ -38,7 +38,7 @@ import {
 } from "./api";
 import { fsFolderOptions, ProcessExplorer } from "./ProcessExplorer";
 import { PromotePicker } from "./PromotePicker";
-import { emptyWeld, ProjectWeldEditor } from "./ProjectWeldEditor";
+import { emptyWeld, ProjectWeldEditor, type ProcessOption } from "./ProjectWeldEditor";
 
 type CreateForm = { name: string; content: string; weldKind: string; copyable: boolean; parentId?: string };
 type MkdirForm = { parentId: string; name: string };
@@ -1005,13 +1005,13 @@ function processIdsFromContent(content: string | undefined, schema: ContentSchem
 function processPickerOptions(all: Asset[], pin: (p: Asset) => boolean, selected?: string[]) {
   const seen = new Set<string>();
   const selectedSet = new Set(selected ?? []);
-  const opts: { value: string; label: string; disabled?: boolean }[] = [];
+  const opts: ProcessOption[] = [];
   for (const p of all) {
     seen.add(p.id);
     const ok = pin(p);
     if (!ok && !selectedSet.has(p.id)) continue;
     const extra = ok ? "" : ` · ${statusLabel(p.status)}`;
-    opts.push({ value: p.id, label: `${p.name} · r${p.revision}${extra}`, disabled: !ok });
+    opts.push({ value: p.id, label: `${p.name} · r${p.revision}${extra}`, disabled: !ok, corner: Boolean(p.corner) });
   }
   for (const id of selected ?? []) {
     if (seen.has(id)) continue;
