@@ -6,7 +6,6 @@ package store
 import (
 	"context"
 	"errors"
-	"fmt"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
@@ -91,25 +90,6 @@ func hasRows(db *gorm.DB, model any, query string, args ...any) (bool, error) {
 	// 数匹配行，用来判断还有没有引用。
 	err := db.Model(model).Where(query, args...).Count(&n).Error
 	return n > 0, err
-}
-
-// pathMentions 看事实/资产路径快照里是否出现过该身份。
-func pathMentions(db *gorm.DB, key string, id uuid.UUID) (bool, error) {
-	// 拼出路径里要匹配的那一截身份。
-	payload := fmt.Sprintf(`[{"%s":"%s"}]`, key, id)
-	// 几张带路径的表都要看，有一处提到就不能删。
-	for _, table := range []string{"fact_stubs", "personal_asset_stubs", "assets", "weld_facts"} {
-		// 准备承接计数，用来判断有没有匹配行。
-		var n int64
-		err := db.Raw("SELECT COUNT(*) FROM "+table+" WHERE org_path @> ?::jsonb", payload).Scan(&n).Error
-		if err != nil {
-			return false, err
-		}
-		if n > 0 {
-			return true, nil
-		}
-	}
-	return false, nil
 }
 
 // setStatus 只改状态列，找不到行就当不存在。

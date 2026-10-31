@@ -1,26 +1,17 @@
 package service
 
 import (
-	"github.com/google/uuid"
-
 	"wmesh/factory/internal/store"
 )
 
 const (
-	StatusPending  = store.StatusPending  // 待启用：可预写角色，但不能登录
-	StatusActive   = store.StatusActive   // 有效：认证后按角色作用域操作
+	StatusActive   = store.StatusActive   // 有效：认证后按角色操作
 	StatusDisabled = store.StatusDisabled // 已停用：不能新开会话或新开受保护操作
-	StatusEnded    = store.StatusEnded    // 分配已取消，行留下做历史
 	StatusRevoked  = store.StatusRevoked  // 角色已收回，行留下做历史
 
-	RoleFactorySuperAdmin = store.RoleFactorySuperAdmin // 工厂超管，只能挂本厂作用域
-	RoleOrgAdmin          = store.RoleOrgAdmin          // 组织管理员，可挂整厂或某个节点及当前子树
-	RoleOrgLead           = store.RoleOrgLead           // 组织负责人，子树只读
-	RoleOperator          = store.RoleOperator          // 操作员，可产生运行事实、作用域内下发
-	RoleAuditor           = store.RoleAuditor           // 审计员，只读，不能改业务
-
-	ScopeFactory = store.ScopeFactory // 覆盖本厂当时全部组织节点
-	ScopeOrgUnit = store.ScopeOrgUnit // 只覆盖该节点及当时子树
+	RoleFactorySuperAdmin = store.RoleFactorySuperAdmin // 工厂超管，拥有本厂全部权限
+	RoleOrgAdmin          = store.RoleOrgAdmin          // 管理员：厂级工艺工程、报表与审计
+	RoleOperator          = store.RoleOperator          // 操作员：示教器作业、产生焊事实
 
 	ClientStatusBound = store.ClientStatusBound // 本厂有效绑定，可以签发
 	ClientStatusVoid  = store.ClientStatusVoid  // 已作废，不得再签发
@@ -47,12 +38,6 @@ const (
 	LoginKindMQTT   = store.LoginKindMQTT   // 本厂 MQTT 回连补现场快照
 )
 
-// 授角色时与落库用同一条作用域规则。
-func validScope(role, scopeKind string, orgUnitID *uuid.UUID) bool {
-	// 交给落库同一套规则，避免授角和存储各算各的
-	return store.ValidScope(role, scopeKind, orgUnitID)
-}
-
 // 与 store 同源的表模型，按域给应用服务和验收当入口类型用。
 type (
 	Store   = store.Store   // 本厂库连接，业务只经它读写
@@ -61,14 +46,12 @@ type (
 
 	Lifecycle = store.Lifecycle // 本厂启停注销以及当前修订
 
-	OrgUnit    = store.OrgUnit    // 组织节点，停用后不能当新上下文
-	Assignment = store.Assignment // 人员挂到组织的当前分配
-	RoleGrant  = store.RoleGrant  // 带作用域的角色授予
+	OrgUnit   = store.OrgUnit   // 组织节点，停用后不能再收人
+	RoleGrant = store.RoleGrant // 角色授予，都覆盖整厂
 
-	PathNode      = store.PathNode      // 事实发生时路径上的一节
-	WorkContext   = store.WorkContext   // 这次操作选定的工作上下文
-	FactStub      = store.FactStub      // 运行事实桩，带冻结的路径
-	PersonalAsset = store.PersonalAsset // 个人资产桩，正文不进审计
+	PathNode    = store.PathNode    // 事实发生时路径上的一节
+	WorkContext = store.WorkContext // 这次操作选定的工作上下文
+	FactStub    = store.FactStub    // 运行事实桩，带冻结的路径
 
 	Client         = store.Client         // 已分配到本厂的设备
 	SigningKey     = store.SigningKey     // 本厂签发运行凭证的钥

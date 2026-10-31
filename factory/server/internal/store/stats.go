@@ -23,20 +23,18 @@ const (
 	WeldGroupPersonDay = "person-day" // 按人、路径、日
 	WeldGroupPerson    = "person"     // 按人
 	WeldGroupProject   = "project"    // 按工程
-	WeldGroupOrg       = "org"        // 按发生组织
+	WeldGroupOrg       = "org"        // 按人现在的所属组织
 	WeldGroupDay       = "day"        // 按报表时区的日
 	WeldMaxLengthMM    = 10_000_000   // 单条焊长上限毫米，即 10 公里
 	WeldMaxDurationSec = 86_400       // 单条时长上限秒，即一整天
 	WeldMaxProjectName = 200          // 工程名去首尾空白后的字数上限，和 WAN 一致
 )
 
-// WeldFact 是一次起停焊的运行事实：焊长、时长跟人走，工程名按当时快照。
+// WeldFact 是一次起停焊的运行事实：只绑人，组织按人现在的所属组织算；工程名按当时快照。
 type WeldFact struct {
 	ID          uuid.UUID  // 产生端事实身份
 	CreatorID   uuid.UUID  // 当时登录人
 	FactoryID   uuid.UUID  // 所属工厂
-	OrgUnitID   *uuid.UUID // 发生节点；厂直属为空
-	OrgPath     []PathNode // 发生时路径快照
 	ClientID    *uuid.UUID // 当时 Client；未匹配可空
 	ProjectID   *uuid.UUID // 当时工程身份；未打开可空
 	ProjectName string     // 当时工程名快照
@@ -47,11 +45,12 @@ type WeldFact struct {
 	CreatedAt   time.Time  // 首次汇聚时间
 }
 
-// WeldFactView 是带当时人名的焊事实，供报表和下钻。
+// WeldFactView 是带人名和人现在所属组织的焊事实，供报表和下钻。
 type WeldFactView struct {
-	WeldFact           // 焊事实本体，人名另挂
-	LoginName   string // 当时登录名，可改
-	DisplayName string // 显示名，可改
+	WeldFact               // 焊事实本体，人名另挂
+	LoginName   string     // 当时登录名，可改
+	DisplayName string     // 显示名，可改
+	OrgUnitID   *uuid.UUID // 此人现在的所属组织；厂直属为空
 }
 
 // WeldTotals 是某人已汇聚合计。
@@ -85,8 +84,8 @@ type WeldReportRow struct {
 	CreatorID   uuid.UUID  // 当时登录人；非按人维为零值
 	LoginName   string     // 登录名
 	DisplayName string     // 显示名
-	OrgUnitID   *uuid.UUID // 发生节点；厂直属为空
-	OrgPath     []PathNode // 发生时路径
+	OrgUnitID   *uuid.UUID // 人现在的所属组织；厂直属为空
+	OrgPath     []PathNode // 该组织当前路径，由应用服务按组织树补
 	Day         time.Time  // 报表时区当日零点；非按日维为零值
 	ProjectID   *uuid.UUID // 工程身份
 	ProjectName string     // 工程名快照或未关联
@@ -95,10 +94,9 @@ type WeldReportRow struct {
 	RunCount    int64      // 该组次数
 }
 
-// WeldScope 是调用方能看的焊事实范围：本人焊的总能看，另加这些节点上发生的。
+// WeldScope 是调用方能看的焊事实范围：只看本人焊的。
 type WeldScope struct {
-	SelfID     uuid.UUID   // 调用方本人，自己焊的总能看
-	OrgUnitIDs []uuid.UUID // 可见节点，已含子树；空表示只看本人
+	SelfID uuid.UUID // 调用方本人
 }
 
 // WeldFactFilter 是焊事实查询窗；空字段表示不裁。
@@ -108,8 +106,8 @@ type WeldFactFilter struct {
 	CreatorID  *uuid.UUID // 当时登录人
 	ProjectID  *uuid.UUID // 工程身份
 	NoProject  bool       // 只取未打开工程
-	OrgUnitID  *uuid.UUID // 发生节点
-	DirectOnly bool       // 只取厂直属，即发生节点为空
+	OrgUnitID  *uuid.UUID // 人现在的所属组织
+	DirectOnly bool       // 只取厂直属的人，即所属组织为空
 	Day        *time.Time // UTC 日历日
 	Scope      *WeldScope // 可见范围；空表示全厂都能看
 	Limit      int        // 条数上限；0 不裁
@@ -121,8 +119,6 @@ type weldFactRow struct {
 	ID          uuid.UUID  `gorm:"type:uuid;primaryKey"`         // 产生端事实身份
 	CreatorID   uuid.UUID  `gorm:"type:uuid;not null"`           // 当时登录人
 	FactoryID   uuid.UUID  `gorm:"type:uuid;not null"`           // 所属工厂
-	OrgUnitID   *uuid.UUID `gorm:"type:uuid"`                    // 发生节点
-	OrgPath     []byte     `gorm:"type:jsonb;not null"`          // 路径快照原文
 	ClientID    *uuid.UUID `gorm:"type:uuid"`                    // 当时 Client
 	ProjectID   *uuid.UUID `gorm:"type:uuid"`                    // 当时工程身份
 	ProjectName string     `gorm:"column:project_name;not null"` // 当时工程名
@@ -142,8 +138,7 @@ type weldFactScan struct {
 	CreatorID   uuid.UUID  `gorm:"column:creator_id"`   // 当时登录人
 	LoginName   string     `gorm:"column:login_name"`   // 登录名
 	DisplayName string     `gorm:"column:display_name"` // 显示名
-	OrgUnitID   *uuid.UUID `gorm:"column:org_unit_id"`  // 发生节点
-	OrgPath     []byte     `gorm:"column:org_path"`     // 路径快照
+	OrgUnitID   *uuid.UUID `gorm:"column:org_unit_id"`  // 人现在的所属组织
 	ClientID    *uuid.UUID `gorm:"column:client_id"`    // Client
 	ProjectID   *uuid.UUID `gorm:"column:project_id"`   // 工程身份
 	ProjectName string     `gorm:"column:project_name"` // 工程名
@@ -159,8 +154,7 @@ type weldReportScan struct {
 	CreatorID   uuid.UUID  `gorm:"column:creator_id"`   // 当时登录人
 	LoginName   string     `gorm:"column:login_name"`   // 登录名
 	DisplayName string     `gorm:"column:display_name"` // 显示名
-	OrgUnitID   *uuid.UUID `gorm:"column:org_unit_id"`  // 发生节点
-	OrgPath     []byte     `gorm:"column:org_path"`     // 该组最近一条路径快照
+	OrgUnitID   *uuid.UUID `gorm:"column:org_unit_id"`  // 人现在的所属组织
 	LocalDay    string     `gorm:"column:local_day"`    // 报表时区日期
 	ProjectID   *uuid.UUID `gorm:"column:project_id"`   // 工程身份
 	ProjectName string     `gorm:"column:project_name"` // 工程名或未关联
@@ -246,12 +240,6 @@ func (s *Store) MergeWeldFact(ctx context.Context, in WeldFact) (WeldFact, error
 	if !errors.Is(err, domain.ErrNotFound) {
 		return WeldFact{}, err
 	}
-	// 先收成路径，结果留给紧跟着的判断。
-	raw, err := marshalPath(in.OrgPath)
-	// 收成路径失败就停，避免带着错误继续。
-	if err != nil {
-		return WeldFact{}, err
-	}
 	// 先转到世界时，结果留给紧跟着的判断。
 	occurred := in.OccurredAt.UTC()
 	// 还没有更新时间就补上现在，避免零时间。
@@ -264,8 +252,6 @@ func (s *Store) MergeWeldFact(ctx context.Context, in WeldFact) (WeldFact, error
 		ID:          in.ID,
 		CreatorID:   in.CreatorID,
 		FactoryID:   s.factoryID,
-		OrgUnitID:   in.OrgUnitID,
-		OrgPath:     raw,
 		ClientID:    in.ClientID,
 		ProjectID:   in.ProjectID,
 		ProjectName: in.ProjectName,
@@ -356,6 +342,9 @@ func (s *Store) ListWeldProjectsByCreator(ctx context.Context, creatorID uuid.UU
 	return out, nil
 }
 
+// weldFactsWithOrg 是焊事实连上人现在所属组织的底表，别名固定为 f。
+const weldFactsWithOrg = "(SELECT wf.*, wp.org_unit_id FROM weld_facts wf JOIN people wp ON wp.id = wf.creator_id) AS f"
+
 // weldFactWhere 把查询窗和可见范围拼进条件；表别名固定为 f，明细、合计和报表共用。
 func weldFactWhere(q *gorm.DB, f WeldFactFilter) *gorm.DB {
 	// 给了起始时间才按发生时间裁。
@@ -382,11 +371,11 @@ func weldFactWhere(q *gorm.DB, f WeldFactFilter) *gorm.DB {
 		// 补上筛选或限定列，避免动到不该动的字段。
 		q = q.Where("f.project_id = ?", *f.ProjectID)
 	}
-	// 只要厂直属就取发生节点为空的，指定节点不再看。
+	// 只要厂直属就取所属组织为空的人，指定节点不再看。
 	if f.DirectOnly {
-		// 厂直属的焊没有发生节点。
+		// 厂直属的人没有所属组织。
 		q = q.Where("f.org_unit_id IS NULL")
-		// 点了节点就只取这个节点上发生的。
+		// 点了节点就只取归在这个节点的人焊的。
 	} else if f.OrgUnitID != nil {
 		// 补上筛选或限定列，避免动到不该动的字段。
 		q = q.Where("f.org_unit_id = ?", *f.OrgUnitID)
@@ -398,17 +387,10 @@ func weldFactWhere(q *gorm.DB, f WeldFactFilter) *gorm.DB {
 		// 补上筛选或限定列，避免动到不该动的字段。
 		q = q.Where("((f.occurred_at AT TIME ZONE 'UTC')::date) = ?::date", day)
 	}
-	// 带了可见范围就只留本人焊的和可见节点上发生的。
+	// 带了可见范围就只留本人焊的。
 	if f.Scope != nil {
-		// 没有可见节点就只看本人。
-		if len(f.Scope.OrgUnitIDs) == 0 {
-			// 只留本人焊的，别人的一条不给。
-			q = q.Where("f.creator_id = ?", f.Scope.SelfID)
-			// 有可见节点就本人的加上这些节点上的。
-		} else {
-			// 两个条件用括号包住，免得和别的条件串成或。
-			q = q.Where("(f.creator_id = ? OR f.org_unit_id IN ?)", f.Scope.SelfID, f.Scope.OrgUnitIDs)
-		}
+		// 只留本人焊的，别人的一条不给。
+		q = q.Where("f.creator_id = ?", f.Scope.SelfID)
 	}
 	return q
 }
@@ -416,8 +398,8 @@ func weldFactWhere(q *gorm.DB, f WeldFactFilter) *gorm.DB {
 // ListWeldFacts 按窗列出焊事实，带当时人名；新的在前。
 func (s *Store) ListWeldFacts(ctx context.Context, f WeldFactFilter) ([]WeldFactView, error) {
 	// 补上筛选或限定列，避免动到不该动的字段。
-	q := s.db.WithContext(ctx).Table("weld_facts AS f").
-		Select("f.id, f.creator_id, p.login_name, p.display_name, f.org_unit_id, f.org_path, f.client_id, f.project_id, f.project_name, f.weld_kind, f.length_mm, f.duration_sec, f.occurred_at, f.created_at").
+	q := s.db.WithContext(ctx).Table(weldFactsWithOrg).
+		Select("f.id, f.creator_id, p.login_name, p.display_name, f.org_unit_id, f.client_id, f.project_id, f.project_name, f.weld_kind, f.length_mm, f.duration_sec, f.occurred_at, f.created_at").
 		Joins("JOIN people p ON p.id = f.creator_id").
 		Order("f.occurred_at DESC, f.id DESC")
 	// 拼上查询窗和可见范围，分页前先裁。
@@ -448,8 +430,6 @@ func (s *Store) ListWeldFacts(ctx context.Context, f WeldFactFilter) ([]WeldFact
 				ID:          r.ID,
 				CreatorID:   r.CreatorID,
 				FactoryID:   s.factoryID,
-				OrgUnitID:   r.OrgUnitID,
-				OrgPath:     unmarshalPath(r.OrgPath),
 				ClientID:    r.ClientID,
 				ProjectID:   r.ProjectID,
 				ProjectName: r.ProjectName,
@@ -461,6 +441,7 @@ func (s *Store) ListWeldFacts(ctx context.Context, f WeldFactFilter) ([]WeldFact
 			},
 			LoginName:   r.LoginName,
 			DisplayName: r.DisplayName,
+			OrgUnitID:   r.OrgUnitID,
 		})
 	}
 	return out, nil
@@ -471,7 +452,7 @@ func (s *Store) WeldFactTotals(ctx context.Context, f WeldFactFilter) (WeldTotal
 	// 准备承接这次要交回的合计。
 	var out WeldTotals
 	// 只数条数和封顶求和，人名不用连表。
-	q := s.db.WithContext(ctx).Table("weld_facts AS f").
+	q := s.db.WithContext(ctx).Table(weldFactsWithOrg).
 		Select(cappedSum("f.length_mm") + " AS length_mm, " + cappedSum("f.duration_sec") + " AS duration_sec, COUNT(*) AS run_count")
 	// 拼上和明细同一套查询窗与可见范围，再扫出合计。
 	err := weldFactWhere(q, f).Scan(&out).Error
@@ -491,8 +472,8 @@ func (s *Store) ListWeldReport(ctx context.Context, f WeldFactFilter, group stri
 		loc = time.UTC
 	}
 	// 子查询先裁窗、换未关联名、算当地日期，外层只管分组。
-	inner := weldFactWhere(s.db.Table("weld_facts AS f").
-		Select(`f.id, f.creator_id, f.org_unit_id, f.org_path, f.project_id,
+	inner := weldFactWhere(s.db.Table(weldFactsWithOrg).
+		Select(`f.id, f.creator_id, f.org_unit_id, f.project_id,
 			CASE WHEN f.project_name = '' THEN '未关联工程' ELSE f.project_name END AS project_name,
 			f.length_mm, f.duration_sec, f.occurred_at,
 			to_char((f.occurred_at AT TIME ZONE ?), 'YYYY-MM-DD') AS local_day`, loc.String()), f)
@@ -522,11 +503,6 @@ func (s *Store) ListWeldReport(ctx context.Context, f WeldFactFilter, group stri
 			OrgUnitID: r.OrgUnitID, ProjectID: r.ProjectID, ProjectName: r.ProjectName,
 			LengthMM: r.LengthMM, DurationSec: r.DurationSec, RunCount: r.RunCount,
 		}
-		// 选了路径列才收成路径，别的维度不带路径。
-		if len(r.OrgPath) > 0 {
-			// 取该组最近一条的路径快照。
-			row.OrgPath = unmarshalPath(r.OrgPath)
-		}
 		// 选了日期列才按报表时区收成当地零点。
 		if r.LocalDay != "" {
 			// 日期文本按报表时区解析成当地零点。
@@ -546,8 +522,6 @@ func (s *Store) ListWeldReport(ctx context.Context, f WeldFactFilter, group stri
 
 // weldReportColumns 按维度交出分组列、要选的列，以及要不要连人员表取名字。
 func weldReportColumns(group string) (string, string, bool) {
-	// 路径取该组最近一条快照，同时刻按身份定一条。
-	const lastPath = "(array_agg(g.org_path ORDER BY g.occurred_at DESC, g.id DESC))[1] AS org_path"
 	// 按选定维度给出分组列。
 	switch group {
 	// 按人汇总时每人一行，名字跟着人。
@@ -558,19 +532,19 @@ func weldReportColumns(group string) (string, string, bool) {
 	case WeldGroupProject:
 		// 交出按工程的分组列和选列。
 		return "g.project_id, g.project_name", "g.project_id, g.project_name", false
-	// 按发生组织汇总，厂直属单独一行。
+	// 按人现在的所属组织汇总，厂直属单独一行。
 	case WeldGroupOrg:
-		// 交出按组织的分组列，路径取最近一条。
-		return "g.org_unit_id", "g.org_unit_id, " + lastPath, false
+		// 交出按组织的分组列，路径由应用服务补。
+		return "g.org_unit_id", "g.org_unit_id", false
 	// 按报表时区的日历日汇总，同一天并成一行。
 	case WeldGroupDay:
 		// 交出按日的分组列和选列。
 		return "g.local_day", "g.local_day", false
 	// 没指定维度就按人、路径和日汇总。
 	default:
-		// 交出按人、节点和日的分组列，路径取最近一条。
+		// 交出按人、所属组织和日的分组列。
 		return "g.creator_id, p.login_name, p.display_name, g.org_unit_id, g.local_day",
-			"g.creator_id, p.login_name, p.display_name, g.org_unit_id, g.local_day, " + lastPath, true
+			"g.creator_id, p.login_name, p.display_name, g.org_unit_id, g.local_day", true
 	}
 }
 
@@ -580,8 +554,6 @@ func weldFromRow(row weldFactRow) WeldFact {
 		ID:          row.ID,
 		CreatorID:   row.CreatorID,
 		FactoryID:   row.FactoryID,
-		OrgUnitID:   row.OrgUnitID,
-		OrgPath:     unmarshalPath(row.OrgPath),
 		ClientID:    row.ClientID,
 		ProjectID:   row.ProjectID,
 		ProjectName: row.ProjectName,
@@ -595,8 +567,8 @@ func weldFromRow(row weldFactRow) WeldFact {
 
 // weldFactSame 已有行与待汇聚是否同一份，不同则拒绝覆盖。
 func weldFactSame(got WeldFact, in WeldFact) bool {
-	// 人或路径对不上就不是同一份焊。
-	if got.CreatorID != in.CreatorID || !sameOptUUID(got.OrgUnitID, in.OrgUnitID) || !pathEqual(got.OrgPath, in.OrgPath) {
+	// 人对不上就不是同一份焊。
+	if got.CreatorID != in.CreatorID {
 		return false
 	}
 	// 本机或工程对不上就不能覆盖。
@@ -657,6 +629,48 @@ func (s *Store) ListWeldWANSummaries(ctx context.Context) ([]WeldWANSummary, err
 			Day: r.Day, ProjectName: r.ProjectName, WeldKind: r.WeldKind,
 			RunCount: r.RunCount, LengthMM: r.LengthMM, DurationSec: r.DurationSec,
 		})
+	}
+	return out, nil
+}
+
+// ClientWeldUsage 是一台设备上的焊次概况：最近谁焊、什么时候、累计多少。
+type ClientWeldUsage struct {
+	LastPersonID uuid.UUID `gorm:"column:last_person_id"` // 最近一次焊的人
+	LastAt       time.Time `gorm:"column:last_at"`        // 最近一次焊完时间
+	LengthMM     int64     `gorm:"column:length_mm"`      // 累计焊长毫米，已封顶
+	RunCount     int64     `gorm:"column:run_count"`      // 累计次数
+}
+
+// 按设备汇总焊次的扫描行。
+type clientWeldScan struct {
+	ClientID        uuid.UUID `gorm:"column:client_id"` // 设备身份
+	ClientWeldUsage           // 该设备的概况
+}
+
+// ListClientWeldUsage 按设备汇总焊事实：最近谁焊、什么时候、累计焊长和次数；没焊过的设备不在表里。
+func (s *Store) ListClientWeldUsage(ctx context.Context) (map[uuid.UUID]ClientWeldUsage, error) {
+	// 准备承接每台设备一行。
+	var rows []clientWeldScan
+	// 只看带了设备的焊事实，按设备分组。
+	err := s.db.WithContext(ctx).Table("weld_facts").
+		Select(`client_id,
+			(array_agg(creator_id ORDER BY occurred_at DESC, id DESC))[1] AS last_person_id,
+			MAX(occurred_at) AS last_at,
+			COUNT(*) AS run_count,
+			` + cappedSum("length_mm") + ` AS length_mm`).
+		Where("client_id IS NOT NULL").
+		Group("client_id").
+		Scan(&rows).Error
+	// 出错就停，避免把失败当成已经完成。
+	if err != nil {
+		return nil, err
+	}
+	// 按设备身份收成表。
+	out := make(map[uuid.UUID]ClientWeldUsage, len(rows))
+	// 逐台记下概况。
+	for _, r := range rows {
+		// 记进表里，按设备身份取。
+		out[r.ClientID] = r.ClientWeldUsage
 	}
 	return out, nil
 }

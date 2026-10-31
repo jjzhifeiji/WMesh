@@ -1,4 +1,4 @@
-// 阶段3第6圈：厂内侧升档、跨厂隔离、工程依赖与归属（8.1～15.2、17.1～18.2）。
+// 阶段3第6圈：厂内侧升档（每次复制新草稿）、跨厂隔离、工程依赖与归属（8.1～15.2、17.1～18.2）。
 package service_test
 
 import (
@@ -23,15 +23,15 @@ func testAssetPromote(t *testing.T, run func(string, func(*testing.T))) {
 	// 起一套隔离厂库，起不来则本用例没有库可测。
 	h := New(t)
 	// 开通本厂，供后面步骤使用，失败则前提断了。
-	seed, facA, err := h.Provision(ctx, "sa-a", "超管A")
+	_, facA, err := h.Provision(ctx, "sa-a", "超管A")
 	// 开通本厂没成功，后面的断言就没有依据。
 	if err != nil {
 		// 开通本厂失败即停，不能把这一步的失败当成通过。
 		t.Fatal(err)
 	}
-	// 激活账号没成功，后面的断言就没有依据。
-	if err := facA.Activate(ctx, "sa-a", seed.ActivationToken, "sa-pass"); err != nil {
-		// 激活账号失败即停，不能把这一步的失败当成通过。
+	// 改测试口令没成功，后面的断言就没有依据。
+	if err := seedPass(ctx, facA, "sa-a", "sa-pass"); err != nil {
+		// 改测试口令失败即停，不能把这一步的失败当成通过。
 		t.Fatal(err)
 	}
 	// 登录取会话，供后面步骤使用，失败则前提断了。
@@ -43,23 +43,23 @@ func testAssetPromote(t *testing.T, run func(string, func(*testing.T))) {
 		// 开通本厂失败即停，不能把这一步的失败当成通过。
 		t.Fatal(err)
 	}
-	// 激活账号没成功，后面的断言就没有依据。
-	if err := facB.Activate(ctx, "sa-b", seedB.ActivationToken, "sa-b-pass"); err != nil {
-		// 激活账号失败即停，不能把这一步的失败当成通过。
+	// 改测试口令没成功，后面的断言就没有依据。
+	if err := seedPass(ctx, facB, "sa-b", "sa-b-pass"); err != nil {
+		// 改测试口令失败即停，不能把这一步的失败当成通过。
 		t.Fatal(err)
 	}
 	// 登录取会话，供后面步骤使用，失败则前提断了。
 	saB := mustLogin(t, ctx, facB, "sa-b", "sa-b-pass")
 	// 建人并授角色，供后面步骤使用，失败则前提断了。
-	pe := mustCreateRole(t, ctx, facA, saA, "pe-a", "pe-pass", factory.RoleOperator, factory.ScopeFactory, nil)
+	pe := mustCreateRole(t, ctx, facA, saA, "pe-a", "pe-pass", factory.RoleOrgAdmin)
 	// 建人并授角色，供后面步骤使用，失败则前提断了。
-	pe2 := mustCreateRole(t, ctx, facA, saA, "pe-a2", "pe2-pass", factory.RoleOperator, factory.ScopeFactory, nil)
+	pe2 := mustCreateRole(t, ctx, facA, saA, "pe-a2", "pe2-pass", factory.RoleOrgAdmin)
 	// 建人并授角色，供后面步骤使用，失败则前提断了。
-	op := mustCreateRole(t, ctx, facA, saA, "op-a", "op-pass", factory.RoleOperator, factory.ScopeFactory, nil)
+	op := mustCreateRole(t, ctx, facA, saA, "op-a", "op-pass", factory.RoleOperator)
 	// 建人并授角色，供后面步骤使用，失败则前提断了。
-	peB := mustCreateRole(t, ctx, facB, saB, "pe-b", "pe-b-pass", factory.RoleOperator, factory.ScopeFactory, nil)
+	peB := mustCreateRole(t, ctx, facB, saB, "pe-b", "pe-b-pass", factory.RoleOrgAdmin)
 	// 用直属上下文写资产，不把它挂到某个车间。
-	direct := factory.WorkContext{Direct: true}
+	direct := factory.WorkContext{}
 	// 准备一段正文，读回或检索时要拿它对照。
 	body := []byte("circle6-body-secret")
 	// 新建组织节点，供后面步骤使用，失败则前提断了。
@@ -84,10 +84,10 @@ func testAssetPromote(t *testing.T, run func(string, func(*testing.T))) {
 		t.Fatal(err)
 	}
 	// 建人并授角色，供后面步骤使用，失败则前提断了。
-	peShop := mustCreateRole(t, ctx, facA, saA, "pe-shop", "shop-pass", factory.RoleOperator, factory.ScopeOrgUnit, &shop.ID)
-	// 把人分进组织没成功，后面的断言就没有依据。
-	if err := facA.Assign(ctx, saA, peShop.acc.ID, shop.ID); err != nil {
-		// 把人分进组织失败即停，不能把这一步的失败当成通过。
+	peShop := mustCreateRole(t, ctx, facA, saA, "pe-shop", "shop-pass", factory.RoleOrgAdmin)
+	// 把人归进车间A，所属组织不给权，只用于统计。
+	if _, err := facA.SetPersonOrg(ctx, saA, peShop.acc.ID, &shop.ID); err != nil {
+		// 归组织失败即停，不能把这一步的失败当成通过。
 		t.Fatal(err)
 	}
 
@@ -112,15 +112,15 @@ func testAssetPromote(t *testing.T, run func(string, func(*testing.T))) {
 		// 记下这条个人工艺，后面还要再升一次。
 		personal = src
 		// 升成厂级，供后面步骤使用，失败则前提断了。
-		promoted, err = facA.PromoteToFactory(ctx, pe.tok, src.ID)
+		promoted, err = facA.PromoteToFactory(ctx, pe.tok, src.ID, uuid.Nil)
 		// 升成厂级没成功，后面的断言就没有依据。
 		if err != nil {
 			// 升成厂级失败即停，不能把这一步的失败当成通过。
 			t.Fatal(err)
 		}
-		// 升档结果必须是新的厂级资产，而且不能带着正文。
+		// 升档结果必须是新的厂级草稿，可复制，不带正文，并指回源。
 		if promoted.ID == src.ID || promoted.Level != factory.AssetLevelFactory || promoted.Content != nil ||
-			promoted.SourceID == nil || *promoted.SourceID != src.ID {
+			promoted.Status != factory.AssetDraft || !promoted.Copyable || promoted.SourceID == nil || *promoted.SourceID != src.ID {
 			// 升档结果不对就停，原件被当成了厂级。
 			t.Fatalf("%+v", promoted)
 		}
@@ -139,22 +139,22 @@ func testAssetPromote(t *testing.T, run func(string, func(*testing.T))) {
 			t.Fatalf("%q %v", got, err)
 		}
 	})
-	// 同一条再升一次，必须命中已有厂级且修订不变。
+	// 同一条再升一次，必须另复制一份新草稿，不命中已有厂级。
 	run("8.4", func(t *testing.T) {
 		// 升成厂级，供后面步骤使用，失败则前提断了。
-		again, err := facA.PromoteToFactory(ctx, pe.tok, personal.ID)
+		again, err := facA.PromoteToFactory(ctx, pe.tok, personal.ID, uuid.Nil)
 		// 升成厂级没成功，后面的断言就没有依据。
 		if err != nil {
 			// 升成厂级失败即停，不能把这一步的失败当成通过。
 			t.Fatal(err)
 		}
-		// 再次升档必须命中已有厂级，修订也不能变。
-		if again.ID != promoted.ID || again.Revision != promoted.Revision {
-			// 又升出一条或修订变了就停，没有复用已有厂级。
-			t.Fatalf("skip %+v want %+v", again, promoted)
+		// 再次升档必须是新身份的首个修订草稿。
+		if again.ID == promoted.ID || again.Revision != 1 || again.Status != factory.AssetDraft {
+			// 复用了已有厂级就停，升档不该回写。
+			t.Fatalf("again %+v first %+v", again, promoted)
 		}
 	})
-	// 个人正文改过后再升，厂级修订加一且摘要跟上。
+	// 个人正文改过后再升，新副本摘要跟上，旧副本不动。
 	run("8.5", func(t *testing.T) {
 		// 改写资产正文，供后面步骤使用，失败则前提断了。
 		changed, err := facA.UpdateAssetContent(ctx, pe.tok, personal.ID, personal.Revision, []byte("personal-v2"))
@@ -166,21 +166,21 @@ func testAssetPromote(t *testing.T, run func(string, func(*testing.T))) {
 		// 换成改过正文的个人工艺，供再次升档使用。
 		personal = changed
 		// 升成厂级，供后面步骤使用，失败则前提断了。
-		got, err := facA.PromoteToFactory(ctx, pe.tok, personal.ID)
-		// 升成厂级没成功，后面的断言就没有依据。
-		if err != nil {
-			// 升成厂级失败即停，不能把这一步的失败当成通过。
-			t.Fatal(err)
+		got, err := facA.PromoteToFactory(ctx, pe.tok, personal.ID, uuid.Nil)
+		// 新副本身份不同、摘要跟上源现在的正文。
+		if err != nil || got.ID == promoted.ID || !bytes.Equal(got.Digest, personal.Digest) {
+			// 摘要没跟上或覆盖了旧副本就停。
+			t.Fatalf("copy %+v from %+v %v", got, personal, err)
 		}
-		// 个人正文变了再升，厂级修订要加一且摘要跟上。
-		if got.ID != promoted.ID || got.Revision != promoted.Revision+1 || !bytes.Equal(got.Digest, personal.Digest) {
-			// 修订没加或摘要没跟上就停，覆盖没有做成。
-			t.Fatalf("overwrite %+v from %+v", got, personal)
+		// 读回第一份副本，修订和摘要都不能被改。
+		first, err := facA.GetAsset(ctx, pe.tok, promoted.ID)
+		// 旧副本被改了就停，升档回写了。
+		if err != nil || first.Revision != promoted.Revision || !bytes.Equal(first.Digest, promoted.Digest) {
+			// 旧副本被改了就停。
+			t.Fatalf("first copy %+v want %+v %v", first, promoted, err)
 		}
-		// 记下新的厂级修订，防止后面被带走。
-		promoted = got
 	})
-	// 再升要保留厂级的不可复制；厂级停用后再升必须被拒。
+	// 草稿个人工艺也能升；停用的个人工艺升档必须被拒。
 	run("8.6", func(t *testing.T) {
 		// 另建一条个人工艺，不动后面还要用的那条。
 		src, err := facA.CreatePersonalProcess(ctx, pe.tok, direct, "再升守门", body)
@@ -189,6 +189,11 @@ func testAssetPromote(t *testing.T, run func(string, func(*testing.T))) {
 			// 建个人工艺失败即停，不能把这一步的失败当成通过。
 			t.Fatal(err)
 		}
+		// 还是草稿就升，应能复制。
+		if _, err := facA.PromoteToFactory(ctx, pe.tok, src.ID, uuid.Nil); err != nil {
+			// 草稿升不了就停。
+			t.Fatalf("draft promote: %v", err)
+		}
 		// 发布成可用，供后面步骤使用，失败则前提断了。
 		src, err = facA.PublishAsset(ctx, pe.tok, src.ID, src.Revision)
 		// 发布成可用没成功，后面的断言就没有依据。
@@ -196,101 +201,41 @@ func testAssetPromote(t *testing.T, run func(string, func(*testing.T))) {
 			// 发布成可用失败即停，不能把这一步的失败当成通过。
 			t.Fatal(err)
 		}
-		// 先升出厂级目标，后面在它上面改可复制和停用。
-		target, err := facA.PromoteToFactory(ctx, pe.tok, src.ID)
-		// 升成厂级没成功，后面的断言就没有依据。
-		if err != nil {
-			// 升成厂级失败即停，不能把这一步的失败当成通过。
-			t.Fatal(err)
-		}
-		// 把厂级目标改成不可复制，看再升会不会被改回去。
-		target, err = facA.SetAssetCopyable(ctx, pe.tok, target.ID, target.Revision, false)
-		// 修改可否复制没成功，后面的断言就没有依据。
-		if err != nil {
-			// 修改可否复制失败即停，不能把这一步的失败当成通过。
-			t.Fatal(err)
-		}
-		// 改个人正文，让再升走覆盖分支。
-		src, err = facA.UpdateAssetContent(ctx, pe.tok, src.ID, src.Revision, []byte("guard-v2"))
-		// 改写资产正文没成功，后面的断言就没有依据。
-		if err != nil {
-			// 改写资产正文失败即停，不能把这一步的失败当成通过。
-			t.Fatal(err)
-		}
-		// 再升一次，正文变了应覆盖厂级目标。
-		got, err := facA.PromoteToFactory(ctx, pe.tok, src.ID)
-		// 覆盖升档没成功，后面的断言就没有依据。
-		if err != nil {
-			// 覆盖升档失败即停，不能把这一步的失败当成通过。
-			t.Fatal(err)
-		}
-		// 覆盖后修订加一、摘要跟上，可复制和状态保持原样。
-		if got.ID != target.ID || got.Revision != target.Revision+1 || !bytes.Equal(got.Digest, src.Digest) ||
-			got.Copyable || got.Status != factory.AssetAvailable {
-			// 被改回可复制或修订没加就停，覆盖改了不该改的。
-			t.Fatalf("overwrite %+v from %+v", got, src)
-		}
-		// 停用厂级目标，看再升会不会把它重新放开。
-		off, err := facA.DisableAsset(ctx, pe.tok, got.ID, got.Revision)
+		// 停用这条个人工艺。
+		off, err := facA.DisableAsset(ctx, pe.tok, src.ID, src.Revision)
 		// 停用资产没成功，后面的断言就没有依据。
 		if err != nil {
 			// 停用资产失败即停，不能把这一步的失败当成通过。
 			t.Fatal(err)
 		}
-		// 摘要没变时再升，停用目标也必须被拒。
-		if _, err := facA.PromoteToFactory(ctx, pe.tok, src.ID); !errors.Is(err, domain.ErrAssetNotAvailable) {
-			// 停用目标被跳过放行就停，守门没有拦住。
-			t.Fatalf("same digest got %v", err)
-		}
-		// 再改个人正文，让再升本该走覆盖分支。
-		src, err = facA.UpdateAssetContent(ctx, pe.tok, src.ID, src.Revision, []byte("guard-v3"))
-		// 改写资产正文没成功，后面的断言就没有依据。
-		if err != nil {
-			// 改写资产正文失败即停，不能把这一步的失败当成通过。
-			t.Fatal(err)
-		}
-		// 正文变了再升，停用目标仍必须被拒。
-		if _, err := facA.PromoteToFactory(ctx, pe.tok, src.ID); !errors.Is(err, domain.ErrAssetNotAvailable) {
-			// 停用目标被覆盖就停，问题工艺会被悄悄放开。
-			t.Fatalf("changed digest got %v", err)
-		}
-		// 读回厂级目标，核对它没有被这两次升档改动。
-		after, err := facA.GetAsset(ctx, pe.tok, off.ID)
-		// 目标的修订、摘要和停用状态都必须原样不动。
-		if err != nil || after.Revision != off.Revision || !bytes.Equal(after.Digest, off.Digest) || after.Status != factory.AssetDisabled {
-			// 目标被改了就停，被拒的升档仍写进了库。
-			t.Fatalf("%+v want %+v %v", after, off, err)
+		// 停用的个人工艺升档必须被拒。
+		if _, err := facA.PromoteToFactory(ctx, pe.tok, off.ID, uuid.Nil); !errors.Is(err, domain.ErrAssetNotAvailable) {
+			// 停用件被升了就停，问题工艺会被悄悄放开。
+			t.Fatalf("disabled got %v", err)
 		}
 	})
-	// 别的车间的人也能把已发布个人工艺升成厂级。
+	// 别人的个人工艺只有创建人和超管能升；没有厂级制作权的创建人也不能升。
 	run("8.2", func(t *testing.T) {
-		// 把人分进组织没成功，后面的断言就没有依据。
-		if err := facA.Assign(ctx, saA, pe.acc.ID, shopB.ID); err != nil {
-			// 把人分进组织失败即停，不能把这一步的失败当成通过。
-			t.Fatal(err)
+		// 另一名管理员升 pe 的个人工艺必须被拒，个人级只给创建人和超管碰。
+		if _, err := facA.PromoteToFactory(ctx, peShop.tok, personal.ID, uuid.Nil); !errors.Is(err, domain.ErrForbidden) {
+			// 别人的个人工艺被升了就停。
+			t.Fatalf("other admin got %v", err)
 		}
-		// 建个人工艺，供后面步骤使用，失败则前提断了。
-		src, err := facA.CreatePersonalProcess(ctx, pe.tok, factory.WorkContext{OrgUnitID: &shopB.ID}, "他车间个人", body)
+		// 操作员建一条自己的个人工艺。
+		src, err := facA.CreatePersonalProcess(ctx, op.tok, direct, "操作员个人", body)
 		// 建个人工艺没成功，后面的断言就没有依据。
 		if err != nil {
 			// 建个人工艺失败即停，不能把这一步的失败当成通过。
 			t.Fatal(err)
 		}
-		// 发布成可用，供后面步骤使用，失败则前提断了。
-		src, err = facA.PublishAsset(ctx, pe.tok, src.ID, src.Revision)
-		// 发布成可用没成功，后面的断言就没有依据。
-		if err != nil {
-			// 发布成可用失败即停，不能把这一步的失败当成通过。
-			t.Fatal(err)
-		}
-		// 他车间的人升档必须成功，失败说明被辖区拦住了。
-		if _, err := facA.PromoteToFactory(ctx, peShop.tok, src.ID); err != nil {
-			// 他车间升档失败就停，这条没有变成厂级。
-			t.Fatalf("got %v", err)
+		// 操作员没有厂级制作权，升自己的也必须被拒。
+		if _, err := facA.PromoteToFactory(ctx, op.tok, src.ID, uuid.Nil); !errors.Is(err, domain.ErrForbidden) {
+			// 操作员升上去了就停，制作权漏给了岗位。
+			t.Fatalf("operator got %v", err)
 		}
 		// 读资产元数据，供后面步骤使用，失败则前提断了。
-		still, err := facA.GetAsset(ctx, pe.tok, src.ID)
-		// 升完之后源工艺必须仍是个人级，级别变了就错。
+		still, err := facA.GetAsset(ctx, op.tok, src.ID)
+		// 被拒之后源工艺必须仍是个人级。
 		if err != nil || still.Level != factory.AssetLevelPersonal {
 			// 源工艺级别变了就停，升档改写了原件。
 			t.Fatalf("%+v %v", still, err)
@@ -299,41 +244,22 @@ func testAssetPromote(t *testing.T, run func(string, func(*testing.T))) {
 	// 超管同样可以把已发布的个人工艺升成厂级。
 	run("8.3", func(t *testing.T) {
 		// 超管升档必须成功，失败说明超管没有这条权限。
-		if _, err := facA.PromoteToFactory(ctx, saA, personal.ID); err != nil {
+		if _, err := facA.PromoteToFactory(ctx, saA, personal.ID, uuid.Nil); err != nil {
 			// 超管升档失败就停，这条权限和预期不符。
 			t.Fatalf("got %v", err)
 		}
 	})
-	// 标成不可复制的个人工艺，升厂级必须被拒绝。
+	// 厂端建的个人工艺都可复制。
 	run("9.1", func(t *testing.T) {
 		// 建个人工艺，供后面步骤使用，失败则前提断了。
-		p, err := facA.CreatePersonalProcess(ctx, pe.tok, direct, "不可复制", body)
-		// 建个人工艺没成功，后面的断言就没有依据。
-		if err != nil {
-			// 建个人工艺失败即停，不能把这一步的失败当成通过。
-			t.Fatal(err)
-		}
-		// 修改可否复制，供后面步骤使用，失败则前提断了。
-		p, err = facA.SetAssetCopyable(ctx, pe.tok, p.ID, p.Revision, false)
-		// 修改可否复制没成功，后面的断言就没有依据。
-		if err != nil {
-			// 修改可否复制失败即停，不能把这一步的失败当成通过。
-			t.Fatal(err)
-		}
-		// 发布成可用，供后面步骤使用，失败则前提断了。
-		p, err = facA.PublishAsset(ctx, pe.tok, p.ID, p.Revision)
-		// 发布成可用没成功，后面的断言就没有依据。
-		if err != nil {
-			// 发布成可用失败即停，不能把这一步的失败当成通过。
-			t.Fatal(err)
-		}
-		// 不可复制的个人工艺升档必须被拒绝。
-		if _, err := facA.PromoteToFactory(ctx, pe.tok, p.ID); !errors.Is(err, domain.ErrAssetNotCopyable) {
-			// 不可复制还能升上去就停，这道守门没有拦住。
-			t.Fatalf("got %v", err)
+		p, err := facA.CreatePersonalProcess(ctx, pe.tok, direct, "都可复制", body)
+		// 建个人工艺没成功或不可复制就停。
+		if err != nil || !p.Copyable {
+			// 新建的不可复制就停，厂端不该再有保密件。
+			t.Fatalf("%+v %v", p, err)
 		}
 	})
-	// 不可复制的厂级导出后，快照仍要标不可复制。
+	// 厂级导出快照，可复制并指回源。
 	run("9.2", func(t *testing.T) {
 		// 建厂级工艺，供后面步骤使用，失败则前提断了。
 		p, err := facA.CreateFactoryProcess(ctx, pe.tok, direct, "不可升平台", body)
@@ -349,18 +275,11 @@ func testAssetPromote(t *testing.T, run func(string, func(*testing.T))) {
 			// 发布成可用失败即停，不能把这一步的失败当成通过。
 			t.Fatal(err)
 		}
-		// 修改可否复制，供后面步骤使用，失败则前提断了。
-		p, err = facA.SetAssetCopyable(ctx, pe.tok, p.ID, p.Revision, false)
-		// 修改可否复制没成功，后面的断言就没有依据。
-		if err != nil {
-			// 修改可否复制失败即停，不能把这一步的失败当成通过。
-			t.Fatal(err)
-		}
 		// 导出升档快照，供后面步骤使用，失败则前提断了。
 		snap, err := facA.ExportAssetSnapshot(ctx, pe.tok, p.ID)
-		// 导出的快照必须不可复制，并且要指回原来的源。
-		if err != nil || snap.Copyable || snap.SourceID != p.ID {
-			// 快照可复制或没有指回源就停，导出的信息不对。
+		// 导出的快照必须可复制，并且要指回原来的源。
+		if err != nil || !snap.Copyable || snap.SourceID != p.ID {
+			// 快照不可复制或没有指回源就停，导出的信息不对。
 			t.Fatalf("%+v %v", snap, err)
 		}
 	})
@@ -386,7 +305,7 @@ func testAssetPromote(t *testing.T, run func(string, func(*testing.T))) {
 			t.Fatal(err)
 		}
 		// 正文被篡改之后再升档，必须因完整性被拒绝。
-		if _, err := facA.PromoteToFactory(ctx, pe.tok, p.ID); !errors.Is(err, domain.ErrIntegrity) {
+		if _, err := facA.PromoteToFactory(ctx, pe.tok, p.ID, uuid.Nil); !errors.Is(err, domain.ErrIntegrity) {
 			// 篡改了还能升就停，完整性没有挡住。
 			t.Fatalf("got %v", err)
 		}
@@ -428,7 +347,7 @@ func testAssetPromote(t *testing.T, run func(string, func(*testing.T))) {
 			t.Fatalf("update: %v", err)
 		}
 		// 他厂会话升本厂个人工艺必须因未授权被拒绝。
-		if _, err := facA.PromoteToFactory(ctx, peB.tok, personal.ID); !errors.Is(err, domain.ErrUnauthorized) {
+		if _, err := facA.PromoteToFactory(ctx, peB.tok, personal.ID, uuid.Nil); !errors.Is(err, domain.ErrUnauthorized) {
 			// 他厂能升本厂工艺就停，升档没有隔开。
 			t.Fatalf("promote: %v", err)
 		}
@@ -643,45 +562,52 @@ func testAssetPromote(t *testing.T, run func(string, func(*testing.T))) {
 			t.Fatal(err)
 		}
 		// 依赖的工艺还没升档时，工程升档必须被拒绝。
-		if _, err := facA.PromoteToFactory(ctx, pe.tok, proj.ID); !errors.Is(err, domain.ErrAssetDependency) {
+		if _, err := facA.PromoteToFactory(ctx, pe.tok, proj.ID, uuid.Nil); !errors.Is(err, domain.ErrAssetDependency) {
 			// 工艺没升、工程却升了就停，顺序错了。
 			t.Fatalf("got %v", err)
 		}
 	})
-	// 不能把工程当成工艺再另存出一条。
+	// 升出来的厂级草稿可以改正文再发布，改的是副本不碰源。
 	run("14.3", func(t *testing.T) {
-		// 把工程当成工艺另存必须因越权被拒绝。
-		if err := facA.CreateProcessFromProject(ctx, pe.tok, pinned.ID); !errors.Is(err, domain.ErrForbidden) {
-			// 工程能被当成工艺另存就停，类型没有守住。
-			t.Fatalf("got %v", err)
+		// 改写厂级副本正文，供后面步骤使用，失败则前提断了。
+		edited, err := facA.UpdateAssetContent(ctx, pe.tok, promoted.ID, promoted.Revision, []byte("promoted-v2"))
+		// 改写失败就停，草稿副本该能改。
+		if err != nil {
+			// 改写资产正文失败即停，不能把这一步的失败当成通过。
+			t.Fatal(err)
+		}
+		// 发布副本，供后面步骤使用，失败则前提断了。
+		promoted, err = facA.PublishAsset(ctx, pe.tok, edited.ID, edited.Revision)
+		// 发布失败或不是可用就停。
+		if err != nil || promoted.Status != factory.AssetAvailable {
+			// 发布失败即停，不能把这一步的失败当成通过。
+			t.Fatalf("%+v %v", promoted, err)
+		}
+		// 读回源个人工艺，修订不能被副本改动带走。
+		src, err := facA.GetAsset(ctx, pe.tok, personal.ID)
+		// 源被改了就停，升档副本和源没分开。
+		if err != nil || src.Revision != personal.Revision {
+			// 源修订变了就停。
+			t.Fatalf("%+v %v", src, err)
 		}
 	})
-	// 操作员读不了别人的个人正文，但可以把它当依赖。
+	// 个人级只给创建人和超管看：操作员读不了别人的正文，也看不到元数据。
 	run("15.1", func(t *testing.T) {
 		// 操作员读别人的个人正文必须因越权被拒绝。
 		if _, err := facA.ReadAssetContent(ctx, op.tok, personal.ID); !errors.Is(err, domain.ErrForbidden) {
 			// 操作员能读到个人正文就停，保密被打破了。
 			t.Fatalf("read: %v", err)
 		}
-		// 建厂级工程，供后面步骤使用，失败则前提断了。
-		got, err := facA.CreateFactoryProject(ctx, op.tok, direct, "当厂级依赖", body, []factory.AssetDep{{
-			ID: personal.ID, Revision: personal.Revision, Digest: personal.Digest,
-		}})
-		// 操作员把别人的个人工艺当成厂级依赖必须能建上。
-		if err != nil {
-			// 当依赖没建成就停，引用和个人保密被绑死了。
-			t.Fatalf("dep: %v", err)
+		// 操作员看别人个人级的元数据也必须被拒。
+		if _, err := facA.GetAsset(ctx, op.tok, personal.ID); !errors.Is(err, domain.ErrForbidden) {
+			// 操作员看到元数据就停，个人级不该露给别人。
+			t.Fatalf("meta: %v", err)
 		}
-		// 建成的工程必须只钉住那一条个人工艺。
-		if len(got.Deps) != 1 || got.Deps[0].ID != personal.ID {
-			// 依赖不对就停，引用没有落在预期的那条上。
-			t.Fatalf("deps %+v", got.Deps)
-		}
-		// 读资产元数据，供后面步骤使用，失败则前提断了。
-		still, err := facA.GetAsset(ctx, pe.tok, personal.ID)
-		// 被当成依赖之后，原来的个人工艺级别必须不变。
+		// 超管能看别人个人级的元数据。
+		still, err := facA.GetAsset(ctx, saA, personal.ID)
+		// 超管看不到或级别变了就停。
 		if err != nil || still.Level != factory.AssetLevelPersonal {
-			// 个人工艺级别变了就停，依赖把它升走了。
+			// 超管看不到个人级就停。
 			t.Fatalf("%+v %v", still, err)
 		}
 	})
@@ -747,51 +673,45 @@ func testAssetPromote(t *testing.T, run func(string, func(*testing.T))) {
 			t.Fatalf("%+v %v", still, err)
 		}
 	})
-	// 人离开车间后，已写资产仍留在原来的组织和路径。
+	// 人改所属组织后，已写资产的作者不变，组织不记在资产上。
 	run("17.1", func(t *testing.T) {
-		// 解除组织分配没成功，后面的断言就没有依据。
-		if err := facA.Unassign(ctx, saA, pe.acc.ID, shopB.ID); err != nil {
-			// 解除组织分配失败即停，不能把这一步的失败当成通过。
-			t.Fatal(err)
-		}
-		// 把人分进组织没成功，后面的断言就没有依据。
-		if err := facA.Assign(ctx, saA, pe.acc.ID, shop.ID); err != nil {
-			// 把人分进组织失败即停，不能把这一步的失败当成通过。
+		// 把人归到车间B。
+		if _, err := facA.SetPersonOrg(ctx, saA, pe.acc.ID, &shopB.ID); err != nil {
+			// 归组织失败即停，不能把这一步的失败当成通过。
 			t.Fatal(err)
 		}
 		// 建个人工艺，供后面步骤使用，失败则前提断了。
-		p, err := facA.CreatePersonalProcess(ctx, pe.tok, factory.WorkContext{OrgUnitID: &shop.ID}, "路径个人", body)
+		p, err := facA.CreatePersonalProcess(ctx, pe.tok, direct, "调岗前个人", body)
 		// 建个人工艺没成功，后面的断言就没有依据。
 		if err != nil {
 			// 建个人工艺失败即停，不能把这一步的失败当成通过。
 			t.Fatal(err)
 		}
-		// 解除组织分配没成功，后面的断言就没有依据。
-		if err := facA.Unassign(ctx, saA, pe.acc.ID, shop.ID); err != nil {
-			// 解除组织分配失败即停，不能把这一步的失败当成通过。
+		// 把人调到车间A。
+		if _, err := facA.SetPersonOrg(ctx, saA, pe.acc.ID, &shop.ID); err != nil {
+			// 改组织失败即停，不能把这一步的失败当成通过。
 			t.Fatal(err)
 		}
 		// 读资产元数据，供后面步骤使用，失败则前提断了。
 		got, err := facA.GetAsset(ctx, saA, p.ID)
-		// 人调走之后，作者、组织和路径必须留在原来的车间。
-		if err != nil || got.CreatorID != pe.acc.ID || got.OrgUnitID == nil || *got.OrgUnitID != shop.ID ||
-			len(got.OrgPath) == 0 || got.OrgPath[len(got.OrgPath)-1].ID != shop.ID {
+		// 调岗之后作者和级别都不能变。
+		if err != nil || got.CreatorID != pe.acc.ID || got.Level != factory.AssetLevelPersonal {
 			// 归属被带走就停，调人不该改已经写下的资产。
 			t.Fatalf("%+v %v", got, err)
 		}
-	})
-	// 超管不能把个人工艺改挂到别处，作者也不能变。
-	run("17.2", func(t *testing.T) {
-		// 超管把个人工艺改挂到别处必须因越权被拒绝。
-		if err := facA.RehomeAsset(ctx, saA, personal.ID); !errors.Is(err, domain.ErrForbidden) {
-			// 能把个人工艺改挂走就停，归属可以被搬走。
-			t.Fatalf("got %v", err)
+		// 本人仍能看自己的个人级。
+		if _, err := facA.GetAsset(ctx, pe.tok, p.ID); err != nil {
+			// 调岗后看不到自己的就停。
+			t.Fatal(err)
 		}
+	})
+	// 超管能看别人的个人工艺，作者不变。
+	run("17.2", func(t *testing.T) {
 		// 读资产元数据，供后面步骤使用，失败则前提断了。
 		got, err := facA.GetAsset(ctx, saA, personal.ID)
-		// 改挂被拒绝之后，作者必须还是原来那个人。
-		if err != nil || got.CreatorID != pe.acc.ID {
-			// 作者变了就停，拒绝之后归属丢了。
+		// 超管看不到或作者变了就停。
+		if err != nil || got.CreatorID != pe.acc.ID || got.Level != factory.AssetLevelPersonal {
+			// 作者变了就停，归属丢了。
 			t.Fatalf("%+v %v", got, err)
 		}
 	})

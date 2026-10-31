@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"golang.org/x/time/rate"
 
 	"wmesh/factory/internal/platform/audit"
 	"wmesh/factory/internal/platform/domain"
@@ -16,12 +15,6 @@ import (
 )
 
 const sessionTTL = 12 * time.Hour // 网页会话有效期；示教器另按登录时效
-
-// 激活码按账号限次：先给几次，之后每分钟补一次，重启清零。
-const (
-	activateBurst = 5           // 每个待启用账号先给的试码次数
-	activateEvery = time.Minute // 用完之后每隔多久补一次
-)
 
 // appTokenExpiry 示教器令牌跟登录时效走；0 表示直到退出，不按时钟作废。
 func appTokenExpiry(pol ClientPolicy, now time.Time) time.Time {
@@ -34,43 +27,7 @@ func appTokenExpiry(pol ClientPolicy, now time.Time) time.Time {
 	return time.Date(9999, 1, 1, 0, 0, 0, 0, time.UTC)
 }
 
-// BootstrapInitial 在本厂写入待启用初始超管和预置厂级超管角色，激活码只返回给交付方。
-func (s *Auth) BootstrapInitial(ctx context.Context, saLogin, saDisplay string) (Account, string, error) {
-	// 先去首尾空白再限长，建厂表单带的空格不进库
-	saLogin, err := normalizeLoginName(saLogin)
-	// 名字空了或太长，交付中止
-	if err != nil {
-		return Account{}, "", err
-	}
-	// 写入待启用初始超管，尚无日常密码。
-	p, err := s.store.CreatePerson(ctx, saLogin, saDisplay, true)
-	// 账号写不进去，不留下半截人员
-	if err != nil {
-		return Account{}, "", err
-	}
-	// 激活码只给交付方，库里只存哈希。
-	token, err := secret.ActivationCode()
-	// 激活码生成失败，交付中止
-	if err != nil {
-		return Account{}, "", err
-	}
-	// 令牌摘要失败，不能对上会话
-	if err := s.store.SetActivationHash(ctx, p.ID, secret.TokenHash(token)); err != nil {
-		return Account{}, "", err
-	}
-	// 预置厂级超管角色，待启用时还不生效。
-	if _, err := s.store.GrantRole(ctx, p.ID, RoleFactorySuperAdmin, ScopeFactory, nil); err != nil {
-		return Account{}, "", err
-	}
-	// 审计没写下则整次不算完成
-	if err := s.audit(ctx, nil, &saLogin, "bootstrap_initial_sa", p.ID.String(), audit.Allow); err != nil {
-		return Account{}, "", err
-	}
-	// 收成不含口令的对外账号，再交回调用方
-	return accountOf(p), token, nil
-}
-
-// AcceptEnrollment 按 WAN 约定身份写入初始超管并当场自设密码，完成激活。
+// AcceptEnrollment 按 WAN 约定身份写入初始超管并当场自设密码。
 // 只有 Hub.Claim 在 WAN 刚认可建厂码后才调；WAN 只在确认成功时清码且不重签，
 // 所以超管已有效时一定是同一次没确认完的认领：口令一致按幂等成功，
 // 不一致就覆盖成这次的新口令并作废旧会话，不另设建厂码失效的分支。
@@ -87,12 +44,22 @@ func (s *Auth) AcceptEnrollment(ctx context.Context, personID uuid.UUID, loginNa
 		_ = s.audit(ctx, nil, nil, "enroll_factory", personID.String(), audit.Deny)
 		return Account{}, err
 	}
+	// 自设日常密码只存哈希，新建和重试都用这一份
+	hash, err := secret.HashPassword(password)
+	// 口令摘要失败，拒绝落库
+	if err != nil {
+		return Account{}, err
+	}
 	// 身份须对上；尚无档则按约定写入。失败一律记拒绝。
 	p, err := s.store.PersonByID(ctx, personID)
+	// 记下这次是不是新建的
+	created := false
 	// 还没有这个人，就按约定身份新建
 	if errors.Is(err, domain.ErrNotFound) {
-		// 按约定身份写入初始超管
-		p, err = s.store.CreatePersonAt(ctx, personID, loginName, displayName, true)
+		// 走新建这一支
+		created = true
+		// 按约定身份写入初始超管，当场有效
+		p, err = s.store.CreatePersonAt(ctx, personID, loginName, displayName, hash, true)
 		// 初始超管写不进去，建厂中止
 		if err != nil {
 			// 记下按约定建厂被拒绝，写失败不改变结果
@@ -109,146 +76,35 @@ func (s *Auth) AcceptEnrollment(ctx context.Context, personID uuid.UUID, loginNa
 		return Account{}, domain.ErrInvalidEnrollment
 	}
 	// 幂等补厂级超管角色；已有则跳过。
-	if _, err := s.store.GrantRole(ctx, p.ID, RoleFactorySuperAdmin, ScopeFactory, nil); err != nil && !errors.Is(err, domain.ErrDuplicateRoleGrant) {
+	if _, err := s.store.GrantRole(ctx, p.ID, RoleFactorySuperAdmin); err != nil && !errors.Is(err, domain.ErrDuplicateRoleGrant) {
 		// 记下按约定建厂被拒绝，写失败不改变结果
 		_ = s.audit(ctx, &p.ID, &loginName, "enroll_factory", p.ID.String(), audit.Deny)
 		return Account{}, err
 	}
-	// 已经有效说明是认领重试，按这次口令分两路处理
-	if p.Status == StatusActive {
-		// 口令和库里一致，按同一次重试幂等交回
-		if p.PasswordHash != nil && secret.VerifyPassword(*p.PasswordHash, password) {
-			// 收成不含口令的对外账号，再交回调用方
-			return accountOf(p), nil
-		}
-		// 这次换了口令，仍是同一次认领，只存新哈希
-		hash, err := secret.HashPassword(password)
-		// 口令摘要失败，拒绝落库
-		if err != nil {
-			return Account{}, err
-		}
-		// 换口令和清旧会话同一事务，免得旧口令开的会话留下
-		if err := s.store.ReplacePasswordDropSessions(ctx, p.ID, hash); err != nil {
-			// 记下按约定建厂被拒绝，写失败不改变结果
-			_ = s.audit(ctx, &p.ID, &loginName, "enroll_factory", p.ID.String(), audit.Deny)
-			return Account{}, err
-		}
-		// 审计没写下则整次不算完成
-		if err := s.audit(ctx, &p.ID, &loginName, "enroll_factory", p.ID.String(), audit.Allow); err != nil {
-			return Account{}, err
-		}
+	// 刚按约定新建的，记审计后交回
+	if created {
+		// 新建成功后记审计，再把结果交回
+		return accountOf(p), s.audit(ctx, &p.ID, &loginName, "enroll_factory", p.ID.String(), audit.Allow)
+	}
+	// 停用的初始超管不靠认领复活
+	if p.Status != StatusActive {
+		// 记下按约定建厂被拒绝，写失败不改变结果
+		_ = s.audit(ctx, &p.ID, &loginName, "enroll_factory", p.ID.String(), audit.Deny)
+		return Account{}, domain.ErrAccountDisabled
+	}
+	// 已经有效说明是认领重试；口令和库里一致，按同一次重试幂等交回
+	if p.PasswordHash != nil && secret.VerifyPassword(*p.PasswordHash, password) {
 		// 收成不含口令的对外账号，再交回调用方
 		return accountOf(p), nil
 	}
-	// 当场自设日常密码，只存哈希。
-	hash, err := secret.HashPassword(password)
-	// 口令摘要失败，拒绝落库
-	if err != nil {
+	// 这次换了口令，仍是同一次认领，只存新哈希；换口令和清旧会话同一事务，免得旧口令开的会话留下
+	if err := s.store.ReplacePasswordDropSessions(ctx, p.ID, hash); err != nil {
+		// 记下按约定建厂被拒绝，写失败不改变结果
+		_ = s.audit(ctx, &p.ID, &loginName, "enroll_factory", p.ID.String(), audit.Deny)
 		return Account{}, err
 	}
-	// 激活落库失败，账号仍待启用
-	if err := s.store.ActivatePerson(ctx, p.ID, hash); err != nil {
-		// 记下激活被拒绝，写失败不改变结果
-		_ = s.audit(ctx, &p.ID, &loginName, "activate", p.ID.String(), audit.Deny)
-		return Account{}, err
-	}
-	// 审计没写下则整次不算完成
-	if err := s.audit(ctx, &p.ID, &loginName, "enroll_factory", p.ID.String(), audit.Allow); err != nil {
-		return Account{}, err
-	}
-	// 激活成功后记审计，再把结果交回
-	return accountOf(p), s.audit(ctx, &p.ID, &loginName, "activate", p.ID.String(), audit.Allow)
-}
-
-// Activate 由持有者自己设日常密码，账号转为有效；WAN 不得代设。
-func (s *Auth) Activate(ctx context.Context, loginName, activationToken, password string) error {
-	// 去掉登录名首尾空白，和建档时的规范一致
-	loginName = strings.TrimSpace(loginName)
-	// 工厂须开着；码不对或已激活一律记拒绝。
-	if err := s.requireFactoryOpen(ctx); err != nil {
-		// 厂已停用、注销或租约到期，记下激活被拒绝，写失败不改变结果
-		_ = s.audit(ctx, nil, &loginName, "activate", s.store.FactoryID().String(), audit.Deny)
-		return err
-	}
-	// 去掉首尾空白后再做判断
-	activationToken = strings.TrimSpace(activationToken)
-	// 按登录名找本厂人员
-	p, err := s.store.PersonByLogin(ctx, loginName)
-	// 登录名对不上人，按拒绝停住
-	if err != nil {
-		// 记下激活被拒绝，写失败不改变结果
-		_ = s.audit(ctx, nil, &loginName, "activate", loginName, audit.Deny)
-		return domain.ErrInvalidActivation
-	}
-	// 不是待启用则拒绝激活，避免重复开通
-	if p.Status != StatusPending {
-		// 账号仍待启用，记下激活被拒绝，写失败不改变结果
-		_ = s.audit(ctx, &p.ID, &loginName, "activate", p.ID.String(), audit.Deny)
-		return domain.ErrAlreadyActivated
-	}
-	// 试码太勤就先挡住，不比对摘要，免得几小时猜完一亿种
-	if !s.activateAllow(p.ID) {
-		// 超出限次，记下激活被拒绝，写失败不改变结果
-		_ = s.audit(ctx, &p.ID, &loginName, "activate", p.ID.String(), audit.Deny)
-		return domain.ErrTooManyAttempts
-	}
-	// 激活码为空或不对，拒绝开通
-	if p.ActivationTokenHash == nil || !activationOK(*p.ActivationTokenHash, activationToken) {
-		// 激活码不对或已失效，记下激活被拒绝，写失败不改变结果
-		_ = s.audit(ctx, &p.ID, &loginName, "activate", p.ID.String(), audit.Deny)
-		return domain.ErrInvalidActivation
-	}
-	// 日常密码只存哈希；激活后激活码作废。
-	hash, err := secret.HashPassword(password)
-	// 口令摘要失败，拒绝落库
-	if err != nil {
-		return err
-	}
-	// 激活落库失败，账号仍待启用
-	if err := s.store.ActivatePerson(ctx, p.ID, hash); err != nil {
-		// 记下激活被拒绝，写失败不改变结果
-		_ = s.audit(ctx, &p.ID, &loginName, "activate", p.ID.String(), audit.Deny)
-		return err
-	}
-	// 已激活就不用再限次，删掉这个账号的条目
-	s.activateForget(p.ID)
-	// 激活成功后记审计，再把结果交回
-	return s.audit(ctx, &p.ID, &loginName, "activate", p.ID.String(), audit.Allow)
-}
-
-// activateAllow 按账号扣一次试码名额；表里只放已存在的待启用账号。
-func (s *Auth) activateAllow(id uuid.UUID) bool {
-	// 占住限次表，并发试码也不会各建一份
-	s.activateMu.Lock()
-	// 离开时放开，别的账号才能接着试
-	defer s.activateMu.Unlock()
-	// 先看这个账号是否已有限速器
-	lim, ok := s.activateGates[id]
-	// 第一次试码就建一个，先给几次再按分钟补
-	if !ok {
-		// 新建这个账号的限速器，起始名额是满的
-		lim = rate.NewLimiter(rate.Every(activateEvery), activateBurst)
-		// 记进表里，下次试码接着扣
-		s.activateGates[id] = lim
-	}
-	// 还有名额就扣一个放行，没有就挡住
-	return lim.Allow()
-}
-
-// activateForget 激活成功后删掉该账号的限次，表不会越积越多。
-func (s *Auth) activateForget(id uuid.UUID) {
-	// 占住限次表，避免和试码同时改
-	s.activateMu.Lock()
-	// 离开时放开，别的账号才能接着试
-	defer s.activateMu.Unlock()
-	// 删掉这个账号的条目，已激活不会再试码
-	delete(s.activateGates, id)
-}
-
-// activationOK 恒定时间比对激活码哈希，不给按位猜测的机会。
-func activationOK(storedHash, token string) bool {
-	// 只拿令牌摘要对会话，原文不入库，再交回调用方
-	return secret.Equal(storedHash, secret.TokenHash(token))
+	// 换口令成功后记审计，再把结果交回
+	return accountOf(p), s.audit(ctx, &p.ID, &loginName, "enroll_factory", p.ID.String(), audit.Allow)
 }
 
 // Login 只接受本厂有效账号；待启用、已停用或密码错误都拒绝，审计不记秘密。
@@ -268,12 +124,6 @@ func (s *Auth) Login(ctx context.Context, loginName, password string) (string, e
 		// 记下登录被拒绝，写失败不改变结果
 		_ = s.audit(ctx, nil, &loginName, "login", s.store.FactoryID().String(), audit.Deny)
 		return "", domain.ErrInvalidCredentials
-	}
-	// 待启用可预写角色，但角色不生效，也不能登录。
-	if p.Status == StatusPending {
-		// 账号仍待启用，记下登录被拒绝，写失败不改变结果
-		_ = s.audit(ctx, &p.ID, &loginName, "login", s.store.FactoryID().String(), audit.Deny)
-		return "", domain.ErrAccountPending
 	}
 	// 已停用则拒绝登录或保持停用只换口令
 	if p.Status == StatusDisabled {
@@ -352,12 +202,6 @@ func (s *kernel) RequireActive(ctx context.Context, token string) (Account, erro
 	if err != nil {
 		return Account{}, err
 	}
-	// 还在待启用，不能登录也不能当有效超管
-	if p.Status == StatusPending {
-		// 账号仍待启用，记下续接会话被拒绝，写失败不改变结果
-		_ = s.audit(ctx, &p.ID, &p.LoginName, "protect", p.ID.String(), audit.Deny)
-		return Account{}, domain.ErrAccountPending
-	}
 	// 不是有效状态则拒绝，待启用和停用都不能做
 	if p.Status != StatusActive {
 		// 记下续接会话被拒绝，写失败不改变结果
@@ -412,32 +256,16 @@ func (s *Auth) ChangePassword(ctx context.Context, token, currentPassword, newPa
 	return s.audit(ctx, &acc.ID, &acc.LoginName, "change_password", acc.ID.String(), audit.Allow)
 }
 
-// Rename 改显示名或登录名，不改稳定身份。
-func (s *Auth) Rename(ctx context.Context, token, displayName, loginName string) error {
+// SetMyDisplayName 本人改自己的显示名；登录名和稳定身份不变。
+func (s *Auth) SetMyDisplayName(ctx context.Context, token, displayName string) (Account, error) {
 	// 先确认会话仍有效，过期或停用直接拒绝
 	acc, err := s.RequireActive(ctx, token)
 	// 会话无效或账号已停用，拒绝继续
 	if err != nil {
-		return err
+		return Account{}, err
 	}
-	// 先去首尾空白再限长，免得改出登不上的名字
-	name, err := normalizeLoginName(loginName)
-	// 名字空了或太长，拒绝改名
-	if err != nil {
-		// 记下改名被拒绝，写失败不改变结果
-		_ = s.audit(ctx, &acc.ID, &loginName, "rename", acc.ID.String(), audit.Deny)
-		return err
-	}
-	// 往下落库和审计都用规范后的名字
-	loginName = name
-	// 改显示名或登录名，稳定身份不变。
-	if err := s.store.RenamePerson(ctx, acc.ID, displayName, loginName); err != nil {
-		// 记下改名被拒绝，写失败不改变结果
-		_ = s.audit(ctx, &acc.ID, &loginName, "rename", acc.ID.String(), audit.Deny)
-		return err
-	}
-	// 改名成功后记审计，再把结果交回
-	return s.audit(ctx, &acc.ID, &loginName, "rename", acc.ID.String(), audit.Allow)
+	// 落库并交回改后的账号
+	return s.renameDisplay(ctx, acc, acc.ID, displayName)
 }
 
 // DisableAccount 停用本厂账号并作废其全部会话；若会去掉最后一名有效厂级超管则拒绝。
@@ -449,7 +277,7 @@ func (s *Auth) DisableAccount(ctx context.Context, token string, targetID uuid.U
 		return err
 	}
 	// 只有工厂超管能停用；最后一名有效超管入口不能停。失败一律记拒绝。
-	if err := s.can(ctx, acc, permManageAccount, nil); err != nil {
+	if err := s.can(ctx, acc, permManageAccount); err != nil {
 		// 不是工厂超管，记下停用账号被拒绝，写失败不改变结果
 		_ = s.audit(ctx, &acc.ID, nil, "disable_account", targetID.String(), audit.Deny)
 		return err
@@ -479,7 +307,7 @@ func (s *Auth) ResetPassword(ctx context.Context, token string, targetID uuid.UU
 		return Account{}, err
 	}
 	// 只有工厂超管能重置他人密码。失败一律记拒绝。
-	if err := s.can(ctx, acc, permManageAccount, nil); err != nil {
+	if err := s.can(ctx, acc, permManageAccount); err != nil {
 		// 不是工厂超管，记下重置口令被拒绝，写失败不改变结果
 		_ = s.audit(ctx, &acc.ID, nil, "reset_password", targetID.String(), audit.Deny)
 		return Account{}, err
@@ -544,7 +372,7 @@ func (s *Auth) EnableAccount(ctx context.Context, token string, targetID uuid.UU
 		return err
 	}
 	// 只有工厂超管能恢复账号。失败一律记拒绝。
-	if err := s.can(ctx, acc, permManageAccount, nil); err != nil {
+	if err := s.can(ctx, acc, permManageAccount); err != nil {
 		// 不是工厂超管，记下恢复账号被拒绝，写失败不改变结果
 		_ = s.audit(ctx, &acc.ID, nil, "enable_account", targetID.String(), audit.Deny)
 		return err
@@ -562,15 +390,25 @@ func (s *Auth) EnableAccount(ctx context.Context, token string, targetID uuid.UU
 		// 恢复账号成功后记审计，再把结果交回
 		return s.audit(ctx, &acc.ID, nil, "enable_account", targetID.String(), audit.Allow)
 	}
-	// 没有日常口令就回到待启用，不能直接登录
-	next := StatusPending
-	// 已经有日常口令则恢复为可登录，否则仍待启用
-	if p.PasswordHash != nil && *p.PasswordHash != "" {
-		// 已有日常口令则直接恢复为可登录
-		next = StatusActive
+	// 没有日常口令就补上默认口令，恢复后照常能登录
+	if p.PasswordHash == nil || *p.PasswordHash == "" {
+		// 默认口令只存哈希
+		hash, err := secret.HashPassword(secret.DefaultPersonPassword(p.LoginName))
+		// 口令摘要失败，拒绝恢复
+		if err != nil {
+			return err
+		}
+		// 补口令并转有效
+		if err := s.store.ApplyPersonPassword(ctx, targetID, hash, StatusActive); err != nil {
+			// 记下恢复账号被拒绝，写失败不改变结果
+			_ = s.audit(ctx, &acc.ID, nil, "enable_account", targetID.String(), audit.Deny)
+			return err
+		}
+		// 恢复账号成功后记审计，再把结果交回
+		return s.audit(ctx, &acc.ID, nil, "enable_account", targetID.String(), audit.Allow)
 	}
-	// 有日常密码的回到有效，否则回到待启用。
-	if err := s.store.SetPersonStatus(ctx, targetID, next); err != nil {
+	// 已有日常口令则直接恢复为可登录
+	if err := s.store.SetPersonStatus(ctx, targetID, StatusActive); err != nil {
 		// 记下恢复账号被拒绝，写失败不改变结果
 		_ = s.audit(ctx, &acc.ID, nil, "enable_account", targetID.String(), audit.Deny)
 		return err

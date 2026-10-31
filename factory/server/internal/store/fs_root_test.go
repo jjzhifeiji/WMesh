@@ -59,7 +59,7 @@ func TestEnsureFSRootConcurrentPersonal(t *testing.T) {
 	// 每轮换一个新人，个人根一开始都不存在。
 	for r := 0; r < rootRaceRounds; r++ {
 		// 建这一轮的账号，个人根的主人要真实存在。
-		p, err := s.CreatePerson(ctx, fmt.Sprintf("root-race-%02d", r), "建根并发", false)
+		p, err := s.CreatePerson(ctx, fmt.Sprintf("root-race-%02d", r), "建根并发", "", false)
 		// 建账号失败就停测，避免后面没有前提。
 		if err != nil {
 			// 建账号失败就停测。

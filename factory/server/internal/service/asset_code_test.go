@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/uuid"
+
 	"wmesh/factory/internal/platform/assetcode"
 	"wmesh/factory/internal/platform/digest"
 	"wmesh/factory/internal/platform/domain"
@@ -30,16 +32,16 @@ func TestFactoryAssetCodes(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 开通失败就停，否则后面没有可靠结果。
-	if err := facA.Activate(ctx, "sa-a", seedA.ActivationToken, "sa-pass"); err != nil {
+	if err := seedPass(ctx, facA, "sa-a", "sa-pass"); err != nil {
 		// 把开通的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
 	// 登录并取出令牌，失败说明账号没有开通成功。
 	saA := mustLogin(t, ctx, facA, "sa-a", "sa-pass")
 	// 建人并授好角色，失败说明后面没有账号可用。
-	peA := mustCreateRole(t, ctx, facA, saA, "pe-a", "pe-pass", factory.RoleOperator, factory.ScopeFactory, nil)
+	peA := mustCreateRole(t, ctx, facA, saA, "pe-a", "pe-pass", factory.RoleOrgAdmin)
 	// 标明直接作业上下文，后面新建资产都挂在这里。
-	direct := factory.WorkContext{Direct: true}
+	direct := factory.WorkContext{}
 
 	// 新建一份厂级工艺，失败说明起草入口坏了。
 	p1, err := facA.CreateFactoryProcess(ctx, peA.tok, direct, "焊1", []byte(`{"name":"p","current":180}`))
@@ -126,7 +128,7 @@ func TestFactoryAssetCodes(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 把资产升到厂级，失败说明状态不允许升。
-	promoted, err := facA.PromoteToFactory(ctx, peA.tok, pers.ID)
+	promoted, err := facA.PromoteToFactory(ctx, peA.tok, pers.ID, uuid.Nil)
 	// 升厂级失败就停，否则后面没有可靠结果。
 	if err != nil {
 		// 把升厂级的错误打出来并停住，避免继续往下验。
@@ -137,11 +139,11 @@ func TestFactoryAssetCodes(t *testing.T) {
 		// 升档后的级别不对，说明没有升成厂级。
 		t.Fatalf("promote %+v from %s", promoted, pers.Code)
 	}
-	// 把资产升到厂级，失败说明状态不允许升。
-	again, err := facA.PromoteToFactory(ctx, peA.tok, pers.ID)
-	// 升厂级失败或编号不对就停，说明没达预期。
-	if err != nil || again.ID != promoted.ID || again.Code != promoted.Code {
-		// 升档后的级别不对，说明没有升成厂级。
+	// 再升一次应另起一份新号的厂级草稿，不回写上一份。
+	again, err := facA.PromoteToFactory(ctx, peA.tok, pers.ID, uuid.Nil)
+	// 升厂级失败或编号撞上上一份就停，说明没另起新稿。
+	if err != nil || again.ID == promoted.ID || again.Code == promoted.Code || again.Status != factory.AssetDraft {
+		// 再升没有另起一份，说明还在回写旧稿。
 		t.Fatalf("re-promote %+v %v", again, err)
 	}
 	// 读取资产台账，失败说明无权看或已经删除。
@@ -178,7 +180,7 @@ func TestFactoryAssetCodes(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 资产编号应是预期这一个，对不上说明发号偏了。
-	if p3.Code != "GY-F01-000006" {
+	if p3.Code != "GY-F01-000007" {
 		// 断言没通过就停，结果和这条用例的预期不一致。
 		t.Fatalf("seq after ingest %s", p3.Code)
 	}
@@ -242,14 +244,14 @@ func TestFactoryAssetCodes(t *testing.T) {
 	}
 
 	// 建厂并签发超管激活码，失败则没有厂可测。
-	seedB, facB, err := h.Provision(ctx, "sa-b", "超管B")
+	_, facB, err := h.Provision(ctx, "sa-b", "超管B")
 	// 建厂失败就停，否则后面没有可靠结果。
 	if err != nil {
 		// 把建厂的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
 	// 开通失败就停，否则后面没有可靠结果。
-	if err := facB.Activate(ctx, "sa-b", seedB.ActivationToken, "sb-pass"); err != nil {
+	if err := seedPass(ctx, facB, "sa-b", "sb-pass"); err != nil {
 		// 把开通的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
@@ -340,22 +342,15 @@ func TestFactoryAssetCodeMissing(t *testing.T) {
 		// 把签发租约的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
-	// 写入首个超管，失败说明厂库还不能开张。
-	_, token, err := svc.BootstrapInitial(ctx, "sa", "超管")
-	// 写首个超管失败就停，否则后面没有可靠结果。
-	if err != nil {
+	// 写入首个超管，口令用默认口令，失败说明厂库还不能开张。
+	if _, err := svc.AcceptEnrollment(ctx, id.New(), "sa", "超管", personPass("sa")); err != nil {
 		// 把写首个超管的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
-	// 开通失败就停，否则后面没有可靠结果。
-	if err := svc.Activate(ctx, "sa", token, "sa-pass"); err != nil {
-		// 把开通的错误打出来并停住，避免继续往下验。
-		t.Fatal(err)
-	}
 	// 登录并取出令牌，失败说明账号没有开通成功。
-	tok := mustLogin(t, ctx, svc, "sa", "sa-pass")
+	tok := mustLogin(t, ctx, svc, "sa", personPass("sa"))
 	// 建工艺应因缺少编号被拒绝，放行说明没拦住。
-	if _, err := svc.CreateFactoryProcess(ctx, tok, factory.WorkContext{Direct: true}, "无短码", []byte(`{"name":"x","current":1}`)); !errors.Is(err, domain.ErrAssetCodeMissing) {
+	if _, err := svc.CreateFactoryProcess(ctx, tok, factory.WorkContext{}, "无短码", []byte(`{"name":"x","current":1}`)); !errors.Is(err, domain.ErrAssetCodeMissing) {
 		t.Fatalf("missing origin: %v", err)
 	}
 }

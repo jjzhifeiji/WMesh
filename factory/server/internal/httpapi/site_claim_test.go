@@ -34,7 +34,7 @@ func TestClaimWANTooManyRequests(t *testing.T) {
 	// 测完关掉枢纽，释放测试占用的连接。
 	t.Cleanup(h.Close)
 	// 拉起指向假平台的厂端服务，测完由清理关掉。
-	srv := httptest.NewServer(httpapi.New(h, "boot-secret", wan.URL).Router())
+	srv := httptest.NewServer(httpapi.New(h, wan.URL).Router())
 	// 测完关闭临时服务，把端口让出来。
 	t.Cleanup(srv.Close)
 	// 用建厂码认领，WAN 第一步就限频。

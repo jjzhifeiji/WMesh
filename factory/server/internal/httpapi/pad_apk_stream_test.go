@@ -77,7 +77,7 @@ func TestPadClientSoftwareSlowStream(t *testing.T) {
 		h.Close()
 	})
 	// 同一套接口，建厂和登录走不限时的服务。
-	api := httpapi.New(h, "boot-secret", "")
+	api := httpapi.New(h, "")
 	// 拉起不限读时的服务，建厂开库慢也不被掐。
 	srv := httptest.NewServer(api.Router())
 	// 测完关闭临时服务，把端口让出来。
@@ -92,36 +92,10 @@ func TestPadClientSoftwareSlowStream(t *testing.T) {
 	t.Cleanup(slow.Close)
 	// 拼出本厂前缀，后面的路径都接在后面。
 	base := "/v1/factories/" + fid.String()
-	// 用共享密码建厂，激活码只出现在回包。
-	code, body := do(t, srv, "POST", "/internal/bootstrap", "boot-secret", `{"factoryId":"`+fid.String()+`","saLogin":"sa","saDisplay":"超管"}`)
-	// 不是已创建则本测失败。
-	if code != http.StatusCreated {
-		// 与预期不符就停测，避免后面连环误判。
-		t.Fatalf("bootstrap %d %s", code, body)
-	}
-	// 按工厂打开已有库，没有库就当未初始化。
-	svc, err := h.Service(context.Background(), fid)
-	// 这一步失败则停测，避免在坏结果上继续。
-	if err != nil {
-		// 与预期不符就停测，避免后面连环误判。
-		t.Fatalf("service: %v", err)
-	}
-	// 租约写不进去则停测，后面读正文会失败。
-	if err := svc.Store().GrantLocalLease(context.Background()); err != nil {
-		// 与预期不符就停测，避免后面连环误判。
-		t.Fatalf("lease: %v", err)
-	}
-	// 取出激活码，启用账号时要用。
-	act := gjson(t, body, "activationToken")
-	// 用激活码启用账号，错码应当被拒绝。
-	code, body = do(t, srv, "POST", base+"/activate", "", `{"loginName":"sa","activationToken":"`+act+`","password":"secret"}`)
-	// 不是无内容则本测失败。
-	if code != http.StatusNoContent {
-		// 与预期不符就停测，避免后面连环误判。
-		t.Fatalf("activate %d %s", code, body)
-	}
+	// 按约定身份建厂，初始超管当场有效。
+	svc, _ := enrollSA(t, h, fid)
 	// 登录并取得会话，口令错误应当被拒绝。
-	code, body = do(t, srv, "POST", base+"/pad/login", "", `{"loginName":"sa","password":"secret"}`)
+	code, body := do(t, srv, "POST", base+"/pad/login", "", `{"loginName":"sa","password":"secret"}`)
 	// 不是成功则本测失败。
 	if code != http.StatusOK {
 		// 与预期不符就停测，避免后面连环误判。

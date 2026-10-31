@@ -24,26 +24,26 @@ func TestPadInboxTrimsOthersPersonal(t *testing.T) {
 	// 拉起隔离厂库，起不来说明测试库还没就绪。
 	h := New(t)
 	// 建厂并签发超管激活码，失败则没有厂可测。
-	seed, fac, err := h.Provision(ctx, "sa", "超管")
+	_, fac, err := h.Provision(ctx, "sa", "超管")
 	// 建厂失败就停，否则后面没有可靠结果。
 	if err != nil {
 		// 把建厂的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
 	// 开通失败就停，否则后面没有可靠结果。
-	if err := fac.Activate(ctx, "sa", seed.ActivationToken, "sa-pass"); err != nil {
+	if err := seedPass(ctx, fac, "sa", "sa-pass"); err != nil {
 		// 把开通的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
 	// 登录并取出令牌，失败说明账号没有开通成功。
 	sa := mustLogin(t, ctx, fac, "sa", "sa-pass")
+	// 建管理员，厂级工艺工程由它起草发布。
+	pe := mustCreateRole(t, ctx, fac, sa, "pe", "pe-pass", factory.RoleOrgAdmin)
 	// 建人并授好角色，失败说明后面没有账号可用。
-	pe := mustCreateRole(t, ctx, fac, sa, "pe", "pe-pass", factory.RoleOperator, factory.ScopeFactory, nil)
-	// 建人并授好角色，失败说明后面没有账号可用。
-	_ = mustCreateRole(t, ctx, fac, sa, "op", "op-pass", factory.RoleOperator, factory.ScopeFactory, nil)
+	_ = mustCreateRole(t, ctx, fac, sa, "op", "op-pass", factory.RoleOperator)
 
-	// 标明直接作业上下文，后面新建资产都挂在这里。
-	direct := factory.WorkContext{Direct: true}
+	// 不指定文件夹，后面新建资产都挂在对应树根。
+	direct := factory.WorkContext{}
 	// 新建一份厂级工艺，失败说明起草入口坏了。
 	draftProc, err := fac.CreateFactoryProcess(ctx, pe.tok, direct, "草稿工艺", []byte(`{"current":1}`))
 	// 建工艺失败就停，否则后面没有可靠结果。
@@ -117,10 +117,10 @@ func TestPadInboxTrimsOthersPersonal(t *testing.T) {
 		// 把列资产的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
-	// 网页列表仍列别人的个人级元数据，网页口径不受这次裁剪影响。
-	if !padSyncListHas(listed, mine.ID) {
-		// 网页列表少了别人的个人级，说明裁剪误伤了网页。
-		t.Fatalf("factory list lost personal meta %+v", listed)
+	// 网页列表也不列别人的个人级，个人级只给创建人和超管看。
+	if padSyncListHas(listed, mine.ID) {
+		// 网页列表里出现了别人的个人级，说明可见口径放宽了。
+		t.Fatalf("factory list leaked personal meta %+v", listed)
 	}
 	// 拉平板收件箱，失败说明会话失效或名单空。
 	box, err := fac.PadClientInbox(ctx, sess.Token)
@@ -251,28 +251,28 @@ func TestPadPinnedPersonalProcess(t *testing.T) {
 	// 拉起隔离厂库，起不来说明测试库还没就绪。
 	h := New(t)
 	// 建厂并签发超管激活码，失败则没有厂可测。
-	seed, fac, err := h.Provision(ctx, "sa", "超管")
+	_, fac, err := h.Provision(ctx, "sa", "超管")
 	// 建厂失败就停，否则后面没有可靠结果。
 	if err != nil {
 		// 把建厂的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
 	// 开通失败就停，否则后面没有可靠结果。
-	if err := fac.Activate(ctx, "sa", seed.ActivationToken, "sa-pass"); err != nil {
+	if err := seedPass(ctx, fac, "sa", "sa-pass"); err != nil {
 		// 把开通的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
 	// 登录并取出令牌，失败说明账号没有开通成功。
 	sa := mustLogin(t, ctx, fac, "sa", "sa-pass")
 	// 建个人工艺的创建人，整厂操作员。
-	pe := mustCreateRole(t, ctx, fac, sa, "pe", "pe-pass", factory.RoleOperator, factory.ScopeFactory, nil)
-	// 另一位整厂操作员，用来建厂级工程并试拉。
-	op := mustCreateRole(t, ctx, fac, sa, "op", "op-pass", factory.RoleOperator, factory.ScopeFactory, nil)
+	pe := mustCreateRole(t, ctx, fac, sa, "pe", "pe-pass", factory.RoleOperator)
+	// 另一位整厂操作员，用来在示教器上试拉。
+	_ = mustCreateRole(t, ctx, fac, sa, "op", "op-pass", factory.RoleOperator)
 	// 整厂组织管理员，示教器上也不该拿到别人的个人级。
-	_ = mustCreateRole(t, ctx, fac, sa, "oa", "oa-pass", factory.RoleOrgAdmin, factory.ScopeFactory, nil)
+	_ = mustCreateRole(t, ctx, fac, sa, "oa", "oa-pass", factory.RoleOrgAdmin)
 
-	// 标明直接作业上下文，后面新建资产都挂在这里。
-	direct := factory.WorkContext{Direct: true}
+	// 不指定文件夹，后面新建资产都挂在对应树根。
+	direct := factory.WorkContext{}
 	// pe 新建一份个人工艺，失败说明个人入口被拒。
 	pinned, err := fac.CreatePersonalProcess(ctx, pe.tok, direct, "个人工艺", []byte(`{"current":160}`))
 	// 建个人工艺失败就停，否则后面没有可靠结果。
@@ -289,8 +289,8 @@ func TestPadPinnedPersonalProcess(t *testing.T) {
 	}
 	// 工程正文引用这份个人工艺，建工程时据此钉依赖。
 	body := []byte(`[{"name":"w","processId":"` + pinned.ID.String() + `"}]`)
-	// op 建厂级工程钉住 pe 的个人工艺，本厂有效账号都能这样建。
-	proj, err := fac.CreateFactoryProject(ctx, op.tok, direct, "钉个人工艺的工程", body, nil)
+	// 超管建厂级工程钉住 pe 的个人工艺，超管看得到别人的个人级。
+	proj, err := fac.CreateFactoryProject(ctx, sa, direct, "钉个人工艺的工程", body, nil)
 	// 建工程失败就停，否则后面没有可靠结果。
 	if err != nil {
 		// 把建工程的错误打出来并停住，避免继续往下验。
@@ -302,7 +302,7 @@ func TestPadPinnedPersonalProcess(t *testing.T) {
 		t.Fatalf("deps %+v", proj.Deps)
 	}
 	// 发布当前修订，失败说明状态不允许发布。
-	proj, err = fac.PublishAsset(ctx, op.tok, proj.ID, proj.Revision)
+	proj, err = fac.PublishAsset(ctx, sa, proj.ID, proj.Revision)
 	// 发布失败就停，否则后面没有可靠结果。
 	if err != nil {
 		// 把发布的错误打出来并停住，避免继续往下验。
@@ -417,14 +417,14 @@ func TestPadPinnedPlatformProcess(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 开通失败就停，否则后面没有可靠结果。
-	if err := fac.Activate(ctx, "sa", seed.ActivationToken, "sa-pass"); err != nil {
+	if err := seedPass(ctx, fac, "sa", "sa-pass"); err != nil {
 		// 把开通的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
 	// 登录并取出令牌，失败说明账号没有开通成功。
 	sa := mustLogin(t, ctx, fac, "sa", "sa-pass")
-	// 整厂操作员，用来建厂级工程并在示教器上拉。
-	op := mustCreateRole(t, ctx, fac, sa, "op", "op-pass", factory.RoleOperator, factory.ScopeFactory, nil)
+	// 整厂操作员，用来在示教器上拉。
+	_ = mustCreateRole(t, ctx, fac, sa, "op", "op-pass", factory.RoleOperator)
 	// 记下本厂标识，下发的快照要指到这家厂。
 	fid := seed.ID
 
@@ -453,12 +453,12 @@ func TestPadPinnedPlatformProcess(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// 标明直接作业上下文，后面新建资产都挂在这里。
-	direct := factory.WorkContext{Direct: true}
+	// 不指定文件夹，后面新建资产都挂在对应树根。
+	direct := factory.WorkContext{}
 	// 工程正文引用平台工艺 P，建工程时据此钉依赖。
 	body := []byte(`[{"name":"w","processId":"` + p.ID.String() + `"}]`)
-	// op 建一份厂级工程钉住 P，失败说明起草入口坏了。
-	proj, err := fac.CreateFactoryProject(ctx, op.tok, direct, "钉平台工艺的工程", body, nil)
+	// 超管建一份厂级工程钉住 P，失败说明起草入口坏了。
+	proj, err := fac.CreateFactoryProject(ctx, sa, direct, "钉平台工艺的工程", body, nil)
 	// 建工程失败就停，否则后面没有可靠结果。
 	if err != nil {
 		// 把建工程的错误打出来并停住，避免继续往下验。
@@ -472,7 +472,7 @@ func TestPadPinnedPlatformProcess(t *testing.T) {
 	// 记下钉死的那一条，后面拿来比对修订和摘要。
 	pinned := proj.Deps[0]
 	// 发布当前修订，失败说明状态不允许发布。
-	proj, err = fac.PublishAsset(ctx, op.tok, proj.ID, proj.Revision)
+	proj, err = fac.PublishAsset(ctx, sa, proj.ID, proj.Revision)
 	// 发布失败就停，否则后面没有可靠结果。
 	if err != nil {
 		// 把发布的错误打出来并停住，避免继续往下验。

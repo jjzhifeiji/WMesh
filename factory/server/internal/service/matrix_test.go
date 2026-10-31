@@ -5,11 +5,13 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
 	"wmesh/factory/internal/platform/audit"
 	"wmesh/factory/internal/platform/domain"
+	"wmesh/factory/internal/platform/id"
 	factory "wmesh/factory/internal/service"
 )
 
@@ -17,18 +19,15 @@ import (
 var matrixIDs = []string{
 	"2.1", "2.3", "2.4",
 	"4.1", "4.2",
-	"5.1", "5.2", "5.3", "5.4",
+	"5.1", "5.2", "5.4",
 	"6.1", "6.2", "6.3", "6.4", "6.5", "6.6",
-	"7.1", "7.2",
-	"8.1", "8.2", "8.3", "8.4",
-	"9.1", "9.2", "9.3", "9.4", "9.5", "9.6",
+	"7.1",
+	"8.1", "8.2",
+	"9.1", "9.3", "9.6",
 	"10.1", "10.2", "10.3", "10.4", "10.5", "10.6", "10.7", "10.8", "10.9", "10.10",
 	"11.2", "11.3", "11.4", "11.5",
 	"12.1",
-	"13.1", "13.2", "13.3",
-	"14.1", "14.2", "14.3",
-	"15.1", "15.2", "15.3",
-	"16.1", "16.2", "16.3",
+	"15.3",
 	"17.1", "17.2", "17.3",
 }
 
@@ -71,7 +70,7 @@ func TestMatrix(t *testing.T) {
 		// 建厂并种初始超管失败就把原因打出并停掉本例
 		t.Fatal(err)
 	}
-	// 验收建厂后只有一名待启用超管，多出来即失败
+	// 验收建厂后只有一名超管，多出来即失败
 	run("2.1", func(t *testing.T) {
 		// 人员必须只有一名，多或少都算建厂不对
 		if n, _ := facA.Store().PersonCount(ctx); n != 1 {
@@ -79,20 +78,20 @@ func TestMatrix(t *testing.T) {
 			t.Fatalf("sa count %d", n)
 		}
 	})
-	// 验收激活前待启用超管不算有效入口，算了即失败
+	// 验收建厂后超管当场有效，没有待启用
 	run("10.7", func(t *testing.T) {
 		// 按身份读人员，失败则本步验收不能继续
 		p, err := facA.Store().PersonByID(ctx, a.SuperAdminID)
-		// 按身份读人员失败就停，避免带着错误继续验
-		if err != nil || p.Status != factory.StatusPending {
-			// 激活前不是待启用就失败，入口被提前算有效
-			t.Fatalf("pending sa: %+v %v", p, err)
+		// 读不到或不是有效就失败
+		if err != nil || p.Status != factory.StatusActive {
+			// 建厂后不是有效就失败
+			t.Fatalf("sa status: %+v %v", p, err)
 		}
 	})
-	// 验收待启用账号不能登录或操作，放行即失败
+	// 验收口令错不能登录，没有会话不能操作
 	run("10.1", func(t *testing.T) {
-		// 期望登录被拒为待启用，放行即失败
-		if _, err := facA.Login(ctx, "sa-a", "no"); !errors.Is(err, domain.ErrAccountPending) {
+		// 期望登录被拒为凭证不对，放行即失败
+		if _, err := facA.Login(ctx, "sa-a", "no"); !errors.Is(err, domain.ErrInvalidCredentials) {
 			// 登录结果不对就失败
 			t.Fatalf("login: %v", err)
 		}
@@ -102,13 +101,13 @@ func TestMatrix(t *testing.T) {
 			t.Fatalf("protect: %v", err)
 		}
 	})
-	// 留出超管令牌，激活登录成功后再写上
+	// 留出超管令牌，登录成功后再写上
 	var saA string
-	// 验收激活后能登录本厂，登不上即失败
+	// 验收改成测试口令后能登录本厂，登不上即失败
 	run("2.4", func(t *testing.T) {
-		// 激活初始超管失败就停，避免带着错误继续验
-		if err := facA.Activate(ctx, "sa-a", a.ActivationToken, "sa-pass"); err != nil {
-			// 激活初始超管失败就把原因打出并停掉本例
+		// 改测试口令失败就停，避免带着错误继续验
+		if err := seedPass(ctx, facA, "sa-a", "sa-pass"); err != nil {
+			// 改测试口令失败就把原因打出并停掉本例
 			t.Fatal(err)
 		}
 		// 登录，失败则本步验收不能继续
@@ -121,7 +120,7 @@ func TestMatrix(t *testing.T) {
 		// 记下登录令牌，后面的管理操作都凭它
 		saA = tok
 	})
-	// 验收激活改密登录成功且审计无秘密，泄密即失败
+	// 验收改密后用新口令登录成功
 	run("17.3", func(t *testing.T) {
 		// 修改密码失败就停，避免带着错误继续验
 		if err := facA.ChangePassword(ctx, saA, "sa-pass", "sa-pass-2"); err != nil {
@@ -133,15 +132,15 @@ func TestMatrix(t *testing.T) {
 	})
 
 	// 建厂并种初始超管，失败则本步验收不能继续
-	b, facB, err := h.Provision(ctx, "sa-b", "超管B")
+	_, facB, err := h.Provision(ctx, "sa-b", "超管B")
 	// 建厂并种初始超管失败就停，避免带着错误继续验
 	if err != nil {
 		// 建厂并种初始超管失败就把原因打出并停掉本例
 		t.Fatal(err)
 	}
-	// 激活初始超管失败就停，避免带着错误继续验
-	if err := facB.Activate(ctx, "sa-b", b.ActivationToken, "sb-pass"); err != nil {
-		// 激活初始超管失败就把原因打出并停掉本例
+	// 改测试口令失败就停，避免带着错误继续验
+	if err := seedPass(ctx, facB, "sa-b", "sb-pass"); err != nil {
+		// 改测试口令失败就把原因打出并停掉本例
 		t.Fatal(err)
 	}
 	// 登录取出令牌，登不上则后面没有身份
@@ -159,15 +158,16 @@ func TestMatrix(t *testing.T) {
 			// 对他厂的管理没有被拒就失败
 			t.Fatalf("manage B: %v", err)
 		}
-		// 期望记一条事实被拒为未授权，放行即失败
-		if _, err := facB.CreateFact(ctx, saA, factory.WorkContext{Direct: true}); !errors.Is(err, domain.ErrUnauthorized) {
+		// 期望拿本厂令牌往他厂送焊事实被拒为未授权，放行即失败
+		if _, err := facB.FlushWeldFacts(ctx, saA, nil); !errors.Is(err, domain.ErrUnauthorized) {
+			// 他厂收了本厂令牌就失败
 			t.Fatalf("fact B: %v", err)
 		}
 	})
 
-	// 留出组织位，建树成功后给分配和越权用
+	// 留出组织位，建树成功后给归属和越权用
 	var site, shop, shopB, line, team, spare factory.OrgUnit
-	// 验收超管能建组织和人员，建不成即失败
+	// 验收超管能建组织，建不成即失败
 	run("4.1", func(t *testing.T) {
 		// 留出错误位，供这一步把失败写回来
 		var err error
@@ -228,16 +228,11 @@ func TestMatrix(t *testing.T) {
 			// 校验会话仍有效失败就把原因打出并停掉本例
 			t.Fatal(err)
 		}
-		// 改显示名失败就停，避免带着错误继续验
-		if err := facA.Rename(ctx, saA, "超管A改名", "sa-a"); err != nil {
-			// 改显示名失败就把原因打出并停掉本例
-			t.Fatal(err)
-		}
-		// 校验会话仍有效，失败则本步验收不能继续
-		got, err := facA.RequireActive(ctx, saA)
-		// 校验会话仍有效失败就停，避免带着错误继续验
-		if err != nil || got.ID != old.ID {
-			// 已下发成员修订漂了就失败，旧快照不该变
+		// 改显示名，失败则本步验收不能继续
+		got, err := facA.SetMyDisplayName(ctx, saA, "超管A改名")
+		// 改名失败、身份漂了或登录名变了就失败
+		if err != nil || got.ID != old.ID || got.LoginName != "sa-a" || got.DisplayName != "超管A改名" {
+			// 身份漂了就失败
 			t.Fatalf("id drifted %+v %v", got, err)
 		}
 	})
@@ -252,14 +247,6 @@ func TestMatrix(t *testing.T) {
 		if err := facA.ReparentOrgUnit(ctx, saA, site.ID, &team.ID); !errors.Is(err, domain.ErrCycle) {
 			// 名称或说明不对就失败
 			t.Fatalf("desc: %v", err)
-		}
-	})
-	// 验收同一节点不能有两个父级，加上即失败
-	run("5.3", func(t *testing.T) {
-		// 期望再加一个父组织被拒为多个父级，放行即失败
-		if err := facA.AddParent(ctx, saA, shop.ID, shopB.ID); !errors.Is(err, domain.ErrMultiParent) {
-			// 没拒成多个父级就失败，并打出实际错误
-			t.Fatalf("got %v", err)
 		}
 	})
 	// 建立组织，失败则本步验收不能继续
@@ -279,20 +266,20 @@ func TestMatrix(t *testing.T) {
 	})
 
 	// 建立人员，失败则本步验收不能继续
-	lone, err := facA.CreatePerson(ctx, saA, "lone", "未分配")
+	lone, err := facA.CreatePerson(ctx, saA, "lone", "未归组织")
 	// 建立人员失败就停，避免带着错误继续验
 	if err != nil {
 		// 建立人员失败就把原因打出并停掉本例
 		t.Fatal(err)
 	}
-	// 验收人员可以不分配组织，这一步被拒即失败
+	// 验收人员可以不归组织，默认厂直属
 	run("6.1", func(t *testing.T) {
-		// 清点分配数，失败则本步验收不能继续
-		n, err := facA.Store().AssignmentCount(ctx, lone.ID)
-		// 清点分配数失败就停，避免带着错误继续验
-		if err != nil || n != 0 {
-			// 分配结果不对就失败
-			t.Fatalf("assign %d %v", n, err)
+		// 按身份读人员，失败则本步验收不能继续
+		got, err := facA.Store().PersonByID(ctx, lone.ID)
+		// 读不到或已有所属组织就失败
+		if err != nil || got.OrgUnitID != nil {
+			// 默认不是厂直属就失败
+			t.Fatalf("lone org %+v %v", got.OrgUnitID, err)
 		}
 	})
 	// 建立人员，失败则本步验收不能继续
@@ -304,26 +291,28 @@ func TestMatrix(t *testing.T) {
 	}
 	// 设好登录密码，设失败则这个人登不上
 	pTok := mustAdoptPassword(t, ctx, facA, "p", "p-pass")
-	// 验收人员可以只分配一个组织，没分上即失败
+	// 验收超管能把人归到一个组织
 	run("6.2", func(t *testing.T) {
-		// 分配到组织失败就停，避免带着错误继续验
-		if err := facA.Assign(ctx, saA, p.ID, shop.ID); err != nil {
-			// 分配到组织失败就把原因打出并停掉本例
+		// 归组织失败就停，避免带着错误继续验
+		if _, err := facA.SetPersonOrg(ctx, saA, p.ID, &shop.ID); err != nil {
+			// 归组织失败就把原因打出并停掉本例
 			t.Fatal(err)
 		}
 	})
-	// 验收已分配后再分第二个组织要拒绝，分上即失败
+	// 验收再归另一组织直接覆盖，每人至多一个
 	run("6.3", func(t *testing.T) {
-		// 期望分配到组织被拒为重复分配，放行即失败
-		if err := facA.Assign(ctx, saA, p.ID, shopB.ID); !errors.Is(err, domain.ErrDuplicateAssignment) {
-			// 没拒成重复分配就失败，并打出实际错误
-			t.Fatalf("got %v", err)
+		// 改归车间B，失败则本步验收不能继续
+		acc, err := facA.SetPersonOrg(ctx, saA, p.ID, &shopB.ID)
+		// 改组织失败或没改成车间B就失败
+		if err != nil || acc.OrgUnitID == nil || *acc.OrgUnitID != shopB.ID {
+			// 没覆盖就失败，并打出实际值
+			t.Fatalf("%+v %v", acc.OrgUnitID, err)
 		}
 	})
-	// 验收不能把人分配到他厂组织，分上即失败
+	// 验收不能把人归到他厂组织，归上即失败
 	run("6.4", func(t *testing.T) {
-		// 期望分配到组织被拒为不存在，放行即失败
-		if err := facA.Assign(ctx, saA, p.ID, bUnit.ID); !errors.Is(err, domain.ErrNotFound) {
+		// 期望归组织被拒为不存在，放行即失败
+		if _, err := facA.SetPersonOrg(ctx, saA, p.ID, &bUnit.ID); !errors.Is(err, domain.ErrNotFound) {
 			// 没拒成不存在就失败，并打出实际错误
 			t.Fatalf("got %v", err)
 		}
@@ -346,106 +335,64 @@ func TestMatrix(t *testing.T) {
 			t.Fatalf("%v %+v", err, same)
 		}
 	})
-	// 验收未分配的人不能选组织做事实，做成即失败
+	// 验收所属组织不给权：没有角色的人改不了组织也建不了厂级
 	run("7.1", func(t *testing.T) {
-		// 期望记一条事实被拒为越权，放行即失败
-		if _, err := facA.CreateFact(ctx, pTok, factory.WorkContext{OrgUnitID: &shop.ID}); !errors.Is(err, domain.ErrForbidden) {
-			t.Fatalf("fact: %v", err)
-		}
-		// 期望建个人资产被拒为越权，放行即失败
-		if _, err := facA.CreatePersonalAsset(ctx, pTok, factory.WorkContext{OrgUnitID: &shop.ID}, "x"); !errors.Is(err, domain.ErrForbidden) {
-			t.Fatalf("asset: %v", err)
-		}
-	})
-	// 验收未分配的人不能在节点上操作，做成即失败
-	run("7.2", func(t *testing.T) {
-		// 期望在节点上操作被拒为越权，放行即失败
-		if err := facA.Operate(ctx, pTok, shop.ID); !errors.Is(err, domain.ErrForbidden) {
+		// 期望建组织被拒为越权，放行即失败
+		if _, err := facA.CreateOrgUnit(ctx, pTok, "x", &shopB.ID); !errors.Is(err, domain.ErrForbidden) {
 			// 没拒成越权就失败，并打出实际错误
-			t.Fatalf("got %v", err)
+			t.Fatalf("org: %v", err)
+		}
+		// 期望建厂级工艺被拒为越权，放行即失败
+		if _, err := facA.CreateFactoryProcess(ctx, pTok, factory.WorkContext{}, "x", []byte(`{"a":1}`)); !errors.Is(err, domain.ErrForbidden) {
+			// 没拒成越权就失败，并打出实际错误
+			t.Fatalf("author: %v", err)
 		}
 	})
 
 	// 建人并授角色，失败则夹具缺这个身份
-	oa := mustCreateRole(t, ctx, facA, saA, "oa", "oa-pass", factory.RoleOrgAdmin, factory.ScopeOrgUnit, &shop.ID)
-	// 验收组织管理员能在子树内管组织，管不成即失败
+	oa := mustCreateRole(t, ctx, facA, saA, "oa", "oa-pass", factory.RoleOrgAdmin)
+	// 验收管理员能建厂级工艺，建不成即失败
 	run("8.1", func(t *testing.T) {
-		// 建立组织失败就停，避免带着错误继续验
-		if _, err := facA.CreateOrgUnit(ctx, oa.tok, "线2", &shop.ID); err != nil {
-			// 建立组织失败就把原因打出并停掉本例
+		// 建厂级工艺失败就停，避免带着错误继续验
+		if _, err := facA.CreateFactoryProcess(ctx, oa.tok, factory.WorkContext{}, "管理员工艺", []byte(`{"a":1}`)); err != nil {
+			// 建厂级工艺失败就把原因打出并停掉本例
 			t.Fatal(err)
 		}
 	})
-	// 验收管理员在自己子树内可以管，管不成即失败
-	run("9.5", func(t *testing.T) {
-		// 取消组织分配失败就停，避免带着错误继续验
-		if err := facA.Unassign(ctx, oa.tok, p.ID, shop.ID); err != nil {
-			// 取消组织分配失败就把原因打出并停掉本例
-			t.Fatal(err)
-		}
-		// 分配到组织失败就停，避免带着错误继续验
-		if err := facA.Assign(ctx, oa.tok, p.ID, line.ID); err != nil {
-			// 分配到组织失败就把原因打出并停掉本例
-			t.Fatal(err)
-		}
-	})
-	// 验收管理员选本节点做事实要拒绝，做成即失败
-	run("8.3", func(t *testing.T) {
-		// 期望记一条事实被拒为工作上下文不对，放行即失败
-		if _, err := facA.CreateFact(ctx, oa.tok, factory.WorkContext{OrgUnitID: &shop.ID}); !errors.Is(err, domain.ErrWorkContext) {
-			t.Fatalf("got %v", err)
-		}
-	})
-	// 建人并授角色，失败则夹具缺这个身份
-	lead := mustCreateRole(t, ctx, facA, saA, "lead", "lead-pass", factory.RoleOrgLead, factory.ScopeOrgUnit, &shop.ID)
-	// 建人并授角色，失败则夹具缺这个身份
-	aud := mustCreateRole(t, ctx, facA, saA, "aud", "aud-pass", factory.RoleAuditor, factory.ScopeOrgUnit, &shop.ID)
-	// 验收负责人只能看不能改，改成即失败
+	// 验收管理员能看全厂报表
 	run("8.2", func(t *testing.T) {
-		// 查看组织失败就停，避免带着错误继续验
-		if err := facA.ViewOrg(ctx, lead.tok, shop.ID); err != nil {
-			// 查看组织失败就把原因打出并停掉本例
+		// 拉报表失败就停，避免带着错误继续验
+		if _, err := facA.ListWeldReport(ctx, oa.tok, "org", nil, nil, time.UTC); err != nil {
+			// 拉报表失败就把原因打出并停掉本例
 			t.Fatal(err)
 		}
-		// 查看组织失败就停，避免带着错误继续验
-		if err := facA.ViewOrg(ctx, aud.tok, shop.ID); err != nil {
-			// 查看组织失败就把原因打出并停掉本例
+		// 拉下钻失败就停，避免带着错误继续验
+		if _, err := facA.ListWeldRuns(ctx, oa.tok, factory.WeldRunQuery{}); err != nil {
+			// 拉下钻失败就把原因打出并停掉本例
 			t.Fatal(err)
 		}
 	})
-	// 建人并授角色，失败则夹具缺这个身份
-	eng := mustCreateRole(t, ctx, facA, saA, "eng", "eng-pass", factory.RoleOperator, factory.ScopeOrgUnit, &shop.ID)
-	// 验收操作员未分配该节点不能做事实，做成即失败
-	run("8.4", func(t *testing.T) {
-		// 期望记一条事实被拒为工作上下文不对，放行即失败
-		if _, err := facA.CreateFact(ctx, eng.tok, factory.WorkContext{OrgUnitID: &shop.ID}); !errors.Is(err, domain.ErrWorkContext) {
-			t.Fatalf("got %v", err)
-		}
-	})
-	// 验收管理员不能管兄弟或父节点，管成即失败
+	// 验收管理员不能管组织、归属和账号，管成即失败
 	run("9.1", func(t *testing.T) {
 		// 期望建立组织被拒为越权，放行即失败
-		if _, err := facA.CreateOrgUnit(ctx, oa.tok, "越界", &shopB.ID); !errors.Is(err, domain.ErrForbidden) {
+		if _, err := facA.CreateOrgUnit(ctx, oa.tok, "越界", &shop.ID); !errors.Is(err, domain.ErrForbidden) {
 			// 没拒成越权就失败，并打出实际错误
-			t.Fatalf("got %v", err)
+			t.Fatalf("org: %v", err)
 		}
-	})
-	// 验收负责人不能改组织或授角色，改成即失败
-	run("9.2", func(t *testing.T) {
-		// 期望建立组织被拒为越权，放行即失败
-		if _, err := facA.CreateOrgUnit(ctx, lead.tok, "x", &shop.ID); !errors.Is(err, domain.ErrForbidden) {
+		// 期望改人的所属组织被拒为越权，放行即失败
+		if _, err := facA.SetPersonOrg(ctx, oa.tok, p.ID, &line.ID); !errors.Is(err, domain.ErrForbidden) {
 			// 没拒成越权就失败，并打出实际错误
-			t.Fatalf("got %v", err)
+			t.Fatalf("person org: %v", err)
 		}
 		// 期望建立人员被拒为越权，放行即失败
-		if _, err := facA.CreatePerson(ctx, lead.tok, "x", "x"); !errors.Is(err, domain.ErrForbidden) {
+		if _, err := facA.CreatePerson(ctx, oa.tok, "x", "x"); !errors.Is(err, domain.ErrForbidden) {
 			// 没拒成越权就失败，并打出实际错误
-			t.Fatalf("got %v", err)
+			t.Fatalf("person: %v", err)
 		}
 	})
 	// 建人并授角色，失败则夹具缺这个身份
-	op := mustCreateRole(t, ctx, facA, saA, "op", "op-pass", factory.RoleOperator, factory.ScopeOrgUnit, &shop.ID)
-	// 验收操作员不能建账号或授角色，做成即失败
+	op := mustCreateRole(t, ctx, facA, saA, "op", "op-pass", factory.RoleOperator)
+	// 验收操作员不能建账号、授角色或建厂级，做成即失败
 	run("9.3", func(t *testing.T) {
 		// 期望建立人员被拒为越权，放行即失败
 		if _, err := facA.CreatePerson(ctx, op.tok, "y", "y"); !errors.Is(err, domain.ErrForbidden) {
@@ -453,7 +400,7 @@ func TestMatrix(t *testing.T) {
 			t.Fatalf("got %v", err)
 		}
 		// 期望授予角色被拒为越权，放行即失败
-		if _, err := facA.GrantRole(ctx, op.tok, p.ID, factory.RoleOperator, factory.ScopeOrgUnit, &shop.ID); !errors.Is(err, domain.ErrForbidden) {
+		if _, err := facA.GrantRole(ctx, op.tok, p.ID, factory.RoleOperator); !errors.Is(err, domain.ErrForbidden) {
 			// 没拒成越权就失败，并打出实际错误
 			t.Fatalf("got %v", err)
 		}
@@ -462,28 +409,21 @@ func TestMatrix(t *testing.T) {
 			// 重置口令的结果不对就失败
 			t.Fatalf("reset: %v", err)
 		}
-	})
-	// 验收审计员不能做事实或改组织，做成即失败
-	run("9.4", func(t *testing.T) {
-		// 期望记一条事实被拒为这几种原因之一，放行即失败
-		if _, err := facA.CreateFact(ctx, aud.tok, factory.WorkContext{OrgUnitID: &shop.ID}); !errors.Is(err, domain.ErrWorkContext) && !errors.Is(err, domain.ErrForbidden) {
-			t.Fatalf("got %v", err)
-		}
-		// 期望建立组织被拒为越权，放行即失败
-		if _, err := facA.CreateOrgUnit(ctx, aud.tok, "z", &shop.ID); !errors.Is(err, domain.ErrForbidden) {
+		// 期望建厂级工艺被拒为越权，放行即失败
+		if _, err := facA.CreateFactoryProcess(ctx, op.tok, factory.WorkContext{}, "y", []byte(`{"a":1}`)); !errors.Is(err, domain.ErrForbidden) {
 			// 没拒成越权就失败，并打出实际错误
-			t.Fatalf("got %v", err)
+			t.Fatalf("author: %v", err)
 		}
 	})
-	// 验收不能把工厂超管授到子树外，授成即失败
+	// 验收管理员授不了任何角色，授成即失败
 	run("9.6", func(t *testing.T) {
 		// 期望授予角色被拒为越权，放行即失败
-		if _, err := facA.GrantRole(ctx, oa.tok, p.ID, factory.RoleFactorySuperAdmin, factory.ScopeFactory, nil); !errors.Is(err, domain.ErrForbidden) {
+		if _, err := facA.GrantRole(ctx, oa.tok, p.ID, factory.RoleFactorySuperAdmin); !errors.Is(err, domain.ErrForbidden) {
 			// 没拒成越权就失败，并打出实际错误
 			t.Fatalf("got %v", err)
 		}
 		// 期望授予角色被拒为越权，放行即失败
-		if _, err := facA.GrantRole(ctx, oa.tok, p.ID, factory.RoleOperator, factory.ScopeOrgUnit, &shopB.ID); !errors.Is(err, domain.ErrForbidden) {
+		if _, err := facA.GrantRole(ctx, oa.tok, p.ID, factory.RoleOperator); !errors.Is(err, domain.ErrForbidden) {
 			// 没拒成越权就失败，并打出实际错误
 			t.Fatalf("got %v", err)
 		}
@@ -512,189 +452,74 @@ func TestMatrix(t *testing.T) {
 			t.Fatalf("not kept %+v %v", u, err)
 		}
 	})
-	// 验收已停用节点不能再分配或当上下文，做成即失败
+	// 验收已停用节点不能再收人，归上即失败
 	run("11.5", func(t *testing.T) {
-		// 期望分配到组织被拒为组织已停用，放行即失败
-		if err := facA.Assign(ctx, saA, p.ID, spare.ID); !errors.Is(err, domain.ErrDisabledOrgUnit) {
-			// 分配结果不对就失败
-			t.Fatalf("assign: %v", err)
-		}
-		// 期望记一条事实被拒为这几种原因之一，放行即失败
-		if _, err := facA.CreateFact(ctx, pTok, factory.WorkContext{OrgUnitID: &spare.ID}); !errors.Is(err, domain.ErrDisabledOrgUnit) && !errors.Is(err, domain.ErrForbidden) && !errors.Is(err, domain.ErrWorkContext) {
-			t.Fatalf("ctx: %v", err)
+		// 期望归组织被拒为组织已停用，放行即失败
+		if _, err := facA.SetPersonOrg(ctx, saA, p.ID, &spare.ID); !errors.Is(err, domain.ErrDisabledOrgUnit) {
+			// 归属结果不对就失败
+			t.Fatalf("set org: %v", err)
 		}
 	})
 
 	// 建人并授角色，失败则夹具缺这个身份
-	q := mustCreateRole(t, ctx, facA, saA, "q", "q-pass", factory.RoleOperator, factory.ScopeFactory, nil)
-	// 分配到组织失败就停，避免带着错误继续验
-	if err := facA.Assign(ctx, saA, q.acc.ID, shop.ID); err != nil {
-		// 分配到组织失败就把原因打出并停掉本例
+	q := mustCreateRole(t, ctx, facA, saA, "q", "q-pass", factory.RoleOperator)
+	// 归到车间失败就停，避免带着错误继续验
+	if _, err := facA.SetPersonOrg(ctx, saA, q.acc.ID, &shop.ID); err != nil {
+		// 归组织失败就把原因打出并停掉本例
 		t.Fatal(err)
 	}
-	// 留下事实桩，改挂后核对旧路径没被改写
-	var factA factory.FactStub
-	// 验收直属厂的事实不挂组织，挂上节点即失败
-	run("16.1", func(t *testing.T) {
-		// 记一条事实，失败则本步验收不能继续
-		direct, err := facA.CreateFact(ctx, q.tok, factory.WorkContext{Direct: true})
-		// 记一条事实失败就停，避免带着错误继续验
-		if err != nil || direct.OrgUnitID != nil || len(direct.OrgPath) != 0 {
-			// 路径不符就把实际值打出并停掉本例
-			t.Fatalf("%v %+v", err, direct)
-		}
-	})
-	// 验收只有组织范围的人不能选直属，选成即失败
-	run("16.2", func(t *testing.T) {
-		// 期望记一条事实被拒为越权，放行即失败
-		if _, err := facA.CreateFact(ctx, op.tok, factory.WorkContext{Direct: true}); !errors.Is(err, domain.ErrForbidden) {
-			t.Fatalf("got %v", err)
-		}
-	})
-	// 验收未分配的人不能选组织当上下文，选成即失败
-	run("16.3", func(t *testing.T) {
-		// 期望记一条事实被拒为工作上下文不对，放行即失败
-		if _, err := facA.CreateFact(ctx, oa.tok, factory.WorkContext{OrgUnitID: &shop.ID}); !errors.Is(err, domain.ErrWorkContext) {
-			t.Fatalf("got %v", err)
-		}
-	})
-	// 验收事实只记下当时路径，串到别的节点即失败
+	// 留下焊事实身份，调岗后核对它跟着人走
+	factID := id.New()
+	// 验收焊事实只绑人，组织按人现在的所属组织算
 	run("12.1", func(t *testing.T) {
-		// 留出错误位，供这一步把失败写回来
-		var err error
-		// 记一条事实，失败则本步验收不能继续
-		factA, err = facA.CreateFact(ctx, q.tok, factory.WorkContext{OrgUnitID: &shop.ID})
-		// 记一条事实失败就停，避免带着错误继续验
-		if err != nil {
-			// 记一条事实失败就把原因打出并停掉本例
-			t.Fatal(err)
-		}
-		// 路径必须符合期望，对不上即失败
-		if factA.OrgUnitID == nil || *factA.OrgUnitID != shop.ID || !pathHas(factA.OrgPath, site.ID) || pathHas(factA.OrgPath, shopB.ID) {
-			// 路径快照不对就失败，历史被改写了
-			t.Fatalf("path %+v", factA)
-		}
-	})
-	// 准备一段个人正文，审计里出现它即泄密失败
-	const payload = "personal-secret"
-	asset, err := facA.CreatePersonalAsset(ctx, q.tok, factory.WorkContext{OrgUnitID: &shop.ID}, payload)
-	// 建个人资产失败就停，避免带着错误继续验
-	if err != nil {
-		// 建个人资产失败就把原因打出并停掉本例
-		t.Fatal(err)
-	}
-	// 验收调整分配不改历史事实，历史变了即失败
-	run("13.3", func(t *testing.T) {
-		// 取消组织分配失败就停，避免带着错误继续验
-		if err := facA.Unassign(ctx, saA, q.acc.ID, shop.ID); err != nil {
-			// 取消组织分配失败就把原因打出并停掉本例
-			t.Fatal(err)
-		}
-		// 分配到组织失败就停，避免带着错误继续验
-		if err := facA.Assign(ctx, saA, q.acc.ID, shopB.ID); err != nil {
-			// 分配到组织失败就把原因打出并停掉本例
-			t.Fatal(err)
-		}
-	})
-	// 验收改挂后旧事实路径不变，被改写即失败
-	run("13.1", func(t *testing.T) {
-		// 读取事实，失败则本步验收不能继续
-		old, err := facA.GetFact(ctx, q.tok, factA.ID)
-		// 读取事实失败就停，避免带着错误继续验
-		if err != nil || *old.OrgUnitID != shop.ID || pathHas(old.OrgPath, shopB.ID) {
-			// 路径不符就把实际值打出并停掉本例
-			t.Fatalf("%v %+v", err, old)
-		}
-	})
-	// 验收改挂后新事实走新路径，仍写旧路径即失败
-	run("13.2", func(t *testing.T) {
-		// 记一条事实，失败则本步验收不能继续
-		nb, err := facA.CreateFact(ctx, q.tok, factory.WorkContext{OrgUnitID: &shopB.ID})
-		// 记一条事实失败就停，避免带着错误继续验
-		if err != nil || *nb.OrgUnitID != shopB.ID {
+		// 送一条焊事实，示教器硬带的组织不算数
+		out, err := facA.FlushWeldFacts(ctx, q.tok, []factory.WeldFact{{
+			ID: factID, CreatorID: q.acc.ID, ProjectName: "工程Q", WeldKind: "single",
+			LengthMM: 10, DurationSec: 1, OccurredAt: time.Date(2026, 9, 18, 8, 0, 0, 0, time.UTC),
+		}})
+		// 汇聚失败或没收下就停
+		if err != nil || len(out.Accepted) != 1 {
 			// 结果不符就把实际值打出并停掉本例
-			t.Fatalf("%v %+v", err, nb)
+			t.Fatalf("%+v %v", out, err)
 		}
-	})
-	// 取消组织分配失败就停，避免带着错误继续验
-	if err := facA.Unassign(ctx, saA, q.acc.ID, shopB.ID); err != nil {
-		// 取消组织分配失败就把原因打出并停掉本例
-		t.Fatal(err)
-	}
-	// 分配到组织失败就停，避免带着错误继续验
-	if err := facA.Assign(ctx, saA, q.acc.ID, shop.ID); err != nil {
-		// 分配到组织失败就把原因打出并停掉本例
-		t.Fatal(err)
-	}
-	// 验收改名换父级本身不改历史，历史变了即失败
-	run("14.3", func(t *testing.T) {
-		// 给组织改名失败就停，避免带着错误继续验
-		if err := facA.RenameOrgUnit(ctx, saA, shop.ID, "车间改名"); err != nil {
-			// 给组织改名失败就把原因打出并停掉本例
+		// 按车间筛，应正好这一条且路径末级是车间
+		runs, err := facA.ListWeldRuns(ctx, saA, factory.WeldRunQuery{OrgUnitID: &shop.ID})
+		// 条数不对或路径不对就失败
+		if err != nil || runs.Total != 1 || !pathHas(runs.Items[0].OrgPath, shop.ID) {
+			// 结果不符就把实际值打出并停掉本例
+			t.Fatalf("shop runs %+v %v", runs, err)
+		}
+		// 把 q 调到产线，旧焊次跟着人走
+		if _, err := facA.SetPersonOrg(ctx, saA, q.acc.ID, &line.ID); err != nil {
+			// 改组织失败就把原因打出并停掉本例
 			t.Fatal(err)
 		}
-		// 改挂父组织失败就停，避免带着错误继续验
-		if err := facA.ReparentOrgUnit(ctx, saA, shop.ID, &shopB.ID); err != nil {
-			// 改挂父组织失败就把原因打出并停掉本例
-			t.Fatal(err)
+		// 按产线筛，旧焊次应在这里，路径走到产线
+		runs, err = facA.ListWeldRuns(ctx, saA, factory.WeldRunQuery{OrgUnitID: &line.ID})
+		// 条数或路径不对就失败
+		if err != nil || runs.Total != 1 || runs.Items[0].ID != factID || pathName(runs.Items[0].OrgPath, line.ID) != "产线" {
+			// 结果不符就把实际值打出并停掉本例
+			t.Fatalf("line runs %+v %v", runs, err)
 		}
 	})
-	// 验收改名后旧事实仍是当时名称，被改写即失败
-	run("14.1", func(t *testing.T) {
-		// 读取事实，失败则本步验收不能继续
-		old, err := facA.GetFact(ctx, saA, factA.ID)
-		// 读取事实失败就停，避免带着错误继续验
-		if err != nil || pathName(old.OrgPath, shop.ID) != "车间" || pathHas(old.OrgPath, shopB.ID) {
-			// 路径不符就把实际值打出并停掉本例
-			t.Fatalf("%v %+v", err, old)
-		}
-	})
-	// 验收换父级后新事实用新路径，仍写旧路径即失败
-	run("14.2", func(t *testing.T) {
-		// 记一条事实，失败则本步验收不能继续
-		fresh, err := facA.CreateFact(ctx, q.tok, factory.WorkContext{OrgUnitID: &shop.ID})
-		// 记一条事实失败就停，避免带着错误继续验
-		if err != nil || pathName(fresh.OrgPath, shop.ID) != "车间改名" || !pathHas(fresh.OrgPath, shopB.ID) {
-			// 路径不符就把实际值打出并停掉本例
-			t.Fatalf("%v %+v", err, fresh)
-		}
-	})
-	// 验收个人资产仍属创建人，归属被改即失败
-	run("15.1", func(t *testing.T) {
-		// 读取个人资产，失败则本步验收不能继续
-		got, err := facA.GetPersonalAsset(ctx, q.tok, asset.ID)
-		// 读取个人资产失败就停，避免带着错误继续验
-		if err != nil || got.CreatorID != q.acc.ID || pathName(got.OrgPath, shop.ID) != "车间" {
-			// 路径不符就把实际值打出并停掉本例
-			t.Fatalf("%v %+v", err, got)
-		}
-	})
-	// 验收停用不得把个人资产改挂给超管，改了即失败
-	run("15.2", func(t *testing.T) {
-		// 期望移交个人资产被拒为越权，放行即失败
-		if err := facA.TransferPersonalAsset(ctx, saA, asset.ID, a.SuperAdminID); !errors.Is(err, domain.ErrForbidden) {
-			// 没拒成越权就失败，并打出实际错误
-			t.Fatalf("got %v", err)
-		}
-		// 期望改写事实路径被拒为越权，放行即失败
-		if err := facA.RewriteFactPath(ctx, saA, factA.ID); !errors.Is(err, domain.ErrForbidden) {
-			// 没拒成越权就失败，并打出实际错误
-			t.Fatalf("got %v", err)
-		}
-	})
-	// 验收超管不能打开别人的个人资产正文，打开即失败
+	// 验收个人级只给创建人和超管看，别的管理员看不到正文
 	run("15.3", func(t *testing.T) {
-		// 期望读个人资产正文被拒为越权，放行即失败
-		if _, err := facA.ReadPersonalAssetContent(ctx, saA, asset.ID); !errors.Is(err, domain.ErrForbidden) {
-			// 没拒成越权就失败，并打出实际错误
-			t.Fatalf("got %v", err)
+		// q 建一条自己的个人工艺
+		mine, err := facA.CreatePersonalProcess(ctx, q.tok, factory.WorkContext{}, "q个人", []byte(`{"q":1}`))
+		// 建个人工艺失败就停，避免带着错误继续验
+		if err != nil {
+			// 建个人工艺失败就把原因打出并停掉本例
+			t.Fatal(err)
 		}
-		// 读个人资产正文，失败则本步验收不能继续
-		body, err := facA.ReadPersonalAssetContent(ctx, q.tok, asset.ID)
-		// 读个人资产正文失败就停，避免带着错误继续验
-		if err != nil || body != payload {
-			// 结果不符就把实际值打出并停掉本例
-			t.Fatalf("%v %q", err, body)
+		// 超管能读别人的个人正文
+		if _, err := facA.ReadAssetContent(ctx, saA, mine.ID); err != nil {
+			// 超管读不了就失败
+			t.Fatalf("sa read: %v", err)
+		}
+		// 别的管理员读个人正文必须被拒
+		if _, err := facA.ReadAssetContent(ctx, oa.tok, mine.ID); !errors.Is(err, domain.ErrForbidden) {
+			// 管理员读到了就失败
+			t.Fatalf("oa read: %v", err)
 		}
 	})
 	// 验收已被引用的组织不能物理删掉，删掉即失败
@@ -721,15 +546,15 @@ func TestMatrix(t *testing.T) {
 		// 登录取出令牌，登不上则后面没有身份
 		pTok = mustLogin(t, ctx, facA, "p", "p-pass")
 	})
-	// 验收停用或收权后原会话立刻失效，还能用即失败
+	// 验收停用或收权后立刻生效，还能用即失败
 	run("10.4", func(t *testing.T) {
-		// 收回角色失败就停，避免带着错误继续验
-		if err := facA.RevokeRole(ctx, saA, op.grant); err != nil {
+		// 收回管理员角色失败就停，避免带着错误继续验
+		if err := facA.RevokeRole(ctx, saA, oa.grant); err != nil {
 			// 收回角色失败就把原因打出并停掉本例
 			t.Fatal(err)
 		}
-		// 期望在节点上操作被拒为越权，放行即失败
-		if err := facA.Operate(ctx, op.tok, shop.ID); !errors.Is(err, domain.ErrForbidden) {
+		// 期望收回后建厂级被拒为越权，放行即失败
+		if _, err := facA.CreateFactoryProcess(ctx, oa.tok, factory.WorkContext{}, "收回后", []byte(`{"a":2}`)); !errors.Is(err, domain.ErrForbidden) {
 			// 没拒成越权就失败，并打出实际错误
 			t.Fatalf("got %v", err)
 		}
@@ -752,37 +577,32 @@ func TestMatrix(t *testing.T) {
 			t.Fatalf("got %v", err)
 		}
 	})
-	// 验收停用账号的历史事实仍可只读查，查不到即失败
+	// 验收停用账号的历史焊次仍可只读查，查不到即失败
 	run("10.8", func(t *testing.T) {
 		// 停用账号失败就停，避免带着错误继续验
 		if err := facA.DisableAccount(ctx, saA, q.acc.ID); err != nil {
 			// 停用账号失败就把原因打出并停掉本例
 			t.Fatal(err)
 		}
-		// 读取事实失败就停，避免带着错误继续验
-		if _, err := facA.GetFact(ctx, saA, factA.ID); err != nil {
-			// 读取事实失败就把原因打出并停掉本例
-			t.Fatal(err)
-		}
-		// 按创建人列事实，失败则本步验收不能继续
-		listed, err := facA.ListFactsByCreator(ctx, saA, q.acc.ID)
-		// 按创建人列事实失败就停，避免带着错误继续验
-		if err != nil || len(listed) == 0 {
+		// 按人下钻，失败则本步验收不能继续
+		runs, err := facA.ListWeldRuns(ctx, saA, factory.WeldRunQuery{PersonID: &q.acc.ID})
+		// 下钻失败或没有这条就失败
+		if err != nil || runs.Total != 1 || runs.Items[0].ID != factID {
 			// 结果不符就把实际值打出并停掉本例
-			t.Fatalf("%v %d", err, len(listed))
+			t.Fatalf("%+v %v", runs, err)
 		}
 	})
 	// 验收还有别的超管时可以停用其中一名，停不成即失败
 	run("10.5", func(t *testing.T) {
 		// 建人并授角色，失败则夹具缺这个身份
-		sa2 := mustCreateRole(t, ctx, facA, saA, "sa2", "sa2-pass", factory.RoleFactorySuperAdmin, factory.ScopeFactory, nil)
+		sa2 := mustCreateRole(t, ctx, facA, saA, "sa2", "sa2-pass", factory.RoleFactorySuperAdmin)
 		// 停用账号失败就停，避免带着错误继续验
 		if err := facA.DisableAccount(ctx, saA, sa2.acc.ID); err != nil {
 			// 停用账号失败就把原因打出并停掉本例
 			t.Fatal(err)
 		}
 		// 建人并授角色，失败则夹具缺这个身份
-		sa3 := mustCreateRole(t, ctx, facA, saA, "sa3", "sa3-pass", factory.RoleFactorySuperAdmin, factory.ScopeFactory, nil)
+		sa3 := mustCreateRole(t, ctx, facA, saA, "sa3", "sa3-pass", factory.RoleFactorySuperAdmin)
 		// 收回角色失败就停，避免带着错误继续验
 		if err := facA.RevokeRole(ctx, saA, sa3.grant); err != nil {
 			// 收回角色失败就把原因打出并停掉本例
@@ -910,7 +730,7 @@ func TestMatrix(t *testing.T) {
 		// 把审计打成文本，没成功则本步验收失败
 		dump := audit.Dump(all)
 		// 文本里夹带秘密或禁词就失败，说明泄密了
-		if audit.ContainsAny(dump, "sa-pass", "sa-pass-2", "p-pass", "q-pass", "lost-pass", personPass("lost"), payload, a.ActivationToken, saA) {
+		if audit.ContainsAny(dump, "sa-pass", "sa-pass-2", "p-pass", "q-pass", "lost-pass", personPass("lost"), saA) {
 			// 审计里出现秘密就失败，说明正文或口令泄了
 			t.Fatalf("secret leaked")
 		}
@@ -942,7 +762,7 @@ func mustLogin(t *testing.T, ctx context.Context, fac *factory.Service, login, p
 }
 
 // 建人并授角色，失败则夹具缺这个身份
-func mustCreateRole(t *testing.T, ctx context.Context, fac *factory.Service, saTok, login, pass, role, scope string, unit *uuid.UUID) namedAcc {
+func mustCreateRole(t *testing.T, ctx context.Context, fac *factory.Service, saTok, login, pass, role string) namedAcc {
 	// 标成辅助函数，失败栈落到调用方
 	t.Helper()
 	// 建立人员，失败则本步验收不能继续
@@ -953,7 +773,7 @@ func mustCreateRole(t *testing.T, ctx context.Context, fac *factory.Service, saT
 		t.Fatal(err)
 	}
 	// 授予角色，失败则本步验收不能继续
-	g, err := fac.GrantRole(ctx, saTok, acc.ID, role, scope, unit)
+	g, err := fac.GrantRole(ctx, saTok, acc.ID, role)
 	// 授予角色失败就停，避免带着错误继续验
 	if err != nil {
 		// 授予角色失败就把原因打出并停掉本例

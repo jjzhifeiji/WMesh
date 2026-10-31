@@ -14,28 +14,28 @@ import (
 	factory "wmesh/factory/internal/service"
 )
 
-// 换臂场景：随绑定补上 ARM-1，换臂注册成 ARM-2 后重放补号，号仍是 ARM-2 且能登录
+// 换臂场景：随绑定补上 ARM-1，换臂注册成 ARM-2 后重放补号，号仍是 ARM-2、昵称不被冲回
 func TestWANReplayKeepsSwappedArm(t *testing.T) {
 	// 准备空上下文，后续调用都挂在这上面
 	ctx := context.Background()
 	// 起一套测试库和厂服务，起不来则本例无法开始
 	h := New(t)
 	// 建厂并种初始超管，失败则本步验收不能继续
-	seed, fac, err := h.Provision(ctx, "sa", "超管")
+	_, fac, err := h.Provision(ctx, "sa", "超管")
 	// 建厂并种初始超管失败就停，避免带着错误继续验
 	if err != nil {
 		// 建厂并种初始超管失败就把原因打出并停掉本例
 		t.Fatal(err)
 	}
 	// 激活初始超管失败就停，避免带着错误继续验
-	if err := fac.Activate(ctx, "sa", seed.ActivationToken, "sa-pass"); err != nil {
+	if err := seedPass(ctx, fac, "sa", "sa-pass"); err != nil {
 		// 激活初始超管失败就把原因打出并停掉本例
 		t.Fatal(err)
 	}
 	// 登录取出令牌，登不上则后面没有身份
 	saTok := mustLogin(t, ctx, fac, "sa", "sa-pass")
 	// 建一个操作员，换臂后用它在本机登录
-	mustCreateRole(t, ctx, fac, saTok, "op", "op-pass", factory.RoleOperator, factory.ScopeFactory, nil)
+	mustCreateRole(t, ctx, fac, saTok, "op", "op-pass", factory.RoleOperator)
 	// 生成焊机密钥，失败则绑定无法开始
 	pub, _, err := nodekey.Generate()
 	// 生成焊机密钥失败就停，避免带着错误继续验
@@ -67,22 +67,40 @@ func TestWANReplayKeepsSwappedArm(t *testing.T) {
 		// 重放报错就把原因打出并停掉本例
 		t.Fatalf("replay: %v", err)
 	}
-	// 读回这台，核对臂号和名字
+	// 读回这台，核对臂号、设备名和昵称
 	row, err := fac.Store().ClientByID(ctx, cid)
-	// 读不到、号被冲回 ARM-1 或名字被冲回都算错
-	if err != nil || row.DeviceSerial != "ARM-2" || row.Name != "一线焊机" || row.Status != factory.ClientStatusBound {
+	// 读不到、号被冲回 ARM-1、昵称被冲掉或设备名不跟 WAN 都算错
+	if err != nil || row.DeviceSerial != "ARM-2" || row.Name != "焊机" || row.Nickname != "一线焊机" || row.Status != factory.ClientStatusBound {
 		// 打出读回结果，便于看是哪一项被冲回
 		t.Fatalf("after replay %+v %v", row, err)
 	}
-	// 用换臂后的 ARM-2 在本机登录，应当成功
-	if _, err := fac.LoginOnClient(ctx, cid, "ARM-2", "op", "op-pass"); err != nil {
-		// 换臂那台登不上就失败，说明号被冲回了
-		t.Fatalf("login arm-2: %v", err)
+	// 操作员厂网登录，设备名录里这台应带换臂后的号和昵称
+	sess, err := fac.LoginPad(ctx, "op", "op-pass")
+	// 登录失败就把原因打出并停掉本例
+	if err != nil {
+		// 厂网登录失败就停，后面没法看名录
+		t.Fatalf("pad login: %v", err)
 	}
-	// 旧臂号 ARM-1 不该再认这台
-	if _, err := fac.LoginOnClient(ctx, cid, "ARM-1", "op", "op-pass"); !errors.Is(err, domain.ErrDeviceSerialMismatch) {
-		// 旧号还能登录就失败
-		t.Fatalf("login arm-1: %v", err)
+	// 先当作名录里没找到这台
+	found := false
+	// 逐台看名录，找到这台再核号和名字
+	for _, d := range sess.Devices {
+		// 不是这台就跳过
+		if d.ID != cid {
+			continue
+		}
+		// 标上找到了这台
+		found = true
+		// 号被冲回或名字不是昵称都算错
+		if d.DeviceSerial != "ARM-2" || d.Name != "一线焊机" {
+			// 打出名录里这台的样子
+			t.Fatalf("pad device %+v", d)
+		}
+	}
+	// 名录里没有这台就失败
+	if !found {
+		// 打出整份名录便于看缺了谁
+		t.Fatalf("pad devices missing %s: %+v", cid, sess.Devices)
 	}
 }
 
@@ -93,19 +111,12 @@ func TestWANVoidAndReplayRespectRevision(t *testing.T) {
 	// 起一套测试库和厂服务，起不来则本例无法开始
 	h := New(t)
 	// 建厂并种初始超管，失败则本步验收不能继续
-	seed, fac, err := h.Provision(ctx, "sa", "超管")
+	_, fac, err := h.Provision(ctx, "sa", "超管")
 	// 建厂并种初始超管失败就停，避免带着错误继续验
 	if err != nil {
 		// 建厂并种初始超管失败就把原因打出并停掉本例
 		t.Fatal(err)
 	}
-	// 激活初始超管失败就停，避免带着错误继续验
-	if err := fac.Activate(ctx, "sa", seed.ActivationToken, "sa-pass"); err != nil {
-		// 激活初始超管失败就把原因打出并停掉本例
-		t.Fatal(err)
-	}
-	// 登录取出令牌，登不上则后面没有身份
-	saTok := mustLogin(t, ctx, fac, "sa", "sa-pass")
 	// 读回设备的小工具，读不到就停
 	read := func(cid uuid.UUID) factory.Client {
 		// 按身份读回这台设备
@@ -118,7 +129,7 @@ func TestWANVoidAndReplayRespectRevision(t *testing.T) {
 		return c
 	}
 
-	// 本厂超管手工作废的这台，验同修订重推不复活
+	// 本厂作废的这台，验同修订重推不复活
 	local := id.New()
 	// WAN 推来的分配，带着臂号
 	bind := factory.WANBinding{ClientID: local, Name: "焊机L", Revision: 1, DeviceSerial: "ARM-L"}
@@ -127,8 +138,8 @@ func TestWANVoidAndReplayRespectRevision(t *testing.T) {
 		// 首次落绑定失败就把原因打出并停掉本例
 		t.Fatalf("bind local: %v", err)
 	}
-	// 本厂超管作废这台，失败就停
-	if err := fac.VoidClientBinding(ctx, saTok, local); err != nil {
+	// 本厂作废这台，失败就停
+	if err := fac.VoidBinding(ctx, local); err != nil {
 		// 作废失败就把原因打出并停掉本例
 		t.Fatalf("void local: %v", err)
 	}
@@ -141,11 +152,6 @@ func TestWANVoidAndReplayRespectRevision(t *testing.T) {
 	if c := read(local); c.Status != factory.ClientStatusVoid || c.BindingRevision != 1 {
 		// 被同修订复活就失败
 		t.Fatalf("local revived %+v", c)
-	}
-	// 作废的这台不能在本机登录
-	if _, err := fac.LoginOnClient(ctx, local, "ARM-L", "sa", "sa-pass"); !errors.Is(err, domain.ErrBindingVoid) {
-		// 作废设备还能登录就失败
-		t.Fatalf("login void: %v", err)
 	}
 	// WAN 改分带来更高修订，才重新绑定
 	bind.Revision = 2

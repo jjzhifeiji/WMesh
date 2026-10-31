@@ -25,7 +25,7 @@ func (s *Closure) GetClientPolicy(ctx context.Context, token string) (ClientPoli
 		return ClientPolicy{}, err
 	}
 	// 只有工厂超管能看本厂统一策略。
-	if err := s.can(ctx, acc, permManageAccount, nil); err != nil {
+	if err := s.can(ctx, acc, permManageAccount); err != nil {
 		return ClientPolicy{}, err
 	}
 	// 读对本厂全部本机生效的策略，再交回调用方
@@ -49,7 +49,7 @@ func (s *Closure) SetClientPolicy(ctx context.Context, token string, in ClientPo
 	// 审计只记键名和修订，不含钥原文
 	target := policyAuditTarget(old, in)
 	// 只有工厂超管能改本厂 Client 策略。失败记拒绝，行不变。
-	if err := s.can(ctx, acc, permManageAccount, nil); err != nil {
+	if err := s.can(ctx, acc, permManageAccount); err != nil {
 		// 不是工厂超管，记下改本机策略被拒绝，写失败不改变结果
 		_ = s.audit(ctx, &acc.ID, nil, "set_client_policy", target, audit.Deny)
 		return ClientPolicy{}, err

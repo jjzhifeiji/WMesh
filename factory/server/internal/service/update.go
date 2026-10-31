@@ -568,7 +568,7 @@ func (s *Updates) SyncFactorySoftware(ctx context.Context, token, kind string) (
 	// 拼种类和版本，审计能对上是哪一个包。
 	target := softwareTarget(kind, 0)
 	// 当前人无权则记拒绝，不继续往下改。
-	if err := s.can(ctx, acc, permManageAccount, nil); err != nil {
+	if err := s.can(ctx, acc, permManageAccount); err != nil {
 		// 拉包被拒时补记审计，写失败仍不收。
 		_ = s.audit(ctx, &acc.ID, nil, "pull_software", target, audit.Deny)
 		return SoftwareReplica{}, err
@@ -651,7 +651,7 @@ func (s *Updates) PendingFactorySoftware(ctx context.Context, token string) (*So
 		return nil, err
 	}
 	// 当前人无权则记拒绝，不继续往下改。
-	if err := s.can(ctx, acc, permManageAccount, nil); err != nil {
+	if err := s.can(ctx, acc, permManageAccount); err != nil {
 		// 无权看待装包则记拒绝。
 		_ = s.audit(ctx, &acc.ID, nil, "pending_software", SoftwareFactoryService, audit.Deny)
 		return nil, err
@@ -703,7 +703,7 @@ func (s *Updates) ConfirmFactoryUpdate(ctx context.Context, token, kind string, 
 	// 拼种类和版本，审计能对上是哪一个包。
 	target := softwareTarget(kind, version)
 	// 当前人无权则记拒绝，不继续往下改。
-	if err := s.can(ctx, acc, permManageAccount, nil); err != nil {
+	if err := s.can(ctx, acc, permManageAccount); err != nil {
 		// 确认被拒时补记审计，写失败仍不切换。
 		_ = s.audit(ctx, &acc.ID, nil, "confirm_software", target, audit.Deny)
 		return err
@@ -778,7 +778,7 @@ func (s *Updates) ApplyProgress(ctx context.Context, token string) (ApplyProgres
 		return ApplyProgress{}, err
 	}
 	// 当前人无权则拒绝，不继续往下改。
-	if err := s.can(ctx, acc, permManageAccount, nil); err != nil {
+	if err := s.can(ctx, acc, permManageAccount); err != nil {
 		return ApplyProgress{}, err
 	}
 	// 没有进度来源就当闲置，不当成更换失败。
@@ -1015,7 +1015,7 @@ func (s *Updates) ListFactorySoftware(ctx context.Context, token, kind string) (
 		return nil, err
 	}
 	// 当前人无权则记拒绝，不继续往下改。
-	if err := s.can(ctx, acc, permManageAccount, nil); err != nil {
+	if err := s.can(ctx, acc, permManageAccount); err != nil {
 		// 无权看软件副本则记拒绝。
 		_ = s.audit(ctx, &acc.ID, nil, "list_software", kind, audit.Deny)
 		return nil, err
@@ -1087,7 +1087,7 @@ func (s *Updates) DeleteFactorySoftware(ctx context.Context, token, kind string,
 	// 拼种类和版本，审计能对上是哪一个包。
 	target := softwareTarget(kind, version)
 	// 当前人无权则记拒绝，不继续往下改。
-	if err := s.can(ctx, acc, permManageAccount, nil); err != nil {
+	if err := s.can(ctx, acc, permManageAccount); err != nil {
 		// 这包不能删或删除失败时记拒绝。
 		_ = s.audit(ctx, &acc.ID, nil, "prune_software", target, audit.Deny)
 		return err
@@ -1173,7 +1173,7 @@ func (s *Updates) RequestImagePrune(ctx context.Context, token, ref string) erro
 	// 点名清用标签，一键清用固定对象，方便对审计。
 	target := imagePruneAuditTarget(ref)
 	// 当前人无权则记拒绝，不继续往下改。
-	if err := s.can(ctx, acc, permManageAccount, nil); err != nil {
+	if err := s.can(ctx, acc, permManageAccount); err != nil {
 		// 清镜像被拒时补记审计，写失败仍不请清。
 		_ = s.audit(ctx, &acc.ID, nil, "prune_images", target, audit.Deny)
 		return err
@@ -1278,7 +1278,7 @@ func (s *Updates) ImagePruneProgress(ctx context.Context, token string) (ImagePr
 		return ImagePrune{}, err
 	}
 	// 当前人无权则拒绝，不继续往下改。
-	if err := s.can(ctx, acc, permManageAccount, nil); err != nil {
+	if err := s.can(ctx, acc, permManageAccount); err != nil {
 		return ImagePrune{}, err
 	}
 	// 没有清理器就当已经清完，回收为零。
@@ -1334,7 +1334,7 @@ func (s *Updates) StorageUsage(ctx context.Context, token string) (StorageUsage,
 		return StorageUsage{}, err
 	}
 	// 当前人无权则拒绝，不继续往下改。
-	if err := s.can(ctx, acc, permManageAccount, nil); err != nil {
+	if err := s.can(ctx, acc, permManageAccount); err != nil {
 		return StorageUsage{}, err
 	}
 	// 先放空占用，读到哪项填哪项。

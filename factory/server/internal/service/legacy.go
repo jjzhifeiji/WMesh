@@ -60,6 +60,7 @@ type LegacyFile struct {
 
 // LegacyImport 厂端一次性导入：先工艺后工程。
 type LegacyImport struct {
+	Level     string       // 导进哪一级：personal 进本人个人文件夹（默认），factory 进厂级要管理员
 	Processes []LegacyFile // 工艺文件，同一路径只入一次
 	Projects  []LegacyFile // 工程文件；缺路径则该份拒绝
 	Overwrite bool         // 同名改正文保留身份；否就跳过同名
@@ -82,7 +83,7 @@ type LegacyImportResult struct {
 	Skipped   []LegacyReject `json:"skipped"`   // 内容相同或同名跳过，沿用已有身份
 }
 
-// ImportLegacy 由工厂超管或整厂管理员把旧文件收成厂级资产。
+// ImportLegacy 把旧文件收成本厂资产：默认进本人个人文件夹，选厂级要超管或管理员。
 func (s *Assets) ImportLegacy(ctx context.Context, token string, in LegacyImport) (LegacyImportResult, error) {
 	// 核对登录仍有效，后面的操作都靠这次会话。
 	acc, err := s.RequireActive(ctx, token)
@@ -90,10 +91,23 @@ func (s *Assets) ImportLegacy(ctx context.Context, token string, in LegacyImport
 	if err != nil {
 		return LegacyImportResult{}, err
 	}
-	// 管理员以上：工厂超管或整厂管理员。操作员不行。
-	if err := s.can(ctx, acc, permManageOrg, nil); err != nil {
-		// 不是管理员则记拒绝，操作员不能导旧文件。
-		_ = s.audit(ctx, &acc.ID, nil, "import_legacy", "factory", audit.Deny)
+	// 没选级别就进个人文件夹
+	level := in.Level
+	// 空着按个人级
+	if level == "" {
+		// 默认导进本人个人文件夹
+		level = AssetLevelPersonal
+	}
+	// 只能导进厂级或个人级
+	if level != AssetLevelFactory && level != AssetLevelPersonal {
+		// 不认识的级别记拒绝
+		_ = s.audit(ctx, &acc.ID, nil, "import_legacy", level, audit.Deny)
+		return LegacyImportResult{}, domain.ErrForbidden
+	}
+	// 按级别核制作权，厂级要管理员
+	if err := s.canAuthorLevel(ctx, acc, level); err != nil {
+		// 没有厂级制作权则记拒绝
+		_ = s.audit(ctx, &acc.ID, nil, "import_legacy", level, audit.Deny)
 		return LegacyImportResult{}, err
 	}
 	// 先放空结果，工艺和工程分开，失败的另记。
@@ -103,16 +117,16 @@ func (s *Assets) ImportLegacy(ctx context.Context, token string, in LegacyImport
 		Rejected:  []LegacyReject{},
 		Skipped:   []LegacyReject{},
 	}
-	// 取出未停用厂级的同名对照和工艺，个人级不参与。
-	book, err := s.factoryImportBook(ctx)
+	// 取出同一级未停用的同名对照和工艺；个人级只看本人的。
+	book, err := s.importBook(ctx, acc, level)
 	// 对照表读失败则整批导入停下。
 	if err != nil {
 		return LegacyImportResult{}, err
 	}
 	// 准备路径对照，工程靠它把旧路径换成身份。
 	idx := newPathIndex()
-	// 导入按直属工厂，不挂到某个组织节点。
-	wc := WorkContext{Direct: true}
+	// 导入挂到对应树根
+	wc := WorkContext{}
 	// 同一相对路径只收一次，重复的丢掉。
 	seen := map[string]struct{}{}
 	// 先预扫本批工程，记下每份工艺被哪些作业类型引用。
@@ -163,13 +177,13 @@ func (s *Assets) ImportLegacy(ctx context.Context, token string, in LegacyImport
 			// 按带回的类型和后缀定位首导时那一份。
 			p.kind, p.suffix = kind, f.Suffix
 			// 只按这种作业类型重试这一份。
-			s.importLegacyProcess(ctx, acc, token, wc, book, idx, &out, p)
+			s.importLegacyProcess(ctx, acc, token, wc, level, book, idx, &out, p)
 			continue
 		}
 		// 本批没有工程引用就只入一份，不限类型沿用。
 		if len(uses[rel]) == 0 {
 			// 不限类型找能沿用的，找不到按单层新建。
-			s.importLegacyProcess(ctx, acc, token, wc, book, idx, &out, p)
+			s.importLegacyProcess(ctx, acc, token, wc, level, book, idx, &out, p)
 			continue
 		}
 		// 被几种作业类型引用就按类型各入一份。
@@ -184,7 +198,7 @@ func (s *Assets) ImportLegacy(ctx context.Context, token string, in LegacyImport
 				p.suffix = weldKindSuffix(kind)
 			}
 			// 按这种作业类型入一份并记进路径对照。
-			s.importLegacyProcess(ctx, acc, token, wc, book, idx, &out, p)
+			s.importLegacyProcess(ctx, acc, token, wc, level, book, idx, &out, p)
 		}
 	}
 	// 按缝隙目录收 T 排那份打底和盖面，缺文件的带也可以留。
@@ -245,7 +259,7 @@ func (s *Assets) ImportLegacy(ctx context.Context, token string, in LegacyImport
 			continue
 		}
 		// 按改写后的正文落厂级工程，不套会丢元素的模版。
-		row, err := s.insertImportedProject(ctx, acc, wc, name, body)
+		row, err := s.insertImportedProject(ctx, acc, level, name, body)
 		// 这一份失败就记入未入清单，其它份继续。
 		if err != nil {
 			// 这一份没入库，记入未入清单，其它份继续。
@@ -322,7 +336,7 @@ func (p legacyProc) indexKind(row Asset) string {
 }
 
 // importLegacyProcess 按一种作业类型收一份旧工艺，结果记进路径对照和本批结果。
-func (s *Assets) importLegacyProcess(ctx context.Context, acc Account, token string, wc WorkContext, book *importBook, idx *pathIndex, out *LegacyImportResult, p legacyProc) {
+func (s *Assets) importLegacyProcess(ctx context.Context, acc Account, token string, wc WorkContext, level string, book *importBook, idx *pathIndex, out *LegacyImportResult, p legacyProc) {
 	// 原名接上后缀就是这一份的名字，撞名时再改。
 	name := p.base + p.suffix
 	// 新建时用的作业类型，本批没人引用就按单层。
@@ -387,8 +401,8 @@ func (s *Assets) importLegacyProcess(ctx context.Context, acc Account, token str
 			return
 		}
 	}
-	// 把这份旧工艺按作业类型收成厂级草稿。
-	row, err := s.CreateFactoryProcess(ctx, token, wc, name, p.content, create)
+	// 把这份旧工艺按作业类型收成所选级别的草稿。
+	row, err := s.CreateProcess(ctx, token, wc, level, name, p.content, true, create)
 	// 这一份失败就记入未入清单，其它份继续。
 	if err != nil {
 		// 这一份没入库，记入未入清单，其它份继续。
@@ -411,28 +425,26 @@ func (s *Assets) importLegacyProcess(ctx context.Context, acc Account, token str
 	out.Processes = append(out.Processes, row)
 }
 
-// insertImportedProject 按改写后正文落厂级工程，不套已收模版，免把 T 排元素丢掉。
-func (s *Assets) insertImportedProject(ctx context.Context, acc Account, wc WorkContext, name string, content []byte) (Asset, error) {
-	// 定下制作时的工作位置，并准备冻结路径。
-	unitID, path, err := s.resolveAuthorContext(ctx, acc, wc)
-	// 工作位置不合法则拒绝，并补记审计。
-	if err != nil {
+// insertImportedProject 按改写后正文落工程，不套已收模版，免把 T 排元素丢掉。
+func (s *Assets) insertImportedProject(ctx context.Context, acc Account, level, name string, content []byte) (Asset, error) {
+	// 按级别核制作权，没有则拒绝。
+	if err := s.canAuthorLevel(ctx, acc, level); err != nil {
 		// 创建被拒时补记审计，写失败仍维持拒绝。
-		_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny, unitID, path)
+		_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny)
 		return Asset{}, err
 	}
 	// 作业类型按改写后正文里的模版推断。
 	weld := contenttpl.InferWeldKind(content)
 	// 按改写后的正文钉当前可用工艺，并核作业类型。
-	deps, err := s.importedProjectDeps(ctx, weld, content)
+	deps, err := s.importedProjectDeps(ctx, acc, level, weld, content)
 	// 失败则记拒绝并停下，不继续往下改。
 	if err != nil {
 		// 创建被拒时补记审计，写失败仍维持拒绝。
-		_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny, unitID, path)
+		_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny)
 		return Asset{}, err
 	}
 	// 校验都过了才按推断的作业类型落成一条资产。
-	return s.insertGoverned(ctx, acc, unitID, path, KindProject, AssetLevelFactory, name, content, deps, true, weld)
+	return s.insertGoverned(ctx, acc, KindProject, level, name, content, deps, true, weld)
 }
 
 // overwriteImported 改正文（工程同时改依赖和作业类型），身份不变；草稿顺带发布。
@@ -446,7 +458,7 @@ func (s *Assets) overwriteImported(ctx context.Context, acc Account, token strin
 		// 工程作业类型按新正文推断，一起写回。
 		weld = contenttpl.InferWeldKind(content)
 		// 按改写后的正文钉当前可用工艺，并核作业类型。
-		d, err := s.importedProjectDeps(ctx, weld, content)
+		d, err := s.importedProjectDeps(ctx, acc, cur.Level, weld, content)
 		// 依赖钉不住则这份工程不能覆盖或新建。
 		if err != nil {
 			return Asset{}, err
@@ -483,7 +495,7 @@ func (s *Assets) overwriteImported(ctx context.Context, acc Account, token strin
 }
 
 // importedProjectDeps 按改写后正文钉当前可用工艺，不套模版；焊缝和依赖都要和作业类型一致。
-func (s *Assets) importedProjectDeps(ctx context.Context, weld string, content []byte) ([]AssetDep, error) {
+func (s *Assets) importedProjectDeps(ctx context.Context, acc Account, level, weld string, content []byte) ([]AssetDep, error) {
 	// 正文里混了几种焊缝就整份拒绝。
 	if err := assertProjectWeldKind(weld, content); err != nil {
 		return nil, err
@@ -496,6 +508,11 @@ func (s *Assets) importedProjectDeps(ctx context.Context, weld string, content [
 	}
 	// 按本厂或已收的可用工艺钉死当前修订。
 	deps, err := mergeProjectDeps(nil, ids, func(id uuid.UUID) (AssetDep, error) {
+		// 个人工程还能钉本人的个人工艺
+		if level == AssetLevelPersonal {
+			// 把引用钉到本人个人工艺或厂级可用工艺。
+			return s.pinPersonalProcess(ctx, acc, id)
+		}
 		// 把引用钉到当前可用的厂级或已收工艺。
 		return s.pinFactoryProcess(ctx, id)
 	})
@@ -503,8 +520,14 @@ func (s *Assets) importedProjectDeps(ctx context.Context, weld string, content [
 	if err != nil {
 		return nil, err
 	}
-	// 依赖不合格则拒绝保存。
-	if err := s.assertFactoryProcessDeps(ctx, deps); err != nil {
+	// 个人工程按个人口径核依赖
+	if level == AssetLevelPersonal {
+		// 依赖不合格则拒绝保存。
+		if err := s.assertPersonalProjectDeps(ctx, acc, deps); err != nil {
+			return nil, err
+		}
+		// 厂级工程只能依赖厂级或已收工艺
+	} else if err := s.assertFactoryProcessDeps(ctx, deps); err != nil {
 		return nil, err
 	}
 	// 依赖钉到别的作业类型的工艺则整份拒绝。
@@ -528,20 +551,24 @@ func (s *Assets) importedProjectDeps(ctx context.Context, weld string, content [
 	return deps, nil
 }
 
-// factoryImportBook 未停用厂级按种类+显示名取最新一条，工艺另全留下按摘要沿用。
-func (s *Assets) factoryImportBook(ctx context.Context) (*importBook, error) {
-	// 读出本厂全部原件，后面再按人筛选。
+// importBook 同一级未停用的按种类+显示名取最新一条，工艺另全留下按摘要沿用；个人级只看本人的。
+func (s *Assets) importBook(ctx context.Context, acc Account, level string) (*importBook, error) {
+	// 读出本厂全部原件，后面再按级别和人筛选。
 	rows, err := s.store.ListGovernedAssets(ctx)
 	// 列表读不出来则整份失败，不回半截。
 	if err != nil {
 		return nil, err
 	}
-	// 同名只留先见到的未停用厂级。
+	// 同名只留先见到的那条。
 	book := newImportBook()
-	// 只收未停用厂级，个人级不参与同名对照。
+	// 只收同一级未停用的；个人级再只看本人的。
 	for _, a := range rows {
-		// 个人级和停用的不参与同名对照。
-		if a.Level != AssetLevelFactory || a.Status == AssetDisabled {
+		// 级别不同或已停用的不参与同名对照。
+		if a.Level != level || a.Status == AssetDisabled {
+			continue
+		}
+		// 个人级只和本人自己的比，别人的不碰。
+		if level == AssetLevelPersonal && a.CreatorID != acc.ID {
 			continue
 		}
 		// 工艺全留下，同名多条时按摘要挑能沿用的。

@@ -1,4 +1,4 @@
-// 第 4 圈：工厂初始化、激活、登录退出、账号状态。
+// 第 4 圈：工厂初始化、登录退出、账号状态。
 package service_test
 
 import (
@@ -19,33 +19,28 @@ import (
 	"wmesh/factory/internal/store"
 )
 
-// 验收初始化、激活、登录退出，以及账号状态流转。
+// 验收初始化、登录退出，以及账号状态流转。
 func TestAuthCircle(t *testing.T) {
 	// 准备无取消的上下文，后面每次调用都挂在上面。
 	ctx := context.Background()
 	// 拉起隔离厂库，起不来说明测试库还没就绪。
 	h := New(t)
-	// 建厂并签发超管激活码，失败则没有厂可测。
+	// 建厂并写下初始超管，失败则没有厂可测。
 	created, facA, err := h.Provision(ctx, "sa-a", "初始超管")
 	// 建厂失败就停，否则后面没有可靠结果。
 	if err != nil {
 		// 断言没通过就停，结果和这条用例的预期不一致。
 		t.Fatalf("bootstrap: %v", err)
 	}
-	// 激活码应是八位，位数不对说明签发坏了。
-	if len(created.ActivationToken) != 8 {
-		// 资产编号和预期不一致，说明发号规则偏了。
-		t.Fatalf("activation code len %d", len(created.ActivationToken))
-	}
 	// 初始化后应只有一名超管，人数不对说明建厂偏了。
 	if n, _ := facA.Store().PersonCount(ctx); n != 1 {
 		// 条目 2.1 没对上，这一条矩阵行为偏了。
 		t.Fatalf("2.1 one sa, got %d", n)
 	}
-	// 登录应因账号未激活被拒绝，放行说明没拦住。
-	if _, err := facA.Login(ctx, "sa-a", "not-yet"); !errors.Is(err, domain.ErrAccountPending) {
+	// 建厂后超管当场有效，口令错也只按口令不对拒绝。
+	if _, err := facA.Login(ctx, "sa-a", "not-yet"); !errors.Is(err, domain.ErrInvalidCredentials) {
 		// 条目 10.1 没对上，这一条矩阵行为偏了。
-		t.Fatalf("10.1 pending login: %v", err)
+		t.Fatalf("10.1 wrong pass login: %v", err)
 	}
 	// 验会话应因未登录被拒绝，放行说明没拦住。
 	if _, err := facA.RequireActive(ctx, "no-session"); !errors.Is(err, domain.ErrUnauthorized) {
@@ -53,7 +48,7 @@ func TestAuthCircle(t *testing.T) {
 		t.Fatalf("10.1 protect: %v", err)
 	}
 	// 开通失败就停，否则后面没有可靠结果。
-	if err := facA.Activate(ctx, "sa-a", created.ActivationToken, "sa-pass"); err != nil {
+	if err := seedPass(ctx, facA, "sa-a", "sa-pass"); err != nil {
 		// 条目 2.4 没对上，这一条矩阵行为偏了。
 		t.Fatalf("2.4 activate: %v", err)
 	}
@@ -70,15 +65,15 @@ func TestAuthCircle(t *testing.T) {
 		t.Fatalf("2.4 protect: %v", err)
 	}
 
-	// 建厂并签发超管激活码，失败则没有厂可测。
-	createdB, facB, err := h.Provision(ctx, "sa-b", "厂B超管")
+	// 建厂并写下初始超管，失败则没有厂可测。
+	_, facB, err := h.Provision(ctx, "sa-b", "厂B超管")
 	// 建厂失败就停，否则后面没有可靠结果。
 	if err != nil {
 		// 断言没通过就停，结果和这条用例的预期不一致。
 		t.Fatalf("create B: %v", err)
 	}
 	// 开通失败就停，否则后面没有可靠结果。
-	if err := facB.Activate(ctx, "sa-b", createdB.ActivationToken, "sb-pass"); err != nil {
+	if err := seedPass(ctx, facB, "sa-b", "sb-pass"); err != nil {
 		// 把开通的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
@@ -198,14 +193,14 @@ func TestAuthCircle(t *testing.T) {
 	// 把审计打成可搜文本，打不出则查不了泄密。
 	dump := audit.Dump(facAudit)
 	// 算出默认口令，首次登录要用它而不是新口令。
-	secrets := []string{"sa-pass", "sa-pass-2", "temp-pass", personPass("temp"), created.ActivationToken, saTok, tempTok}
+	secrets := []string{"sa-pass", "sa-pass-2", "temp-pass", personPass("temp"), saTok, tempTok}
 	// 审计里不应出现口令或正文，出现了就算泄密。
 	if audit.ContainsAny(dump, secrets...) {
 		// 结果里出现了不该有的敏感词，说明已经泄密。
 		t.Fatalf("17 secret leaked in audit")
 	}
 	// 审计应留下允许或拒绝，缺了说明这步没记账。
-	if !audit.HasResult(facAudit, "activate", audit.Allow) || !audit.HasResult(facAudit, "change_password", audit.Allow) {
+	if !audit.HasResult(facAudit, "enroll_factory", audit.Allow) || !audit.HasResult(facAudit, "change_password", audit.Allow) {
 		// 条目 17.3 没对上，这一条矩阵行为偏了。
 		t.Fatalf("17.3 factory audit missing")
 	}
@@ -218,61 +213,6 @@ func TestAuthCircle(t *testing.T) {
 	if !audit.HasResult(facAudit, "logout", audit.Allow) {
 		// 条目 10.3 没对上，这一条矩阵行为偏了。
 		t.Fatalf("10.3 no logout audit")
-	}
-}
-
-// 同一待启用账号连错五次后，第六次即使码对也被挡住。
-func TestActivateThrottle(t *testing.T) {
-	// 准备无取消的上下文，后面每次调用都挂在上面。
-	ctx := context.Background()
-	// 拉起隔离厂库，起不来说明测试库还没就绪。
-	h := New(t)
-	// 建厂并签发超管激活码，失败则没有厂可测。
-	created, fac, err := h.Provision(ctx, "sa-t", "限次超管")
-	// 建厂失败就停，否则后面没有可靠结果。
-	if err != nil {
-		// 断言没通过就停，结果和这条用例的预期不一致。
-		t.Fatalf("bootstrap: %v", err)
-	}
-	// 连错五次，每次都应按激活码不对拒绝。
-	for i := 0; i < 5; i++ {
-		// 错码应被拒绝，放行说明比对坏了。
-		if err := fac.Activate(ctx, "sa-t", "wrong-code", "sa-pass"); !errors.Is(err, domain.ErrInvalidActivation) {
-			// 前五次就被挡，说明限次给得太少。
-			t.Fatalf("try %d: %v", i, err)
-		}
-	}
-	// 名额已用完，码对也应先被限次挡住。
-	if err := fac.Activate(ctx, "sa-t", created.ActivationToken, "sa-pass"); !errors.Is(err, domain.ErrTooManyAttempts) {
-		// 没挡住说明限次没生效，激活码能被一直猜。
-		t.Fatalf("throttled: %v", err)
-	}
-	// 被挡的那次不应激活，账号仍待启用。
-	if _, err := fac.Login(ctx, "sa-t", "sa-pass"); !errors.Is(err, domain.ErrAccountPending) {
-		// 能登录说明被挡的请求仍然改了口令。
-		t.Fatalf("still pending: %v", err)
-	}
-	// 拉出审计流水，失败则无法核对有没有记账。
-	rows, err := fac.ListAudit(ctx)
-	// 拉审计失败就停，否则后面没有可靠结果。
-	if err != nil {
-		// 把拉审计的错误打出来并停住，避免继续往下验。
-		t.Fatal(err)
-	}
-	// 数出激活拒绝的条数，被挡的那次也要记。
-	denies := 0
-	// 逐行看审计，只数激活拒绝。
-	for _, r := range rows {
-		// 激活且拒绝的才算进来。
-		if r.Action == "activate" && r.Result == audit.Deny {
-			// 再记一条激活拒绝。
-			denies++
-		}
-	}
-	// 五次错码加一次被挡，至少六条拒绝。
-	if denies < 6 {
-		// 少了说明被挡的那次没留审计。
-		t.Fatalf("activate deny rows %d", denies)
 	}
 }
 
@@ -398,10 +338,12 @@ func TestLoginNameTrimmed(t *testing.T) {
 		// 库里名字不是 boss，示教器会登不上。
 		t.Fatalf("stored sa login %q %v", sa.LoginName, err)
 	}
-	// 用规范名激活应能成功，失败说明激活没对上名字。
-	if err := fac.Activate(ctx, "boss", created.ActivationToken, "boss-pass"); err != nil {
-		// 规范名激活不了，说明库里名字和规范不一致。
-		t.Fatalf("activate boss: %v", err)
+	// 夹具按原样名字拼了默认口令，用规范名带它登录应能成功。
+	bootTok := mustLogin(t, ctx, fac, "boss", personPass(" boss "))
+	// 改成测试口令，失败说明会话或口令不对。
+	if err := fac.ChangePassword(ctx, bootTok, personPass(" boss "), "boss-pass"); err != nil {
+		// 规范名会话改不了口令就停。
+		t.Fatalf("seed boss: %v", err)
 	}
 	// 用规范名网页登录，拿到超管会话。
 	saTok, err := fac.Login(ctx, "boss", "boss-pass")
@@ -457,22 +399,24 @@ func TestLoginNameTrimmed(t *testing.T) {
 		// 两个张三并存，说明去空白前就落了库。
 		t.Fatalf("taken after trim: %v", err)
 	}
-	// 张三改成默认口令以外的口令并拿会话，后面要改名。
+	// 张三改成默认口令以外的口令并拿会话，后面要改显示名。
 	zTok := mustAdoptPassword(t, ctx, fac, "zhang3", "z-pass")
-	// 改成全空白的名字应被拒绝，放行说明改名没判空。
-	if err := fac.Rename(ctx, zTok, "张三", "  "); !errors.Is(err, domain.ErrInvalidName) {
-		// 改出了空名，账号将再也登不上。
+	// 显示名改成全空白应被拒绝，放行说明改名没判空。
+	if _, err := fac.SetMyDisplayName(ctx, zTok, "  "); !errors.Is(err, domain.ErrInvalidName) {
+		// 改出了空显示名就停。
 		t.Fatalf("rename blank: %v", err)
 	}
-	// 改名带首尾空格，库里应存去掉后的名字。
-	if err := fac.Rename(ctx, zTok, "张三", " zhang-new "); err != nil {
-		// 带空格的新名改不了，说明改名没先规范。
-		t.Fatalf("rename padded: %v", err)
+	// 显示名带首尾空格，库里应存去掉后的名字，登录名不动。
+	acc, err := fac.SetMyDisplayName(ctx, zTok, " 张三新 ")
+	// 改不了、没去空白或登录名被动都算错。
+	if err != nil || acc.DisplayName != "张三新" || acc.LoginName != "zhang3" {
+		// 带空格的新名没规范就停。
+		t.Fatalf("rename padded: %+v %v", acc, err)
 	}
-	// 示教器用改后的规范名登录，应能过。
-	if _, err := fac.LoginPad(ctx, "zhang-new", "z-pass"); err != nil {
-		// 改后的名字登不上，说明改名存了原样。
-		t.Fatalf("pad login renamed: %v", err)
+	// 示教器仍用原登录名登录，应能过。
+	if _, err := fac.LoginPad(ctx, "zhang3", "z-pass"); err != nil {
+		// 改显示名后登不上，说明登录名被连带改了。
+		t.Fatalf("pad login after rename: %v", err)
 	}
 }
 
@@ -535,15 +479,15 @@ func TestChangePasswordChecksCurrent(t *testing.T) {
 	ctx := context.Background()
 	// 拉起隔离厂库，起不来说明测试库还没就绪。
 	h := New(t)
-	// 建厂并签发超管激活码，失败则没有厂可测。
-	created, fac, err := h.Provision(ctx, "sa-cp", "改密超管")
+	// 建厂并写下初始超管，失败则没有厂可测。
+	_, fac, err := h.Provision(ctx, "sa-cp", "改密超管")
 	// 建厂失败就停，否则后面没有可靠结果。
 	if err != nil {
 		// 断言没通过就停，结果和这条用例的预期不一致。
 		t.Fatalf("bootstrap: %v", err)
 	}
 	// 开通失败就停，否则后面没有可靠结果。
-	if err := fac.Activate(ctx, "sa-cp", created.ActivationToken, "cp-pass-1"); err != nil {
+	if err := seedPass(ctx, fac, "sa-cp", "cp-pass-1"); err != nil {
 		// 把开通的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
@@ -628,7 +572,7 @@ func TestChangePasswordAppSession(t *testing.T) {
 	ctx := context.Background()
 	// 拉起隔离厂库，起不来说明测试库还没就绪。
 	h := New(t)
-	// 建厂并签发超管激活码，失败则没有厂可测。
+	// 建厂并写下初始超管，失败则没有厂可测。
 	created, fac, err := h.Provision(ctx, "sa-ap", "示教器超管")
 	// 建厂失败就停，否则后面没有可靠结果。
 	if err != nil {
@@ -636,7 +580,7 @@ func TestChangePasswordAppSession(t *testing.T) {
 		t.Fatalf("bootstrap: %v", err)
 	}
 	// 开通失败就停，否则后面没有可靠结果。
-	if err := fac.Activate(ctx, "sa-ap", created.ActivationToken, "ap-pass-1"); err != nil {
+	if err := seedPass(ctx, fac, "sa-ap", "ap-pass-1"); err != nil {
 		// 把开通的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}

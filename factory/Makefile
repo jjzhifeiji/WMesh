@@ -74,7 +74,7 @@ push: build ## 推送应用镜像到 .env 里的 WMESH_REGISTRY
 	$(COMPOSE) push app
 
 dev-server: test-db ## 本地跑 Go 服务（连测试库；改 WMESH_* 环境变量覆盖默认值）
-	cd server && WMESH_BOOTSTRAP_TOKEN=$${WMESH_BOOTSTRAP_TOKEN:-dev-bootstrap} go run ./cmd/server
+	cd server && go run ./cmd/server
 
 dev-web: ## 本地跑前端开发服务器（:5174，/v1 代理到 :8081）
 	cd frontend && npm install --no-audit --no-fund && npm run dev

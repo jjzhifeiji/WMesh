@@ -1,4 +1,4 @@
-// HTTP 适配：inbox 与 HTTPS 拉闭包密文；他机拒绝。
+// HTTP 适配：厂网登录后 inbox 与 HTTPS 拉闭包密文；本机旧入口已撤。
 package httpapi_test
 
 import (
@@ -45,8 +45,8 @@ func TestClientChannelHTTP(t *testing.T) {
 		// 与预期不符就停测，避免后面连环误判。
 		t.Fatal(err)
 	}
-	// 装上厂内适配，引导口令只在测试里使用。
-	api := httpapi.New(h, "boot-secret", "")
+	// 装上厂内适配，测试不连 WAN。
+	api := httpapi.New(h, "")
 	// 测试里固定通道地址，不跟请求主机变化。
 	api.ClientMQTTURL = "tcp://" + h.ClientMQTTAddr()
 	// 拉起临时服务，测完由清理关掉。
@@ -56,41 +56,15 @@ func TestClientChannelHTTP(t *testing.T) {
 	// 拼出本厂前缀，后面的路径都接在后面。
 	base := "/v1/factories/" + fid.String()
 
-	// 用共享密码建厂，激活码只出现在回包。
-	code, body := do(t, srv, "POST", "/internal/bootstrap", "boot-secret", `{"factoryId":"`+fid.String()+`","saLogin":"sa","saDisplay":"超管"}`)
-	// 不是已创建则本测失败。
-	if code != http.StatusCreated {
-		// 与预期不符就停测，避免后面连环误判。
-		t.Fatalf("bootstrap %d %s", code, body)
-	}
-	// 按工厂打开已有库，没有库就当未初始化。
-	svc, err := h.Service(context.Background(), fid)
-	// 这一步失败则停测，避免在坏结果上继续。
-	if err != nil {
-		// 与预期不符就停测，避免后面连环误判。
-		t.Fatal(err)
-	}
-	// 租约写不进去则停测，后面读正文会失败。
-	if err := svc.Store().GrantLocalLease(context.Background()); err != nil {
-		// 与预期不符就停测，避免后面连环误判。
-		t.Fatal(err)
-	}
+	// 按约定身份建厂，初始超管当场有效。
+	svc, _ := enrollSA(t, h, fid)
 	// 厂短码写不进去则停测。
 	if err := svc.Store().PutFactoryShortCode(context.Background(), "F01"); err != nil {
 		// 与预期不符就停测，避免后面连环误判。
 		t.Fatal(err)
 	}
-	// 取出激活码，启用账号时要用。
-	act := gjson(t, body, "activationToken")
-	// 用激活码启用账号，错码应当被拒绝。
-	code, body = do(t, srv, "POST", base+"/activate", "", `{"loginName":"sa","activationToken":"`+act+`","password":"secret"}`)
-	// 不是无内容则本测失败。
-	if code != http.StatusNoContent {
-		// 与预期不符就停测，避免后面连环误判。
-		t.Fatalf("activate %d %s", code, body)
-	}
 	// 登录并取得会话，口令错误应当被拒绝。
-	code, body = do(t, srv, "POST", base+"/login", "", `{"loginName":"sa","password":"secret"}`)
+	code, body := do(t, srv, "POST", base+"/login", "", `{"loginName":"sa","password":"secret"}`)
 	// 不是成功则本测失败。
 	if code != http.StatusOK {
 		// 与预期不符就停测，避免后面连环误判。
@@ -108,63 +82,58 @@ func TestClientChannelHTTP(t *testing.T) {
 	}
 	// 分配一个新身份，避免和别的测试撞上。
 	cid := id.New().String()
-	// 分配一个新身份，避免和别的测试撞上。
-	cidB := id.New().String()
 	// 绑定只认 WAN 通道这一个入口，测试直接走它预置。
 	if _, err := svc.Node.AcceptBinding(context.Background(), uuid.MustParse(cid), "焊机", pub, 1); err != nil {
 		// 与预期不符就停测，避免后面连环误判。
 		t.Fatalf("bind: %v", err)
 	}
-	// 再生成一台的公钥，用来验证他机被拒绝。
-	pubB, _, _ := ed25519.GenerateKey(rand.Reader)
-	// 另一台同样走 WAN 通道入口预置，用来验他机被拒。
-	if _, err := svc.Node.AcceptBinding(context.Background(), uuid.MustParse(cidB), "焊机B", pubB, 1); err != nil {
-		// 与预期不符就停测，避免后面连环误判。
-		t.Fatalf("bind b: %v", err)
-	}
-	// 把机械臂号钉到这台设备上。
-	code, body = do(t, srv, "POST", base+"/clients/"+cid+"/device", saTok, `{"deviceSerial":"ARM-1"}`)
+	// 示教器走厂网登录，令牌后面拉清单和连通道都用它。
+	code, body = do(t, srv, "POST", base+"/pad/login", "", `{"loginName":"sa","password":"secret"}`)
 	// 不是成功则本测失败。
 	if code != http.StatusOK {
 		// 与预期不符就停测，避免后面连环误判。
-		t.Fatalf("pin %d %s", code, body)
-	}
-	// 把机械臂号钉到这台设备上。
-	code, body = do(t, srv, "POST", base+"/clients/"+cidB+"/device", saTok, `{"deviceSerial":"ARM-B"}`)
-	// 不是成功则本测失败。
-	if code != http.StatusOK {
-		// 与预期不符就停测，避免后面连环误判。
-		t.Fatalf("pin b %d %s", code, body)
-	}
-	// 登录并取得会话，口令错误应当被拒绝。
-	code, body = do(t, srv, "POST", base+"/clients/"+cid+"/login", "", `{"deviceSerial":"ARM-1","loginName":"sa","password":"secret"}`)
-	// 不是成功，或正文与预期不符则失败。
-	if code != http.StatusOK || gjson(t, body, "mqttUrl") == "" || gjson(t, body, "signingPublicKey") == "" {
-		// 与预期不符就停测，避免后面连环误判。
-		t.Fatalf("client login %d %s", code, body)
+		t.Fatalf("pad login %d %s", code, body)
 	}
 	// 取出会话令牌，后面的请求要带上。
 	tok := gjson(t, body, "token")
-
-	// 拉取对账清单，正文不应当出现。
+	// 取出人员身份，后面用来对上连接。
+	personID := gjson(t, body, "account.id")
+	// 本机旧入口都已撤，应落到兜底的找不到。
+	for _, path := range []string{"/clients/" + cid + "/device", "/clients/" + cid + "/login"} {
+		// 按旧入口发一次。
+		code, body = do(t, srv, "POST", base+path, saTok, `{"deviceSerial":"ARM-1","loginName":"sa","password":"secret"}`)
+		// 不是找不到则本测失败。
+		if code != http.StatusNotFound {
+			// 与预期不符就停测，避免后面连环误判。
+			t.Fatalf("old %s %d %s", path, code, body)
+		}
+	}
+	// 本机收件箱旧入口已撤，应落到兜底的找不到。
 	code, body = do(t, srv, "GET", base+"/clients/"+cid+"/inbox", tok, "")
+	// 不是找不到则本测失败。
+	if code != http.StatusNotFound {
+		// 与预期不符就停测，避免后面连环误判。
+		t.Fatalf("old inbox %d %s", code, body)
+	}
+	// 拉取厂网对账清单，正文不应当出现。
+	code, body = do(t, srv, "GET", base+"/pad/inbox", tok, "")
 	// 不是成功，或正文与预期不符则失败。
 	if code != http.StatusOK || !strings.Contains(body, `"closures"`) {
 		// 与预期不符就停测，避免后面连环误判。
 		t.Fatalf("inbox %d %s", code, body)
 	}
-	// 拉取对账清单，正文不应当出现。
-	code, body = do(t, srv, "GET", base+"/clients/"+cidB+"/inbox", tok, "")
-	// 不是禁止则本测失败。
-	if code != http.StatusForbidden {
+	// 未登录拉清单应当被拒绝。
+	code, body = do(t, srv, "GET", base+"/pad/inbox", "", "")
+	// 不是未授权则本测失败。
+	if code != http.StatusUnauthorized {
 		// 与预期不符就停测，避免后面连环误判。
-		t.Fatalf("other inbox %d %s", code, body)
+		t.Fatalf("anon inbox %d %s", code, body)
 	}
 
 	// 沿用这次请求的取消信号，调用方断开就停。
 	ctx := context.Background()
-	// 用工厂直属的位置，不挂组织节点。
-	direct := service.WorkContext{Direct: true}
+	// 不选文件夹，挂厂级树根。
+	direct := service.WorkContext{}
 	// 准备一段包体，后面用来入库或下载。
 	proc, err := svc.CreateFactoryProcess(ctx, saTok, direct, "工艺", []byte(`{"current":1}`))
 	// 这一步失败则停测，避免在坏结果上继续。
@@ -201,19 +170,26 @@ func TestClientChannelHTTP(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// 拉取闭包，别的设备应当被拒绝。
+	// 本机拉闭包旧入口已撤，应落到兜底的找不到。
 	code, body = do(t, srv, "GET", base+"/clients/"+cid+"/closures/"+proj.ID.String(), tok, "")
+	// 不是找不到则本测失败。
+	if code != http.StatusNotFound {
+		// 与预期不符就停测，避免后面连环误判。
+		t.Fatalf("old pull %d %s", code, body)
+	}
+	// 厂网拉闭包，正文只出信封。
+	code, body = do(t, srv, "GET", base+"/pad/closures/"+proj.ID.String(), tok, "")
 	// 不是成功，或正文与预期不符则失败。
 	if code != http.StatusOK || !strings.Contains(body, `"wrap"`) || strings.Contains(body, `"current":1`) {
 		// 与预期不符就停测，避免后面连环误判。
 		t.Fatalf("pull %d %s", code, body)
 	}
-	// 拉取闭包，别的设备应当被拒绝。
-	code, body = do(t, srv, "GET", base+"/clients/"+cidB+"/closures/"+proj.ID.String(), tok, "")
-	// 不是禁止则本测失败。
-	if code != http.StatusForbidden {
+	// 未登录拉闭包应当被拒绝。
+	code, body = do(t, srv, "GET", base+"/pad/closures/"+proj.ID.String(), "", "")
+	// 不是未授权则本测失败。
+	if code != http.StatusUnauthorized {
 		// 与预期不符就停测，避免后面连环误判。
-		t.Fatalf("other pull %d %s", code, body)
+		t.Fatalf("anon pull %d %s", code, body)
 	}
 
 	// 准备一段包体，后面用来入库或下载。
@@ -264,19 +240,8 @@ func TestClientChannelHTTP(t *testing.T) {
 		t.Fatal("missed policy intent")
 	}
 
-	// 登录并取得会话，口令错误应当被拒绝。
-	code, body = do(t, srv, "POST", base+"/pad/login", "", `{"loginName":"sa","password":"secret"}`)
-	// 不是成功则本测失败。
-	if code != http.StatusOK {
-		// 与预期不符就停测，避免后面连环误判。
-		t.Fatalf("pad login %d %s", code, body)
-	}
-	// 取出会话令牌，后面的请求要带上。
-	padTok := gjson(t, body, "token")
-	// 取出人员身份，后面用来对上连接。
-	personID := gjson(t, body, "account.id")
-	// 用令牌连上本厂通道，连不上则停测。
-	padMQTT := mqttConnect(t, h.ClientMQTTAddr(), fid.String(), personID, padTok)
+	// 厂网登录人按自己身份连通道，设备没登记也放行收听。
+	padMQTT := mqttConnect(t, h.ClientMQTTAddr(), fid.String(), personID, tok)
 	// 等到在线标记符合预期，超时则失败。
 	waitAppOnline(t, svc, saTok, true)
 	// 主动断开，在线标记随后应当掉下去。

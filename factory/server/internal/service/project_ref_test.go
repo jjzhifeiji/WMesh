@@ -32,16 +32,16 @@ func TestProjectProcessRefs(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 开通失败就停，否则后面没有可靠结果。
-	if err := fac.Activate(ctx, "sa", seed.ActivationToken, "sa-pass"); err != nil {
+	if err := seedPass(ctx, fac, "sa", "sa-pass"); err != nil {
 		// 把开通的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
 	// 登录并取出令牌，失败说明账号没有开通成功。
 	sa := mustLogin(t, ctx, fac, "sa", "sa-pass")
 	// 建人并授好角色，失败说明后面没有账号可用。
-	pe := mustCreateRole(t, ctx, fac, sa, "pe", "pe-pass", factory.RoleOperator, factory.ScopeFactory, nil)
+	pe := mustCreateRole(t, ctx, fac, sa, "pe", "pe-pass", factory.RoleOrgAdmin)
 	// 标明直接作业上下文，后面新建资产都挂在这里。
-	direct := factory.WorkContext{Direct: true}
+	direct := factory.WorkContext{}
 
 	// 新建一份厂级工艺，失败说明起草入口坏了。
 	proc, err := fac.CreateFactoryProcess(ctx, pe.tok, direct, "工艺", []byte(`{"name":"p","current":180}`))
@@ -250,16 +250,16 @@ func TestProjectCustomTemplateRefs(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 开通失败就停，否则后面没有可靠结果。
-	if err := fac.Activate(ctx, "sa", seed.ActivationToken, "sa-pass"); err != nil {
+	if err := seedPass(ctx, fac, "sa", "sa-pass"); err != nil {
 		// 把开通的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
 	// 登录并取出令牌，失败说明账号没有开通成功。
 	sa := mustLogin(t, ctx, fac, "sa", "sa-pass")
 	// 建人并授好角色，失败说明后面没有账号可用。
-	pe := mustCreateRole(t, ctx, fac, sa, "pe", "pe-pass", factory.RoleOperator, factory.ScopeFactory, nil)
+	pe := mustCreateRole(t, ctx, fac, sa, "pe", "pe-pass", factory.RoleOrgAdmin)
 	// 标明直接作业上下文，后面新建资产都挂在这里。
-	direct := factory.WorkContext{Direct: true}
+	direct := factory.WorkContext{}
 	// 新建一份多层厂级工艺，作业类型要和工程一致。
 	proc, err := fac.CreateFactoryProcess(ctx, pe.tok, direct, "多层工艺", []byte(`{"name":"p","current":180}`), contenttpl.WeldMultilayer)
 	// 建工艺失败就停，否则后面没有可靠结果。

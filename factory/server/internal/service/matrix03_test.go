@@ -7,6 +7,8 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/google/uuid"
+
 	"wmesh/factory/internal/platform/audit"
 	"wmesh/factory/internal/platform/domain"
 	factory "wmesh/factory/internal/service"
@@ -28,18 +30,18 @@ func testAssetIdentity(t *testing.T, run func(string, func(*testing.T))) {
 		t.Fatal(err)
 	}
 	// 开通失败就停，否则后面没有可靠结果。
-	if err := facA.Activate(ctx, "sa-a", seed.ActivationToken, "sa-pass"); err != nil {
+	if err := seedPass(ctx, facA, "sa-a", "sa-pass"); err != nil {
 		// 把开通的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
 	// 登录并取出令牌，失败说明账号没有开通成功。
 	saA := mustLogin(t, ctx, facA, "sa-a", "sa-pass")
 	// 建人并授好角色，失败说明后面没有账号可用。
-	pe := mustCreateRole(t, ctx, facA, saA, "pe-a", "pe-pass", factory.RoleOperator, factory.ScopeFactory, nil)
+	pe := mustCreateRole(t, ctx, facA, saA, "pe-a", "pe-pass", factory.RoleOrgAdmin)
 	// 建人并授好角色，失败说明后面没有账号可用。
-	pe2 := mustCreateRole(t, ctx, facA, saA, "pe-a2", "pe2-pass", factory.RoleOperator, factory.ScopeFactory, nil)
+	pe2 := mustCreateRole(t, ctx, facA, saA, "pe-a2", "pe2-pass", factory.RoleOrgAdmin)
 	// 标明直接作业上下文，后面新建资产都挂在这里。
-	direct := factory.WorkContext{Direct: true}
+	direct := factory.WorkContext{}
 	// 准备这段正文字节，读回对不上说明没写进去。
 	body := []byte("weld-body-v1")
 	// 准备这段正文字节，读回对不上说明没写进去。
@@ -181,9 +183,9 @@ func testAssetIdentity(t *testing.T, run func(string, func(*testing.T))) {
 			t.Fatal(err)
 		}
 		// 把资产升到厂级，失败说明状态不允许升。
-		got, err := facA.PromoteToFactory(ctx, pe.tok, draft.ID)
-		// 升厂级失败或状态不对就停，说明没达预期。
-		if err != nil || got.ID == draft.ID || got.Level != factory.AssetLevelFactory || got.Status != factory.AssetAvailable || got.Content != nil {
+		got, err := facA.PromoteToFactory(ctx, pe.tok, draft.ID, uuid.Nil)
+		// 升厂级失败或没落成厂级草稿就停，说明没达预期。
+		if err != nil || got.ID == draft.ID || got.Level != factory.AssetLevelFactory || got.Status != factory.AssetDraft || got.Content != nil {
 			// 断言没通过就停，结果和这条用例的预期不一致。
 			t.Fatalf("%+v %v", got, err)
 		}
@@ -283,7 +285,7 @@ func testAssetIdentity(t *testing.T, run func(string, func(*testing.T))) {
 			t.Fatal(err)
 		}
 		// 升厂级应因资产不可用被拒绝，放行说明没拦住。
-		if _, err := facA.PromoteToFactory(ctx, pe.tok, p.ID); !errors.Is(err, domain.ErrAssetNotAvailable) {
+		if _, err := facA.PromoteToFactory(ctx, pe.tok, p.ID, uuid.Nil); !errors.Is(err, domain.ErrAssetNotAvailable) {
 			// 升档后的级别不对，说明没有升成厂级。
 			t.Fatalf("promote: %v", err)
 		}
@@ -381,15 +383,15 @@ func testAssetIdentity(t *testing.T, run func(string, func(*testing.T))) {
 			t.Fatal(err)
 		}
 		// 把资产升到厂级，失败说明状态不允许升。
-		promoted, err := facA.PromoteToFactory(ctx, pe.tok, src.ID)
+		promoted, err := facA.PromoteToFactory(ctx, pe.tok, src.ID, uuid.Nil)
 		// 升厂级失败就停，否则后面没有可靠结果。
 		if err != nil {
 			// 把升厂级的错误打出来并停住，避免继续往下验。
 			t.Fatal(err)
 		}
-		// 可复制标记应符合预期，不对说明开关没写上。
+		// 升出的应是新身份的厂级草稿、可复制、带出处，不对说明复制口径偏了。
 		if promoted.ID == src.ID || promoted.Level != factory.AssetLevelFactory || promoted.Revision != 1 ||
-			promoted.Status != factory.AssetAvailable || !promoted.Copyable || promoted.Content != nil ||
+			promoted.Status != factory.AssetDraft || !promoted.Copyable || promoted.Content != nil ||
 			promoted.SourceID == nil || *promoted.SourceID != src.ID ||
 			promoted.SourceRevision == nil || *promoted.SourceRevision != src.Revision {
 			// 断言没通过就停，结果和这条用例的预期不一致。

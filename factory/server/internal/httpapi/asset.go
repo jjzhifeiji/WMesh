@@ -13,7 +13,6 @@ import (
 // 本厂工艺/工程。
 func (h *Handler) mountAsset(mux *http.ServeMux) {
 	// 查询当前账号可以用来新建的工作位置。
-	mux.HandleFunc("GET /v1/factories/{id}/asset-author-context", h.assetAuthorContext)
 	// 按许可列出本厂工艺和工程，不含正文。
 	mux.HandleFunc("GET /v1/factories/{id}/assets", h.listAssets)
 	// 按级别新建工艺或工程，没带节点则直属。
@@ -28,8 +27,6 @@ func (h *Handler) mountAsset(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/factories/{id}/assets/{assetId}/rename", h.renameAsset)
 	// 改正文并重算摘要，停用之后拒绝。
 	mux.HandleFunc("POST /v1/factories/{id}/assets/{assetId}/content", h.updateAssetContent)
-	// 修改可否复制，停用之后拒绝。
-	mux.HandleFunc("POST /v1/factories/{id}/assets/{assetId}/copyable", h.setAssetCopyable)
 	// 修改作业类型，停用之后拒绝。
 	mux.HandleFunc("POST /v1/factories/{id}/assets/{assetId}/weld-kind", h.setAssetWeldKind)
 	// 把草稿改为可用，失败则保持原状。
@@ -56,16 +53,13 @@ func (h *Handler) mountAsset(mux *http.ServeMux) {
 
 // 新建工艺或工程，可以随后挂进目录。
 type createAssetReq struct {
-	Kind      string             `json:"kind"`      // process / project
-	Level     string             `json:"level"`     // factory / personal
-	Name      string             `json:"name"`      // 显示名
-	Content   string             `json:"content"`   // UTF-8 正文
-	WeldKind  string             `json:"weldKind"`  // 作业类型：single / multilayer / tbar
-	Copyable  *bool              `json:"copyable"`  // 仅工艺；空则默认可复制
-	Direct    bool               `json:"direct"`    // 兼容旧客户端；未带节点时按工厂直属
-	OrgUnitID *string            `json:"orgUnitId"` // 未传则记工厂直属
-	Deps      []service.AssetDep `json:"deps"`      // 可空；新建从参数补
-	ParentID  string             `json:"parentId"`  // 目录父文件夹；空则挂对应树的根
+	Kind     string             `json:"kind"`     // process / project
+	Level    string             `json:"level"`    // 没选文件夹时用：factory / personal，空按个人级；选了文件夹按文件夹所在的树
+	Name     string             `json:"name"`     // 显示名
+	Content  string             `json:"content"`  // UTF-8 正文
+	WeldKind string             `json:"weldKind"` // 作业类型：single / multilayer / tbar
+	Deps     []service.AssetDep `json:"deps"`     // 可空；新建从参数补
+	ParentID string             `json:"parentId"` // 目录父文件夹；空则挂对应树的根
 }
 
 // 示教器要覆盖的正文，不带期望修订。
@@ -103,12 +97,6 @@ type contentReq struct {
 	Content  string `json:"content"`  // 新正文
 }
 
-// 可否复制，以及调用方看到的修订。
-type copyableReq struct {
-	Expected int64 `json:"expected"` // 期望修订
-	Copyable bool  `json:"copyable"` // 可否升档
-}
-
 // 作业类型，以及调用方看到的修订。
 type weldKindReq struct {
 	Expected int64  `json:"expected"` // 期望修订
@@ -129,23 +117,6 @@ type setDepsReq struct {
 // 只在允许阅读时才回给调用方的正文。
 type contentResp struct {
 	Content string `json:"content"` // UTF-8 正文
-}
-
-// 给出当前账号可用来创建资产的工作位置。
-func (h *Handler) assetAuthorContext(w http.ResponseWriter, r *http.Request) {
-	// 给出当前账号可用来创建资产的工作位置。
-	h.withFactory(w, r, func(svc *service.Service) {
-		// 查询当前账号可以用来新建的位置。
-		out, err := svc.Assets.AuthorContext(r.Context(), bearer(r))
-		// 上一步没通过则停止，不把失败写成成功。
-		if err != nil {
-			// 把失败译成状态回给调用方，不写成功。
-			writeErr(w, err)
-			return
-		}
-		// 通过之后把结果回给调用方。
-		writeJSON(w, http.StatusOK, out)
-	})
 }
 
 // 按许可列本厂工艺/工程元数据，不含正文。
@@ -218,24 +189,29 @@ func (h *Handler) createAsset(w http.ResponseWriter, r *http.Request) {
 			writeBadRequest(w, err)
 			return
 		}
-		// 把直属或节点收成工作位置，非法则拒绝。
-		wc, err := parseWorkContext(req.Direct, req.OrgUnitID)
-		// 上一步没通过则停止，不把失败写成成功。
-		if err != nil {
-			// 请求不合法，回非法请求并不进入业务。
-			writeBadRequest(w, err)
-			return
-		}
-		// 目标文件夹随工作位置交给业务，和建资产同一笔提交。
-		wc.FolderID = parentID
+		// 目标文件夹交给业务，和建资产同一笔提交。
+		wc := service.WorkContext{FolderID: parentID}
 		// 正文按原始字节保存，适配层不改编码。
 		content := []byte(req.Content)
-		// 没指定时默认可复制，便于以后升档。
+		// 厂端建的都可复制，保密只对平台级副本。
 		copyable := true
-		// 调用方写了可否复制就按它，没写走默认。
-		if req.Copyable != nil {
-			// 改用调用方明确给出的可否复制。
-			copyable = *req.Copyable
+		// 选了文件夹就按文件夹所在的树定级别，不另选。
+		if parentID != uuid.Nil {
+			// 读出文件夹所在的树，平台树不能建。
+			lvl, err := svc.Assets.FolderLevel(r.Context(), bearer(r), parentID)
+			// 文件夹不在或不能建就拒绝。
+			if err != nil {
+				// 把失败译成状态回给调用方，不写成功。
+				writeErr(w, err)
+				return
+			}
+			// 改用文件夹所在树的级别。
+			req.Level = lvl
+		}
+		// 没选文件夹又没给级别就按个人级。
+		if req.Level == "" {
+			// 默认建在自己名下。
+			req.Level = service.AssetLevelPersonal
 		}
 		// 接住按种类和级别创建出来的那一行。
 		var row service.Asset
@@ -448,31 +424,6 @@ func (h *Handler) updateAssetContent(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// 未停用即可改可复制，发布后也能改回。
-func (h *Handler) setAssetCopyable(w http.ResponseWriter, r *http.Request) {
-	// 未停用即可改可复制，发布后也能改回。
-	h.withAsset(w, r, func(svc *service.Service, assetID uuid.UUID) {
-		// 承接可否复制和调用方看到的修订。
-		var req copyableReq
-		// 正文无法解析则拒绝，不进入业务。
-		if err := decodeJSON(r, &req); err != nil {
-			// 请求不合法，回非法请求并不进入业务。
-			writeBadRequest(w, err)
-			return
-		}
-		// 修改可否复制，停用之后拒绝。
-		row, err := svc.Assets.SetAssetCopyable(r.Context(), bearer(r), assetID, req.Expected, req.Copyable)
-		// 上一步没通过则停止，不把失败写成成功。
-		if err != nil {
-			// 把失败译成状态回给调用方，不写成功。
-			writeErr(w, err)
-			return
-		}
-		// 通过之后把结果回给调用方。
-		writeJSON(w, http.StatusOK, row)
-	})
-}
-
 // 未停用的本厂工艺或工程可改作业类型。
 func (h *Handler) setAssetWeldKind(w http.ResponseWriter, r *http.Request) {
 	// 未停用的本厂工艺或工程可改作业类型。
@@ -589,12 +540,36 @@ func (h *Handler) copyAsset(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// 把可复制的未停用个人级升为厂级；草稿也可升。
+// 升档要放进的厂级文件夹，空则挂厂级树根。
+type promoteReq struct {
+	FolderID string `json:"folderId"` // 厂级文件夹；空挂树根
+}
+
+// 把未停用个人级复制一份到所选厂级文件夹，落成草稿。
 func (h *Handler) promoteAsset(w http.ResponseWriter, r *http.Request) {
-	// 把可复制的未停用个人级升为厂级；草稿也可升。
+	// 把未停用个人级复制一份到所选厂级文件夹，落成草稿。
 	h.withAsset(w, r, func(svc *service.Service, assetID uuid.UUID) {
-		// 把个人级升为厂级，不可复制则拒绝。
-		row, err := svc.Assets.PromoteToFactory(r.Context(), bearer(r), assetID)
+		// 承接目标文件夹，旧客户端不带正文时挂树根。
+		var req promoteReq
+		// 带了正文才解析，空正文按树根。
+		if r.ContentLength != 0 {
+			// 正文无法解析则拒绝，不进入业务。
+			if err := decodeJSON(r, &req); err != nil {
+				// 请求不合法，回非法请求并不进入业务。
+				writeBadRequest(w, err)
+				return
+			}
+		}
+		// 解析目标文件夹，格式不对就不升。
+		folderID, err := parseParentID(req.FolderID)
+		// 解析失败则拒绝，不用这个残缺的值继续。
+		if err != nil {
+			// 请求不合法，回非法请求并不进入业务。
+			writeBadRequest(w, err)
+			return
+		}
+		// 复制一份厂级草稿。
+		row, err := svc.Assets.PromoteToFactory(r.Context(), bearer(r), assetID, folderID)
 		// 上一步没通过则停止，不把失败写成成功。
 		if err != nil {
 			// 把失败译成状态回给调用方，不写成功。
@@ -663,19 +638,4 @@ func (h *Handler) withExpected(w http.ResponseWriter, r *http.Request, fn func(*
 		// 前置已经满足，把这次请求交给业务。
 		fn(svc, assetID, req.Expected)
 	})
-}
-
-// 把直属或节点收成工作上下文。
-func parseWorkContext(direct bool, orgUnitID *string) (service.WorkContext, error) {
-	// 解析可选上级，空着就表示挂在工厂下。
-	id, err := parseOptUUID(orgUnitID)
-	// 解析失败则拒绝，不用这个残缺的值继续。
-	if err != nil {
-		return service.WorkContext{}, err
-	}
-	// 工艺/工程不再让人选位置；没带节点就记工厂直属。
-	if !direct && id == nil {
-		return service.WorkContext{Direct: true}, nil
-	}
-	return service.WorkContext{Direct: direct, OrgUnitID: id}, nil
 }

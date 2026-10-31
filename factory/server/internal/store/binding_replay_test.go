@@ -14,7 +14,7 @@ import (
 	"wmesh/factory/internal/store"
 )
 
-// 同修订重放不冲掉本厂改名；WAN 真改了名或修订升高才覆盖，旧行空 WAN 名只记不改。
+// 设备名只跟 WAN：重放和修订升高都照 WAN 名改；本厂改的是昵称，WAN 怎么重放都留住，空名重放不动设备名。
 func TestAcceptBindingReplayKeepsLocalName(t *testing.T) {
 	// 测试没有取消信号，用空白上下文即可。
 	ctx := context.Background()
@@ -29,82 +29,50 @@ func TestAcceptBindingReplayKeepsLocalName(t *testing.T) {
 		// 接受绑定失败就停测。
 		t.Fatalf("accept: %v", err)
 	}
-	// 本厂超管改名失败就停测，避免后面没有前提。
-	if _, err := s.RenameClient(ctx, cid, "一线焊机"); err != nil {
-		// 改名失败就停测。
-		t.Fatalf("rename: %v", err)
+	// 本厂改昵称，设备名不动。
+	ren, err := s.RenameClient(ctx, cid, "一线焊机")
+	// 改昵称失败或设备名被改都算错。
+	if err != nil || ren.Nickname != "一线焊机" || ren.Name != "焊机A" {
+		// 改昵称失败就停测。
+		t.Fatalf("rename %+v %v", ren, err)
 	}
-	// WAN 回连以同修订、同名重放，本厂改名必须留住。
+	// WAN 回连以同修订、同名重放，昵称必须留住。
 	got, err := s.AcceptBinding(ctx, cid, "焊机A", nil, 1)
-	// 重放报错或名字被冲回 WAN 名都算错。
-	if err != nil || got.Name != "一线焊机" || got.Status != store.ClientStatusBound {
+	// 重放报错、设备名不是 WAN 名或昵称被冲都算错。
+	if err != nil || got.Name != "焊机A" || got.Nickname != "一线焊机" || got.Status != store.ClientStatusBound {
 		// 打出重放结果，便于看是哪一项不对。
 		t.Fatalf("replay same name %+v %v", got, err)
 	}
-	// WAN 改了名仍以同修订送来，本地名要跟着更新。
+	// WAN 改了名仍以同修订送来，设备名要跟着更新，昵称不动。
 	got, err = s.AcceptBinding(ctx, cid, "焊机A-新", nil, 1)
-	// 报错或没改成 WAN 新名都算错。
-	if err != nil || got.Name != "焊机A-新" || got.WANName == nil || *got.WANName != "焊机A-新" {
+	// 报错、没改成 WAN 新名或昵称被冲都算错。
+	if err != nil || got.Name != "焊机A-新" || got.WANName == nil || *got.WANName != "焊机A-新" || got.Nickname != "一线焊机" {
 		// 打出结果，便于看是哪一项不对。
 		t.Fatalf("wan rename %+v %v", got, err)
 	}
-	// 本厂再改一次名，验修订升高时以 WAN 为准。
-	if _, err := s.RenameClient(ctx, cid, "二线焊机"); err != nil {
-		// 改名失败就停测。
-		t.Fatalf("rename again: %v", err)
-	}
-	// 修订升高照旧覆盖本地名。
+	// 修订升高照 WAN 名，昵称仍留住。
 	got, err = s.AcceptBinding(ctx, cid, "焊机A-新", nil, 2)
-	// 报错、修订没升或名字没覆盖都算错。
-	if err != nil || got.Name != "焊机A-新" || got.BindingRevision != 2 {
+	// 报错、修订没升或昵称被冲都算错。
+	if err != nil || got.Name != "焊机A-新" || got.BindingRevision != 2 || got.Nickname != "一线焊机" {
 		// 打出结果，便于看是哪一项不对。
 		t.Fatalf("higher revision %+v %v", got, err)
 	}
-
-	// 现发另一台身份，模拟迁移前落库、没记 WAN 名的旧行。
-	old := id.New()
-	// 接受旧行绑定失败就停测，避免后面没有前提。
-	if _, err := s.AcceptBinding(ctx, old, "焊机B", nil, 1); err != nil {
-		// 接受绑定失败就停测。
-		t.Fatalf("accept old: %v", err)
-	}
-	// 把 WAN 名清回空，等同迁移前的旧行。
-	if err := facDB.Exec("UPDATE clients SET wan_name = NULL WHERE id = ?", old).Error; err != nil {
-		// 改不了库就停测。
-		t.Fatalf("clear wan name: %v", err)
-	}
-	// 旧行在本厂改过名，失败就停测。
-	if _, err := s.RenameClient(ctx, old, "本厂B"); err != nil {
-		// 改名失败就停测。
-		t.Fatalf("rename old: %v", err)
-	}
-	// 旧行第一次同修订重放只记下 WAN 名，不覆盖本地名。
-	got, err = s.AcceptBinding(ctx, old, "焊机B-改", nil, 1)
-	// 报错、本地名被冲或 WAN 名没记下都算错。
-	if err != nil || got.Name != "本厂B" || got.WANName == nil || *got.WANName != "焊机B-改" {
-		// 打出结果，便于看是哪一项不对。
-		t.Fatalf("old row first replay %+v %v", got, err)
-	}
-	// 同名再重放一次，本地名仍不动。
-	got, err = s.AcceptBinding(ctx, old, "焊机B-改", nil, 1)
-	// 报错或本地名被冲都算错。
-	if err != nil || got.Name != "本厂B" {
-		// 打出结果，便于看是哪一项不对。
-		t.Fatalf("old row replay %+v %v", got, err)
-	}
-	// WAN 之后真改了名，同修订送来就更新。
-	got, err = s.AcceptBinding(ctx, old, "焊机B-再改", nil, 1)
-	// 报错或没改成 WAN 新名都算错。
-	if err != nil || got.Name != "焊机B-再改" {
-		// 打出结果，便于看是哪一项不对。
-		t.Fatalf("old row wan rename %+v %v", got, err)
-	}
-	// 空名重放不当 WAN 改名，本地名和 WAN 名都不动。
-	got, err = s.AcceptBinding(ctx, old, "", nil, 1)
+	// 空名重放不当 WAN 改名，设备名和 WAN 名都不动。
+	got, err = s.AcceptBinding(ctx, cid, "", nil, 2)
 	// 报错、名字被改或 WAN 名被清都算错。
-	if err != nil || got.Name != "焊机B-再改" || got.WANName == nil || *got.WANName != "焊机B-再改" {
+	if err != nil || got.Name != "焊机A-新" || got.WANName == nil || *got.WANName != "焊机A-新" {
 		// 打出结果，便于看是哪一项不对。
 		t.Fatalf("empty name replay %+v %v", got, err)
+	}
+	// 昵称改成空串就清掉。
+	if ren, err := s.RenameClient(ctx, cid, ""); err != nil || ren.Nickname != "" || ren.Name != "焊机A-新" {
+		// 清昵称不对就停测。
+		t.Fatalf("clear nickname %+v %v", ren, err)
+	}
+	// 不存在的设备改昵称必须报找不到。
+	if _, err := s.RenameClient(ctx, id.New(), "无"); !errors.Is(err, domain.ErrNotFound) {
+		// 没报找不到就停测。
+		t.Fatalf("rename missing: %v", err)
 	}
 }
 

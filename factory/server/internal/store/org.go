@@ -24,26 +24,11 @@ type OrgUnit struct {
 // 指定落库表名，避免查询时按类型名去猜。
 func (OrgUnit) TableName() string { return "org_units" }
 
-// Assignment 是人员到组织节点的关系；每人最多一条有效分配，取消只把状态标成已结束，不删行。
-type Assignment struct {
-	ID        uuid.UUID  `gorm:"type:uuid;primaryKey" json:"id"`      // 分配关系稳定身份
-	PersonID  uuid.UUID  `gorm:"type:uuid;not null" json:"personId"`  // 本厂人员
-	OrgUnitID uuid.UUID  `gorm:"type:uuid;not null" json:"orgUnitId"` // 分配到的组织节点
-	Status    string     `gorm:"not null" json:"status"`              // active 或 ended；取消不删行
-	CreatedAt time.Time  `gorm:"not null" json:"createdAt"`           // 分配开始时间
-	EndedAt   *time.Time `json:"endedAt"`                             // 取消分配的时间；有效分配必须为空
-}
-
-// 指定落库表名，避免查询时按类型名去猜。
-func (Assignment) TableName() string { return "assignments" }
-
 // RoleGrant 是带明确作用域的一条角色；分配组织不会自动产生本行。
 type RoleGrant struct {
 	ID        uuid.UUID  `gorm:"type:uuid;primaryKey" json:"id"`     // 授予记录稳定身份
 	PersonID  uuid.UUID  `gorm:"type:uuid;not null" json:"personId"` // 被授予的本厂人员
-	Role      string     `gorm:"not null" json:"role"`               // 固定角色：超管/管理员/负责人/操作员/审计员
-	ScopeKind string     `gorm:"not null" json:"scopeKind"`          // factory 或 org_unit
-	OrgUnitID *uuid.UUID `gorm:"type:uuid" json:"orgUnitId"`         // Factory 作用域必须为空
+	Role      string     `gorm:"not null" json:"role"`               // 固定角色：超管/管理员/操作员，都覆盖整厂
 	Status    string     `gorm:"not null" json:"status"`             // active 或 revoked
 	CreatedAt time.Time  `gorm:"not null" json:"createdAt"`          // 授予时间
 	RevokedAt *time.Time `json:"revokedAt"`                          // 收回时间；有效授予必须为空
@@ -169,78 +154,21 @@ func (s *Store) wouldCycle(ctx context.Context, nodeID, newParent uuid.UUID) (bo
 	return false, nil
 }
 
-// Assign 把人员放到本厂恰好一个有效节点；已有有效分配再分到另一节点则拒绝。
-func (s *Store) Assign(ctx context.Context, personID, unitID uuid.UUID) (Assignment, error) {
-	// 节点必须仍有效，停用的不能再当上下文。
-	if err := s.assertUnitActive(ctx, unitID); err != nil {
-		return Assignment{}, err
-	}
-	// 人必须已经在本厂，否则不继续写。
-	if err := s.assertPersonExists(ctx, personID); err != nil {
-		return Assignment{}, err
-	}
-	// 按入参组装要写入的行。
-	row := Assignment{
-		ID:        id.New(),
-		PersonID:  personID,
-		OrgUnitID: unitID,
-		Status:    StatusActive,
-		CreatedAt: time.Now().UTC(),
-	}
-	// 写入一行失败就停，避免带着错误继续。
-	if err := s.db.WithContext(ctx).Create(&row).Error; err != nil {
-		// 唯一约束撞了就改成业务冲突，不抛库原文。
-		if domain.IsUniqueViolation(err) {
-			return Assignment{}, domain.ErrDuplicateAssignment
-		}
-		return Assignment{}, err
-	}
-	return row, nil
-}
-
-// Unassign 取消有效分配：只改状态不删行，留给历史。
-func (s *Store) Unassign(ctx context.Context, personID, unitID uuid.UUID) error {
-	// 取当前时刻，时间列和租约用同一个时钟。
-	now := time.Now().UTC()
-	// 取消只改状态不删行，留给历史。
-	res := s.db.WithContext(ctx).Model(&Assignment{}).
-		Where("person_id = ? AND org_unit_id = ? AND status = ?", personID, unitID, StatusActive).
-		Updates(map[string]any{"status": StatusEnded, "ended_at": now})
-	// 更新失败则交回库错误，不能当成已经改完。
-	if res.Error != nil {
-		return res.Error
-	}
-	// 没有改到行就当目标不存在。
-	if res.RowsAffected == 0 {
-		return domain.ErrNotFound
-	}
-	return nil
-}
-
-// GrantRole 写入一条带作用域的角色；作用域不合法由库约束与 ValidScope 双检。
-func (s *Store) GrantRole(ctx context.Context, personID uuid.UUID, role, scopeKind string, orgUnitID *uuid.UUID) (RoleGrant, error) {
-	// 授予角色这一支不成立就换路。
-	if !ValidScope(role, scopeKind, orgUnitID) {
+// GrantRole 写入一条角色；角色都覆盖整厂，不认识的角色拒绝。
+func (s *Store) GrantRole(ctx context.Context, personID uuid.UUID, role string) (RoleGrant, error) {
+	// 不认识的角色不能授。
+	if !ValidRole(role) {
 		return RoleGrant{}, domain.ErrInvalidRoleScope
 	}
 	// 人必须已经在本厂，否则不继续写。
 	if err := s.assertPersonExists(ctx, personID); err != nil {
 		return RoleGrant{}, err
 	}
-	// 挂到节点上就要确认节点还在。
-	if orgUnitID != nil {
-		// 读取组织节点失败就停，避免带着错误继续。
-		if _, err := s.getUnit(ctx, *orgUnitID); err != nil {
-			return RoleGrant{}, err
-		}
-	}
 	// 按入参组装要写入的行。
 	row := RoleGrant{
 		ID:        id.New(),
 		PersonID:  personID,
 		Role:      role,
-		ScopeKind: scopeKind,
-		OrgUnitID: orgUnitID,
 		Status:    StatusActive,
 		CreatedAt: time.Now().UTC(),
 	}
@@ -285,7 +213,7 @@ func (s *Store) RevokeRoleKeepAdmin(ctx context.Context, grantID uuid.UUID) erro
 			return err
 		}
 		// 只有仍有效的厂级超管授予才关系到管理入口。
-		if g.Status == StatusActive && g.Role == RoleFactorySuperAdmin && g.ScopeKind == ScopeFactory {
+		if g.Status == StatusActive && g.Role == RoleFactorySuperAdmin {
 			// 准备承接拿锁后重读的持有人。
 			var p Person
 			// 拿锁后重读持有人，待启用或停用的不算入口。
@@ -328,7 +256,7 @@ func revokeGrant(db *gorm.DB, grantID uuid.UUID) error {
 	return nil
 }
 
-// DeleteOrgUnit 没有下级、任何分配或角色记录、事实或资产才物理删除。
+// DeleteOrgUnit 没有下级节点、也没有人员归在这里才物理删除。
 func (s *Store) DeleteOrgUnit(ctx context.Context, unitID uuid.UUID) error {
 	// 读取组织节点失败就停，避免带着错误继续。
 	if _, err := s.getUnit(ctx, unitID); err != nil {
@@ -343,12 +271,8 @@ func (s *Store) DeleteOrgUnit(ctx context.Context, unitID uuid.UUID) error {
 			args  []any  // 条件里的节点身份
 		}{
 			{&OrgUnit{}, "parent_id = ?", []any{unitID}},
-			{&Assignment{}, "org_unit_id = ?", []any{unitID}},
-			{&RoleGrant{}, "org_unit_id = ?", []any{unitID}},
+			{&Person{}, "org_unit_id = ?", []any{unitID}},
 			{&factRow{}, "org_unit_id = ?", []any{unitID}},
-			{&weldFactRow{}, "org_unit_id = ?", []any{unitID}},
-			{&assetRow{}, "org_unit_id = ?", []any{unitID}},
-			{&governedAssetRow{}, "org_unit_id = ?", []any{unitID}},
 		}
 		// 逐条处理，避免漏掉还要读或还要写的行。
 		for _, c := range checks {
@@ -362,16 +286,6 @@ func (s *Store) DeleteOrgUnit(ctx context.Context, unitID uuid.UUID) error {
 			if ok {
 				return domain.ErrReferenced
 			}
-		}
-		// 先检查路径是否提到，结果留给紧跟着的判断。
-		ok, err := pathMentions(tx, "id", unitID)
-		// 检查路径是否提到失败就停，避免带着错误继续。
-		if err != nil {
-			return err
-		}
-		// 还有引用就不能物理删除。
-		if ok {
-			return domain.ErrReferenced
 		}
 		// 删掉匹配行，没有行交给后面判断。
 		res := tx.Where("id = ?", unitID).Delete(&OrgUnit{})
@@ -442,23 +356,13 @@ func (s *Store) EnableOrgUnit(ctx context.Context, unitID uuid.UUID) error {
 	return s.setStatus(ctx, &OrgUnit{}, unitID, StatusActive)
 }
 
-// ValidScope：工厂超管只能挂厂；组织负责人只能挂节点；管理员与其余三角色两种作用域都可以。
-func ValidScope(role, scopeKind string, orgUnitID *uuid.UUID) bool {
-	// 按角色看允许的范围，避免授错作用域。
+// ValidRole 只认三种固定角色。
+func ValidRole(role string) bool {
+	// 按角色看是否认识，避免授出不存在的角色。
 	switch role {
-	// 超管只能挂整厂，不能再挂某个节点。
-	case RoleFactorySuperAdmin:
-		return scopeKind == ScopeFactory && orgUnitID == nil
-	// 组织负责人只能挂节点，不能挂整厂。
-	case RoleOrgLead:
-		return scopeKind == ScopeOrgUnit && orgUnitID != nil
-	// 管理员、操作员和审计员两种范围都可以。
-	case RoleOrgAdmin, RoleOperator, RoleAuditor:
-		// 挂整厂时不能再带节点，否则范围重叠。
-		if scopeKind == ScopeFactory {
-			return orgUnitID == nil
-		}
-		return scopeKind == ScopeOrgUnit && orgUnitID != nil
+	// 超管、管理员、操作员都可以授。
+	case RoleFactorySuperAdmin, RoleOrgAdmin, RoleOperator:
+		return true
 	// 不认识的角色一律不能授权。
 	default:
 		return false
@@ -498,7 +402,7 @@ func (s *Store) GrantByID(ctx context.Context, grantID uuid.UUID) (RoleGrant, er
 	return row, nil
 }
 
-// ActiveFactorySuperAdminCount 只数「有效账号 + 有效厂级超管角色」，待启用不计。
+// ActiveFactorySuperAdminCount 只数「有效账号 + 有效厂级超管角色」，停用的不计。
 func (s *Store) ActiveFactorySuperAdminCount(ctx context.Context) (int64, error) {
 	// 走库连接数，口径与事务内重数一致。
 	return activeFactorySACount(s.db.WithContext(ctx))
@@ -512,8 +416,8 @@ func activeFactorySACount(db *gorm.DB) (int64, error) {
 	err := db.Raw(`
 		SELECT COUNT(*) FROM people p
 		INNER JOIN role_grants g ON g.person_id = p.id
-		WHERE p.status = ? AND g.status = ? AND g.role = ? AND g.scope_kind = ?`,
-		StatusActive, StatusActive, RoleFactorySuperAdmin, ScopeFactory,
+		WHERE p.status = ? AND g.status = ? AND g.role = ?`,
+		StatusActive, StatusActive, RoleFactorySuperAdmin,
 	).Scan(&n).Error
 	return n, err
 }
@@ -530,7 +434,7 @@ func personIsActiveFactorySA(db *gorm.DB, personID uuid.UUID) (bool, error) {
 	var n int64
 	// 先接上要操作的表，结果留给紧跟着的判断。
 	err := db.Model(&RoleGrant{}).
-		Where("person_id = ? AND status = ? AND role = ? AND scope_kind = ?", personID, StatusActive, RoleFactorySuperAdmin, ScopeFactory).
+		Where("person_id = ? AND status = ? AND role = ?", personID, StatusActive, RoleFactorySuperAdmin).
 		Count(&n).Error
 	return n > 0, err
 }
@@ -619,41 +523,12 @@ func (s *Store) TryDeleteOrgUnit(ctx context.Context, unitID uuid.UUID) error {
 	return s.db.WithContext(ctx).Exec("DELETE FROM org_units WHERE id = ?", unitID).Error
 }
 
-// AssignmentCount 数某人当前有效分配。
-func (s *Store) AssignmentCount(ctx context.Context, personID uuid.UUID) (int64, error) {
-	// 准备承接计数，用来判断有没有匹配行。
-	var n int64
-	// 先接上要操作的表，结果留给紧跟着的判断。
-	err := s.db.WithContext(ctx).Model(&Assignment{}).
-		Where("person_id = ? AND status = ?", personID, StatusActive).
-		Count(&n).Error
-	return n, err
-}
-
 // ListOrgUnits 列出本厂组织节点，按创建时间从新到旧。
 func (s *Store) ListOrgUnits(ctx context.Context) ([]OrgUnit, error) {
 	// 准备承接查到的多条组织节点。
 	var rows []OrgUnit
 	// 按条件去读，没有行交给后面的分支。
 	err := s.db.WithContext(ctx).Order("created_at DESC").Find(&rows).Error
-	return rows, err
-}
-
-// ActiveAssignments 列出某人当前有效的组织分配。
-func (s *Store) ActiveAssignments(ctx context.Context, personID uuid.UUID) ([]Assignment, error) {
-	// 准备承接查到的多条分配。
-	var rows []Assignment
-	// 按条件去读，没有行交给后面的分支。
-	err := s.db.WithContext(ctx).Where("person_id = ? AND status = ?", personID, StatusActive).Order("created_at DESC").Find(&rows).Error
-	return rows, err
-}
-
-// ListAssignments 列出当前有效人员分配。
-func (s *Store) ListAssignments(ctx context.Context) ([]Assignment, error) {
-	// 准备承接查到的多条分配。
-	var rows []Assignment
-	// 按条件去读，没有行交给后面的分支。
-	err := s.db.WithContext(ctx).Where("status = ?", StatusActive).Order("created_at DESC").Find(&rows).Error
 	return rows, err
 }
 

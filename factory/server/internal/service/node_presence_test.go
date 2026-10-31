@@ -20,21 +20,21 @@ func TestPresenceUsesSessionClient(t *testing.T) {
 	// 起一套测试库和厂服务，起不来则本例无法开始
 	h := New(t)
 	// 建厂并种初始超管，失败则本步验收不能继续
-	seed, fac, err := h.Provision(ctx, "sa", "超管")
+	_, fac, err := h.Provision(ctx, "sa", "超管")
 	// 建厂并种初始超管失败就停，避免带着错误继续验
 	if err != nil {
 		// 建厂并种初始超管失败就把原因打出并停掉本例
 		t.Fatal(err)
 	}
 	// 激活初始超管失败就停，避免带着错误继续验
-	if err := fac.Activate(ctx, "sa", seed.ActivationToken, "sa-pass"); err != nil {
+	if err := seedPass(ctx, fac, "sa", "sa-pass"); err != nil {
 		// 激活初始超管失败就把原因打出并停掉本例
 		t.Fatal(err)
 	}
 	// 登录取出令牌，登不上则后面没有身份
 	saTok := mustLogin(t, ctx, fac, "sa", "sa-pass")
 	// 建人并授角色，失败则夹具缺这个身份
-	op := mustCreateRole(t, ctx, fac, saTok, "op", "op-pass", factory.RoleOperator, factory.ScopeFactory, nil)
+	op := mustCreateRole(t, ctx, fac, saTok, "op", "op-pass", factory.RoleOperator)
 	// 会话里鉴权过的那台焊机
 	cid := id.New()
 	// 载荷里冒报的另一台焊机
@@ -58,7 +58,7 @@ func TestPresenceUsesSessionClient(t *testing.T) {
 			t.Fatal(err)
 		}
 		// 登记机械臂号失败就停，避免带着错误继续验
-		if _, err := fac.RegisterDevice(ctx, saTok, dev.id, dev.serial); err != nil {
+		if _, err := fac.Store().PinDeviceSerial(ctx, dev.id, dev.serial, false); err != nil {
 			// 登记机械臂号失败就把原因打出并停掉本例
 			t.Fatal(err)
 		}

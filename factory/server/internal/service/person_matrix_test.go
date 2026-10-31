@@ -21,7 +21,7 @@ func testPersonMatrix(t *testing.T, run func(string, func(*testing.T))) {
 
 	// 拉起隔离厂库，起不来说明测试库还没就绪。
 	h := New(t)
-	// 建厂并签发超管激活码，失败则没有厂可测。
+	// 建厂并写下初始超管，失败则没有厂可测。
 	seedA, facA, err := h.Provision(ctx, "sa-a", "超管A")
 	// 建厂失败就停，否则后面没有可靠结果。
 	if err != nil {
@@ -29,7 +29,7 @@ func testPersonMatrix(t *testing.T, run func(string, func(*testing.T))) {
 		t.Fatal(err)
 	}
 	// 开通失败就停，否则后面没有可靠结果。
-	if err := facA.Activate(ctx, "sa-a", seedA.ActivationToken, "sa-pass"); err != nil {
+	if err := seedPass(ctx, facA, "sa-a", "sa-pass"); err != nil {
 		// 把开通的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
@@ -40,7 +40,7 @@ func testPersonMatrix(t *testing.T, run func(string, func(*testing.T))) {
 		// 把登录的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
-	// 建厂并签发超管激活码，失败则没有厂可测。
+	// 建厂并写下初始超管，失败则没有厂可测。
 	seedB, facB, err := h.Provision(ctx, "sa-b", "超管B")
 	// 建厂失败就停，否则后面没有可靠结果。
 	if err != nil {
@@ -48,7 +48,7 @@ func testPersonMatrix(t *testing.T, run func(string, func(*testing.T))) {
 		t.Fatal(err)
 	}
 	// 开通失败就停，否则后面没有可靠结果。
-	if err := facB.Activate(ctx, "sa-b", seedB.ActivationToken, "sb-pass"); err != nil {
+	if err := seedPass(ctx, facB, "sa-b", "sb-pass"); err != nil {
 		// 把开通的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
@@ -97,7 +97,7 @@ func testPersonMatrix(t *testing.T, run func(string, func(*testing.T))) {
 	// 把默认口令改成测试口令，失败说明改密被拒。
 	mustAdoptPassword(t, ctx, facA, "op-a", "op-pass")
 	// 授角色失败就停，否则后面没有可靠结果。
-	if _, err := facA.GrantRole(ctx, saTok, op.ID, factory.RoleOperator, factory.ScopeFactory, nil); err != nil {
+	if _, err := facA.GrantRole(ctx, saTok, op.ID, factory.RoleOperator); err != nil {
 		// 把授角色的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
@@ -137,11 +137,6 @@ func testPersonMatrix(t *testing.T, run func(string, func(*testing.T))) {
 		for _, row := range listed {
 			// 应是另一条记录而不是同一条，撞号说明没另立。
 			if row.ID == cidA {
-				// 结果应和这一步的预期一致，偏离说明行为写偏了。
-				if row.OperatorLogin != "op-a" || row.OperatorDisplay != "操作员A" {
-					// 条目 11.1 没对上，这一条矩阵行为偏了。
-					t.Fatalf("11.1 operator %+v", row)
-				}
 				// 记成已经看见，没记会把在线客户端判成缺失。
 				saw = true
 			}
@@ -295,7 +290,7 @@ func testPersonMatrix(t *testing.T, run func(string, func(*testing.T))) {
 	// 把默认口令改成测试口令，失败说明改密被拒。
 	mustAdoptPassword(t, ctx, facA, "aud-a", "aud-pass")
 	// 授角色失败就停，否则后面没有可靠结果。
-	if _, err := facA.GrantRole(ctx, saTok, aud.ID, factory.RoleAuditor, factory.ScopeFactory, nil); err != nil {
+	if _, err := facA.GrantRole(ctx, saTok, aud.ID, factory.RoleOrgAdmin); err != nil {
 		// 把授角色的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}

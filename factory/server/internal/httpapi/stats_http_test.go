@@ -38,7 +38,7 @@ func TestWeldFactsHTTP(t *testing.T) {
 	// 按开发版打开演示焊次，须在建厂打开厂库之前挂上。
 	h.SetDemoData(true)
 	// 拉起临时服务，测完由清理关掉。
-	srv := httptest.NewServer(httpapi.New(h, "boot-secret", "").Router())
+	srv := httptest.NewServer(httpapi.New(h, "").Router())
 	// 测完关闭临时服务，把端口让出来。
 	t.Cleanup(srv.Close)
 	// 拼出本厂前缀，后面的路径都接在后面。
@@ -50,34 +50,8 @@ func TestWeldFactsHTTP(t *testing.T) {
 		// 与预期不符就停测，避免后面连环误判。
 		t.Fatalf("healthz demo on %d %s", code, body)
 	}
-	// 用共享密码建厂，激活码只出现在回包。
-	code, body = do(t, srv, "POST", "/internal/bootstrap", "boot-secret", `{"factoryId":"`+fid.String()+`","saLogin":"sa","saDisplay":"超管"}`)
-	// 不是已创建则本测失败。
-	if code != http.StatusCreated {
-		// 与预期不符就停测，避免后面连环误判。
-		t.Fatalf("bootstrap %d %s", code, body)
-	}
-	// 按工厂打开已有库，没有库就当未初始化。
-	svc, err := h.Service(context.Background(), fid)
-	// 这一步失败则停测，避免在坏结果上继续。
-	if err != nil {
-		// 与预期不符就停测，避免后面连环误判。
-		t.Fatalf("service: %v", err)
-	}
-	// 租约写不进去则停测，后面读正文会失败。
-	if err := svc.Store().GrantLocalLease(context.Background()); err != nil {
-		// 与预期不符就停测，避免后面连环误判。
-		t.Fatalf("lease: %v", err)
-	}
-	// 取出激活码，启用账号时要用。
-	act := gjson(t, body, "activationToken")
-	// 用激活码启用账号，错码应当被拒绝。
-	code, body = do(t, srv, "POST", base+"/activate", "", `{"loginName":"sa","activationToken":"`+act+`","password":"secret"}`)
-	// 不是无内容则本测失败。
-	if code != http.StatusNoContent {
-		// 与预期不符就停测，避免后面连环误判。
-		t.Fatalf("activate %d %s", code, body)
-	}
+	// 按约定身份建厂，初始超管当场有效。
+	svc, _ := enrollSA(t, h, fid)
 	// 登录网页并取回会话，失败则停测。
 	saTok := loginWeb(t, srv, base, "sa", "secret")
 	// 办理组织节点，无上级则挂在工厂下。
@@ -103,32 +77,39 @@ func TestWeldFactsHTTP(t *testing.T) {
 		// 与预期不符就停测，避免后面连环误判。
 		t.Fatal(err)
 	}
-	// 取出组织节点，后面按岗给操作员授权。
+	// 再建一名不归组织的焊工，他的焊算厂直属。
+	pc, err := svc.CreatePerson(ctx, saTok, "op-c", "焊工C")
+	// 这一步失败则停测，避免在坏结果上继续。
+	if err != nil {
+		// 与预期不符就停测，避免后面连环误判。
+		t.Fatal(err)
+	}
+	// 取出组织节点，后面把操作员归进去。
 	units, err := svc.Store().ListOrgUnits(ctx)
 	// 这一步失败则停测，避免在坏结果上继续。
 	if err != nil || len(units) == 0 {
 		// 与预期不符就停测，避免后面连环误判。
 		t.Fatalf("units %v", err)
 	}
-	// 用第一个组织给操作员授岗。
+	// 用第一个组织做操作员的所属组织。
 	shop := units[0]
 	// 授权失败则停测，后面的身份就不对。
-	if _, err := svc.GrantRole(ctx, saTok, pa.ID, service.RoleOperator, service.ScopeOrgUnit, &shop.ID); err != nil {
+	if _, err := svc.GrantRole(ctx, saTok, pa.ID, service.RoleOperator); err != nil {
 		// 与预期不符就停测，避免后面连环误判。
 		t.Fatal(err)
 	}
 	// 授权失败则停测，后面的身份就不对。
-	if _, err := svc.GrantRole(ctx, saTok, pb.ID, service.RoleOperator, service.ScopeOrgUnit, &shop.ID); err != nil {
+	if _, err := svc.GrantRole(ctx, saTok, pb.ID, service.RoleOperator); err != nil {
 		// 与预期不符就停测，避免后面连环误判。
 		t.Fatal(err)
 	}
-	// 这一步被拒绝则停测，避免后面误判。
-	if err := svc.Assign(ctx, saTok, pa.ID, shop.ID); err != nil {
+	// 把焊工A归到车间，归不进去则停测。
+	if _, err := svc.SetPersonOrg(ctx, saTok, pa.ID, &shop.ID); err != nil {
 		// 与预期不符就停测，避免后面连环误判。
 		t.Fatal(err)
 	}
-	// 这一步被拒绝则停测，避免后面误判。
-	if err := svc.Assign(ctx, saTok, pb.ID, shop.ID); err != nil {
+	// 把焊工B归到车间，归不进去则停测。
+	if _, err := svc.SetPersonOrg(ctx, saTok, pb.ID, &shop.ID); err != nil {
 		// 与预期不符就停测，避免后面连环误判。
 		t.Fatal(err)
 	}
@@ -218,12 +199,13 @@ func TestWeldFactsHTTP(t *testing.T) {
 		// 与预期不符就停测，避免后面连环误判。
 		t.Fatalf("bad tz %d %s", code, body)
 	}
-	// 再送一条厂直属焊，下钻按 direct 要能单独取出。
+	// 再送一条厂直属焊工的焊，下钻按 direct 要能单独取出。
 	idC := id.New().String()
-	// 厂直属不带节点，路径为空。
+	// 组织只看人现在的所属组织，示教器硬带的节点不算数。
 	directPayload, _ := json.Marshal(map[string]any{
 		"facts": []map[string]any{{
-			"id": idC, "creatorId": pa.ID.String(), "orgPath": []map[string]string{},
+			"id": idC, "creatorId": pc.ID.String(), "orgUnitId": shop.ID.String(),
+			"orgPath":  []map[string]string{{"id": shop.ID.String(), "name": shop.Name}},
 			"lengthMm": 100, "durationSec": 5,
 			"occurredAt": time.Date(2026, 9, 16, 2, 0, 0, 0, time.UTC).Format(time.RFC3339),
 		}},
@@ -238,7 +220,7 @@ func TestWeldFactsHTTP(t *testing.T) {
 	// 按条件查看每次起停。
 	code, body = do(t, srv, "GET", base+"/weld-runs", saTok, "")
 	// 不是成功，或正文与预期不符则失败。
-	if code != http.StatusOK || !strings.Contains(body, "op-a") || !strings.Contains(body, "op-b") {
+	if code != http.StatusOK || !strings.Contains(body, "op-a") || !strings.Contains(body, "op-b") || !strings.Contains(body, "op-c") {
 		// 与预期不符就停测，避免后面连环误判。
 		t.Fatalf("runs %d %s", code, body)
 	}

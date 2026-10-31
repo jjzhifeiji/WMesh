@@ -314,7 +314,7 @@ func (s *Node) issueRuntime(ctx context.Context, token string, clientID uuid.UUI
 		return RuntimeCred{}, err
 	}
 	// 只有工厂超管能签发或撤销运行凭证。失败一律记拒绝。
-	if err := s.can(ctx, acc, permManageAccount, nil); err != nil {
+	if err := s.can(ctx, acc, permManageAccount); err != nil {
 		// 不是工厂超管，记下签发或撤销运行凭证被拒绝，写失败不改变结果
 		_ = s.audit(ctx, &acc.ID, nil, action, clientID.String(), audit.Deny)
 		return RuntimeCred{}, err

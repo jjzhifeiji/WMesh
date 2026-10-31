@@ -1,9 +1,10 @@
-// C2：HTTPS 拉过站密文；MQTT 小信封无正文；低修订不覆盖；他机拒绝。
+// C2：厂网登录拉过站密文；MQTT 小信封无正文；低修订不覆盖。
 package service_test
 
 import (
 	"bytes"
 	"context"
+	"errors"
 	"sync"
 	"testing"
 
@@ -77,30 +78,30 @@ type errDown string
 // 把哨兵错误变成文本，方便和预期原因比对。
 func (e errDown) Error() string { return string(e) }
 
-// 拉取的是密文信封，低修订不覆盖，他机要拒绝。
+// 拉取的是密文信封，低修订不覆盖，策略和组包推送无正文。
 func TestClientChannelPullAndPolicyFanout(t *testing.T) {
 	// 准备无取消的上下文，后面每次调用都挂在上面。
 	ctx := context.Background()
 	// 拉起隔离厂库，起不来说明测试库还没就绪。
 	h := New(t)
 	// 建厂并签发超管激活码，失败则没有厂可测。
-	seed, fac, err := h.Provision(ctx, "sa", "超管")
+	_, fac, err := h.Provision(ctx, "sa", "超管")
 	// 建厂失败就停，否则后面没有可靠结果。
 	if err != nil {
 		// 把建厂的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
 	// 开通失败就停，否则后面没有可靠结果。
-	if err := fac.Activate(ctx, "sa", seed.ActivationToken, "sa-pass"); err != nil {
+	if err := seedPass(ctx, fac, "sa", "sa-pass"); err != nil {
 		// 把开通的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
 	// 登录并取出令牌，失败说明账号没有开通成功。
 	sa := mustLogin(t, ctx, fac, "sa", "sa-pass")
-	// 建人并授好角色，失败说明后面没有账号可用。
-	pe := mustCreateRole(t, ctx, fac, sa, "pe", "pe-pass", factory.RoleOperator, factory.ScopeFactory, nil)
-	// 建人并授好角色，失败说明后面没有账号可用。
-	_ = mustCreateRole(t, ctx, fac, sa, "op", "op-pass", factory.RoleOperator, factory.ScopeFactory, nil)
+	// 建管理员，厂级工艺工程由它起草发布。
+	pe := mustCreateRole(t, ctx, fac, sa, "pe", "pe-pass", factory.RoleOrgAdmin)
+	// 建操作员，示教器登录、拉包和下发都用它。
+	op := mustCreateRole(t, ctx, fac, sa, "op", "op-pass", factory.RoleOperator)
 
 	// 接上只记录的下行通道，用来看有没有真推送。
 	down := &recDown{}
@@ -130,21 +131,11 @@ func TestClientChannelPullAndPolicyFanout(t *testing.T) {
 		// 把登记绑定的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
-	// 钉臂号失败就停，否则后面没有可靠结果。
-	if _, err := fac.RegisterDevice(ctx, sa, cid, "ARM-1"); err != nil {
-		// 把钉臂号的错误打出来并停住，避免继续往下验。
-		t.Fatal(err)
-	}
-	// 钉臂号失败就停，否则后面没有可靠结果。
-	if _, err := fac.RegisterDevice(ctx, sa, cidB, "ARM-B"); err != nil {
-		// 把钉臂号的错误打出来并停住，避免继续往下验。
-		t.Fatal(err)
-	}
-	// 在这台客户端登录，失败说明臂号或账号不对。
-	sess, err := fac.LoginOnClient(ctx, cid, "ARM-1", "op", "op-pass")
-	// 端上登录失败就停，否则后面没有可靠结果。
+	// 操作员厂网登录，失败说明账号不对。
+	sess, err := fac.LoginPad(ctx, "op", "op-pass")
+	// 厂网登录失败就停，否则后面没有可靠结果。
 	if err != nil {
-		// 把端上登录的错误打出来并停住，避免继续往下验。
+		// 把厂网登录的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
 	// 登录应带回签名公钥，空的说明密钥没发下来。
@@ -153,8 +144,8 @@ func TestClientChannelPullAndPolicyFanout(t *testing.T) {
 		t.Fatal("missing signing key")
 	}
 
-	// 标明直接作业上下文，后面新建资产都挂在这里。
-	direct := factory.WorkContext{Direct: true}
+	// 不指定文件夹，后面新建资产都挂在厂级树根。
+	direct := factory.WorkContext{}
 	// 新建一份厂级工艺，失败说明起草入口坏了。
 	proc, err := fac.CreateFactoryProcess(ctx, pe.tok, direct, "工艺", []byte(`{"current":180}`))
 	// 建工艺失败就停，否则后面没有可靠结果。
@@ -191,19 +182,14 @@ func TestClientChannelPullAndPolicyFanout(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// 拉组包应因越权被拒绝，放行说明没拦住。
-	if _, err := fac.PullClientClosure(ctx, sa, cid, proj.ID); err != domain.ErrForbidden {
+	// 不存在的资产拉包应交回不存在，放行说明没拦住。
+	if _, err := fac.PadPullClientClosure(ctx, sess.Token, id.New()); !errors.Is(err, domain.ErrNotFound) {
 		// 断言没通过就停，结果和这条用例的预期不一致。
-		t.Fatalf("web sa pull: %v", err)
-	}
-	// 拉组包应因越权被拒绝，放行说明没拦住。
-	if _, err := fac.PullClientClosure(ctx, sess.Token, cidB, proj.ID); err != domain.ErrForbidden && err != domain.ErrNotFound {
-		// 断言没通过就停，结果和这条用例的预期不一致。
-		t.Fatalf("other client: %v", err)
+		t.Fatalf("missing asset pull: %v", err)
 	}
 
-	// 按客户端拉组包，失败说明不是这台或未授权。
-	got, err := fac.PullClientClosure(ctx, sess.Token, cid, proj.ID)
+	// 按登录人拉组包，失败说明清单里没有这份。
+	got, err := fac.PadPullClientClosure(ctx, sess.Token, proj.ID)
 	// 拉组包失败就停，否则后面没有可靠结果。
 	if err != nil {
 		// 把拉组包的错误打出来并停住，避免继续往下验。
@@ -226,7 +212,7 @@ func TestClientChannelPullAndPolicyFanout(t *testing.T) {
 	}
 
 	// 打开传输信封，失败说明密钥或摘要不对。
-	opened, err := factory.OpenTransit(fac.Store().FactoryID(), cid, sess.UnwrapKey, got)
+	opened, err := factory.OpenTransit(fac.Store().FactoryID(), sess.Account.ID, sess.UnwrapKey, got)
 	// 拆信封失败就停，否则后面没有可靠结果。
 	if err != nil {
 		// 把拆信封的错误打出来并停住，避免继续往下验。
@@ -264,8 +250,8 @@ func TestClientChannelPullAndPolicyFanout(t *testing.T) {
 		t.Fatalf("stale overwrite %v %v", ok, err)
 	}
 
-	// 读取客户端收件箱，失败说明会话失效。
-	box, err := fac.ClientInbox(ctx, sess.Token, cid)
+	// 读取示教器收件箱，失败说明会话失效。
+	box, err := fac.PadClientInbox(ctx, sess.Token)
 	// 读收件箱失败或条数不对就停，说明没达预期。
 	if err != nil || len(box.Closures) == 0 {
 		// 断言没通过就停，结果和这条用例的预期不一致。
@@ -311,7 +297,7 @@ func TestClientChannelPullAndPolicyFanout(t *testing.T) {
 	// 装一只在线包，字段错了通道用例会对不上。
 	bag := factory.Bag{ClientID: cid, Connected: true}
 	// 下发到端失败就停，否则后面没有可靠结果。
-	if err := fac.DistributeToClient(ctx, pe.tok, proj.ID, cid, &bag, factory.Clocks{}); err != nil {
+	if err := fac.DistributeToClient(ctx, op.tok, proj.ID, cid, &bag, factory.Clocks{}); err != nil {
 		t.Fatal(err)
 	}
 	// 取最近一条下行，空的说明通道还没收到。

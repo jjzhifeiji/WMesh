@@ -394,43 +394,13 @@ func (s *Closure) canPack(ctx context.Context, acc Account, root ClosureMember) 
 		}
 		return nil
 	}
-	// 平台级必须是整厂范围的操作员才能组。
+	// 平台级要有操作权才能组。
 	if root.Level == AssetLevelPlatform {
-		// 没有整厂操作员资格则拒绝组平台级。
-		if !s.isFactoryScopeOperator(ctx, acc) {
-			return domain.ErrForbidden
-		}
-		return nil
+		// 没有操作权则拒绝组平台级。
+		return s.opCovers(ctx, acc)
 	}
-	// 厂级默认不挂节点，读到原件再填创建位置。
-	var unit *uuid.UUID
-	// 厂级按创建时节点看操作员作用域。
-	a, err := s.store.GovernedAssetMetaByID(ctx, root.ID)
-	// 厂级原件读到了就按其创建节点看作用域。
-	if err == nil {
-		// 按创建时的节点看操作员作用域。
-		unit = a.OrgUnitID
-	}
-	// 按操作员作用域看是否盖住该节点。
-	return s.opCovers(ctx, acc, unit)
-}
-
-// isFactoryScopeOperator 是否持有本厂作用域的操作员角色。
-func (s *Closure) isFactoryScopeOperator(ctx context.Context, acc Account) bool {
-	// 读出当前人的授权，再判断角色。
-	grants, err := s.grantsOf(ctx, acc.ID)
-	// 授权读不到则拒绝，不当成没权限放过。
-	if err != nil {
-		return false
-	}
-	// 只看操作员授权里有没有整厂范围。
-	for _, g := range withRoles(grants, RoleOperator) {
-		// 有整厂操作员就可以组平台级。
-		if g.ScopeKind == ScopeFactory {
-			return true
-		}
-	}
-	return false
+	// 厂级也只看操作权。
+	return s.opCovers(ctx, acc)
 }
 
 // putCached 校验后写入本机袋。

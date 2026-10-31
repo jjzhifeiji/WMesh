@@ -21,23 +21,23 @@ func TestCornerSlotBinding(t *testing.T) {
 	// 拉起隔离厂库，起不来说明测试库还没就绪。
 	h := New(t)
 	// 建厂并签发超管激活码，失败则没有厂可测。
-	seed, fac, err := h.Provision(ctx, "sa-a", "超管A")
+	_, fac, err := h.Provision(ctx, "sa-a", "超管A")
 	// 建厂失败就停，否则后面没有可靠结果。
 	if err != nil {
 		// 把建厂的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
 	// 开通失败就停，否则后面没有可靠结果。
-	if err := fac.Activate(ctx, "sa-a", seed.ActivationToken, "sa-pass"); err != nil {
+	if err := seedPass(ctx, fac, "sa-a", "sa-pass"); err != nil {
 		// 把开通的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
 	// 登录并取出令牌，失败说明账号没有开通成功。
 	sa := mustLogin(t, ctx, fac, "sa-a", "sa-pass")
 	// 建人并授好角色，失败说明后面没有账号可用。
-	op := mustCreateRole(t, ctx, fac, sa, "op-a", "op-pass", factory.RoleOperator, factory.ScopeFactory, nil)
+	op := mustCreateRole(t, ctx, fac, sa, "op-a", "op-pass", factory.RoleOrgAdmin)
 	// 标明直接作业上下文，后面新建资产都挂在这里。
-	direct := factory.WorkContext{Direct: true}
+	direct := factory.WorkContext{}
 	// 建一条厂级工艺并发布，工程才钉得上。
 	mk := func(name string, body []byte) factory.Asset {
 		// 标成辅助函数，失败算到调用方。

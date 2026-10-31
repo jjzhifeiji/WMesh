@@ -27,18 +27,18 @@ func TestCopyProcess(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 开通失败就停，否则后面没有可靠结果。
-	if err := fac.Activate(ctx, "sa-a", seed.ActivationToken, "sa-pass"); err != nil {
+	if err := seedPass(ctx, fac, "sa-a", "sa-pass"); err != nil {
 		// 把开通的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
 	// 登录并取出令牌，失败说明账号没有开通成功。
 	sa := mustLogin(t, ctx, fac, "sa-a", "sa-pass")
 	// 建人并授好角色，失败说明后面没有账号可用。
-	pe := mustCreateRole(t, ctx, fac, sa, "pe-a", "pe-pass", factory.RoleOperator, factory.ScopeFactory, nil)
+	pe := mustCreateRole(t, ctx, fac, sa, "pe-a", "pe-pass", factory.RoleOrgAdmin)
 	// 建人并授好角色，失败说明后面没有账号可用。
-	other := mustCreateRole(t, ctx, fac, sa, "pe-b", "pe-b-pass", factory.RoleOperator, factory.ScopeFactory, nil)
+	other := mustCreateRole(t, ctx, fac, sa, "pe-b", "pe-b-pass", factory.RoleOperator)
 	// 标明直接作业上下文，后面新建资产都挂在这里。
-	direct := factory.WorkContext{Direct: true}
+	direct := factory.WorkContext{}
 	// 准备这段正文字节，读回对不上说明没写进去。
 	body := []byte("copy-src-body")
 
@@ -82,21 +82,8 @@ func TestCopyProcess(t *testing.T) {
 		t.Fatalf("empty name: %v", err)
 	}
 
-	// 切换可否复制，失败说明越权或状态不允许。
-	tight, err := fac.SetAssetCopyable(ctx, pe.tok, src.ID, src.Revision, false)
-	// 改可复制失败就停，否则后面没有可靠结果。
-	if err != nil {
-		// 把改可复制的错误打出来并停住，避免继续往下验。
-		t.Fatal(err)
-	}
-	// 复制工艺应因不可复制被拒绝，放行说明没拦住。
-	if _, err := fac.CopyProcess(ctx, pe.tok, src.ID, "应拒绝"); !errors.Is(err, domain.ErrAssetNotCopyable) {
-		// 复制结果和源稿缠在一起，说明没有独立成稿。
-		t.Fatalf("not copyable: %v", err)
-	}
-
 	// 发布当前修订，失败说明状态不允许发布。
-	pub, err := fac.PublishAsset(ctx, pe.tok, tight.ID, tight.Revision)
+	pub, err := fac.PublishAsset(ctx, pe.tok, src.ID, src.Revision)
 	// 发布失败就停，否则后面没有可靠结果。
 	if err != nil {
 		// 把发布的错误打出来并停住，避免继续往下验。
@@ -190,23 +177,23 @@ func TestCreateProcessCopyable(t *testing.T) {
 	// 拉起隔离厂库，起不来说明测试库还没就绪。
 	h := New(t)
 	// 建厂并签发超管激活码，失败则没有厂可测。
-	seed, fac, err := h.Provision(ctx, "sa-a", "超管A")
+	_, fac, err := h.Provision(ctx, "sa-a", "超管A")
 	// 建厂失败就停，否则后面没有可靠结果。
 	if err != nil {
 		// 把建厂的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
 	// 开通失败就停，否则后面没有可靠结果。
-	if err := fac.Activate(ctx, "sa-a", seed.ActivationToken, "sa-pass"); err != nil {
+	if err := seedPass(ctx, fac, "sa-a", "sa-pass"); err != nil {
 		// 把开通的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
 	// 登录并取出令牌，失败说明账号没有开通成功。
 	sa := mustLogin(t, ctx, fac, "sa-a", "sa-pass")
 	// 建人并授好角色，失败说明后面没有账号可用。
-	pe := mustCreateRole(t, ctx, fac, sa, "pe-a", "pe-pass", factory.RoleOperator, factory.ScopeFactory, nil)
+	pe := mustCreateRole(t, ctx, fac, sa, "pe-a", "pe-pass", factory.RoleOrgAdmin)
 	// 标明直接作业上下文，后面新建资产都挂在这里。
-	direct := factory.WorkContext{Direct: true}
+	direct := factory.WorkContext{}
 	// 准备这段正文字节，读回对不上说明没写进去。
 	body := []byte("create-copyable-body")
 

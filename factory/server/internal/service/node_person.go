@@ -196,7 +196,7 @@ func (s *Node) CreateOfflineFact(ctx context.Context, bag Bag, clocks Clocks, lo
 		return FactStub{}, domain.ErrForbidden
 	}
 	// 收成不含口令的对外账号
-	unitID, path, err := s.resolveWorkContext(ctx, accountOf(p), wc)
+	unitID, path, err := s.resolveWorkContext(ctx, accountOf(p))
 	// 账号视图收不成就不交回
 	if err != nil {
 		// 记下写运行事实被拒绝，写失败不改变结果

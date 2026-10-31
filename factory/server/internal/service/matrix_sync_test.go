@@ -71,8 +71,8 @@ func testSyncMatrix(t *testing.T, run func(string, func(*testing.T))) {
 	bag.AssetAllowed = true
 	// 先当成断网，事实应当只留在包里。
 	bag.Connected = false
-	// 用直属上下文入队，不把事实挂到车间。
-	direct := factory.WorkContext{Direct: true}
+	// 不带文件夹的上下文入队，组织跟人现在的所属走。
+	direct := factory.WorkContext{}
 
 	// 留出断网入队的那条事实，连上后再到库里查。
 	var fact factory.PendingFact
@@ -93,26 +93,26 @@ func testSyncMatrix(t *testing.T, run func(string, func(*testing.T))) {
 			t.Fatalf("pending %d", len(bag.PendingFacts))
 		}
 		// 还没连上时，厂库必须找不到这条事实。
-		if _, err := e.fac.GetFact(e.ctx, e.sa, fact.ID); !errors.Is(err, domain.ErrNotFound) {
+		if _, err := e.fac.Store().FactByID(e.ctx, fact.ID); !errors.Is(err, domain.ErrNotFound) {
 			// 断网事实进了厂库就停，弱网边界被打破了。
 			t.Fatalf("leaked to store: %v", err)
 		}
 	})
 
-	// 审计员和跨厂的包都不能把事实放进队列。
+	// 管理员和跨厂的包都不能把事实放进队列。
 	run("1.2", func(t *testing.T) {
 		// 绑定一台已授权的客户端并拿到包，没有包不能测。
 		_, audBag := e.bound(t, e.aud.acc.ID)
-		// 给审计员包打开资产允许，拒绝应来自角色。
+		// 给管理员包打开资产允许，拒绝应来自角色。
 		audBag.AssetAllowed = true
-		// 审计员的包也当成断网，看它会不会入队。
+		// 管理员的包也当成断网，看它会不会入队。
 		audBag.Connected = false
-		// 审计员把事实入队必须因越权被拒绝。
+		// 管理员把事实入队必须因越权被拒绝。
 		if _, err := e.fac.EnqueueFact(e.ctx, &audBag, e.clocks, "aud-a", "aud-pass", direct); !errors.Is(err, domain.ErrForbidden) {
-			// 审计员能入队就停，只读身份被放过了。
+			// 管理员能入队就停，只读身份被放过了。
 			t.Fatalf("auditor: %v", err)
 		}
-		// 审计员被拒绝后，包里不该还留着待发事实。
+		// 管理员被拒绝后，包里不该还留着待发事实。
 		if len(audBag.PendingFacts) != 0 {
 			// 拒绝之后队列还有东西就停，入队没有撤干净。
 			t.Fatal("auditor queued")
@@ -180,7 +180,7 @@ func testSyncMatrix(t *testing.T, run func(string, func(*testing.T))) {
 			t.Fatal("queue not empty")
 		}
 		// 按标识读事实，供后面步骤使用，失败则前提断了。
-		got, err := e.fac.GetFact(e.ctx, e.sa, fact.ID)
+		got, err := e.fac.Store().FactByID(e.ctx, fact.ID)
 		// 按标识读事实没成功，后面的断言就没有依据。
 		if err != nil {
 			// 按标识读事实失败即停，不能把这一步的失败当成通过。
@@ -203,7 +203,7 @@ func testSyncMatrix(t *testing.T, run func(string, func(*testing.T))) {
 			t.Fatal(err)
 		}
 		// 按创建人列事实，供后面步骤使用，失败则前提断了。
-		listed, err := e.fac.ListFactsByCreator(e.ctx, e.sa, e.op.acc.ID)
+		listed, err := e.fac.Store().FactsByCreator(e.ctx, e.op.acc.ID)
 		// 按创建人列事实没成功，后面的断言就没有依据。
 		if err != nil {
 			// 按创建人列事实失败即停，不能把这一步的失败当成通过。
@@ -249,7 +249,7 @@ func testSyncMatrix(t *testing.T, run func(string, func(*testing.T))) {
 			t.Fatalf("got %v", err)
 		}
 		// 按标识读事实，供后面步骤使用，失败则前提断了。
-		got, err := e.fac.GetFact(e.ctx, e.sa, fact.ID)
+		got, err := e.fac.Store().FactByID(e.ctx, fact.ID)
 		// 按标识读事实没成功，后面的断言就没有依据。
 		if err != nil {
 			// 按标识读事实失败即停，不能把这一步的失败当成通过。
@@ -294,7 +294,7 @@ func testSyncMatrix(t *testing.T, run func(string, func(*testing.T))) {
 			t.Fatalf("queue %d", len(bag.PendingFacts))
 		}
 		// 汇聚失败时厂库必须仍然找不到这条事实。
-		if _, err := e.fac.GetFact(e.ctx, e.sa, retry.ID); !errors.Is(err, domain.ErrNotFound) {
+		if _, err := e.fac.Store().FactByID(e.ctx, retry.ID); !errors.Is(err, domain.ErrNotFound) {
 			// 失败却已经入库就停，半截事实落了地。
 			t.Fatalf("stored on fail: %v", err)
 		}
@@ -315,7 +315,7 @@ func testSyncMatrix(t *testing.T, run func(string, func(*testing.T))) {
 			t.Fatal("queue")
 		}
 		// 按标识读事实没成功，后面的断言就没有依据。
-		if _, err := e.fac.GetFact(e.ctx, e.sa, retry.ID); err != nil {
+		if _, err := e.fac.Store().FactByID(e.ctx, retry.ID); err != nil {
 			// 按标识读事实失败即停，不能把这一步的失败当成通过。
 			t.Fatal(err)
 		}
@@ -328,8 +328,8 @@ func testSyncMatrix(t *testing.T, run func(string, func(*testing.T))) {
 		// 授权客户端收工程失败即停，不能把这一步的失败当成通过。
 		t.Fatal(err)
 	}
-	// 把工程下发到包里没成功，后面的断言就没有依据。
-	if err := e.fac.DistributeToClient(e.ctx, e.pe.tok, proj.ID, cid, &bag, e.clocks); err != nil {
+	// 操作员把工程下发到包里没成功，后面的断言就没有依据。
+	if err := e.fac.DistributeToClient(e.ctx, e.op.tok, proj.ID, cid, &bag, e.clocks); err != nil {
 		// 把工程下发到包里失败即停，不能把这一步的失败当成通过。
 		t.Fatal(err)
 	}
@@ -418,8 +418,10 @@ func testSyncMatrix(t *testing.T, run func(string, func(*testing.T))) {
 		}
 	})
 
+	// 前面的操作员已停用，另建一名操作员专门上传。
+	up8 := mustCreateRole(t, e.ctx, e.fac, e.sa, "up-a", "up-pass", factory.RoleOperator)
 	// 绑定一台已授权的客户端并拿到包，没有包不能测。
-	cidU, bagU := e.bound(t, e.pe.acc.ID)
+	cidU, bagU := e.bound(t, up8.acc.ID)
 	// 上传用的包允许装资产，操作员可以入队。
 	bagU.AssetAllowed = true
 	// 上传的包先断网，正文应当先留在包里。
@@ -431,7 +433,7 @@ func testSyncMatrix(t *testing.T, run func(string, func(*testing.T))) {
 		// 另开一个错误变量，避免盖住外层的结果。
 		var err error
 		// 入队一条上传，供后面步骤使用，失败则前提断了。
-		up, err = e.fac.EnqueueUpload(e.ctx, &bagU, e.clocks, "pe-a", "pe-pass", factory.UploadPointCloud, cloud)
+		up, err = e.fac.EnqueueUpload(e.ctx, &bagU, e.clocks, "up-a", "up-pass", factory.UploadPointCloud, cloud)
 		// 入队一条上传没成功，后面的断言就没有依据。
 		if err != nil {
 			// 入队一条上传失败即停，不能把这一步的失败当成通过。
@@ -524,24 +526,15 @@ func testSyncMatrix(t *testing.T, run func(string, func(*testing.T))) {
 		bagU.PendingUploads = nil
 	})
 
-	// 超管和审计员都不能把上传放进队列。
+	// 没有作业权的管理员不能把上传放进队列。
 	run("5.4", func(t *testing.T) {
 		// 绑定一台已授权的客户端并拿到包，没有包不能测。
-		_, saBag := e.bound(t, e.seed.SuperAdminID)
-		// 超管的包也打开资产允许，拒绝应来自角色。
-		saBag.AssetAllowed = true
-		// 超管把上传入队必须因越权被拒绝。
-		if _, err := e.fac.EnqueueUpload(e.ctx, &saBag, e.clocks, "sa-a", "sa-pass", factory.UploadImage, []byte("img")); !errors.Is(err, domain.ErrForbidden) {
-			// 超管能入队上传就停，这个角色不该传文件。
-			t.Fatalf("sa: %v", err)
-		}
-		// 绑定一台已授权的客户端并拿到包，没有包不能测。
 		_, audBag := e.bound(t, e.aud.acc.ID)
-		// 审计员的包打开资产允许，入队上传仍应被拒绝。
+		// 管理员的包打开资产允许，入队上传仍应被拒绝。
 		audBag.AssetAllowed = true
-		// 审计员把上传入队必须因越权被拒绝。
+		// 管理员没有作业权，把上传入队必须因越权被拒绝。
 		if _, err := e.fac.EnqueueUpload(e.ctx, &audBag, e.clocks, "aud-a", "aud-pass", factory.UploadImage, []byte("img")); !errors.Is(err, domain.ErrForbidden) {
-			// 审计员能入队上传就停，只读被放开了。
+			// 管理员能入队上传就停，作业权被放开了。
 			t.Fatalf("aud: %v", err)
 		}
 	})

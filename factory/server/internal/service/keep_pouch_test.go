@@ -17,22 +17,22 @@ func TestPersonKeepPouch(t *testing.T) {
 	ctx := context.Background()
 	// 拉起隔离厂库，起不来说明测试库还没就绪。
 	h := New(t)
-	// 建厂并签发超管激活码，失败则没有厂可测。
-	seed, fac, err := h.Provision(ctx, "sa", "超管")
+	// 建厂并写下初始超管，失败则没有厂可测。
+	_, fac, err := h.Provision(ctx, "sa", "超管")
 	// 建厂失败就停，否则后面没有可靠结果。
 	if err != nil {
 		// 把建厂的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
 	// 开通失败就停，否则后面没有可靠结果。
-	if err := fac.Activate(ctx, "sa", seed.ActivationToken, "sa-pass"); err != nil {
+	if err := seedPass(ctx, fac, "sa", "sa-pass"); err != nil {
 		// 把开通的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
 	// 登录并取出令牌，失败说明账号没有开通成功。
 	saTok := mustLogin(t, ctx, fac, "sa", "sa-pass")
 	// 建人并授好角色，失败说明后面没有账号可用。
-	op := mustCreateRole(t, ctx, fac, saTok, "op", "op-pass", factory.RoleOperator, factory.ScopeFactory, nil)
+	op := mustCreateRole(t, ctx, fac, saTok, "op", "op-pass", factory.RoleOperator)
 	// 留库开关应是这一步的预期值，反了说明没改成。
 	if !op.acc.KeepPouch {
 		// 留库开关和预期相反，说明缺省或修改没生效。

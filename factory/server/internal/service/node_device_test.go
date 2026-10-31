@@ -1,4 +1,4 @@
-// C1：钉机械臂号、本机登录领钥；空号/他机号/未绑定拒绝。
+// C1：厂网登录领钥、列设备、记在场，第二次示教器登录作废旧令牌。
 package service_test
 
 import (
@@ -18,249 +18,6 @@ import (
 	factory "wmesh/factory/internal/service"
 )
 
-// 验收钉臂号和本机登录，空号他号未绑定即失败
-func TestRegisterDeviceAndLogin(t *testing.T) {
-	// 准备空上下文，后续调用都挂在这上面
-	ctx := context.Background()
-	// 起一套测试库和厂服务，起不来则本例无法开始
-	h := New(t)
-	// 建厂并种初始超管，失败则本步验收不能继续
-	seed, fac, err := h.Provision(ctx, "sa", "超管")
-	// 建厂并种初始超管失败就停，避免带着错误继续验
-	if err != nil {
-		// 建厂并种初始超管失败就把原因打出并停掉本例
-		t.Fatal(err)
-	}
-	// 激活初始超管失败就停，避免带着错误继续验
-	if err := fac.Activate(ctx, "sa", seed.ActivationToken, "sa-pass"); err != nil {
-		// 激活初始超管失败就把原因打出并停掉本例
-		t.Fatal(err)
-	}
-	// 登录取出令牌，登不上则后面没有身份
-	saTok := mustLogin(t, ctx, fac, "sa", "sa-pass")
-	// 建人并授角色，失败则夹具缺这个身份
-	op := mustCreateRole(t, ctx, fac, saTok, "op", "op-pass", factory.RoleOperator, factory.ScopeFactory, nil)
-
-	// 生成焊机密钥，失败则绑定无法开始
-	pub, _, err := nodekey.Generate()
-	// 生成焊机密钥失败就停，避免带着错误继续验
-	if err != nil {
-		// 生成焊机密钥失败就把原因打出并停掉本例
-		t.Fatal(err)
-	}
-	// 新开一个身份，避免和别的绑定撞号
-	cid := id.New()
-	// 接受焊机绑定失败就停，避免带着错误继续验
-	if _, err := fac.AcceptBinding(ctx, cid, "焊机", pub, 1); err != nil {
-		// 接受焊机绑定失败就把原因打出并停掉本例
-		t.Fatal(err)
-	}
-
-	// 期望登记机械臂号被拒为必须有臂号，放行即失败
-	if _, err := fac.RegisterDevice(ctx, saTok, cid, ""); !errors.Is(err, domain.ErrDeviceSerialRequired) {
-		// 空值没有被拒或结果是空就失败
-		t.Fatalf("empty: %v", err)
-	}
-	// 登记机械臂号，失败则本步验收不能继续
-	row, err := fac.RegisterDevice(ctx, saTok, cid, "ARM-1")
-	// 登记机械臂号失败就停，避免带着错误继续验
-	if err != nil || row.DeviceSerial != "ARM-1" || len(row.UnwrapKey) != 0 {
-		// 臂号没钉上就失败，并打出登记结果
-		t.Fatalf("pin %+v %v", row, err)
-	}
-	// 登记机械臂号，失败则本步验收不能继续
-	again, err := fac.RegisterDevice(ctx, saTok, cid, "ARM-1")
-	// 登记机械臂号失败就停，避免带着错误继续验
-	if err != nil || again.DeviceSerial != "ARM-1" {
-		// 重复登记没有保持原号就失败
-		t.Fatalf("idempotent %+v %v", again, err)
-	}
-
-	// 新开一个身份，避免和别的绑定撞号
-	cid2 := id.New()
-	// 生成焊机密钥，失败则绑定无法开始
-	pub2, _, err := nodekey.Generate()
-	// 生成焊机密钥失败就停，避免带着错误继续验
-	if err != nil {
-		// 生成焊机密钥失败就把原因打出并停掉本例
-		t.Fatal(err)
-	}
-	// 接受焊机绑定失败就停，避免带着错误继续验
-	if _, err := fac.AcceptBinding(ctx, cid2, "焊机2", pub2, 1); err != nil {
-		// 接受焊机绑定失败就把原因打出并停掉本例
-		t.Fatal(err)
-	}
-	// 不带登录就钉号应当被拒为未登录，放行即失败
-	if _, err := fac.RegisterDevice(ctx, "", cid2, "ARM-X"); !errors.Is(err, domain.ErrUnauthorized) {
-		// 匿名钉号没被拒就失败，厂网谁都能改臂号
-		t.Fatalf("anon pin: %v", err)
-	}
-	// 操作员钉号应当被拒为无权，放行即失败
-	if _, err := fac.RegisterDevice(ctx, op.tok, cid2, "ARM-X"); !errors.Is(err, domain.ErrForbidden) {
-		// 非超管钉号没被拒就失败，只有超管能钉
-		t.Fatalf("operator pin: %v", err)
-	}
-	// 读回第二台，确认两次被拒都没把号钉上
-	c2, err := fac.Store().ClientByID(ctx, cid2)
-	// 读不到或号已被钉上就失败
-	if err != nil || c2.DeviceSerial != "" {
-		// 被拒的请求不该留下臂号
-		t.Fatalf("denied pin left serial %+v %v", c2, err)
-	}
-	// 期望登记机械臂号被拒为臂号已被占用，放行即失败
-	if _, err := fac.RegisterDevice(ctx, saTok, cid2, "ARM-1"); !errors.Is(err, domain.ErrDeviceSerialTaken) {
-		// 重复臂号没有被拒就失败
-		t.Fatalf("taken: %v", err)
-	}
-
-	// 期望在焊机上登录被拒为必须有臂号，放行即失败
-	if _, err := fac.LoginOnClient(ctx, cid, "", "op", "op-pass"); !errors.Is(err, domain.ErrDeviceSerialRequired) {
-		// 空臂号登录没有被拒就失败
-		t.Fatalf("login empty: %v", err)
-	}
-	// 期望在焊机上登录被拒为臂号对不上，放行即失败
-	if _, err := fac.LoginOnClient(ctx, cid, "ARM-9", "op", "op-pass"); !errors.Is(err, domain.ErrDeviceSerialMismatch) {
-		// 臂号对不上却被放行，应当被拒
-		t.Fatalf("mismatch: %v", err)
-	}
-	// 期望新开一个身份被拒为不存在，放行即失败
-	if _, err := fac.LoginOnClient(ctx, id.New(), "ARM-1", "op", "op-pass"); !errors.Is(err, domain.ErrNotFound) {
-		// 未绑定焊机没有被拒就失败
-		t.Fatalf("unbound: %v", err)
-	}
-
-	// 在焊机上登录，失败则本步验收不能继续
-	sess, err := fac.LoginOnClient(ctx, cid, "ARM-1", "op", "op-pass")
-	// 在焊机上登录失败就停，避免带着错误继续验
-	if err != nil || sess.Token == "" || len(sess.UnwrapKey) != 32 || sess.Account.ID != op.acc.ID {
-		// 登录结果不对就失败
-		t.Fatalf("login %+v %v", sess, err)
-	}
-	// 解钥或策略不对就失败，不该持久化或长度错
-	if sess.Policy.PersistUnwrapKey || sess.Policy.CacheScope != factory.CacheScopeAll {
-		// 下发策略不对就失败，解钥不该持久化
-		t.Fatalf("policy %+v", sess.Policy)
-	}
-	// 写入焊机短码失败就停，避免带着错误继续验
-	if err := fac.Store().PutClientShortCode(ctx, cid, "C0008"); err != nil {
-		// 写入焊机短码失败就把原因打出并停掉本例
-		t.Fatal(err)
-	}
-	// 在焊机上登录，失败则本步验收不能继续
-	sess, err = fac.LoginOnClient(ctx, cid, "ARM-1", "op", "op-pass")
-	// 在焊机上登录失败就停，避免带着错误继续验
-	if err != nil || sess.ClientShortCode != "C0008" {
-		// 短码不对就失败，否则失败
-		t.Fatalf("short %+v %v", sess, err)
-	}
-	// 先当作名册里没有操作员，找到了再标上
-	hasOp := false
-	// 逐项核对，漏掉一项即这一步没验完
-	for _, r := range sess.Roles {
-		// 对上操作员角色才标上，没标上即角色没授成
-		if r == factory.RoleOperator {
-			// 标上名册里有这名操作员，没有即建人失败
-			hasOp = true
-		}
-	}
-	// 名册里没有这名操作员就失败，建人没落上
-	if !hasOp {
-		// 角色集合不对就失败
-		t.Fatalf("roles %v", sess.Roles)
-	}
-	// 校验会话仍有效失败就停，避免带着错误继续验
-	if _, err := fac.RequireActive(ctx, sess.Token); err != nil {
-		// 校验会话仍有效失败就把原因打出并停掉本例
-		t.Fatal(err)
-	}
-
-	// 已钉 ARM-1 再换 ARM-2 应当被拒，不许悄悄覆盖
-	if _, err := fac.RegisterDevice(ctx, saTok, cid, "ARM-2"); !errors.Is(err, domain.ErrDeviceSerialMismatch) {
-		// 换号被放行就失败，已钉的号会被人对调
-		t.Fatalf("overwrite: %v", err)
-	}
-	// 旧号仍应能登录，说明被拒的换号没落库
-	if _, err := fac.LoginOnClient(ctx, cid, "ARM-1", "op", "op-pass"); err != nil {
-		// 旧号登不上就失败，换号被拒却改了号
-		t.Fatalf("old arm: %v", err)
-	}
-	// 期望新号登录被拒为臂号对不上，放行即失败
-	if _, err := fac.LoginOnClient(ctx, cid, "ARM-2", "op", "op-pass"); !errors.Is(err, domain.ErrDeviceSerialMismatch) {
-		// 新号能登录就失败，说明号被换掉了
-		t.Fatalf("new arm: %v", err)
-	}
-
-	// 作废绑定失败就停，避免带着错误继续验
-	if err := fac.VoidBinding(ctx, cid); err != nil {
-		// 作废绑定失败就把原因打出并停掉本例
-		t.Fatal(err)
-	}
-	// 期望登记机械臂号被拒为绑定已作废，放行即失败
-	if _, err := fac.RegisterDevice(ctx, saTok, cid, "ARM-3"); !errors.Is(err, domain.ErrBindingVoid) {
-		// 作废绑定后还能登记臂号就失败
-		t.Fatalf("void pin: %v", err)
-	}
-	// 期望在焊机上登录被拒为绑定已作废，放行即失败
-	if _, err := fac.LoginOnClient(ctx, cid, "ARM-1", "op", "op-pass"); !errors.Is(err, domain.ErrBindingVoid) {
-		// 作废绑定后还能登录就失败
-		t.Fatalf("void login: %v", err)
-	}
-
-	// 读取审计，失败则本步验收不能继续
-	rows, err := fac.ListAudit(ctx)
-	// 读取审计失败就停，避免带着错误继续验
-	if err != nil {
-		// 读取审计失败就把原因打出并停掉本例
-		t.Fatal(err)
-	}
-	// 审计字段不齐就失败，这条记录不能用
-	if bad := audit.Incomplete(rows); len(bad) > 0 {
-		// 记录字段缺了就失败，不能当完整记录
-		t.Fatalf("incomplete %#v", bad[0])
-	}
-	// 把审计打成文本，没成功则本步验收失败
-	dump := audit.Dump(rows)
-	// 文本里夹带秘密或禁词就失败，说明泄密了
-	if !audit.ContainsAny(dump, "client_register") || !audit.ContainsAny(dump, "client_login") {
-		// 审计里没有这次动作就失败，记录丢了
-		t.Fatalf("audit %s", dump)
-	}
-	// 文本里夹带秘密或禁词就失败，说明泄密了
-	if audit.ContainsAny(dump, "op-pass", "sa-pass") {
-		// 审计里出现密码就失败，说明口令泄了
-		t.Fatal("password leaked")
-	}
-	// 先当作没看到操作员被拒和超管成功，找到再标上
-	opDenied, saAllowed := false, false
-	// 逐条看钉号审计，每条都要认得出操作人
-	for _, r := range rows {
-		// 不是钉号这一类就跳过
-		if r.Action != "client_register" {
-			continue
-		}
-		// 钉号审计没有操作人就失败，查不出是谁改的号
-		if r.ActorID == nil {
-			// 打出这条缺操作人的审计
-			t.Fatalf("client_register without actor %#v", r)
-		}
-		// 操作员那次被拒要记在操作员名下
-		if r.Result == audit.Deny && *r.ActorID == op.acc.ID {
-			// 标上看到了操作员被拒
-			opDenied = true
-		}
-		// 超管钉号成功要记在超管名下
-		if r.Result == audit.Allow && *r.ActorID == seed.SuperAdminID {
-			// 标上看到了超管成功
-			saAllowed = true
-		}
-	}
-	// 两类审计少一类就失败，操作人没记对
-	if !opDenied || !saAllowed {
-		// 打出审计全文便于看缺哪条
-		t.Fatalf("client_register actors deny=%v allow=%v %s", opDenied, saAllowed, dump)
-	}
-}
-
 // 验收平板登录能列出已登记焊机，缺一台即失败
 func TestPadLoginListsDevicesWithoutSerial(t *testing.T) {
 	// 准备空上下文，后续调用都挂在这上面
@@ -268,21 +25,21 @@ func TestPadLoginListsDevicesWithoutSerial(t *testing.T) {
 	// 起一套测试库和厂服务，起不来则本例无法开始
 	h := New(t)
 	// 建厂并种初始超管，失败则本步验收不能继续
-	seed, fac, err := h.Provision(ctx, "sa", "超管")
+	_, fac, err := h.Provision(ctx, "sa", "超管")
 	// 建厂并种初始超管失败就停，避免带着错误继续验
 	if err != nil {
 		// 建厂并种初始超管失败就把原因打出并停掉本例
 		t.Fatal(err)
 	}
 	// 激活初始超管失败就停，避免带着错误继续验
-	if err := fac.Activate(ctx, "sa", seed.ActivationToken, "sa-pass"); err != nil {
+	if err := seedPass(ctx, fac, "sa", "sa-pass"); err != nil {
 		// 激活初始超管失败就把原因打出并停掉本例
 		t.Fatal(err)
 	}
 	// 登录取出令牌，登不上则后面没有身份
 	saTok := mustLogin(t, ctx, fac, "sa", "sa-pass")
 	// 建人并授角色，失败则夹具缺这个身份
-	op := mustCreateRole(t, ctx, fac, saTok, "op", "op-pass", factory.RoleOperator, factory.ScopeFactory, nil)
+	op := mustCreateRole(t, ctx, fac, saTok, "op", "op-pass", factory.RoleOperator)
 
 	// 新开一个身份，避免和别的绑定撞号
 	cidA := id.New()
@@ -303,12 +60,12 @@ func TestPadLoginListsDevicesWithoutSerial(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 登记机械臂号失败就停，避免带着错误继续验
-	if _, err := fac.RegisterDevice(ctx, saTok, cidA, "ARM-A"); err != nil {
+	if _, err := fac.Store().PinDeviceSerial(ctx, cidA, "ARM-A", false); err != nil {
 		// 登记机械臂号失败就把原因打出并停掉本例
 		t.Fatal(err)
 	}
 	// 登记机械臂号失败就停，避免带着错误继续验
-	if _, err := fac.RegisterDevice(ctx, saTok, cidB, "ARM-B"); err != nil {
+	if _, err := fac.Store().PinDeviceSerial(ctx, cidB, "ARM-B", false); err != nil {
 		// 登记机械臂号失败就把原因打出并停掉本例
 		t.Fatal(err)
 	}
@@ -359,11 +116,6 @@ func TestPadLoginListsDevicesWithoutSerial(t *testing.T) {
 		}
 	}
 
-	// 期望读焊机收件箱被拒为越权，放行即失败
-	if _, err := fac.ClientInbox(ctx, sess.Token, cidA); !errors.Is(err, domain.ErrForbidden) {
-		// 平板令牌读焊机信箱没被拒就失败
-		t.Fatalf("operator inbox: %v", err)
-	}
 	// 读平板收件箱失败就停，避免带着错误继续验
 	if _, err := fac.PadClientInbox(ctx, sess.Token); err != nil {
 		// 平板信箱读失败，登录后应当能看
@@ -401,21 +153,21 @@ func TestPadLoginMarksAppOnlineAndVersion(t *testing.T) {
 	// 起一套测试库和厂服务，起不来则本例无法开始
 	h := New(t)
 	// 建厂并种初始超管，失败则本步验收不能继续
-	seed, fac, err := h.Provision(ctx, "sa", "超管")
+	_, fac, err := h.Provision(ctx, "sa", "超管")
 	// 建厂并种初始超管失败就停，避免带着错误继续验
 	if err != nil {
 		// 建厂并种初始超管失败就把原因打出并停掉本例
 		t.Fatal(err)
 	}
 	// 激活初始超管失败就停，避免带着错误继续验
-	if err := fac.Activate(ctx, "sa", seed.ActivationToken, "sa-pass"); err != nil {
+	if err := seedPass(ctx, fac, "sa", "sa-pass"); err != nil {
 		// 激活初始超管失败就把原因打出并停掉本例
 		t.Fatal(err)
 	}
 	// 登录取出令牌，登不上则后面没有身份
 	saTok := mustLogin(t, ctx, fac, "sa", "sa-pass")
 	// 建人并授角色，失败则夹具缺这个身份
-	op := mustCreateRole(t, ctx, fac, saTok, "op", "op-pass", factory.RoleOperator, factory.ScopeFactory, nil)
+	op := mustCreateRole(t, ctx, fac, saTok, "op", "op-pass", factory.RoleOperator)
 
 	// 读取名册，失败则本步验收不能继续
 	cat, err := fac.Catalog(ctx, saTok)
@@ -543,21 +295,21 @@ func TestPersonLoginLogsKeepDeviceAndWifi(t *testing.T) {
 	// 起一套测试库和厂服务，起不来则本例无法开始
 	h := New(t)
 	// 建厂并种初始超管，失败则本步验收不能继续
-	seed, fac, err := h.Provision(ctx, "sa", "超管")
+	_, fac, err := h.Provision(ctx, "sa", "超管")
 	// 建厂并种初始超管失败就停，避免带着错误继续验
 	if err != nil {
 		// 建厂并种初始超管失败就把原因打出并停掉本例
 		t.Fatal(err)
 	}
 	// 激活初始超管失败就停，避免带着错误继续验
-	if err := fac.Activate(ctx, "sa", seed.ActivationToken, "sa-pass"); err != nil {
+	if err := seedPass(ctx, fac, "sa", "sa-pass"); err != nil {
 		// 激活初始超管失败就把原因打出并停掉本例
 		t.Fatal(err)
 	}
 	// 登录取出令牌，登不上则后面没有身份
 	saTok := mustLogin(t, ctx, fac, "sa", "sa-pass")
 	// 建人并授角色，失败则夹具缺这个身份
-	op := mustCreateRole(t, ctx, fac, saTok, "op", "op-pass", factory.RoleOperator, factory.ScopeFactory, nil)
+	op := mustCreateRole(t, ctx, fac, saTok, "op", "op-pass", factory.RoleOperator)
 	// 新开一个身份，避免和别的绑定撞号
 	cid := id.New()
 	// 生成焊机密钥，失败则绑定无法开始
@@ -573,7 +325,7 @@ func TestPersonLoginLogsKeepDeviceAndWifi(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 登记机械臂号失败就停，避免带着错误继续验
-	if _, err := fac.RegisterDevice(ctx, saTok, cid, "ARM-1"); err != nil {
+	if _, err := fac.Store().PinDeviceSerial(ctx, cid, "ARM-1", false); err != nil {
 		// 登记机械臂号失败就把原因打出并停掉本例
 		t.Fatal(err)
 	}
@@ -682,21 +434,21 @@ func TestPresenceWithWM2RecordsLogin(t *testing.T) {
 	// 起一套测试库和厂服务，起不来则本例无法开始
 	h := New(t)
 	// 建厂并种初始超管，失败则本步验收不能继续
-	seed, fac, err := h.Provision(ctx, "sa", "超管")
+	_, fac, err := h.Provision(ctx, "sa", "超管")
 	// 建厂并种初始超管失败就停，避免带着错误继续验
 	if err != nil {
 		// 建厂并种初始超管失败就把原因打出并停掉本例
 		t.Fatal(err)
 	}
 	// 激活初始超管失败就停，避免带着错误继续验
-	if err := fac.Activate(ctx, "sa", seed.ActivationToken, "sa-pass"); err != nil {
+	if err := seedPass(ctx, fac, "sa", "sa-pass"); err != nil {
 		// 激活初始超管失败就把原因打出并停掉本例
 		t.Fatal(err)
 	}
 	// 登录取出令牌，登不上则后面没有身份
 	saTok := mustLogin(t, ctx, fac, "sa", "sa-pass")
 	// 建人并授角色，失败则夹具缺这个身份
-	op := mustCreateRole(t, ctx, fac, saTok, "op", "op-pass", factory.RoleOperator, factory.ScopeFactory, nil)
+	op := mustCreateRole(t, ctx, fac, saTok, "op", "op-pass", factory.RoleOperator)
 	// 新开一个身份，避免和别的绑定撞号
 	cid := id.New()
 	// 生成焊机密钥，失败则绑定无法开始
@@ -712,7 +464,7 @@ func TestPresenceWithWM2RecordsLogin(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 钉一个带 WM2 的臂号，失败则上报对不上设备
-	if _, err := fac.RegisterDevice(ctx, saTok, cid, "ARM-WM2"); err != nil {
+	if _, err := fac.Store().PinDeviceSerial(ctx, cid, "ARM-WM2", false); err != nil {
 		// 登记机械臂号失败就把原因打出并停掉本例
 		t.Fatal(err)
 	}
@@ -745,21 +497,21 @@ func TestPadLoginIssuesUnwrapKeyWithoutSerial(t *testing.T) {
 	// 起一套测试库和厂服务，起不来则本例无法开始
 	h := New(t)
 	// 建厂并种初始超管，失败则本步验收不能继续
-	seed, fac, err := h.Provision(ctx, "sa", "超管")
+	_, fac, err := h.Provision(ctx, "sa", "超管")
 	// 建厂并种初始超管失败就停，避免带着错误继续验
 	if err != nil {
 		// 建厂并种初始超管失败就把原因打出并停掉本例
 		t.Fatal(err)
 	}
 	// 激活初始超管失败就停，避免带着错误继续验
-	if err := fac.Activate(ctx, "sa", seed.ActivationToken, "sa-pass"); err != nil {
+	if err := seedPass(ctx, fac, "sa", "sa-pass"); err != nil {
 		// 激活初始超管失败就把原因打出并停掉本例
 		t.Fatal(err)
 	}
 	// 登录取出令牌，登不上则后面没有身份
 	saTok := mustLogin(t, ctx, fac, "sa", "sa-pass")
 	// 建人并授角色，失败则夹具缺这个身份
-	_ = mustCreateRole(t, ctx, fac, saTok, "op", "op-pass", factory.RoleOperator, factory.ScopeFactory, nil)
+	_ = mustCreateRole(t, ctx, fac, saTok, "op", "op-pass", factory.RoleOperator)
 
 	// 新开一个身份，避免和别的绑定撞号
 	cid := id.New()
@@ -790,96 +542,6 @@ func TestPadLoginIssuesUnwrapKeyWithoutSerial(t *testing.T) {
 	}
 }
 
-// 验收本机登录清掉另一台的操作员，没清即失败
-func TestLoginOnClientClearsOtherDevice(t *testing.T) {
-	// 准备空上下文，后续调用都挂在这上面
-	ctx := context.Background()
-	// 起一套测试库和厂服务，起不来则本例无法开始
-	h := New(t)
-	// 建厂并种初始超管，失败则本步验收不能继续
-	seed, fac, err := h.Provision(ctx, "sa", "超管")
-	// 建厂并种初始超管失败就停，避免带着错误继续验
-	if err != nil {
-		// 建厂并种初始超管失败就把原因打出并停掉本例
-		t.Fatal(err)
-	}
-	// 激活初始超管失败就停，避免带着错误继续验
-	if err := fac.Activate(ctx, "sa", seed.ActivationToken, "sa-pass"); err != nil {
-		// 激活初始超管失败就把原因打出并停掉本例
-		t.Fatal(err)
-	}
-	// 登录取出令牌，登不上则后面没有身份
-	saTok := mustLogin(t, ctx, fac, "sa", "sa-pass")
-	// 建人并授角色，失败则夹具缺这个身份
-	op := mustCreateRole(t, ctx, fac, saTok, "op", "op-pass", factory.RoleOperator, factory.ScopeFactory, nil)
-
-	// 新开一个身份，避免和别的绑定撞号
-	cidA := id.New()
-	// 新开一个身份，避免和别的绑定撞号
-	cidB := id.New()
-	// 生成焊机密钥，失败则绑定无法开始
-	pubA, _, _ := nodekey.Generate()
-	// 生成焊机密钥，失败则绑定无法开始
-	pubB, _, _ := nodekey.Generate()
-	// 接受焊机绑定失败就停，避免带着错误继续验
-	if _, err := fac.AcceptBinding(ctx, cidA, "A", pubA, 1); err != nil {
-		// 接受焊机绑定失败就把原因打出并停掉本例
-		t.Fatal(err)
-	}
-	// 接受焊机绑定失败就停，避免带着错误继续验
-	if _, err := fac.AcceptBinding(ctx, cidB, "B", pubB, 1); err != nil {
-		// 接受焊机绑定失败就把原因打出并停掉本例
-		t.Fatal(err)
-	}
-	// 登记机械臂号失败就停，避免带着错误继续验
-	if _, err := fac.RegisterDevice(ctx, saTok, cidA, "ARM-A"); err != nil {
-		// 登记机械臂号失败就把原因打出并停掉本例
-		t.Fatal(err)
-	}
-	// 登记机械臂号失败就停，避免带着错误继续验
-	if _, err := fac.RegisterDevice(ctx, saTok, cidB, "ARM-B"); err != nil {
-		// 登记机械臂号失败就把原因打出并停掉本例
-		t.Fatal(err)
-	}
-	// 在焊机上登录失败就停，避免带着错误继续验
-	if _, err := fac.LoginOnClient(ctx, cidA, "ARM-A", "op", "op-pass"); err != nil {
-		// 在焊机上登录失败就把原因打出并停掉本例
-		t.Fatal(err)
-	}
-	// 在焊机上登录失败就停，避免带着错误继续验
-	if _, err := fac.LoginOnClient(ctx, cidB, "ARM-B", "op", "op-pass"); err != nil {
-		// 在焊机上登录失败就把原因打出并停掉本例
-		t.Fatal(err)
-	}
-	// 列出焊机，失败则本步验收不能继续
-	listed, err := fac.ListClients(ctx, saTok)
-	// 列出焊机失败就停，避免带着错误继续验
-	if err != nil {
-		// 列出焊机失败就把原因打出并停掉本例
-		t.Fatal(err)
-	}
-	// 先当作两台都没被清掉，清掉了再标上
-	var aOp, bOp bool
-	// 逐台看焊机，不该还占着旧操作员
-	for _, c := range listed {
-		// 焊机上的操作员归属不对就失败
-		if c.ID == cidA && c.OperatorID != nil && *c.OperatorID == op.acc.ID {
-			// 标上第一台仍绑着该人，用来验有没有清掉
-			aOp = true
-		}
-		// 焊机上的操作员归属不对就失败
-		if c.ID == cidB && c.OperatorID != nil && *c.OperatorID == op.acc.ID {
-			// 标上第二台绑着该人，没标上即登录没落到新机
-			bOp = true
-		}
-	}
-	// 旧焊机上还留着操作员即失败，登录没互斥
-	if aOp || !bOp {
-		// 旧焊机上还有操作员就失败，登录没互斥
-		t.Fatalf("operator still on old client: a=%v b=%v", aOp, bOp)
-	}
-}
-
 // 验收应用令牌跟着密钥有效期走，提前过期即失败
 func TestAppTokenUsesKeyTTL(t *testing.T) {
 	// 准备空上下文，后续调用都挂在这上面
@@ -887,21 +549,21 @@ func TestAppTokenUsesKeyTTL(t *testing.T) {
 	// 起一套测试库和厂服务，起不来则本例无法开始
 	h := New(t)
 	// 建厂并种初始超管，失败则本步验收不能继续
-	seed, fac, err := h.Provision(ctx, "sa", "超管")
+	_, fac, err := h.Provision(ctx, "sa", "超管")
 	// 建厂并种初始超管失败就停，避免带着错误继续验
 	if err != nil {
 		// 建厂并种初始超管失败就把原因打出并停掉本例
 		t.Fatal(err)
 	}
 	// 激活初始超管失败就停，避免带着错误继续验
-	if err := fac.Activate(ctx, "sa", seed.ActivationToken, "sa-pass"); err != nil {
+	if err := seedPass(ctx, fac, "sa", "sa-pass"); err != nil {
 		// 激活初始超管失败就把原因打出并停掉本例
 		t.Fatal(err)
 	}
 	// 登录取出令牌，登不上则后面没有身份
 	saTok := mustLogin(t, ctx, fac, "sa", "sa-pass")
 	// 建人并授角色，失败则夹具缺这个身份
-	mustCreateRole(t, ctx, fac, saTok, "op", "op-pass", factory.RoleOperator, factory.ScopeFactory, nil)
+	mustCreateRole(t, ctx, fac, saTok, "op", "op-pass", factory.RoleOperator)
 	// 平板登录，失败则本步验收不能继续
 	open, err := fac.LoginPad(ctx, "op", "op-pass")
 	// 平板登录失败就停，避免带着错误继续验
@@ -960,136 +622,101 @@ func TestAppTokenUsesKeyTTL(t *testing.T) {
 
 // 验收同一人第二次示教器登录后旧令牌作废，网页令牌和别人的不受影响
 func TestSecondPadLoginRevokesOldAppToken(t *testing.T) {
-	// 两种第二次登录各跑一遍：厂网登录和本机登录
-	cases := []struct {
-		name   string // 子用例名，失败时好认是哪种登录
-		viaPad bool   // 真则第二次走厂网登录，假则走本机登录
-	}{
-		{name: "pad", viaPad: true},
-		{name: "client", viaPad: false},
+	// 准备空上下文，后续调用都挂在这上面
+	ctx := context.Background()
+	// 起一套测试库和厂服务，起不来则本例无法开始
+	h := New(t)
+	// 建厂并种初始超管，失败则本步验收不能继续
+	_, fac, err := h.Provision(ctx, "sa", "超管")
+	// 建厂并种初始超管失败就停，避免带着错误继续验
+	if err != nil {
+		// 建厂并种初始超管失败就把原因打出并停掉本例
+		t.Fatal(err)
 	}
-	// 逐种第二次登录各起一座厂验一遍
-	for _, tc := range cases {
-		// 每种登录单独成子用例，互不串库
-		t.Run(tc.name, func(t *testing.T) {
-			// 准备空上下文，后续调用都挂在这上面
-			ctx := context.Background()
-			// 起一套测试库和厂服务，起不来则本例无法开始
-			h := New(t)
-			// 建厂并种初始超管，失败则本步验收不能继续
-			seed, fac, err := h.Provision(ctx, "sa", "超管")
-			// 建厂并种初始超管失败就停，避免带着错误继续验
-			if err != nil {
-				// 建厂并种初始超管失败就把原因打出并停掉本例
-				t.Fatal(err)
-			}
-			// 激活初始超管失败就停，避免带着错误继续验
-			if err := fac.Activate(ctx, "sa", seed.ActivationToken, "sa-pass"); err != nil {
-				// 激活初始超管失败就把原因打出并停掉本例
-				t.Fatal(err)
-			}
-			// 登录取出令牌，登不上则后面没有身份
-			saTok := mustLogin(t, ctx, fac, "sa", "sa-pass")
-			// 建人并授角色，带回的令牌是网页会话
-			op := mustCreateRole(t, ctx, fac, saTok, "op", "op-pass", factory.RoleOperator, factory.ScopeFactory, nil)
+	// 激活初始超管失败就停，避免带着错误继续验
+	if err := seedPass(ctx, fac, "sa", "sa-pass"); err != nil {
+		// 激活初始超管失败就把原因打出并停掉本例
+		t.Fatal(err)
+	}
+	// 登录取出令牌，登不上则后面没有身份
+	saTok := mustLogin(t, ctx, fac, "sa", "sa-pass")
+	// 建人并授角色，带回的令牌是网页会话
+	op := mustCreateRole(t, ctx, fac, saTok, "op", "op-pass", factory.RoleOperator)
 
-			// 新开一个身份，避免和别的绑定撞号
-			cid := id.New()
-			// 生成焊机密钥，失败则绑定无法开始
-			pub, _, err := nodekey.Generate()
-			// 生成焊机密钥失败就停，避免带着错误继续验
-			if err != nil {
-				// 生成焊机密钥失败就把原因打出并停掉本例
-				t.Fatal(err)
-			}
-			// 接受焊机绑定失败就停，避免带着错误继续验
-			if _, err := fac.AcceptBinding(ctx, cid, "焊机", pub, 1); err != nil {
-				// 接受焊机绑定失败就把原因打出并停掉本例
-				t.Fatal(err)
-			}
-			// 登记机械臂号失败就停，本机登录要先钉号
-			if _, err := fac.RegisterDevice(ctx, saTok, cid, "ARM-1"); err != nil {
-				// 登记机械臂号失败就把原因打出并停掉本例
-				t.Fatal(err)
-			}
+	// 新开一个身份，避免和别的绑定撞号
+	cid := id.New()
+	// 生成焊机密钥，失败则绑定无法开始
+	pub, _, err := nodekey.Generate()
+	// 生成焊机密钥失败就停，避免带着错误继续验
+	if err != nil {
+		// 生成焊机密钥失败就把原因打出并停掉本例
+		t.Fatal(err)
+	}
+	// 接受焊机绑定失败就停，避免带着错误继续验
+	if _, err := fac.AcceptBinding(ctx, cid, "焊机", pub, 1); err != nil {
+		// 接受焊机绑定失败就把原因打出并停掉本例
+		t.Fatal(err)
+	}
 
-			// 别人先在厂网登录，用来验只删本人的令牌
-			other, err := fac.LoginPad(ctx, "sa", "sa-pass")
-			// 别人登录失败就停，避免带着错误继续验
-			if err != nil {
-				// 别人登录失败就把原因打出并停掉本例
-				t.Fatal(err)
-			}
-			// 第一台示教器登录拿到旧令牌 A
-			first, err := fac.LoginPad(ctx, "op", "op-pass")
-			// 第一次登录失败就停，避免带着错误继续验
-			if err != nil {
-				// 第一次登录失败就把原因打出并停掉本例
-				t.Fatal(err)
-			}
-			// 第二次登录前旧令牌应当可用，否则后面的断言没意义
-			if _, err := fac.RequireActive(ctx, first.Token); err != nil {
-				// 旧令牌一登录就不能用即失败，夹具不对
-				t.Fatalf("first token before second login: %v", err)
-			}
+	// 别人先在厂网登录，用来验只删本人的令牌
+	other, err := fac.LoginPad(ctx, "sa", "sa-pass")
+	// 别人登录失败就停，避免带着错误继续验
+	if err != nil {
+		// 别人登录失败就把原因打出并停掉本例
+		t.Fatal(err)
+	}
+	// 第一台示教器登录拿到旧令牌 A
+	first, err := fac.LoginPad(ctx, "op", "op-pass")
+	// 第一次登录失败就停，避免带着错误继续验
+	if err != nil {
+		// 第一次登录失败就把原因打出并停掉本例
+		t.Fatal(err)
+	}
+	// 第二次登录前旧令牌应当可用，否则后面的断言没意义
+	if _, err := fac.RequireActive(ctx, first.Token); err != nil {
+		// 旧令牌一登录就不能用即失败，夹具不对
+		t.Fatalf("first token before second login: %v", err)
+	}
 
-			// 准备承接第二次登录拿到的新令牌 B
-			var second string
-			// 按子用例选第二次登录走厂网还是本机
-			if tc.viaPad {
-				// 第二台示教器厂网登录拿到新令牌
-				sess, err := fac.LoginPad(ctx, "op", "op-pass")
-				// 第二次厂网登录失败就停，避免带着错误继续验
-				if err != nil {
-					// 第二次厂网登录失败就把原因打出并停掉本例
-					t.Fatal(err)
-				}
-				// 记下新令牌，后面验它仍可用
-				second = sess.Token
-				// 第二次走本机登录
-			} else {
-				// 在钉好号的焊机上本机登录拿到新令牌
-				sess, err := fac.LoginOnClient(ctx, cid, "ARM-1", "op", "op-pass")
-				// 第二次本机登录失败就停，避免带着错误继续验
-				if err != nil {
-					// 第二次本机登录失败就把原因打出并停掉本例
-					t.Fatal(err)
-				}
-				// 记下新令牌，后面验它仍可用
-				second = sess.Token
-			}
+	// 第二台示教器厂网登录拿到新令牌 B
+	sess, err := fac.LoginPad(ctx, "op", "op-pass")
+	// 第二次厂网登录失败就停，避免带着错误继续验
+	if err != nil {
+		// 第二次厂网登录失败就把原因打出并停掉本例
+		t.Fatal(err)
+	}
+	// 记下新令牌，后面验它仍可用
+	second := sess.Token
 
-			// 旧令牌续接会话应被拒为未登录，放行即失败
-			if _, err := fac.RequireActive(ctx, first.Token); !errors.Is(err, domain.ErrUnauthorized) {
-				// 旧机令牌还能拉包上送就失败
-				t.Fatalf("old token still active: %v", err)
-			}
-			// 旧令牌连通道应被拒为未登录，放行即失败
-			if _, err := fac.AuthClientMQTT(ctx, cid, first.Token); !errors.Is(err, domain.ErrUnauthorized) {
-				// 旧机令牌还能连通道就失败
-				t.Fatalf("old token mqtt: %v", err)
-			}
-			// 新令牌续接会话失败即失败，第二台应当能用
-			if _, err := fac.RequireActive(ctx, second); err != nil {
-				// 新令牌被误删就失败
-				t.Fatalf("new token: %v", err)
-			}
-			// 新令牌连通道失败即失败，第二台应当能连
-			if _, err := fac.AuthClientMQTT(ctx, cid, second); err != nil {
-				// 新令牌连不上通道就失败
-				t.Fatalf("new token mqtt: %v", err)
-			}
-			// 本人网页令牌应当保留，被一起删掉即失败
-			if _, err := fac.RequireActive(ctx, op.tok); err != nil {
-				// 网页会话被示教器登录踢掉就失败
-				t.Fatalf("web token: %v", err)
-			}
-			// 别人的示教器令牌应当保留，被一起删掉即失败
-			if _, err := fac.RequireActive(ctx, other.Token); err != nil {
-				// 删到别人的会话就失败
-				t.Fatalf("other person token: %v", err)
-			}
-		})
+	// 旧令牌续接会话应被拒为未登录，放行即失败
+	if _, err := fac.RequireActive(ctx, first.Token); !errors.Is(err, domain.ErrUnauthorized) {
+		// 旧机令牌还能拉包上送就失败
+		t.Fatalf("old token still active: %v", err)
+	}
+	// 旧令牌连通道应被拒为未登录，放行即失败
+	if _, err := fac.AuthClientMQTT(ctx, cid, first.Token); !errors.Is(err, domain.ErrUnauthorized) {
+		// 旧机令牌还能连通道就失败
+		t.Fatalf("old token mqtt: %v", err)
+	}
+	// 新令牌续接会话失败即失败，第二台应当能用
+	if _, err := fac.RequireActive(ctx, second); err != nil {
+		// 新令牌被误删就失败
+		t.Fatalf("new token: %v", err)
+	}
+	// 新令牌连通道失败即失败，第二台应当能连
+	if _, err := fac.AuthClientMQTT(ctx, cid, second); err != nil {
+		// 新令牌连不上通道就失败
+		t.Fatalf("new token mqtt: %v", err)
+	}
+	// 本人网页令牌应当保留，被一起删掉即失败
+	if _, err := fac.RequireActive(ctx, op.tok); err != nil {
+		// 网页会话被示教器登录踢掉就失败
+		t.Fatalf("web token: %v", err)
+	}
+	// 别人的示教器令牌应当保留，被一起删掉即失败
+	if _, err := fac.RequireActive(ctx, other.Token); err != nil {
+		// 删到别人的会话就失败
+		t.Fatalf("other person token: %v", err)
 	}
 }
 

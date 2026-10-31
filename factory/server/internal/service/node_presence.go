@@ -109,7 +109,7 @@ func (s *Node) fillLoginDevice(ctx context.Context, snap *LoginSnap) {
 			// 现场没带设备名或识别号，才用名录补
 			if snap.ClientName == "" {
 				// 用名录里的设备名，人的身份不当设备
-				snap.ClientName = cl.Name
+				snap.ClientName = clientLabel(cl)
 			}
 			// 名字或识别号为空则拒绝或去名录补
 			if strings.TrimSpace(snap.DeviceSerial) == "" {
@@ -138,7 +138,7 @@ func (s *Node) fillLoginDevice(ctx context.Context, snap *LoginSnap) {
 	// 现场没带设备名或识别号，才用名录补
 	if snap.ClientName == "" {
 		// 用名录里的设备名，人的身份不当设备
-		snap.ClientName = cl.Name
+		snap.ClientName = clientLabel(cl)
 	}
 	// 名字或识别号为空则拒绝或去名录补
 	if strings.TrimSpace(snap.DeviceSerial) == "" {

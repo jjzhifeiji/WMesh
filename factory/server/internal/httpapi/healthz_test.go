@@ -46,16 +46,13 @@ func TestHealthzSchema(t *testing.T) {
 		h.Close()
 	})
 	// 拉起临时服务，测完由清理关掉。
-	srv := httptest.NewServer(httpapi.New(h, "boot-secret", "").Router())
+	srv := httptest.NewServer(httpapi.New(h, "").Router())
 	// 测完关闭临时服务，把端口让出来。
 	t.Cleanup(srv.Close)
 	// 建出坏库：先占掉 people 表，第一支迁移必失败。
 	breakDB(t, bad)
-	// 用共享密码建好的那家，库随之打开。
-	if code, body := do(t, srv, "POST", "/internal/bootstrap", "boot-secret", `{"factoryId":"`+good.String()+`","saLogin":"sa","saDisplay":"超管"}`); code != http.StatusCreated {
-		// 建厂失败就停测。
-		t.Fatalf("bootstrap %d %s", code, body)
-	}
+	// 按约定身份建好的那家，库随之打开。
+	enrollSA(t, h, good)
 	// 访问坏的那家，迁移失败。
 	if _, err := h.Service(context.Background(), bad); err == nil {
 		// 坏库居然打开了，前提不成立。

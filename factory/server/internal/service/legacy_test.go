@@ -27,25 +27,25 @@ func TestImportLegacy(t *testing.T) {
 	// 拉起隔离厂库，起不来说明测试库还没就绪。
 	h := New(t)
 	// 建厂并签发超管激活码，失败则没有厂可测。
-	seed, fac, err := h.Provision(ctx, "sa", "超管")
+	_, fac, err := h.Provision(ctx, "sa", "超管")
 	// 建厂失败就停，否则后面没有可靠结果。
 	if err != nil {
 		// 把建厂的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
 	// 开通失败就停，否则后面没有可靠结果。
-	if err := fac.Activate(ctx, "sa", seed.ActivationToken, "sa-pass"); err != nil {
+	if err := seedPass(ctx, fac, "sa", "sa-pass"); err != nil {
 		// 把开通的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
 	// 登录并取出令牌，失败说明账号没有开通成功。
 	saTok := mustLogin(t, ctx, fac, "sa", "sa-pass")
 	// 建人并授好角色，失败说明后面没有账号可用。
-	pe := mustCreateRole(t, ctx, fac, saTok, "pe", "pe-pass", factory.RoleOperator, factory.ScopeFactory, nil)
+	pe := mustCreateRole(t, ctx, fac, saTok, "pe", "pe-pass", factory.RoleOrgAdmin)
 	// 建人并授好角色，失败说明后面没有账号可用。
-	op := mustCreateRole(t, ctx, fac, saTok, "op", "op-pass", factory.RoleOperator, factory.ScopeFactory, nil)
+	op := mustCreateRole(t, ctx, fac, saTok, "op", "op-pass", factory.RoleOperator)
 	// 建人并授好角色，失败说明后面没有账号可用。
-	oa := mustCreateRole(t, ctx, fac, saTok, "oa", "oa-pass", factory.RoleOrgAdmin, factory.ScopeFactory, nil)
+	oa := mustCreateRole(t, ctx, fac, saTok, "oa", "oa-pass", factory.RoleOrgAdmin)
 
 	// 准备这段正文字节，读回对不上说明没写进去。
 	procBody := []byte(`{"name":"角焊","current":170}`)
@@ -66,6 +66,7 @@ func TestImportLegacy(t *testing.T) {
 
 	// 装好旧版导入包，缺工艺或工程则导入结果是空的。
 	in := factory.LegacyImport{
+		Level: factory.AssetLevelFactory,
 		Processes: []factory.LegacyFile{
 			{Path: "1焊角.json", Content: procBody},
 			{Path: "Standard/6T1.2-T排立对接/1H-3-4/打底.json", Content: rootBody},
@@ -84,16 +85,16 @@ func TestImportLegacy(t *testing.T) {
 		// 断言没通过就停，结果和这条用例的预期不一致。
 		t.Fatalf("anon import: %v", err)
 	}
-	// 导入旧包应因越权被拒绝，放行说明没拦住。
-	if _, err := fac.ImportLegacy(ctx, op.tok, factory.LegacyImport{}); !errors.Is(err, domain.ErrForbidden) {
-		t.Fatalf("op import: %v", err)
+	// 操作员导进自己的个人级应放行，拒了说明默认级别不对。
+	if _, err := fac.ImportLegacy(ctx, op.tok, factory.LegacyImport{}); err != nil {
+		t.Fatalf("op personal import: %v", err)
 	}
-	// 导入旧包应因越权被拒绝，放行说明没拦住。
-	if _, err := fac.ImportLegacy(ctx, pe.tok, factory.LegacyImport{}); !errors.Is(err, domain.ErrForbidden) {
-		t.Fatalf("pe import: %v", err)
+	// 操作员导进厂级应因越权被拒绝，放行说明没拦住。
+	if _, err := fac.ImportLegacy(ctx, op.tok, factory.LegacyImport{Level: factory.AssetLevelFactory}); !errors.Is(err, domain.ErrForbidden) {
+		t.Fatalf("op factory import: %v", err)
 	}
-	// 导入旧版工艺包，失败说明包结构对不上。
-	empty, err := fac.ImportLegacy(ctx, oa.tok, factory.LegacyImport{})
+	// 管理员导进厂级，失败说明包结构对不上或越权。
+	empty, err := fac.ImportLegacy(ctx, oa.tok, factory.LegacyImport{Level: factory.AssetLevelFactory})
 	// 导入旧包失败就停，否则后面没有可靠结果。
 	if err != nil {
 		// 把导入旧包的错误打出来并停住，避免继续往下验。
@@ -280,14 +281,14 @@ func TestImportLegacyMissingKeepsProcess(t *testing.T) {
 	// 拉起隔离厂库，起不来说明测试库还没就绪。
 	h := New(t)
 	// 建厂并签发超管激活码，失败则没有厂可测。
-	seed, fac, err := h.Provision(ctx, "sa", "超管")
+	_, fac, err := h.Provision(ctx, "sa", "超管")
 	// 建厂失败就停，否则后面没有可靠结果。
 	if err != nil {
 		// 把建厂的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
 	// 开通失败就停，否则后面没有可靠结果。
-	if err := fac.Activate(ctx, "sa", seed.ActivationToken, "sa-pass"); err != nil {
+	if err := seedPass(ctx, fac, "sa", "sa-pass"); err != nil {
 		// 把开通的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
@@ -329,14 +330,14 @@ func TestImportLegacyTBarNeedsGapBands(t *testing.T) {
 	// 拉起隔离厂库，起不来说明测试库还没就绪。
 	h := New(t)
 	// 建厂并签发超管激活码，失败则没有厂可测。
-	seed, fac, err := h.Provision(ctx, "sa", "超管")
+	_, fac, err := h.Provision(ctx, "sa", "超管")
 	// 建厂失败就停，否则后面没有可靠结果。
 	if err != nil {
 		// 把建厂的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
 	// 开通失败就停，否则后面没有可靠结果。
-	if err := fac.Activate(ctx, "sa", seed.ActivationToken, "sa-pass"); err != nil {
+	if err := seedPass(ctx, fac, "sa", "sa-pass"); err != nil {
 		// 把开通的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
@@ -429,14 +430,14 @@ func TestImportLegacySameName(t *testing.T) {
 	// 拉起隔离厂库，起不来说明测试库还没就绪。
 	h := New(t)
 	// 建厂并签发超管激活码，失败则没有厂可测。
-	seed, fac, err := h.Provision(ctx, "sa", "超管")
+	_, fac, err := h.Provision(ctx, "sa", "超管")
 	// 建厂失败就停，否则后面没有可靠结果。
 	if err != nil {
 		// 把建厂的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
 	// 开通失败就停，否则后面没有可靠结果。
-	if err := fac.Activate(ctx, "sa", seed.ActivationToken, "sa-pass"); err != nil {
+	if err := seedPass(ctx, fac, "sa", "sa-pass"); err != nil {
 		// 把开通的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
@@ -577,14 +578,14 @@ func TestImportLegacyPathIdentity(t *testing.T) {
 	// 拉起隔离厂库，起不来说明测试库还没就绪。
 	h := New(t)
 	// 建厂并签发超管激活码，失败则没有厂可测。
-	seed, fac, err := h.Provision(ctx, "sa", "超管")
+	_, fac, err := h.Provision(ctx, "sa", "超管")
 	// 建厂失败就停，否则后面没有可靠结果。
 	if err != nil {
 		// 把建厂的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
 	// 开通失败就停，否则后面没有可靠结果。
-	if err := fac.Activate(ctx, "sa", seed.ActivationToken, "sa-pass"); err != nil {
+	if err := seedPass(ctx, fac, "sa", "sa-pass"); err != nil {
 		// 把开通的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
@@ -753,14 +754,14 @@ func TestImportLegacyWeldKind(t *testing.T) {
 	// 拉起隔离厂库，起不来说明测试库还没就绪。
 	h := New(t)
 	// 建厂并签发超管激活码，失败则没有厂可测。
-	seed, fac, err := h.Provision(ctx, "sa", "超管")
+	_, fac, err := h.Provision(ctx, "sa", "超管")
 	// 建厂失败就停，否则后面没有可靠结果。
 	if err != nil {
 		// 把建厂的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
 	// 开通失败就停，否则后面没有可靠结果。
-	if err := fac.Activate(ctx, "sa", seed.ActivationToken, "sa-pass"); err != nil {
+	if err := seedPass(ctx, fac, "sa", "sa-pass"); err != nil {
 		// 把开通的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
@@ -912,7 +913,7 @@ func TestImportLegacyWeldKindOverwrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 开通失败就停，否则后面没有可靠结果。
-	if err := fac.Activate(ctx, "sa", seed.ActivationToken, "sa-pass"); err != nil {
+	if err := seedPass(ctx, fac, "sa", "sa-pass"); err != nil {
 		// 把开通的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
@@ -923,7 +924,7 @@ func TestImportLegacyWeldKindOverwrite(t *testing.T) {
 	// 引用共用工艺的单层工程。
 	single := factory.LegacyFile{Path: "single_layer/单/project_data.json", Content: []byte(`[{"id":"s1","processPath":"User/1K6.5mmD.json","points":[]}]`)}
 	// 先只导单层工程，库里留下单层那份工艺。
-	old, err := fac.ImportLegacy(ctx, saTok, factory.LegacyImport{Processes: []factory.LegacyFile{proc}, Projects: []factory.LegacyFile{single}})
+	old, err := fac.ImportLegacy(ctx, saTok, factory.LegacyImport{Level: factory.AssetLevelFactory, Processes: []factory.LegacyFile{proc}, Projects: []factory.LegacyFile{single}})
 	// 导入失败或条数不对就停，否则后面没有旧数据。
 	if err != nil || len(old.Processes) != 1 || len(old.Projects) != 1 {
 		// 断言没通过就停，结果和这条用例的预期不一致。
@@ -951,6 +952,7 @@ func TestImportLegacyWeldKindOverwrite(t *testing.T) {
 	}
 	// 开覆盖重导单层和多层工程。
 	over, err := fac.ImportLegacy(ctx, saTok, factory.LegacyImport{
+		Level:     factory.AssetLevelFactory,
 		Overwrite: true,
 		Processes: []factory.LegacyFile{proc},
 		Projects: []factory.LegacyFile{
@@ -986,14 +988,14 @@ func TestImportLegacyRetrySplitCopy(t *testing.T) {
 	// 拉起隔离厂库，起不来说明测试库还没就绪。
 	h := New(t)
 	// 建厂并签发超管激活码，失败则没有厂可测。
-	seed, fac, err := h.Provision(ctx, "sa", "超管")
+	_, fac, err := h.Provision(ctx, "sa", "超管")
 	// 建厂失败就停，否则后面没有可靠结果。
 	if err != nil {
 		// 把建厂的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
 	// 开通失败就停，否则后面没有可靠结果。
-	if err := fac.Activate(ctx, "sa", seed.ActivationToken, "sa-pass"); err != nil {
+	if err := seedPass(ctx, fac, "sa", "sa-pass"); err != nil {
 		// 把开通的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
@@ -1195,14 +1197,14 @@ func TestImportLegacyRejectReasonHidesInternal(t *testing.T) {
 	// 拉起隔离厂库，起不来说明测试库还没就绪。
 	h := New(t)
 	// 建厂并签发超管激活码，失败则没有厂可测。
-	seed, fac, err := h.Provision(ctx, "sa", "超管")
+	_, fac, err := h.Provision(ctx, "sa", "超管")
 	// 建厂失败就停，否则后面没有可靠结果。
 	if err != nil {
 		// 把建厂的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
 	// 开通失败就停，否则后面没有可靠结果。
-	if err := fac.Activate(ctx, "sa", seed.ActivationToken, "sa-pass"); err != nil {
+	if err := seedPass(ctx, fac, "sa", "sa-pass"); err != nil {
 		// 把开通的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}

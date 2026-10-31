@@ -11,7 +11,6 @@ import (
 
 	"github.com/google/uuid"
 	"golang.org/x/sync/singleflight"
-	"golang.org/x/time/rate"
 
 	"wmesh/factory/internal/platform/audit"
 	"wmesh/factory/internal/platform/blob"
@@ -65,18 +64,11 @@ type ClientDown interface {
 
 // Auth 管登录、激活、会话、停用和密码重置。
 type Auth struct {
-	*kernel                                   // 共用本厂库、审计和在线计数
-	activateMu    sync.Mutex                  // 护着激活限次表，避免并发写乱
-	activateGates map[uuid.UUID]*rate.Limiter // 待启用账号各自的激活限次，只在内存
+	*kernel // 共用本厂库、审计和在线计数
 }
 
 // Org 管人员、组织、角色和名册。
 type Org struct {
-	*kernel // 共用本厂库、审计和在线计数
-}
-
-// Attr 管事实桩、个人资产桩和工作上下文。
-type Attr struct {
 	*kernel // 共用本厂库、审计和在线计数
 }
 
@@ -110,7 +102,6 @@ type Service struct {
 	*kernel    // 共用本厂库、审计和在线计数
 	*Auth      // 登录、激活、会话和口令
 	*Org       // 人员、组织、角色和名册
-	*Attr      // 事实桩、个人资产和工作上下文
 	*Node      // 设备绑定、登录和运行凭证
 	*Assets    // 本厂工艺和工程治理
 	*Templates // 已收到的工艺工程模版
@@ -163,9 +154,8 @@ func NewService(st *Store) *Service {
 	}
 	return &Service{
 		kernel:    k,
-		Auth:      &Auth{kernel: k, activateGates: map[uuid.UUID]*rate.Limiter{}},
+		Auth:      &Auth{kernel: k},
 		Org:       &Org{k},
-		Attr:      &Attr{k},
 		Node:      &Node{k},
 		Assets:    &Assets{k},
 		Templates: &Templates{k},
@@ -196,7 +186,8 @@ type Account struct {
 	ID              uuid.UUID  `json:"id"`                      // 稳定身份，改名也不变
 	LoginName       string     `json:"loginName"`               // 厂内登录名，一厂唯一
 	DisplayName     string     `json:"displayName"`             // 显示名，可改
-	Status          string     `json:"status"`                  // 人员状态：pending / active / disabled
+	Status          string     `json:"status"`                  // 人员状态：active / disabled
+	OrgUnitID       *uuid.UUID `json:"orgUnitId"`               // 所属组织；空表示厂直属
 	AppOnline       bool       `json:"appOnline"`               // 示教器 MQTT 连着才算在线；管理端登录不算
 	AppLastSeenAt   *time.Time `json:"appLastSeenAt,omitempty"` // 最近一次示教器登录或 MQTT 见到
 	AppVersion      int64      `json:"appVersion"`              // 示教器自报 versionCode；离线仍留上次
@@ -209,7 +200,7 @@ type Account struct {
 // 对外账号视图，不含密码；在线标记由名册另填。
 func accountOf(p Person) Account {
 	return Account{
-		ID: p.ID, LoginName: p.LoginName, DisplayName: p.DisplayName, Status: p.Status,
+		ID: p.ID, LoginName: p.LoginName, DisplayName: p.DisplayName, Status: p.Status, OrgUnitID: p.OrgUnitID,
 		AppLastSeenAt: p.AppLastSeenAt, AppVersion: p.AppVersion, AppVersionName: p.AppVersionName,
 		KeepPouch: p.KeepPouch,
 	}

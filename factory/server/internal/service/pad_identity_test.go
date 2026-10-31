@@ -30,16 +30,16 @@ func TestPadCreateIdentityGuard(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 开通失败就停，否则后面没有可靠结果。
-	if err := fac.Activate(ctx, "sa", seed.ActivationToken, "sa-pass"); err != nil {
+	if err := seedPass(ctx, fac, "sa", "sa-pass"); err != nil {
 		// 把开通的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
 	// 登录并取出超管令牌，后面建厂级和删条目要用。
 	sa := mustLogin(t, ctx, fac, "sa", "sa-pass")
 	// 建一名现场操作员，示教器新建都用他。
-	op := mustCreateRole(t, ctx, fac, sa, "op", "op-pass", factory.RoleOperator, factory.ScopeFactory, nil)
-	// 标明直接作业上下文，网页新建都挂在这里。
-	direct := factory.WorkContext{Direct: true}
+	op := mustCreateRole(t, ctx, fac, sa, "op", "op-pass", factory.RoleOperator)
+	// 不指定文件夹，网页新建都挂在对应树根。
+	direct := factory.WorkContext{}
 	// 登记 C0008 这台焊机，它的 C 段号才是合规号。
 	cid := mustClientShortCode(t, ctx, fac, "C0008")
 	// 准备示教器新建用的正文。

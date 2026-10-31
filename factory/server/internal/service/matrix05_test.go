@@ -28,66 +28,38 @@ func testAssetAuthorship(t *testing.T, run func(string, func(*testing.T))) {
 		t.Fatal(err)
 	}
 	// 开通失败就停，否则后面没有可靠结果。
-	if err := facA.Activate(ctx, "sa-a", seed.ActivationToken, "sa-pass"); err != nil {
+	if err := seedPass(ctx, facA, "sa-a", "sa-pass"); err != nil {
 		// 把开通的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
 	// 登录并取出令牌，失败说明账号没有开通成功。
 	saA := mustLogin(t, ctx, facA, "sa-a", "sa-pass")
 	// 建厂并签发超管激活码，失败则没有厂可测。
-	seedB, facB, err := h.Provision(ctx, "sa-b", "超管B")
+	_, facB, err := h.Provision(ctx, "sa-b", "超管B")
 	// 建厂失败就停，否则后面没有可靠结果。
 	if err != nil {
 		// 把建厂的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
 	// 开通失败就停，否则后面没有可靠结果。
-	if err := facB.Activate(ctx, "sa-b", seedB.ActivationToken, "sa-b-pass"); err != nil {
+	if err := seedPass(ctx, facB, "sa-b", "sa-b-pass"); err != nil {
 		// 把开通的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
 	// 登录并取出令牌，失败说明账号没有开通成功。
 	saB := mustLogin(t, ctx, facB, "sa-b", "sa-b-pass")
 	// 建人并授好角色，失败说明后面没有账号可用。
-	pe := mustCreateRole(t, ctx, facA, saA, "pe-a", "pe-pass", factory.RoleOperator, factory.ScopeFactory, nil)
+	pe := mustCreateRole(t, ctx, facA, saA, "pe-a", "pe-pass", factory.RoleOrgAdmin)
 	// 建人并授好角色，失败说明后面没有账号可用。
-	pe2 := mustCreateRole(t, ctx, facA, saA, "pe-a2", "pe2-pass", factory.RoleOperator, factory.ScopeFactory, nil)
+	pe2 := mustCreateRole(t, ctx, facA, saA, "pe-a2", "pe2-pass", factory.RoleOrgAdmin)
 	// 建人并授好角色，失败说明后面没有账号可用。
-	op := mustCreateRole(t, ctx, facA, saA, "op-a", "op-pass", factory.RoleOperator, factory.ScopeFactory, nil)
+	op := mustCreateRole(t, ctx, facA, saA, "op-a", "op-pass", factory.RoleOperator)
 	// 建人并授好角色，失败说明后面没有账号可用。
-	peB := mustCreateRole(t, ctx, facB, saB, "pe-b", "pe-b-pass", factory.RoleOperator, factory.ScopeFactory, nil)
+	peB := mustCreateRole(t, ctx, facB, saB, "pe-b", "pe-b-pass", factory.RoleOrgAdmin)
 	// 标明直接作业上下文，后面新建资产都挂在这里。
-	direct := factory.WorkContext{Direct: true}
+	direct := factory.WorkContext{}
 	// 准备这段正文字节，读回对不上说明没写进去。
 	body := []byte("personal-secret-body")
-	// 新建组织节点，失败说明名称或上级不合法。
-	site, err := facA.CreateOrgUnit(ctx, saA, "场地", nil)
-	// 建组织失败就停，否则后面没有可靠结果。
-	if err != nil {
-		// 把建组织的错误打出来并停住，避免继续往下验。
-		t.Fatal(err)
-	}
-	// 新建组织节点，失败说明名称或上级不合法。
-	shop, err := facA.CreateOrgUnit(ctx, saA, "车间A", &site.ID)
-	// 建组织失败就停，否则后面没有可靠结果。
-	if err != nil {
-		// 把建组织的错误打出来并停住，避免继续往下验。
-		t.Fatal(err)
-	}
-	// 新建组织节点，失败说明名称或上级不合法。
-	shopB, err := facA.CreateOrgUnit(ctx, saA, "车间B", &site.ID)
-	// 建组织失败就停，否则后面没有可靠结果。
-	if err != nil {
-		// 把建组织的错误打出来并停住，避免继续往下验。
-		t.Fatal(err)
-	}
-	// 建人并授好角色，失败说明后面没有账号可用。
-	peShop := mustCreateRole(t, ctx, facA, saA, "pe-shop", "shop-pass", factory.RoleOperator, factory.ScopeOrgUnit, &shop.ID)
-	// 挂组织失败就停，否则后面没有可靠结果。
-	if err := facA.Assign(ctx, saA, peShop.acc.ID, shop.ID); err != nil {
-		// 把挂组织的错误打出来并停住，避免继续往下验。
-		t.Fatal(err)
-	}
 
 	// 先留出厂级工艺，建好后给作者边界用例用。
 	var facProc factory.Asset
@@ -111,8 +83,8 @@ func testAssetAuthorship(t *testing.T, run func(string, func(*testing.T))) {
 	})
 	// 验收条目 5.2，断言不过表示这一条没过。
 	run("5.2", func(t *testing.T) {
-		// 建工艺失败就停，否则后面没有可靠结果。
-		if _, err := facA.CreateFactoryProcess(ctx, op.tok, direct, "焊接", body); err != nil {
+		// 操作员没有厂级制作权，建厂级工艺必须被拒。
+		if _, err := facA.CreateFactoryProcess(ctx, op.tok, direct, "焊接", body); !errors.Is(err, domain.ErrForbidden) {
 			// 断言没通过就停，结果和这条用例的预期不一致。
 			t.Fatalf("op: %v", err)
 		}
@@ -132,33 +104,6 @@ func testAssetAuthorship(t *testing.T, run func(string, func(*testing.T))) {
 			t.Fatalf("op draft content: %v", err)
 		}
 	})
-	// 验收条目 5.3，断言不过表示这一条没过。
-	run("5.3", func(t *testing.T) {
-		// 新建一份厂级工艺，失败说明起草入口坏了。
-		got, err := facA.CreateFactoryProcess(ctx, peShop.tok, factory.WorkContext{OrgUnitID: &shop.ID}, "车间工艺", body)
-		// 建工艺失败就停，否则后面没有可靠结果。
-		if err != nil {
-			// 把建工艺的错误打出来并停住，避免继续往下验。
-			t.Fatal(err)
-		}
-		// 路径上的节点和名称应与当时组织一致，漂移即失败。
-		if got.OrgUnitID == nil || *got.OrgUnitID != shop.ID || len(got.OrgPath) == 0 || got.OrgPath[len(got.OrgPath)-1].ID != shop.ID {
-			// 断言没通过就停，结果和这条用例的预期不一致。
-			t.Fatalf("%+v", got)
-		}
-	})
-	// 验收条目 5.4，断言不过表示这一条没过。
-	run("5.4", func(t *testing.T) {
-		// 建工艺失败就停，否则后面没有可靠结果。
-		if _, err := facA.CreateFactoryProcess(ctx, peShop.tok, direct, "直属", body); err != nil {
-			// 断言没通过就停，结果和这条用例的预期不一致。
-			t.Fatalf("direct: %v", err)
-		}
-		// 建工艺应因上下文非法被拒绝，放行说明没拦住。
-		if _, err := facA.CreateFactoryProcess(ctx, peShop.tok, factory.WorkContext{OrgUnitID: &shopB.ID}, "他车间", body); !errors.Is(err, domain.ErrWorkContext) && !errors.Is(err, domain.ErrForbidden) {
-			t.Fatalf("shopB: %v", err)
-		}
-	})
 
 	// 先留出个人资产，建好后用来核对归属。
 	var personal factory.Asset
@@ -176,7 +121,7 @@ func testAssetAuthorship(t *testing.T, run func(string, func(*testing.T))) {
 		// 事实应落在预期组织上，串了车间说明上下文偏了。
 		if personal.Level != factory.AssetLevelPersonal || personal.CreatorID != pe.acc.ID ||
 			personal.FactoryID != seed.ID || !personal.Copyable || personal.Status != factory.AssetDraft ||
-			personal.Content != nil || personal.OrgUnitID != nil {
+			personal.Content != nil {
 			// 断言没通过就停，结果和这条用例的预期不一致。
 			t.Fatalf("%+v", personal)
 		}
@@ -186,13 +131,6 @@ func testAssetAuthorship(t *testing.T, run func(string, func(*testing.T))) {
 		// 建个人工艺失败就停，否则后面没有可靠结果。
 		if _, err := facA.CreatePersonalProcess(ctx, op.tok, direct, "操作员个人", body); err != nil {
 			// 断言没通过就停，结果和这条用例的预期不一致。
-			t.Fatalf("got %v", err)
-		}
-	})
-	// 验收条目 6.3，断言不过表示这一条没过。
-	run("6.3", func(t *testing.T) {
-		// 建个人工艺应因上下文非法被拒绝，放行说明没拦住。
-		if _, err := facA.CreatePersonalProcess(ctx, pe.tok, factory.WorkContext{}, "无上下文", body); !errors.Is(err, domain.ErrWorkContext) {
 			t.Fatalf("got %v", err)
 		}
 	})
@@ -253,10 +191,10 @@ func testAssetAuthorship(t *testing.T, run func(string, func(*testing.T))) {
 			// 断言没通过就停，结果和这条用例的预期不一致。
 			t.Fatalf("%+v %v", got, err)
 		}
-		// 读台账失败就停，否则后面没有可靠结果。
-		if _, err := facA.GetAsset(ctx, pe2.tok, personal.ID); err != nil {
-			// 把读台账的错误打出来并停住，避免继续往下验。
-			t.Fatal(err)
+		// 个人级元数据只给创建人和超管，同事读台账必须被拒。
+		if _, err := facA.GetAsset(ctx, pe2.tok, personal.ID); !errors.Is(err, domain.ErrForbidden) {
+			// 放行说明别人的个人级元数据漏了出去。
+			t.Fatalf("pe2 meta: %v", err)
 		}
 	})
 }

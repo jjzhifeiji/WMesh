@@ -66,8 +66,6 @@ type Asset struct {
 	Digest         []byte     `json:"digest"`         // SHA-256 32 字节
 	CreatorID      uuid.UUID  `json:"creatorId"`      // 创建人
 	FactoryID      uuid.UUID  `json:"factoryId"`      // 所属本厂
-	OrgUnitID      *uuid.UUID `json:"orgUnitId"`      // 创建时节点；直属为空
-	OrgPath        []PathNode `json:"orgPath"`        // 创建时路径
 	SourceID       *uuid.UUID `json:"sourceId"`       // 升档源身份
 	SourceRevision *int64     `json:"sourceRevision"` // 升档源修订
 	Deps           []AssetDep `json:"deps"`           // 工艺必须空
@@ -104,8 +102,6 @@ type governedAssetRow struct {
 	Digest         []byte     `gorm:"type:bytea;not null"`       // SHA-256
 	CreatorID      uuid.UUID  `gorm:"type:uuid;not null"`        // 创建人
 	FactoryID      uuid.UUID  `gorm:"type:uuid;not null"`        // 所属本厂
-	OrgUnitID      *uuid.UUID `gorm:"type:uuid"`                 // 创建时节点
-	OrgPath        []byte     `gorm:"type:jsonb;not null"`       // 路径快照
 	SourceID       *uuid.UUID `gorm:"type:uuid"`                 // 升档源
 	SourceRevision *int64     `gorm:"column:source_revision"`    // 升档源修订
 	Deps           []byte     `gorm:"type:jsonb;not null"`       // 依赖 JSON
@@ -130,22 +126,9 @@ func (s *Store) InsertGovernedAssetInto(ctx context.Context, in Asset, parentID 
 	if err := s.assertPersonExists(ctx, in.CreatorID); err != nil {
 		return Asset{}, err
 	}
-	// 挂了节点就要确认节点还在，避免悬空归属。
-	if in.OrgUnitID != nil {
-		// 读取组织节点失败就停，避免带着错误继续。
-		if _, err := s.getUnit(ctx, *in.OrgUnitID); err != nil {
-			return Asset{}, err
-		}
-	}
 	// 先收成依赖，结果留给紧跟着的判断。
 	deps, err := marshalAssetDeps(in.Kind, in.Deps)
 	// 收成依赖失败就停，避免带着错误继续。
-	if err != nil {
-		return Asset{}, err
-	}
-	// 先收成路径，结果留给紧跟着的判断。
-	path, err := marshalPath(in.OrgPath)
-	// 收成路径失败就停，避免带着错误继续。
 	if err != nil {
 		return Asset{}, err
 	}
@@ -225,8 +208,6 @@ func (s *Store) InsertGovernedAssetInto(ctx context.Context, in Asset, parentID 
 			Digest:         in.Digest,
 			CreatorID:      in.CreatorID,
 			FactoryID:      s.factoryID,
-			OrgUnitID:      in.OrgUnitID,
-			OrgPath:        path,
 			SourceID:       in.SourceID,
 			SourceRevision: in.SourceRevision,
 			Deps:           deps,
@@ -455,22 +436,6 @@ func (s *Store) GovernedAssetByCode(ctx context.Context, code string) (Asset, er
 	return assetFromGoverned(row), nil
 }
 
-// GovernedAssetBySourceID 按升档源身份找本厂已升档条目。
-func (s *Store) GovernedAssetBySourceID(ctx context.Context, sourceID uuid.UUID) (Asset, error) {
-	// 准备承接查到的工艺或工程。
-	var row governedAssetRow
-	// 按条件取一行失败就停，避免带着错误继续。
-	if err := s.db.WithContext(ctx).Where("source_id = ?", sourceID).Order("updated_at DESC").First(&row).Error; err != nil {
-		// 没有这一行就当成不存在。
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return Asset{}, domain.ErrNotFound
-		}
-		return Asset{}, err
-	}
-	// 库行收成对外结果再交回。
-	return s.decodeGoverned(row)
-}
-
 // AssetIsReferenced 是否仍被某条工程的 deps 引用。
 func (s *Store) AssetIsReferenced(ctx context.Context, assetID uuid.UUID) (bool, error) {
 	// 事务外直接查一次，供业务层快速拒绝。
@@ -653,15 +618,8 @@ func assertAssetDigest(d []byte) error {
 	return nil
 }
 
-// assetSourceIndex 同一升档源只一条厂级的部分唯一索引名，迁移 0045 建。
-const assetSourceIndex = "assets_source_id_uq"
-
 // mapAssetWriteErr 库约束收成业务错误，不抛 SQL。
 func mapAssetWriteErr(err error) error {
-	// 同源已被并发升档先插上，交给升档回读那条，不当编号冲突。
-	if domain.IsUniqueViolation(err) && domain.UniqueConstraint(err) == assetSourceIndex {
-		return domain.ErrAssetSourceTaken
-	}
 	// 唯一约束撞了就改成业务冲突，不抛库原文。
 	if domain.IsUniqueViolation(err) {
 		return domain.ErrAssetCodeConflict
@@ -720,8 +678,6 @@ func assetFromGoverned(row governedAssetRow) Asset {
 		Digest:         row.Digest,
 		CreatorID:      row.CreatorID,
 		FactoryID:      row.FactoryID,
-		OrgUnitID:      row.OrgUnitID,
-		OrgPath:        unmarshalPath(row.OrgPath),
 		SourceID:       row.SourceID,
 		SourceRevision: row.SourceRevision,
 		Deps:           unmarshalAssetDeps(row.Deps),

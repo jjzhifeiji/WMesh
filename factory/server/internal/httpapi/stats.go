@@ -34,8 +34,8 @@ type weldFactReq struct {
 	ID          string       `json:"id"`          // 产生端事实身份
 	CreatorID   string       `json:"creatorId"`   // 当时登录人
 	ClientID    string       `json:"clientId"`    // 当时 Client，可空
-	OrgUnitID   *string      `json:"orgUnitId"`   // 发生节点；厂直属为空
-	OrgPath     []pathNodeIn `json:"orgPath"`     // 发生时路径
+	OrgUnitID   *string      `json:"orgUnitId"`   // 示教器还会带，不收：组织按人现在的所属组织算
+	OrgPath     []pathNodeIn `json:"orgPath"`     // 示教器还会带，不收
 	ProjectID   string       `json:"projectId"`   // 当时工程身份，可空
 	ProjectName string       `json:"projectName"` // 当时工程名快照
 	WeldKind    string       `json:"weldKind"`    // single / multilayer / tbar / 空
@@ -44,7 +44,7 @@ type weldFactReq struct {
 	OccurredAt  string       `json:"occurredAt"`  // RFC3339 焊完时间
 }
 
-// 焊事实里的一级组织，记下当时的名称。
+// 示教器旧版焊事实里带的一级组织，只为能解开，不收。
 type pathNodeIn struct {
 	ID   string `json:"id"`   // 节点稳定身份
 	Name string `json:"name"` // 当时显示名
@@ -227,7 +227,6 @@ func parseWeldFact(row weldFactReq) (service.WeldFact, error) {
 		WeldKind:    row.WeldKind,
 		LengthMM:    row.LengthMM,
 		DurationSec: row.DurationSec,
-		OrgPath:     make([]service.PathNode, 0, len(row.OrgPath)),
 	}
 	// 带了设备才解析，空着则不记设备。
 	if row.ClientID != "" {
@@ -240,17 +239,6 @@ func parseWeldFact(row weldFactReq) (service.WeldFact, error) {
 		// 带了设备才记下，避免写入空编号。
 		item.ClientID = &cid
 	}
-	// 带了组织才解析，空着则不记节点。
-	if row.OrgUnitID != nil && *row.OrgUnitID != "" {
-		// 组织编号必须合法，否则整批拒绝。
-		uid, err := uuid.Parse(*row.OrgUnitID)
-		// 解析失败则拒绝，不用这个残缺的值继续。
-		if err != nil {
-			return service.WeldFact{}, errInvalidID
-		}
-		// 带了组织才记下归属节点。
-		item.OrgUnitID = &uid
-	}
 	// 带了工程才解析，空着则不记工程。
 	if row.ProjectID != "" {
 		// 工程编号必须合法，否则整批拒绝。
@@ -261,17 +249,6 @@ func parseWeldFact(row weldFactReq) (service.WeldFact, error) {
 		}
 		// 带了工程才记下当时所用的工程。
 		item.ProjectID = &pid
-	}
-	// 逐级解析组织路径，一处非法则整批拒绝。
-	for _, n := range row.OrgPath {
-		// 路径上的节点必须合法，否则整批拒绝。
-		nid, err := uuid.Parse(n.ID)
-		// 解析失败则拒绝，不用这个残缺的值继续。
-		if err != nil {
-			return service.WeldFact{}, errInvalidID
-		}
-		// 把这一级组织补进路径，名称按当时快照。
-		item.OrgPath = append(item.OrgPath, service.PathNode{ID: nid, Name: n.Name})
 	}
 	// 带了焊完时间才解析，空着则不填时刻。
 	if row.OccurredAt != "" {

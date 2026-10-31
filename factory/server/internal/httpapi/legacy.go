@@ -27,13 +27,14 @@ type legacyFileReq struct {
 type legacyImportReq struct {
 	Processes []legacyFileReq `json:"processes"` // 工艺文件
 	Projects  []legacyFileReq `json:"projects"`  // 工程文件
+	Level     string          `json:"level"`     // personal（默认）或 factory
 	Overwrite bool            `json:"overwrite"` // 同名改正文保留身份；否就跳过
 	Rename    bool            `json:"rename"`    // 同名按路径另起新名；覆盖优先
 }
 
-// 工厂超管或整厂管理员导入旧工艺/工程；缺路径的工程拒绝，已入工艺保留。
+// 导入旧工艺/工程：默认进本人个人文件夹，厂级要管理员；缺路径的工程拒绝，已入工艺保留。
 func (h *Handler) importLegacy(w http.ResponseWriter, r *http.Request) {
-	// 工厂超管或整厂管理员导入旧工艺/工程；缺路径的工程拒绝，已入工艺保留。
+	// 导入旧工艺/工程：默认进本人个人文件夹，厂级要管理员；缺路径的工程拒绝，已入工艺保留。
 	h.withFactory(w, r, func(svc *service.Service) {
 		// 大正文先验令牌再读，角色仍由业务核对。
 		if _, err := svc.Auth.RequireActive(r.Context(), bearer(r)); err != nil {
@@ -53,6 +54,7 @@ func (h *Handler) importLegacy(w http.ResponseWriter, r *http.Request) {
 		}
 		// 收成一批导入，同名可以覆盖或另起。
 		in := service.LegacyImport{
+			Level:     req.Level,
 			Processes: make([]service.LegacyFile, 0, len(req.Processes)),
 			Projects:  make([]service.LegacyFile, 0, len(req.Projects)),
 			Overwrite: req.Overwrite,

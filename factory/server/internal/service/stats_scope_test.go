@@ -13,43 +13,41 @@ import (
 	factory "wmesh/factory/internal/service"
 )
 
-// 负责人看子树不看兄弟，审计员看厂直属，操作员只看自己；分页和合计按同一范围，超界求和封顶。
+// 管理员看全厂、按人现在的所属组织分组，操作员只看自己；分页和合计按同一范围，超界求和封顶。
 // 一座厂测完全部情况，少开测试库连接。
 func TestWeldReportScopeAndPaging(t *testing.T) {
 	// 准备无取消的上下文，后面每次调用都挂在上面。
 	ctx := context.Background()
 	// 另开一座厂并拿到库连接，最后的超界数据只能用原生 SQL 写。
 	fac, db, saTok, saID := weldRawFactory(t, ctx)
-	// 车间A是负责人的根节点。
+	// 车间A，两名操作员归在这里。
 	shopA := mustWeldUnit(t, ctx, fac, saTok, "车间A", nil)
-	// 班组A1挂在车间A下，负责人应能看到。
+	// 班组A1挂在车间A下。
 	teamA1 := mustWeldUnit(t, ctx, fac, saTok, "班组A1", &shopA.ID)
-	// 车间B是兄弟分支，负责人不该看到。
+	// 车间B是兄弟分支。
 	shopB := mustWeldUnit(t, ctx, fac, saTok, "车间B", nil)
-	// 车间A的操作员，作用域挂在车间A。
-	opA := mustWeldPerson(t, ctx, fac, saTok, "op-sa", factory.RoleOperator, factory.ScopeOrgUnit, &shopA.ID)
-	// 车间A的另一名操作员，同节点也不能互看。
-	opA2 := mustWeldPerson(t, ctx, fac, saTok, "op-sa2", factory.RoleOperator, factory.ScopeOrgUnit, &shopA.ID)
-	// 班组A1的操作员，焊次落在子节点。
-	opA1 := mustWeldPerson(t, ctx, fac, saTok, "op-sa1", factory.RoleOperator, factory.ScopeOrgUnit, &teamA1.ID)
-	// 车间B的操作员，焊次落在兄弟分支。
-	opB := mustWeldPerson(t, ctx, fac, saTok, "op-sb", factory.RoleOperator, factory.ScopeOrgUnit, &shopB.ID)
-	// 车间A负责人，只读子树。
-	mustWeldPerson(t, ctx, fac, saTok, "lead-sa", factory.RoleOrgLead, factory.ScopeOrgUnit, &shopA.ID)
-	// 整厂审计员，能看厂直属。
-	mustWeldPerson(t, ctx, fac, saTok, "aud-s", factory.RoleAuditor, factory.ScopeFactory, nil)
+	// 车间A的操作员。
+	opA := mustWeldPerson(t, ctx, fac, saTok, "op-sa", factory.RoleOperator, &shopA.ID)
+	// 车间A的另一名操作员，同组织也不能互看。
+	opA2 := mustWeldPerson(t, ctx, fac, saTok, "op-sa2", factory.RoleOperator, &shopA.ID)
+	// 班组A1的操作员。
+	opA1 := mustWeldPerson(t, ctx, fac, saTok, "op-sa1", factory.RoleOperator, &teamA1.ID)
+	// 车间B的操作员。
+	opB := mustWeldPerson(t, ctx, fac, saTok, "op-sb", factory.RoleOperator, &shopB.ID)
+	// 管理员，不归组织，能看全厂报表。
+	mustWeldPerson(t, ctx, fac, saTok, "aud-s", factory.RoleOrgAdmin, nil)
 	// 取一个固定起点，各条焊按小时错开，先后可断言。
 	base := time.Date(2026, 9, 20, 8, 0, 0, 0, time.UTC)
-	// 车间A最老的一条，路径快照还是旧名。
-	fA := scopeWeld(opA, &shopA.ID, "车间A旧名", 100, base)
-	// 班组A1的一条，负责人应能看到。
-	fA1 := scopeWeld(opA1, &teamA1.ID, "班组A1", 200, base.Add(time.Hour))
-	// 车间A较新的一条，路径快照是新名。
-	fA2 := scopeWeld(opA2, &shopA.ID, "车间A", 300, base.Add(2*time.Hour))
-	// 车间B的一条，负责人看不到。
-	fB := scopeWeld(opB, &shopB.ID, "车间B", 400, base.Add(3*time.Hour))
-	// 超管自己的厂直属一条，最新。
-	fD := scopeWeld(saID, nil, "", 500, base.Add(4*time.Hour))
+	// 车间A最老的一条。
+	fA := scopeWeld(opA, 100, base)
+	// 班组A1的一条。
+	fA1 := scopeWeld(opA1, 200, base.Add(time.Hour))
+	// 车间A较新的一条。
+	fA2 := scopeWeld(opA2, 300, base.Add(2*time.Hour))
+	// 车间B的一条。
+	fB := scopeWeld(opB, 400, base.Add(3*time.Hour))
+	// 超管自己的一条，超管不归组织算厂直属，最新。
+	fD := scopeWeld(saID, 500, base.Add(4*time.Hour))
 	// 超管一次送上全部焊，发送人不必是创建人。
 	out, err := fac.FlushWeldFacts(ctx, saTok, []factory.WeldFact{fA, fA1, fA2, fB, fD})
 	// 汇聚失败或有被拒的就停。
@@ -57,49 +55,29 @@ func TestWeldReportScopeAndPaging(t *testing.T) {
 		// 断言没通过就停，结果和这条用例的预期不一致。
 		t.Fatalf("flush: %+v %v", out, err)
 	}
-
-	// 负责人登录，看车间A子树。
-	leadTok := mustAdoptPassword(t, ctx, fac, "lead-sa", "lead-pass")
-	// 负责人下钻全部，应只有车间A和班组A1的三条。
-	runs, err := fac.ListWeldRuns(ctx, leadTok, factory.WeldRunQuery{})
-	// 条数、合计或身份不对，说明子树或兄弟分支判错了。
-	if err != nil || runs.Total != 3 || runs.LengthMM != 600 || !sameRunIDs(runs.Items, fA2.ID, fA1.ID, fA.ID) {
-		// 断言没通过就停，结果和这条用例的预期不一致。
-		t.Fatalf("lead runs: %+v %v", runs, err)
-	}
-	// 负责人按人看报表，应是车间A子树里的三个人。
-	byPerson, err := fac.ListWeldReport(ctx, leadTok, "person", nil, nil, time.UTC)
-	// 条数不对说明报表范围和下钻不一致。
-	if err != nil || len(byPerson) != 3 {
-		// 断言没通过就停，结果和这条用例的预期不一致。
-		t.Fatalf("lead report: %+v %v", byPerson, err)
-	}
-	// 逐行核对，兄弟分支和厂直属的人不能出现。
-	for _, r := range byPerson {
-		// 出现车间B或超管就说明越权。
-		if r.PersonID == nil || *r.PersonID == opB || *r.PersonID == saID {
-			// 断言没通过就停，结果和这条用例的预期不一致。
-			t.Fatalf("lead sees %+v", r)
-		}
-	}
-	// 节点负责人不看厂直属，只要厂直属应一条没有。
-	direct, err := fac.ListWeldRuns(ctx, leadTok, factory.WeldRunQuery{DirectOnly: true})
-	// 看到了厂直属说明节点作用域放宽过头。
-	if err != nil || direct.Total != 0 || len(direct.Items) != 0 {
-		// 断言没通过就停，结果和这条用例的预期不一致。
-		t.Fatalf("lead direct: %+v %v", direct, err)
+	// 焊后再改车间A的名字，报表路径应按现在的树。
+	if err := fac.RenameOrgUnit(ctx, saTok, shopA.ID, "车间A新"); err != nil {
+		// 改名失败就停。
+		t.Fatal(err)
 	}
 
-	// 审计员登录，整厂作用域。
+	// 管理员登录，看全厂。
 	audTok := mustAdoptPassword(t, ctx, fac, "aud-s", "aud-pass")
-	// 审计员只要厂直属，应只拿到超管那条。
-	direct, err = fac.ListWeldRuns(ctx, audTok, factory.WeldRunQuery{DirectOnly: true})
-	// 拿不到或混进了有节点的焊就停。
+	// 管理员下钻全部，五条都在。
+	runs, err := fac.ListWeldRuns(ctx, audTok, factory.WeldRunQuery{})
+	// 条数或合计不对说明管理员被裁了范围。
+	if err != nil || runs.Total != 5 || runs.LengthMM != 1500 {
+		// 断言没通过就停，结果和这条用例的预期不一致。
+		t.Fatalf("auditor runs: %+v %v", runs, err)
+	}
+	// 管理员只要厂直属，应只拿到超管那条。
+	direct, err := fac.ListWeldRuns(ctx, audTok, factory.WeldRunQuery{DirectOnly: true})
+	// 拿不到或混进了有组织的人的焊就停。
 	if err != nil || direct.Total != 1 || len(direct.Items) != 1 || direct.Items[0].ID != fD.ID || direct.LengthMM != 500 {
 		// 断言没通过就停，结果和这条用例的预期不一致。
 		t.Fatalf("auditor direct: %+v %v", direct, err)
 	}
-	// 审计员按组织看报表，厂直属要单独一行。
+	// 管理员按组织看报表，厂直属要单独一行。
 	byOrg, err := fac.ListWeldReport(ctx, audTok, "org", nil, nil, time.UTC)
 	// 四个组织行都在，第一行是最新的厂直属。
 	if err != nil || len(byOrg) != 4 || byOrg[0].OrgUnitID != nil || byOrg[0].LengthMM != 500 {
@@ -116,13 +94,18 @@ func TestWeldReportScopeAndPaging(t *testing.T) {
 			t.Fatalf("org order %d: %+v", i+1, byOrg)
 		}
 	}
-	// 车间A两条合计，路径取较新那条的快照。
-	if byOrg[2].RunCount != 2 || byOrg[2].LengthMM != 400 || len(byOrg[2].OrgPath) != 1 || byOrg[2].OrgPath[0].Name != "车间A" {
+	// 车间A两条合计，路径取现在的树。
+	if byOrg[2].RunCount != 2 || byOrg[2].LengthMM != 400 || len(byOrg[2].OrgPath) != 1 || byOrg[2].OrgPath[0].Name != "车间A新" {
 		// 断言没通过就停，结果和这条用例的预期不一致。
 		t.Fatalf("shop A row: %+v", byOrg[2])
 	}
+	// 班组A1的路径是车间A新到班组A1两级。
+	if len(byOrg[3].OrgPath) != 2 || byOrg[3].OrgPath[0].Name != "车间A新" || byOrg[3].OrgPath[1].Name != "班组A1" {
+		// 断言没通过就停，结果和这条用例的预期不一致。
+		t.Fatalf("team A1 row: %+v", byOrg[3])
+	}
 
-	// 车间A操作员登录，节点作用域的操作员。
+	// 车间A操作员登录，只能看自己。
 	opTok := mustAdoptPassword(t, ctx, fac, "op-sa", "op-pass")
 	// 操作员下钻，只能看到自己那条，同节点的人也看不到。
 	runs, err = fac.ListWeldRuns(ctx, opTok, factory.WeldRunQuery{})
@@ -181,7 +164,7 @@ func TestWeldReportScopeAndPaging(t *testing.T) {
 		// 断言没通过就停，结果和这条用例的预期不一致。
 		t.Fatalf("plain: %+v %v", plain, err)
 	}
-	// 按节点筛只取车间A本节点，子节点不算进来。
+	// 按组织筛只取归在车间A本节点的人，子节点不算进来。
 	both, err := fac.ListWeldRuns(ctx, saTok, factory.WeldRunQuery{OrgUnitID: &shopA.ID})
 	// 车间A只有两条，混进别的节点就停。
 	if err != nil || both.Total != 2 || !sameRunIDs(both.Items, fA2.ID, fA.ID) {
@@ -248,8 +231,8 @@ func mustWeldUnit(t *testing.T, ctx context.Context, fac *factory.Service, saTok
 	return u
 }
 
-// 超管建一个人并授一个角色，交回人员身份。
-func mustWeldPerson(t *testing.T, ctx context.Context, fac *factory.Service, saTok, login, role, scope string, unit *uuid.UUID) uuid.UUID {
+// 超管建一个人、授一个角色并归到组织，交回人员身份；组织空表示厂直属。
+func mustWeldPerson(t *testing.T, ctx context.Context, fac *factory.Service, saTok, login, role string, unit *uuid.UUID) uuid.UUID {
 	// 标成辅助步骤，失败时行号指向真正的用例。
 	t.Helper()
 	// 新建厂内人员，失败说明登录名冲突或越权。
@@ -260,25 +243,26 @@ func mustWeldPerson(t *testing.T, ctx context.Context, fac *factory.Service, saT
 		t.Fatal(err)
 	}
 	// 授角色失败就停，否则后面没有可靠结果。
-	if _, err := fac.GrantRole(ctx, saTok, p.ID, role, scope, unit); err != nil {
+	if _, err := fac.GrantRole(ctx, saTok, p.ID, role); err != nil {
 		// 把授角色的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
+	}
+	// 给了组织才归进去，厂直属不用设。
+	if unit != nil {
+		// 归组织失败就停，否则后面的分组没有依据。
+		if _, err := fac.SetPersonOrg(ctx, saTok, p.ID, unit); err != nil {
+			// 把归组织的错误打出来并停住，避免继续往下验。
+			t.Fatal(err)
+		}
 	}
 	return p.ID
 }
 
-// 造一条焊事实，节点空表示厂直属，路径名按快照给。
-func scopeWeld(creator uuid.UUID, unit *uuid.UUID, pathName string, length int64, at time.Time) factory.WeldFact {
-	// 厂直属的路径是空的。
-	path := []factory.PathNode{}
-	// 有节点就给一级路径快照。
-	if unit != nil {
-		// 路径只放这一级，名字按当时快照。
-		path = []factory.PathNode{{ID: *unit, Name: pathName}}
-	}
+// 造一条焊事实，只绑人；组织按人现在的所属组织算。
+func scopeWeld(creator uuid.UUID, length int64, at time.Time) factory.WeldFact {
 	// 交回带新身份的焊事实，时长取焊长的十分之一。
 	return factory.WeldFact{
-		ID: id.New(), CreatorID: creator, OrgUnitID: unit, OrgPath: path,
+		ID: id.New(), CreatorID: creator,
 		ProjectName: "工程S", WeldKind: "single", LengthMM: length, DurationSec: length / 10, OccurredAt: at,
 	}
 }

@@ -8,12 +8,11 @@ import (
 
 // Catalog 是厂内名册快照，不含密码或激活码。
 type Catalog struct {
-	Me          Account      `json:"me"`          // 当前会话账号
-	MyGrants    []RoleGrant  `json:"myGrants"`    // 当前账号的有效角色，任何人都能看自己的
-	People      []Account    `json:"people"`      // 本厂人员，不含认证秘密；非超管为空
-	OrgUnits    []OrgUnit    `json:"orgUnits"`    // 本厂组织节点
-	Assignments []Assignment `json:"assignments"` // 当前有效分配
-	RoleGrants  []RoleGrant  `json:"roleGrants"`  // 当前有效角色授予
+	Me         Account     `json:"me"`         // 当前会话账号
+	MyGrants   []RoleGrant `json:"myGrants"`   // 当前账号的有效角色，任何人都能看自己的
+	People     []Account   `json:"people"`     // 本厂人员，不含认证秘密；非超管为空
+	OrgUnits   []OrgUnit   `json:"orgUnits"`   // 本厂组织节点
+	RoleGrants []RoleGrant `json:"roleGrants"` // 当前有效角色授予
 }
 
 // Catalog 工厂超管可看本厂名册；其他人只看到自己和自己的角色，避免把全厂账号交给无许可者。
@@ -26,12 +25,11 @@ func (s *Org) Catalog(ctx context.Context, token string) (Catalog, error) {
 	}
 	// 先放上自己和空名册，超管才填全厂
 	out := Catalog{
-		Me:          acc,
-		MyGrants:    []RoleGrant{},
-		People:      []Account{},
-		OrgUnits:    []OrgUnit{},
-		Assignments: []Assignment{},
-		RoleGrants:  []RoleGrant{},
+		Me:         acc,
+		MyGrants:   []RoleGrant{},
+		People:     []Account{},
+		OrgUnits:   []OrgUnit{},
+		RoleGrants: []RoleGrant{},
 	}
 	// 角色读失败就无法判定，拒绝放行
 	if mine, err := s.grantsOf(ctx, acc.ID); err != nil {
@@ -53,8 +51,12 @@ func (s *Org) Catalog(ctx context.Context, token string) (Catalog, error) {
 	}
 	// 补最近一次带设备的登录现场
 	markLastDevice(&out.Me, devices)
+	// 组织树人人可看，本人页要按它显示所属组织；组织读失败，名册不交残缺
+	if out.OrgUnits, err = s.store.ListOrgUnits(ctx); err != nil {
+		return Catalog{}, err
+	}
 	// 不是工厂超管，看不到全厂名册，只交自己那份
-	if err := s.can(ctx, acc, permManageAccount, nil); err != nil {
+	if err := s.can(ctx, acc, permManageAccount); err != nil {
 		// 名册是前端每 5 秒的轮询读，成功不记允许，免得撑大审计表
 		return out, nil
 	}
@@ -74,14 +76,6 @@ func (s *Org) Catalog(ctx context.Context, token string) (Catalog, error) {
 		markLastDevice(&row, devices)
 		// 把这一条收进结果，漏了清单就不齐
 		out.People = append(out.People, row)
-	}
-	// 组织读失败，名册不交残缺
-	if out.OrgUnits, err = s.store.ListOrgUnits(ctx); err != nil {
-		return Catalog{}, err
-	}
-	// 分配读失败，名册不交残缺
-	if out.Assignments, err = s.store.ListAssignments(ctx); err != nil {
-		return Catalog{}, err
 	}
 	// 角色列表读失败，名册不交残缺
 	if out.RoleGrants, err = s.store.ListRoleGrants(ctx); err != nil {

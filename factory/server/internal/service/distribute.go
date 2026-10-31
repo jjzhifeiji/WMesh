@@ -140,7 +140,7 @@ func (s *Closure) GrantClientProject(ctx context.Context, token string, projectI
 	// 收成文本身份，供审计或对账对准
 	target := projectID.String() + " client=" + clientID.String()
 	// 只有工厂超管能授权 Client 收工程。失败一律记拒绝。
-	if err := s.can(ctx, acc, permManageAccount, nil); err != nil {
+	if err := s.can(ctx, acc, permManageAccount); err != nil {
 		// 不是工厂超管，记下授权工程被拒绝，写失败不改变结果
 		_ = s.audit(ctx, &acc.ID, nil, "grant_closure", target, audit.Deny)
 		return err
@@ -186,7 +186,7 @@ func (s *Closure) RevokeClientProject(ctx context.Context, token string, project
 	// 收成文本身份，供审计或对账对准
 	target := projectID.String() + " client=" + clientID.String()
 	// 不是工厂超管，拒绝这次账号或策略操作
-	if err := s.can(ctx, acc, permManageAccount, nil); err != nil {
+	if err := s.can(ctx, acc, permManageAccount); err != nil {
 		// 不是工厂超管，记下收回工程授权被拒绝，写失败不改变结果
 		_ = s.audit(ctx, &acc.ID, nil, "revoke_closure", target, audit.Deny)
 		return err
@@ -420,45 +420,6 @@ func (s *Closure) CachePersonalProject(ctx context.Context, token string, projec
 	}
 	// 装入个人工程成功后记审计，再把结果交回
 	return s.audit(ctx, &acc.ID, nil, "cache_closure", closureTarget(snap), audit.Allow)
-}
-
-// ForwardToFactory 厂内不得把已收平台级转发给另一厂。
-func (s *Closure) ForwardToFactory(ctx context.Context, token string, assetID, factoryID uuid.UUID) error {
-	// 先确认会话仍有效，过期或停用直接拒绝
-	acc, err := s.RequireActive(ctx, token)
-	// 会话无效或账号已停用，拒绝继续
-	if err != nil {
-		return err
-	}
-	// 记下转发到他厂被拒绝，写失败不改变结果
-	_ = s.audit(ctx, &acc.ID, nil, "forward_closure", assetID.String()+" factory="+factoryID.String(), audit.Deny)
-	return domain.ErrForbidden
-}
-
-// SetReplicaCopyable 平台级副本不得改可复制。
-func (s *Closure) SetReplicaCopyable(ctx context.Context, token string, assetID uuid.UUID, copyable bool) error {
-	// 先确认会话仍有效，过期或停用直接拒绝
-	acc, err := s.RequireActive(ctx, token)
-	// 会话无效或账号已停用，拒绝继续
-	if err != nil {
-		return err
-	}
-	// 记下改副本可复制被拒绝，写失败不改变结果
-	_ = s.audit(ctx, &acc.ID, nil, "update_replica", assetID.String(), audit.Deny)
-	return domain.ErrForbidden
-}
-
-// PromoteReplica 平台级副本不得升档。
-func (s *Closure) PromoteReplica(ctx context.Context, token string, assetID uuid.UUID) error {
-	// 先确认会话仍有效，过期或停用直接拒绝
-	acc, err := s.RequireActive(ctx, token)
-	// 会话无效或账号已停用，拒绝继续
-	if err != nil {
-		return err
-	}
-	// 记下把副本升档被拒绝，写失败不改变结果
-	_ = s.audit(ctx, &acc.ID, nil, "promote_asset", assetID.String(), audit.Deny)
-	return domain.ErrForbidden
 }
 
 // ListReplicas 列出本厂已收平台级副本元数据，不含正文。

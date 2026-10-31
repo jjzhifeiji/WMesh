@@ -70,8 +70,8 @@ type WeldWANSummary struct {
 // PadWorkSnap 是登录时钉死的工作上下文，供本机写焊事实。
 type PadWorkSnap struct {
 	Direct    bool       `json:"direct"`              // 厂直属
-	OrgUnitID *uuid.UUID `json:"orgUnitId,omitempty"` // 当时分配节点
-	OrgPath   []PathNode `json:"orgPath"`             // 当时路径快照
+	OrgUnitID *uuid.UUID `json:"orgUnitId,omitempty"` // 现在的所属组织，只给示教器显示
+	OrgPath   []PathNode `json:"orgPath"`             // 该组织当前路径
 }
 
 // WeldFlushResult 是本机待发汇聚结果；拒绝的条仍留本机。
@@ -121,8 +121,8 @@ type WeldReportRow struct {
 	PersonID    *uuid.UUID `json:"personId,omitempty"`    // 当时登录人
 	LoginName   string     `json:"loginName,omitempty"`   // 登录名
 	DisplayName string     `json:"displayName,omitempty"` // 显示名
-	OrgUnitID   *uuid.UUID `json:"orgUnitId,omitempty"`   // 发生节点
-	OrgPath     []PathNode `json:"orgPath,omitempty"`     // 发生时路径
+	OrgUnitID   *uuid.UUID `json:"orgUnitId,omitempty"`   // 人现在的所属组织
+	OrgPath     []PathNode `json:"orgPath,omitempty"`     // 该组织当前路径
 	Day         string     `json:"day,omitempty"`         // 报表时区日期 YYYY-MM-DD
 	ProjectID   *uuid.UUID `json:"projectId,omitempty"`   // 工程身份
 	ProjectName string     `json:"projectName,omitempty"` // 工程名
@@ -137,8 +137,8 @@ type WeldRunRow struct {
 	PersonID    uuid.UUID  `json:"personId"`            // 当时登录人
 	LoginName   string     `json:"loginName"`           // 登录名
 	DisplayName string     `json:"displayName"`         // 显示名
-	OrgUnitID   *uuid.UUID `json:"orgUnitId,omitempty"` // 发生节点
-	OrgPath     []PathNode `json:"orgPath"`             // 发生时路径
+	OrgUnitID   *uuid.UUID `json:"orgUnitId,omitempty"` // 人现在的所属组织
+	OrgPath     []PathNode `json:"orgPath"`             // 该组织当前路径
 	ProjectID   *uuid.UUID `json:"projectId,omitempty"` // 工程身份
 	ProjectName string     `json:"projectName"`         // 工程名快照
 	WeldKind    string     `json:"weldKind"`            // 焊接模式
@@ -160,7 +160,7 @@ type WeldRunQuery struct {
 	PersonID   *uuid.UUID // 当时登录人
 	ProjectID  *uuid.UUID // 工程身份
 	NoProject  bool       // 只取未打开工程
-	OrgUnitID  *uuid.UUID // 发生节点
+	OrgUnitID  *uuid.UUID // 人现在的所属组织
 	DirectOnly bool       // 只取厂直属
 	Day        *time.Time // UTC 日历日
 	Limit      int        // 每页条数；0 取默认，超上限按上限
@@ -225,7 +225,7 @@ func (s *Stats) FlushWeldFacts(ctx context.Context, token string, items []WeldFa
 			out.Rejected = append(out.Rejected, WeldReject{ID: item.ID, Error: domain.ErrForbidden.Error()})
 			continue
 		}
-		// 创建人必须是本厂人员；路径和工程按本机快照落，不按现分配改写。
+		// 创建人必须是本厂人员；只绑人，示教器报的组织不收，组织按人现在的所属组织算。
 		if _, err := s.store.MergeWeldFact(ctx, item); err != nil {
 			// 业务错误给原话，库错只进日志，拒绝行不带库原文
 			out.Rejected = append(out.Rejected, WeldReject{ID: item.ID, Error: rejectReason(err)})
@@ -348,12 +348,14 @@ func (s *Stats) ListWeldReport(ctx context.Context, token, group string, from, t
 	}
 	// 按条数决定是空、超限还是继续
 	out := make([]WeldReportRow, 0, len(agg))
+	// 组织路径按当前树补，同一节点只走一次
+	paths := s.newOrgPaths()
 	// 逐条处理，某一条失败不把整批悄悄算成功
 	for _, row := range agg {
 		// 组装报表一行，看不到的人不会进这里
 		item := WeldReportRow{
 			LoginName: row.LoginName, DisplayName: row.DisplayName,
-			OrgUnitID: row.OrgUnitID, OrgPath: row.OrgPath,
+			OrgUnitID: row.OrgUnitID, OrgPath: paths.of(ctx, row.OrgUnitID),
 			ProjectID: row.ProjectID, ProjectName: row.ProjectName,
 			LengthMM: row.LengthMM, DurationSec: row.DurationSec, RunCount: row.RunCount,
 		}
@@ -423,12 +425,14 @@ func (s *Stats) ListWeldRuns(ctx context.Context, token string, q WeldRunQuery) 
 		Items: make([]WeldRunRow, 0, len(facts)),
 		Total: tot.RunCount, LengthMM: tot.LengthMM, DurationSec: tot.DurationSec,
 	}
+	// 组织路径按当前树补，同一节点只走一次
+	paths := s.newOrgPaths()
 	// 逐条收成下钻行，范围已在库里裁过
 	for _, f := range facts {
 		// 把这一条收进结果，漏了清单就不齐
 		out.Items = append(out.Items, WeldRunRow{
 			ID: f.ID, PersonID: f.CreatorID, LoginName: f.LoginName, DisplayName: f.DisplayName,
-			OrgUnitID: f.OrgUnitID, OrgPath: f.OrgPath, ProjectID: f.ProjectID,
+			OrgUnitID: f.OrgUnitID, OrgPath: paths.of(ctx, f.OrgUnitID), ProjectID: f.ProjectID,
 			ProjectName: store.ProjectLabel(f.ProjectName), WeldKind: f.WeldKind,
 			LengthMM: f.LengthMM, DurationSec: f.DurationSec,
 			OccurredAt: f.OccurredAt.UTC().Format(time.RFC3339),
@@ -490,12 +494,6 @@ func (s *Stats) SeedWeldDemo(ctx context.Context, token string) (WeldDemoResult,
 		_ = s.audit(ctx, &acc.ID, nil, "seed_weld_demo", "demo", audit.Deny)
 		return WeldDemoResult{}, domain.ErrNotFound
 	}
-	// 列出本厂组织节点
-	units, err := s.store.ListOrgUnits(ctx)
-	// 组织读失败，名册不交残缺
-	if err != nil {
-		return WeldDemoResult{}, err
-	}
 	// 取出本厂稳定身份，封包和审计都要用
 	fid := s.store.FactoryID()
 	// 同一厂重复写入仍是原来的身份
@@ -526,11 +524,9 @@ func (s *Stats) SeedWeldDemo(ctx context.Context, token string) (WeldDemoResult,
 		pi := i % len(projNames)
 		// 演示工程身份，不要求库里真有该工程
 		pid := weldDemoProjectID(fid, pi)
-		// 演示优先用当时分配，否则有效组织
-		unitID, path := s.demoWork(ctx, who.ID, units)
 		// 组装一条演示焊次，身份稳定可重复写
 		item := WeldFact{
-			ID: weldDemoID(fid, i), CreatorID: who.ID, OrgUnitID: unitID, OrgPath: path,
+			ID: weldDemoID(fid, i), CreatorID: who.ID,
 			ProjectID: &pid, ProjectName: projNames[pi], WeldKind: kinds[pi],
 			LengthMM: 800 + int64((i%12)*150), DurationSec: 40 + int64((i%9)*15),
 			OccurredAt: now.Add(-time.Duration(i) * 11 * time.Hour),
@@ -550,71 +546,62 @@ func (s *Stats) SeedWeldDemo(ctx context.Context, token string) (WeldDemoResult,
 	return WeldDemoResult{Created: created, Total: weldDemoCount}, s.audit(ctx, &acc.ID, nil, "seed_weld_demo", "demo", audit.Allow)
 }
 
-// personWorkSnap 用当前有效分配钉路径；没有分配则厂直属。
+// personWorkSnap 给示教器看这个人现在的所属组织；没有则厂直属。焊事实不再带组织。
 func (s *kernel) personWorkSnap(ctx context.Context, personID uuid.UUID) (PadWorkSnap, error) {
-	// 只取仍有效的人员分配
-	assigns, err := s.store.ActiveAssignments(ctx, personID)
-	// 分配读失败，不能钉工作上下文
+	// 组织跟人走，取此人现在的所属组织
+	unit, path, err := s.personOrgSnap(ctx, personID)
+	// 组织读失败，交不出工作位置
 	if err != nil {
 		return PadWorkSnap{}, err
 	}
-	// 没有有效分配则改走厂直属或拒绝
-	if len(assigns) == 0 {
-		return PadWorkSnap{Direct: true, OrgPath: []PathNode{}}, nil
-	}
-	// 冻结当时的组织路径
-	path, err := s.store.PathSnapshot(ctx, assigns[0].OrgUnitID)
-	// 路径冻结失败，拒绝写下残缺事实
-	if err != nil {
-		return PadWorkSnap{}, err
-	}
-	// 用当前有效分配上的节点钉路径
-	unit := assigns[0].OrgUnitID
-	return PadWorkSnap{Direct: false, OrgUnitID: &unit, OrgPath: path}, nil
+	return PadWorkSnap{Direct: unit == nil, OrgUnitID: unit, OrgPath: path}, nil
 }
 
-// weldScope 只读一次角色算焊事实可见范围；空指针表示全厂，否则本人加可见子树。
-// 只有超管和组织管理员、负责人、审计员能放宽，和只读查看同一套角色。
+// weldScope 算焊事实可见范围：超管和管理员看全厂，其余只看本人。
 func (s *kernel) weldScope(ctx context.Context, acc Account) (*store.WeldScope, error) {
-	// 只取当前有效角色，收回的不参与
-	grants, err := s.grantsOf(ctx, acc.ID)
-	// 角色读失败就无法判定，拒绝放行
-	if err != nil {
-		return nil, err
-	}
-	// 持有厂级超管则盖住全厂，不必再查子树
-	if isFactorySA(grants) {
+	// 有报表只读权就看全厂
+	if err := s.can(ctx, acc, permView); err == nil {
 		return nil, nil
-	}
-	// 收集节点作用域的根，后面一次求出子树
-	roots := make([]uuid.UUID, 0, len(grants))
-	// 只看三种只读管理角色，操作员等不放宽
-	for _, g := range withRoles(grants, RoleOrgAdmin, RoleOrgLead, RoleAuditor) {
-		// 整厂作用域盖住全部节点和厂直属
-		if g.ScopeKind == ScopeFactory {
-			return nil, nil
-		}
-		// 节点作用域记下根节点
-		if g.OrgUnitID != nil {
-			// 收进根列表，子树一起求
-			roots = append(roots, *g.OrgUnitID)
-		}
-	}
-	// 先备好只看本人的范围，有子树再补上
-	scope := &store.WeldScope{SelfID: acc.ID, OrgUnitIDs: []uuid.UUID{}}
-	// 没有节点作用域就只看本人
-	if len(roots) == 0 {
-		return scope, nil
-	}
-	// 递归求出这些根的当前子树，不按状态裁
-	units, err := s.store.OrgSubtreeIDs(ctx, roots)
-	// 子树读失败则拒绝，不猜是否覆盖
-	if err != nil {
+		// 不是权限不够的错误要交回，不当成看不到
+	} else if !errors.Is(err, domain.ErrForbidden) {
 		return nil, err
 	}
-	// 可见节点就是这些子树
-	scope.OrgUnitIDs = units
-	return scope, nil
+	// 其余只看本人
+	return &store.WeldScope{SelfID: acc.ID}, nil
+}
+
+// orgPaths 按当前组织树给节点补路径，同一节点只走一次。
+type orgPaths struct {
+	k    *kernel                  // 读组织树用
+	seen map[uuid.UUID][]PathNode // 已走过的节点路径
+}
+
+// newOrgPaths 备好一张空的路径缓存。
+func (s *kernel) newOrgPaths() *orgPaths {
+	// 交回空缓存，按需填
+	return &orgPaths{k: s, seen: map[uuid.UUID][]PathNode{}}
+}
+
+// of 交出节点当前路径；厂直属或节点读不到交空路径。
+func (o *orgPaths) of(ctx context.Context, unit *uuid.UUID) []PathNode {
+	// 厂直属没有路径
+	if unit == nil {
+		return []PathNode{}
+	}
+	// 走过的直接交回
+	if p, ok := o.seen[*unit]; ok {
+		return p
+	}
+	// 按当前树走出路径
+	p, err := o.k.store.PathSnapshot(ctx, *unit)
+	// 节点读不到当空路径，不让整张报表失败
+	if err != nil {
+		// 空路径也记下，免得反复读
+		p = []PathNode{}
+	}
+	// 记进缓存
+	o.seen[*unit] = p
+	return p
 }
 
 // weldRunsPage 收住下钻分页参数：条数不给按默认，超上限按上限，负跳过当零。
@@ -635,40 +622,6 @@ func weldRunsPage(limit, offset int) (int, int) {
 		offset = 0
 	}
 	return limit, offset
-}
-
-// demoWork 优先用人当时分配，否则轮询有效组织，再不行厂直属。
-func (s *Stats) demoWork(ctx context.Context, personID uuid.UUID, units []OrgUnit) (*uuid.UUID, []PathNode) {
-	// 只取仍有效的人员分配
-	assigns, err := s.store.ActiveAssignments(ctx, personID)
-	// 没有错误才采用这次结果，失败另走拒绝
-	if err == nil && len(assigns) > 0 {
-		// 冻结当时的组织路径
-		path, err := s.store.PathSnapshot(ctx, assigns[0].OrgUnitID)
-		// 没有错误才采用这次结果，失败另走拒绝
-		if err == nil {
-			// 用当前有效分配上的节点钉路径
-			unit := assigns[0].OrgUnitID
-			return &unit, path
-		}
-	}
-	// 逐条处理，某一条失败不把整批悄悄算成功
-	for _, u := range units {
-		// 这一条不符合就跳过，其它条继续
-		if u.Status != StatusActive {
-			continue
-		}
-		// 冻结当时的组织路径
-		path, err := s.store.PathSnapshot(ctx, u.ID)
-		// 路径冻结失败，拒绝写下残缺事实
-		if err != nil {
-			continue
-		}
-		// 另拷一份身份再取址，避免下一轮把指针改掉
-		id := u.ID
-		return &id, path
-	}
-	return nil, []PathNode{}
 }
 
 // RequestWANPush 发「焊汇总已变」信号；已有没取走的就合并，调用方不阻塞。

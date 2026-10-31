@@ -649,8 +649,8 @@ func (s *Assets) checkFSDeletable(ctx context.Context, acc Account, folderID uui
 		if err != nil {
 			return err
 		}
-		// 没有制作权则整体拒绝，和单删资产同一口径。
-		if err := s.canAuthorFactory(ctx, acc, cur.OrgUnitID); err != nil {
+		// 按级别核制作权，和单删资产同一口径。
+		if err := s.canAuthorLevel(ctx, acc, cur.Level); err != nil {
 			return err
 		}
 		// 个人级不是创建人也不是管理员则整体拒绝。
@@ -708,7 +708,7 @@ func (s *Assets) deleteFSTree(ctx context.Context, token string, acc Account, n 
 // isComputerAdmin 工厂超管或整厂组织管理员，可看见别人的个人树。
 func (s *kernel) isComputerAdmin(ctx context.Context, acc Account) bool {
 	// 按本厂权限判断当前人能不能做。
-	return s.can(ctx, acc, permManageOrg, nil) == nil
+	return s.can(ctx, acc, permManageAccount) == nil
 }
 
 // canSeeFSNode 平台/厂级人人可见；个人树仅主人或本厂管理员。
@@ -734,7 +734,7 @@ func (s *kernel) canWriteFS(ctx context.Context, acc Account, n FSNode) error {
 	// 厂级目录本厂有效账号可以改。
 	case store.FSTreeFactory:
 		// 确认当前人能在该处制作厂级。
-		return s.canAuthorFactory(ctx, acc, nil)
+		return s.canAuthorFactory(ctx, acc)
 	// 个人树只给主人或本厂管理员改。
 	case store.FSTreePersonal:
 		// 主人可以改自己的个人树。
@@ -742,7 +742,7 @@ func (s *kernel) canWriteFS(ctx context.Context, acc Account, n FSNode) error {
 			return nil
 		}
 		// 按本厂权限判断当前人能不能做。
-		return s.can(ctx, acc, permManageOrg, nil)
+		return s.can(ctx, acc, permManageAccount)
 	// 不认识的树一律拒绝写入。
 	default:
 		return domain.ErrForbidden
@@ -868,6 +868,32 @@ func (s *Assets) checkNewAssetFolder(ctx context.Context, acc Account, parentID 
 	}
 	// 这棵树只读或不是主人则拒绝；种类和树在事务里再核。
 	return s.canWriteFS(ctx, acc, parent)
+}
+
+// FolderLevel 交出文件夹所在树对应的资产级别；平台树只读，不能在里面建。
+func (s *Assets) FolderLevel(ctx context.Context, token string, folderID uuid.UUID) (string, error) {
+	// 核对登录仍有效，后面的操作都靠这次会话。
+	if _, err := s.RequireActive(ctx, token); err != nil {
+		return "", err
+	}
+	// 读出目标文件夹，没有就不建资产。
+	n, err := s.store.FSNodeByID(ctx, folderID)
+	// 目录不在或读失败就拒绝。
+	if err != nil {
+		return "", err
+	}
+	// 按树定级别。
+	switch n.TreeLevel {
+	// 厂级树建厂级。
+	case store.FSTreeFactory:
+		return AssetLevelFactory, nil
+	// 个人树建个人级。
+	case store.FSTreePersonal:
+		return AssetLevelPersonal, nil
+	// 平台树只读。
+	default:
+		return "", domain.ErrForbidden
+	}
 }
 
 // padNewAssetFolder 示教器新建：目录不在或不可写就改挂树根，只有库错误才报错。

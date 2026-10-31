@@ -2,7 +2,6 @@
 package httpapi_test
 
 import (
-	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -34,42 +33,16 @@ func TestFactoryClientPolicyHTTP(t *testing.T) {
 		h.Close()
 	})
 	// 拉起临时服务，测完由清理关掉。
-	srv := httptest.NewServer(httpapi.New(h, "boot-secret", "").Router())
+	srv := httptest.NewServer(httpapi.New(h, "").Router())
 	// 测完关闭临时服务，把端口让出来。
 	t.Cleanup(srv.Close)
 	// 拼出本厂前缀，后面的路径都接在后面。
 	base := "/v1/factories/" + fid.String()
 
-	// 用共享密码建厂，激活码只出现在回包。
-	code, body := do(t, srv, "POST", "/internal/bootstrap", "boot-secret", `{"factoryId":"`+fid.String()+`","saLogin":"sa","saDisplay":"超管"}`)
-	// 不是已创建则本测失败。
-	if code != http.StatusCreated {
-		// 与预期不符就停测，避免后面连环误判。
-		t.Fatalf("bootstrap %d %s", code, body)
-	}
-	// 按工厂打开已有库，没有库就当未初始化。
-	svc, err := h.Service(context.Background(), fid)
-	// 这一步失败则停测，避免在坏结果上继续。
-	if err != nil {
-		// 与预期不符就停测，避免后面连环误判。
-		t.Fatalf("service: %v", err)
-	}
-	// 租约写不进去则停测，后面读正文会失败。
-	if err := svc.Store().GrantLocalLease(context.Background()); err != nil {
-		// 与预期不符就停测，避免后面连环误判。
-		t.Fatalf("lease: %v", err)
-	}
-	// 取出激活码，启用账号时要用。
-	act := gjson(t, body, "activationToken")
-	// 用激活码启用账号，错码应当被拒绝。
-	code, body = do(t, srv, "POST", base+"/activate", "", `{"loginName":"sa","activationToken":"`+act+`","password":"secret"}`)
-	// 不是无内容则本测失败。
-	if code != http.StatusNoContent {
-		// 与预期不符就停测，避免后面连环误判。
-		t.Fatalf("activate %d %s", code, body)
-	}
+	// 按约定身份建厂，初始超管当场有效。
+	enrollSA(t, h, fid)
 	// 登录并取得会话，口令错误应当被拒绝。
-	code, body = do(t, srv, "POST", base+"/login", "", `{"loginName":"sa","password":"secret"}`)
+	code, body := do(t, srv, "POST", base+"/login", "", `{"loginName":"sa","password":"secret"}`)
 	// 不是成功则本测失败。
 	if code != http.StatusOK {
 		// 与预期不符就停测，避免后面连环误判。
@@ -142,8 +115,8 @@ func TestFactoryClientPolicyHTTP(t *testing.T) {
 	}
 	// 取出人员身份，后面用来对上连接。
 	personID := gjson(t, body, "account.id")
-	// 授予角色，超出作用域应当被拒绝。
-	code, body = do(t, srv, "POST", base+"/grants", tok, `{"personId":"`+personID+`","role":"operator","scopeKind":"factory"}`)
+	// 授予操作员角色，角色都覆盖整厂。
+	code, body = do(t, srv, "POST", base+"/grants", tok, `{"personId":"`+personID+`","role":"operator"}`)
 	// 不是已创建则本测失败。
 	if code != http.StatusCreated {
 		// 与预期不符就停测，避免后面连环误判。

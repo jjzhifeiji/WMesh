@@ -36,7 +36,8 @@ func (SigningKey) TableName() string { return "signing_keys" }
 // Client 是本厂已接受的一台现场设备绑定。
 type Client struct {
 	ID              uuid.UUID  `gorm:"type:uuid;primaryKey" json:"id"`        // 固定识别号，与 WAN 相同的全局身份
-	Name            string     `gorm:"not null" json:"name"`                  // 给人看的设备名，可改，不当身份
+	Name            string     `gorm:"not null" json:"name"`                  // WAN 下发的设备名，厂端只读，不当身份
+	Nickname        string     `gorm:"not null" json:"nickname"`              // 厂端起的昵称；空表示没起
 	PublicKey       []byte     `gorm:"type:bytea" json:"publicKey"`           // 本机公钥；未上线为空，无私钥
 	BindingRevision int64      `gorm:"not null" json:"bindingRevision"`       // 已接受的绑定修订，只向前
 	Status          string     `gorm:"not null" json:"status"`                // bound / void
@@ -203,14 +204,11 @@ func (s *Store) AcceptBinding(ctx context.Context, clientID uuid.UUID, name stri
 			// 把这一列放进待更新集合，只覆盖带来的字段。
 			patch["binding_revision"] = revision
 		}
-		// WAN 带了名字才考虑改名，空名不动本地名。
+		// WAN 带了名字就照收，设备名只由 WAN 定；厂端自己的叫法在昵称里。
 		if wanName != nil {
-			// 修订升高，或同修订而 WAN 名与上次记下的不同，才算 WAN 真改了名。
-			if revision > row.BindingRevision || (row.WANName != nil && *row.WANName != *wanName) {
-				// 把这一列放进待更新集合，只覆盖带来的字段。
-				patch["name"] = *wanName
-			}
-			// 记下这次收到的 WAN 名；旧行为空时只记不覆盖本地名。
+			// 把这一列放进待更新集合，只覆盖带来的字段。
+			patch["name"] = *wanName
+			// 记下这次收到的 WAN 名。
 			patch["wan_name"] = *wanName
 		}
 		// 同修订只允许补尚未登记的公钥。
@@ -282,10 +280,10 @@ func (s *Store) PutClientShortCode(ctx context.Context, clientID uuid.UUID, code
 	return s.db.WithContext(ctx).Model(&Client{}).Where("id = ?", clientID).Update("short_code", code).Error
 }
 
-// RenameClient 只改给人看的名字，不改绑定修订。
-func (s *Store) RenameClient(ctx context.Context, clientID uuid.UUID, name string) (Client, error) {
-	// 只改点名的列，避免把别的字段写成零值。
-	res := s.db.WithContext(ctx).Model(&Client{}).Where("id = ?", clientID).Update("name", name)
+// RenameClient 只改厂端昵称，不改 WAN 设备名和绑定修订。
+func (s *Store) RenameClient(ctx context.Context, clientID uuid.UUID, nickname string) (Client, error) {
+	// 只改昵称，设备名由 WAN 定。
+	res := s.db.WithContext(ctx).Model(&Client{}).Where("id = ?", clientID).Update("nickname", nickname)
 	// 更新失败则交回库错误，不能当成已经改完。
 	if res.Error != nil {
 		// 检查约束不通过就改成业务拒绝。

@@ -32,7 +32,7 @@ func TestAssetCornerFlag(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 建一名创建人。
-	p, err := s.CreatePerson(ctx, "pe", "工艺员", false)
+	p, err := s.CreatePerson(ctx, "pe", "工艺员", "", false)
 	// 建账号失败就停测。
 	if err != nil {
 		// 建账号失败就停测。

@@ -33,7 +33,7 @@ func (s *Sync) EnqueueFact(ctx context.Context, bag *Bag, clocks Clocks, loginNa
 		return PendingFact{}, domain.ErrForbidden
 	}
 	// 收成不含口令的对外账号
-	unitID, path, err := s.resolveWorkContext(ctx, accountOf(p), wc)
+	unitID, path, err := s.resolveWorkContext(ctx, accountOf(p))
 	// 账号视图收不成就不交回
 	if err != nil {
 		// 记下事实入队被拒绝，写失败不改变结果
@@ -204,7 +204,7 @@ func (s *Sync) GetUpload(ctx context.Context, token string, uploadID uuid.UUID) 
 		return UploadRecord{}, err
 	}
 	// 既不是创建人又无只读许可，拒绝查看
-	if err := s.canReadMeta(ctx, acc, row.CreatorID, nil); err != nil {
+	if err := s.canReadMeta(ctx, acc, row.CreatorID); err != nil {
 		// 记下读取上传被拒绝，写失败不改变结果
 		_ = s.audit(ctx, &acc.ID, nil, "get_upload", uploadID.String(), audit.Deny)
 		return UploadRecord{}, err

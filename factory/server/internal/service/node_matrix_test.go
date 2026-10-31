@@ -35,7 +35,7 @@ func testNodeMatrix(t *testing.T, run func(string, func(*testing.T))) {
 		t.Fatal(err)
 	}
 	// 激活账号没成功，后面的断言就没有依据。
-	if err := facA.Activate(ctx, "sa-a", seedA.ActivationToken, "sa-pass"); err != nil {
+	if err := seedPass(ctx, facA, "sa-a", "sa-pass"); err != nil {
 		// 激活账号失败即停，不能把这一步的失败当成通过。
 		t.Fatal(err)
 	}
@@ -54,7 +54,7 @@ func testNodeMatrix(t *testing.T, run func(string, func(*testing.T))) {
 		t.Fatal(err)
 	}
 	// 激活账号没成功，后面的断言就没有依据。
-	if err := facB.Activate(ctx, "sa-b", seedB.ActivationToken, "sb-pass"); err != nil {
+	if err := seedPass(ctx, facB, "sa-b", "sb-pass"); err != nil {
 		// 激活账号失败即停，不能把这一步的失败当成通过。
 		t.Fatal(err)
 	}
@@ -487,14 +487,14 @@ func TestRuntimeGrantServerWindow(t *testing.T) {
 	// 起一套隔离厂库，起不来则本用例没有库可测。
 	h := New(t)
 	// 开通本厂，供后面步骤使用，失败则前提断了。
-	seed, fac, err := h.Provision(ctx, "sa-w", "超管W")
+	_, fac, err := h.Provision(ctx, "sa-w", "超管W")
 	// 开通本厂没成功，后面的断言就没有依据。
 	if err != nil {
 		// 开通本厂失败即停，不能把这一步的失败当成通过。
 		t.Fatal(err)
 	}
 	// 激活账号没成功，后面的断言就没有依据。
-	if err := fac.Activate(ctx, "sa-w", seed.ActivationToken, "sw-pass"); err != nil {
+	if err := seedPass(ctx, fac, "sa-w", "sw-pass"); err != nil {
 		// 激活账号失败即停，不能把这一步的失败当成通过。
 		t.Fatal(err)
 	}

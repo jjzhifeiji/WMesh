@@ -1,4 +1,4 @@
-// 第 3 圈：厂库模型约束（无环、唯一登录名、角色作用域、停用保护、禁止物理删）。
+// 第 3 圈：厂库模型约束（无环、唯一登录名、固定角色、停用保护、禁止物理删）。
 package store_test
 
 import (
@@ -32,30 +32,30 @@ func TestFactoryConstraints(t *testing.T) {
 	s := store.Open(facDB, facID)
 
 	// 先拿到这一步的结果，后面断言还要用。
-	sa, err := s.CreatePerson(ctx, "sa", "初始超管", true)
+	sa, err := s.CreatePerson(ctx, "sa", "初始超管", "", true)
 	// 建账号失败就停测，避免后面没有前提。
 	if err != nil {
 		// 建初始超管失败就停测。
 		t.Fatalf("sa: %v", err)
 	}
-	// 新建账号必须停在待启用，还不能登录。
-	if sa.Status != store.StatusPending {
-		// 初始账号必须停在待启用。
+	// 新建账号直接有效，没有待启用。
+	if sa.Status != store.StatusActive {
+		// 初始账号必须直接有效。
 		t.Fatalf("sa status %s", sa.Status)
 	}
 	// 第二名初始超管必须被拒绝。
-	if _, err := s.CreatePerson(ctx, "sa2", "第二初始", true); err != domain.ErrInitialSAExists {
+	if _, err := s.CreatePerson(ctx, "sa2", "第二初始", "", true); err != domain.ErrInitialSAExists {
 		// 不能再写出第二名初始超管。
 		t.Fatalf("second initial: %v", err)
 	}
 	// 本厂登录名重复必须被拒绝。
-	if _, err := s.CreatePerson(ctx, "sa", "重名", false); err != domain.ErrLoginNameTaken {
+	if _, err := s.CreatePerson(ctx, "sa", "重名", "", false); err != domain.ErrLoginNameTaken {
 		// 重名没有被拒绝就停测。
 		t.Fatalf("dup login: %v", err)
 	}
 
 	// 先拿到这一步的结果，后面断言还要用。
-	p, err := s.CreatePerson(ctx, "op", "操作员", false)
+	p, err := s.CreatePerson(ctx, "op", "操作员", "", false)
 	// 建账号失败就停测，避免后面没有前提。
 	if err != nil {
 		// 建账号失败就停测。
@@ -124,61 +124,61 @@ func TestFactoryConstraints(t *testing.T) {
 		t.Fatalf("rename unit: %v", err)
 	}
 
-	// 分配到节点失败就停测，避免后面没有前提。
-	if _, err := s.Assign(ctx, p.ID, site.ID); err != nil {
-		// 分配到节点失败就停测。
-		t.Fatalf("assign: %v", err)
+	// 归到场地失败就停测，避免后面没有前提。
+	if err := s.SetPersonOrg(ctx, p.ID, &site.ID); err != nil {
+		// 归组织失败就停测。
+		t.Fatalf("set org: %v", err)
 	}
-	// 必须得到预期的业务错误，否则停测。
-	if _, err := s.Assign(ctx, p.ID, shop.ID); err != domain.ErrDuplicateAssignment {
-		// 同一人再挂第二个节点必须被拒绝。
-		t.Fatalf("second unit: %v", err)
+	// 改归车间直接覆盖，每人至多一个所属组织。
+	if err := s.SetPersonOrg(ctx, p.ID, &shop.ID); err != nil {
+		// 改组织失败就停测。
+		t.Fatalf("move org: %v", err)
 	}
-	// 必须得到预期的业务错误，否则停测。
-	if _, err := s.Assign(ctx, p.ID, site.ID); err != domain.ErrDuplicateAssignment {
-		// 重复分配必须被拒绝。
-		t.Fatalf("dup assign: %v", err)
+	// 读回这个人，确认所属组织已是车间。
+	if got, err := s.PersonByID(ctx, p.ID); err != nil || got.OrgUnitID == nil || *got.OrgUnitID != shop.ID {
+		// 所属组织没改对就停测。
+		t.Fatalf("person org %+v %v", got.OrgUnitID, err)
 	}
-	// 取消分配失败就停测，避免后面没有前提。
-	if err := s.Unassign(ctx, p.ID, site.ID); err != nil {
-		// 取消分配失败就停测。
-		t.Fatalf("unassign: %v", err)
+	// 不存在的人改组织必须报找不到。
+	if err := s.SetPersonOrg(ctx, id.New(), &site.ID); !errors.Is(err, domain.ErrNotFound) {
+		// 没报找不到就停测。
+		t.Fatalf("set org missing person: %v", err)
 	}
-	// 分配到节点失败就停测，避免后面没有前提。
-	if _, err := s.Assign(ctx, p.ID, site.ID); err != nil {
-		// 结束后应允许再次分配。
-		t.Fatalf("reassign after end: %v", err)
+	// 改回厂直属失败就停测。
+	if err := s.SetPersonOrg(ctx, p.ID, nil); err != nil {
+		// 改直属失败就停测。
+		t.Fatalf("direct: %v", err)
 	}
 
 	// 授予角色失败就停测，避免后面没有前提。
-	if _, err := s.GrantRole(ctx, sa.ID, store.RoleFactorySuperAdmin, store.ScopeFactory, nil); err != nil {
+	if _, err := s.GrantRole(ctx, sa.ID, store.RoleFactorySuperAdmin); err != nil {
 		// 给初始超管授角失败就停测。
 		t.Fatalf("sa role: %v", err)
 	}
-	// 必须得到预期的业务错误，否则停测。
-	if _, err := s.GrantRole(ctx, sa.ID, store.RoleFactorySuperAdmin, store.ScopeOrgUnit, &site.ID); err != domain.ErrInvalidRoleScope {
-		// 超管挂到节点上必须被拒绝。
-		t.Fatalf("sa org scope: %v", err)
+	// 同人同角色再授必须被拒绝。
+	if _, err := s.GrantRole(ctx, sa.ID, store.RoleFactorySuperAdmin); err != domain.ErrDuplicateRoleGrant {
+		// 重复授超管没被拒就停测。
+		t.Fatalf("sa dup: %v", err)
 	}
 	// 授予角色失败就停测，避免后面没有前提。
-	if _, err := s.GrantRole(ctx, p.ID, store.RoleOrgAdmin, store.ScopeFactory, nil); err != nil {
+	if _, err := s.GrantRole(ctx, p.ID, store.RoleOrgAdmin); err != nil {
 		// 组织管理员挂整厂应被允许。
 		t.Fatalf("org admin factory scope: %v", err)
 	}
-	// 必须得到预期的业务错误，否则停测。
-	if _, err := s.GrantRole(ctx, p.ID, store.RoleOrgLead, store.ScopeFactory, nil); err != domain.ErrInvalidRoleScope {
-		// 负责人挂整厂必须被拒绝。
-		t.Fatalf("org lead factory scope: %v", err)
+	// 已去掉的负责人角色必须被拒绝。
+	if _, err := s.GrantRole(ctx, p.ID, "org_lead"); err != domain.ErrInvalidRoleScope {
+		// 不认识的角色没被拒就停测。
+		t.Fatalf("org lead role: %v", err)
 	}
 	// 先授予角色，结果留给紧跟着的判断。
-	grant, err := s.GrantRole(ctx, p.ID, store.RoleOperator, store.ScopeOrgUnit, &shop.ID)
+	grant, err := s.GrantRole(ctx, p.ID, store.RoleOperator)
 	// 授予角色失败就停测，避免后面没有前提。
 	if err != nil {
 		// 授予操作员失败就停测。
 		t.Fatalf("operator: %v", err)
 	}
 	// 必须得到预期的业务错误，否则停测。
-	if _, err := s.GrantRole(ctx, p.ID, store.RoleOperator, store.ScopeOrgUnit, &shop.ID); err != domain.ErrDuplicateRoleGrant {
+	if _, err := s.GrantRole(ctx, p.ID, store.RoleOperator); err != domain.ErrDuplicateRoleGrant {
 		// 重复授予必须被拒绝。
 		t.Fatalf("dup grant: %v", err)
 	}
@@ -199,9 +199,9 @@ func TestFactoryConstraints(t *testing.T) {
 		t.Fatalf("disable leaf: %v", err)
 	}
 	// 停用节点下面不能再挂人或子级。
-	if _, err := s.Assign(ctx, p.ID, team.ID); err != domain.ErrDisabledOrgUnit {
-		// 不能把人分到已停用的节点。
-		t.Fatalf("assign disabled: %v", err)
+	if err := s.SetPersonOrg(ctx, p.ID, &team.ID); err != domain.ErrDisabledOrgUnit {
+		// 不能把人归到已停用的节点。
+		t.Fatalf("set org disabled: %v", err)
 	}
 	// 停用节点下面不能再挂人或子级。
 	if _, err := s.CreateOrgUnit(ctx, "新班组", &team.ID); err != domain.ErrDisabledOrgUnit {
@@ -247,12 +247,12 @@ func TestLoginNameUniquePerFactoryDB(t *testing.T) {
 	// 按这家厂的稳定身份打开库。
 	b := store.Open(testpg.OpenMigrated(t, dsnB), uuid.MustParse("00000000-0000-0000-0000-00000000000b"))
 	// 建账号失败就停测，避免后面没有前提。
-	if _, err := a.CreatePerson(ctx, "same", "甲", false); err != nil {
+	if _, err := a.CreatePerson(ctx, "same", "甲", "", false); err != nil {
 		// 第一套厂库建号失败就停测。
 		t.Fatalf("a: %v", err)
 	}
 	// 建账号失败就停测，避免后面没有前提。
-	if _, err := b.CreatePerson(ctx, "same", "乙", false); err != nil {
+	if _, err := b.CreatePerson(ctx, "same", "乙", "", false); err != nil {
 		// 第二套厂库同名应能建，库是分开的。
 		t.Fatalf("b: %v", err)
 	}
@@ -267,7 +267,7 @@ func TestPhysicalDeleteOrgUnitBlockedWhenAssigned(t *testing.T) {
 	// 按这家厂的稳定身份打开库。
 	s := store.Open(facDB, facID)
 	// 先拿到这一步的结果，后面断言还要用。
-	p, err := s.CreatePerson(ctx, "p", "人", false)
+	p, err := s.CreatePerson(ctx, "p", "人", "", false)
 	// 建账号失败就停测，避免后面没有前提。
 	if err != nil {
 		// 建账号不符合预期就停测。
@@ -280,9 +280,9 @@ func TestPhysicalDeleteOrgUnitBlockedWhenAssigned(t *testing.T) {
 		// 建组织节点不符合预期就停测。
 		t.Fatal(err)
 	}
-	// 分配到节点失败就停测，避免后面没有前提。
-	if _, err := s.Assign(ctx, p.ID, u.ID); err != nil {
-		// 分配到节点不符合预期就停测。
+	// 归到节点失败就停测，避免后面没有前提。
+	if err := s.SetPersonOrg(ctx, p.ID, &u.ID); err != nil {
+		// 归到节点不符合预期就停测。
 		t.Fatal(err)
 	}
 	// 外键对不上就当被指的对象不存在。
@@ -336,8 +336,8 @@ func TestDeleteOrgWhenUnreferenced(t *testing.T) {
 	}
 }
 
-// 摘掉分配和角色后仍拒删，历史行留着，只能停用。
-func TestDeleteOrgAfterUnassignAndRevoke(t *testing.T) {
+// 人挪走、角色收回后节点就能删；角色不再挡删节点。
+func TestDeleteOrgAfterPersonLeaves(t *testing.T) {
 	// 测试没有取消信号，用空白上下文即可。
 	ctx := context.Background()
 	// 单独起一套厂库，免得用例互相踩到。
@@ -345,7 +345,7 @@ func TestDeleteOrgAfterUnassignAndRevoke(t *testing.T) {
 	// 按这家厂的稳定身份打开库。
 	s := store.Open(facDB, facID)
 	// 先拿到这一步的结果，后面断言还要用。
-	p, err := s.CreatePerson(ctx, "p", "人", false)
+	p, err := s.CreatePerson(ctx, "p", "人", "", false)
 	// 建账号失败就停测，避免后面没有前提。
 	if err != nil {
 		// 建账号不符合预期就停测。
@@ -358,63 +358,37 @@ func TestDeleteOrgAfterUnassignAndRevoke(t *testing.T) {
 		// 建组织节点不符合预期就停测。
 		t.Fatal(err)
 	}
-	// 分配到节点失败就停测，避免后面没有前提。
-	if _, err := s.Assign(ctx, p.ID, u.ID); err != nil {
-		// 分配到节点不符合预期就停测。
+	// 归到节点失败就停测，避免后面没有前提。
+	if err := s.SetPersonOrg(ctx, p.ID, &u.ID); err != nil {
+		// 归到节点不符合预期就停测。
 		t.Fatal(err)
 	}
-	// 先授予角色，结果留给紧跟着的判断。
-	g, err := s.GrantRole(ctx, p.ID, store.RoleOperator, store.ScopeOrgUnit, &u.ID)
-	// 授予角色失败就停测，避免后面没有前提。
-	if err != nil {
+	// 授一条操作员，角色不带节点。
+	if _, err := s.GrantRole(ctx, p.ID, store.RoleOperator); err != nil {
 		// 授予角色不符合预期就停测。
 		t.Fatal(err)
 	}
-	// 还有引用时不能物理删除。
+	// 还有人归在这里时不能物理删除。
 	if err := s.DeleteOrgUnit(ctx, u.ID); err != domain.ErrReferenced {
-		// 还有有效引用时删除必须被拒绝。
-		t.Fatalf("active refs: %v", err)
+		// 还有人时删除必须被拒绝。
+		t.Fatalf("person refs: %v", err)
 	}
-	// 取消分配失败就停测，避免后面没有前提。
-	if err := s.Unassign(ctx, p.ID, u.ID); err != nil {
-		// 取消分配不符合预期就停测。
+	// 把人挪回厂直属。
+	if err := s.SetPersonOrg(ctx, p.ID, nil); err != nil {
+		// 挪走不符合预期就停测。
 		t.Fatal(err)
 	}
-	// 收回角色失败就停测，避免后面没有前提。
-	if err := s.RevokeRole(ctx, g.ID); err != nil {
-		// 收回角色不符合预期就停测。
-		t.Fatal(err)
+	// 没人归在这里了，角色也不挡，删除应成功。
+	if err := s.DeleteOrgUnit(ctx, u.ID); err != nil {
+		// 删除失败就停测。
+		t.Fatalf("delete after leave: %v", err)
 	}
-	// 只剩已结束分配和已收回角色，删除也必须被拒。
-	if err := s.DeleteOrgUnit(ctx, u.ID); err != domain.ErrReferenced {
-		// 有过分配或角色的节点不能物理删除。
-		t.Fatalf("after end/revoke: %v", err)
-	}
-	// 准备承接已结束分配的行数。
-	var ended int64
-	// 数一下这个节点上已结束的分配，确认没被清掉。
-	if err := facDB.Model(&store.Assignment{}).Where("org_unit_id = ? AND status = ?", u.ID, store.StatusEnded).Count(&ended).Error; err != nil || ended != 1 {
-		// 拒删之后分配历史必须原样留着。
-		t.Fatalf("ended assignments: n=%d err=%v", ended, err)
-	}
-	// 准备承接已收回角色的行数。
-	var revoked int64
-	// 数一下这个节点上已收回的角色，确认没被清掉。
-	if err := facDB.Model(&store.RoleGrant{}).Where("org_unit_id = ? AND status = ?", u.ID, store.StatusRevoked).Count(&revoked).Error; err != nil || revoked != 1 {
-		// 拒删之后角色历史必须原样留着。
-		t.Fatalf("revoked grants: n=%d err=%v", revoked, err)
-	}
-	// 有历史的节点改走停用，停用必须成功。
-	if err := s.DisableOrgUnit(ctx, u.ID); err != nil {
-		// 停用失败说明替代路径不通。
-		t.Fatalf("disable: %v", err)
-	}
-	// 准备承接停用后的节点状态。
-	var status string
-	// 读回节点状态，确认确实已停用。
-	if err := facDB.Raw("SELECT status FROM org_units WHERE id = ?", u.ID).Scan(&status).Error; err != nil || status != store.StatusDisabled {
-		// 节点应留在库里且已停用。
-		t.Fatalf("status after disable: %q err=%v", status, err)
+	// 准备承接删后剩下的节点行数。
+	var left int64
+	// 数一下这个节点，确认已物理删除。
+	if err := facDB.Raw("SELECT COUNT(*) FROM org_units WHERE id = ?", u.ID).Scan(&left).Error; err != nil || left != 0 {
+		// 节点还在就停测。
+		t.Fatalf("unit left: n=%d err=%v", left, err)
 	}
 }
 
@@ -494,7 +468,7 @@ func TestClientBindingAndGrants(t *testing.T) {
 		t.Fatalf("client: %+v", c)
 	}
 	// 先建账号，结果留给紧跟着的判断。
-	who, err := s.CreatePerson(ctx, "op-a", "操作员A", false)
+	who, err := s.CreatePerson(ctx, "op-a", "操作员A", "", false)
 	// 建账号失败就停测，避免后面没有前提。
 	if err != nil {
 		// 建账号失败就停测。
@@ -512,10 +486,10 @@ func TestClientBindingAndGrants(t *testing.T) {
 		// 名单里的登录人和写入不一致就停测。
 		t.Fatalf("list operator: %+v %v", listed, err)
 	}
-	// 先改设备名，结果留给紧跟着的判断。
+	// 先改厂端昵称，结果留给紧跟着的判断。
 	ren, err := s.RenameClient(ctx, cid, "一线焊机")
-	// 改设备名失败就停测，避免后面没有前提。
-	if err != nil || ren.Name != "一线焊机" {
+	// 改昵称失败或设备名被改都算错。
+	if err != nil || ren.Nickname != "一线焊机" || ren.Name != "焊机-1" {
 		// 改名失败就停测。
 		t.Fatalf("rename: %+v %v", ren, err)
 	}
@@ -684,7 +658,7 @@ func TestEnsurePersonUnwrapKeyBackfills(t *testing.T) {
 	// 按这家厂的稳定身份打开库。
 	s := store.Open(facDB, facID)
 	// 先拿到这一步的结果，后面断言还要用。
-	p, err := s.CreatePerson(ctx, "op", "操作员", false)
+	p, err := s.CreatePerson(ctx, "op", "操作员", "", false)
 	// 建账号失败就停测，避免后面没有前提。
 	if err != nil {
 		// 建账号不符合预期就停测。
@@ -742,24 +716,10 @@ func TestFactoryAssets(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 先拿到这一步的结果，后面断言还要用。
-	p, err := s.CreatePerson(ctx, "pe", "工艺师", false)
+	p, err := s.CreatePerson(ctx, "pe", "工艺师", "", false)
 	// 建账号失败就停测，避免后面没有前提。
 	if err != nil {
 		// 建账号不符合预期就停测。
-		t.Fatal(err)
-	}
-	// 先建组织节点，结果留给紧跟着的判断。
-	unit, err := s.CreateOrgUnit(ctx, "车间", nil)
-	// 建组织节点失败就停测，避免后面没有前提。
-	if err != nil {
-		// 建组织节点不符合预期就停测。
-		t.Fatal(err)
-	}
-	// 先收集当时路径，结果留给紧跟着的判断。
-	path, err := s.PathSnapshot(ctx, unit.ID)
-	// 收集当时路径失败就停测，避免后面没有前提。
-	if err != nil {
-		// 收集当时路径不符合预期就停测。
 		t.Fatal(err)
 	}
 	// 准备一段正文，用来核对封装和解开。
@@ -770,7 +730,7 @@ func TestFactoryAssets(t *testing.T) {
 	a, err := s.InsertGovernedAsset(ctx, store.Asset{
 		Kind: store.KindProcess, Level: store.AssetLevelFactory, Name: "焊接",
 		Status: store.AssetDraft, Copyable: true, Content: body, Digest: sum,
-		CreatorID: p.ID, OrgUnitID: &unit.ID, OrgPath: path,
+		CreatorID: p.ID,
 	})
 	// 出错就停测，避免在坏状态上继续。
 	if err != nil {
@@ -890,13 +850,6 @@ func TestFactoryAssets(t *testing.T) {
 		// 删除工艺或工程不符合预期就停测。
 		t.Fatal(err)
 	}
-	// 准备承接查到的那一行。
-	var stubExists bool
-	// 扫描查询结果失败就停测，避免后面没有前提。
-	if err := facDB.Raw("SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name='personal_asset_stubs')").Scan(&stubExists).Error; err != nil || !stubExists {
-		// 删工艺不能把事实桩一起删掉。
-		t.Fatalf("stubs must remain: %v %v", stubExists, err)
-	}
 }
 
 // 生成一对签发密钥，失败就停测。
@@ -939,7 +892,7 @@ func TestContentMasterRestore(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 先拿到这一步的结果，后面断言还要用。
-	p, err := s.CreatePerson(ctx, "pe", "工艺师", false)
+	p, err := s.CreatePerson(ctx, "pe", "工艺师", "", false)
 	// 建账号失败就停测，避免后面没有前提。
 	if err != nil {
 		// 建账号不符合预期就停测。
@@ -1054,7 +1007,7 @@ func TestLeaseClockWindows(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 先拿到这一步的结果，后面断言还要用。
-	p, err := s.CreatePerson(ctx, "pe", "工艺师", false)
+	p, err := s.CreatePerson(ctx, "pe", "工艺师", "", false)
 	// 建账号失败就停测，避免后面没有前提。
 	if err != nil {
 		// 建账号不符合预期就停测。
@@ -1172,7 +1125,7 @@ func TestChannelFlapKeepsLease(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 先拿到这一步的结果，后面断言还要用。
-	p, err := s.CreatePerson(ctx, "pe", "工艺师", false)
+	p, err := s.CreatePerson(ctx, "pe", "工艺师", "", false)
 	// 建账号失败就停测，避免后面没有前提。
 	if err != nil {
 		// 建账号不符合预期就停测。
@@ -1222,7 +1175,7 @@ func TestWeldReportDayTZ(t *testing.T) {
 		t.Fatalf("load tz: %v", err)
 	}
 	// 同一个焊工，两条焊共用这个人。
-	who, err := s.CreatePerson(ctx, "op-tz", "焊工", false)
+	who, err := s.CreatePerson(ctx, "op-tz", "焊工", "", false)
 	// 建账号失败就停测，避免后面没有前提。
 	if err != nil {
 		// 与预期不符就停测，避免后面连环误判。

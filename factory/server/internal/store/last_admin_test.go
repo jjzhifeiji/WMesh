@@ -15,7 +15,7 @@ import (
 // raceRounds 每种并发组合重放的轮数，多跑几轮才压得出交错。
 const raceRounds = 20
 
-// twoActiveSA 建两名已激活、各握一条厂级超管角色的账号，交回人和授予。
+// twoActiveSA 建两名有效、各握一条厂级超管角色的账号，交回人和授予。
 func twoActiveSA(t *testing.T, ctx context.Context, s *store.Store) ([2]store.Person, [2]store.RoleGrant) {
 	// 标成辅助函数，失败算到调用方。
 	t.Helper()
@@ -23,22 +23,17 @@ func twoActiveSA(t *testing.T, ctx context.Context, s *store.Store) ([2]store.Pe
 	var people [2]store.Person
 	// 准备承接两条厂级超管授予。
 	var grants [2]store.RoleGrant
-	// 逐个建人、激活、授超管，两人条件对等。
+	// 逐个建人、授超管，两人条件对等。
 	for i, name := range []string{"sa1", "sa2"} {
-		// 先建待启用账号，后面再激活。
-		p, err := s.CreatePerson(ctx, name, name, false)
+		// 建有效账号，建档时就带上密码。
+		p, err := s.CreatePerson(ctx, name, name, "hash-"+name, false)
 		// 建账号失败就停测，避免后面没有前提。
 		if err != nil {
 			// 建超管账号失败就停测。
 			t.Fatalf("create %s: %v", name, err)
 		}
-		// 激活后才算有效入口，待启用不计。
-		if err := s.ActivatePerson(ctx, p.ID, "hash-"+name); err != nil {
-			// 激活失败就停测。
-			t.Fatalf("activate %s: %v", name, err)
-		}
 		// 授予厂级超管角色，凑成两名有效超管。
-		g, err := s.GrantRole(ctx, p.ID, store.RoleFactorySuperAdmin, store.ScopeFactory, nil)
+		g, err := s.GrantRole(ctx, p.ID, store.RoleFactorySuperAdmin)
 		// 授予失败就停测，避免后面没有前提。
 		if err != nil {
 			// 授超管失败就停测。
@@ -177,7 +172,7 @@ func TestRevokeKeepAdminConcurrent(t *testing.T) {
 				continue
 			}
 			// 给被收的人重新授厂级超管。
-			g, gerr := s.GrantRole(ctx, people[i].ID, store.RoleFactorySuperAdmin, store.ScopeFactory, nil)
+			g, gerr := s.GrantRole(ctx, people[i].ID, store.RoleFactorySuperAdmin)
 			// 重授失败就停测，避免下一轮前提不对。
 			if gerr != nil {
 				// 重授超管失败就停测。
@@ -223,7 +218,7 @@ func TestDisableAndRevokeKeepAdminConcurrent(t *testing.T) {
 		// 收回成功的话给 sa2 重授超管。
 		if errs[1] == nil {
 			// 给 sa2 重新授厂级超管。
-			g, err := s.GrantRole(ctx, people[1].ID, store.RoleFactorySuperAdmin, store.ScopeFactory, nil)
+			g, err := s.GrantRole(ctx, people[1].ID, store.RoleFactorySuperAdmin)
 			// 重授失败就停测，避免下一轮前提不对。
 			if err != nil {
 				// 重授超管失败就停测。
@@ -246,7 +241,7 @@ func TestKeepAdminAllowsNonLast(t *testing.T) {
 	// 建两名有效超管和各自的授予。
 	people, grants := twoActiveSA(t, ctx, s)
 	// 再建一名普通账号，停用它不碰超管入口。
-	op, err := s.CreatePerson(ctx, "op", "操作员", false)
+	op, err := s.CreatePerson(ctx, "op", "操作员", "", false)
 	// 建账号失败就停测，避免后面没有前提。
 	if err != nil {
 		// 建普通账号失败就停测。

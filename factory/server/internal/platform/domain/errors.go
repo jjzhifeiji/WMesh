@@ -12,7 +12,6 @@ var (
 	ErrDisabledOrgUnit       = errors.New("org unit is disabled")                   // 不能再分配或当新工作上下文
 	ErrHasActiveChildren     = errors.New("org unit still has active children")     // 还有有效下级，不能停用
 	ErrReferenced            = errors.New("still referenced")                       // 还有下级、当前人员、有效角色或历史事实，不能物理删除
-	ErrDuplicateAssignment   = errors.New("active assignment already exists")       // 同一人同一节点已有有效分配
 	ErrInvalidRoleScope      = errors.New("role and scope do not match")            // 角色与允许的作用域不一致
 	ErrDuplicateRoleGrant    = errors.New("active role grant already exists")       // 同一人同一角色作用域已有有效授予
 	ErrDuplicateSession      = errors.New("session token hash already exists")      // 会话令牌哈希已占用
@@ -20,12 +19,9 @@ var (
 	ErrForbidden             = errors.New("forbidden")                              // 已登录但没有这份许可
 	ErrInvalidCredentials    = errors.New("invalid credentials")                    // 登录名或密码不对
 	ErrInvalidActivation     = errors.New("invalid activation")                     // 激活码不对或已失效
-	ErrAlreadyActivated      = errors.New("already activated")                      // 已经激活过，不能再用激活码
-	ErrAccountPending        = errors.New("account pending")                        // 待启用不能登录
 	ErrAccountDisabled       = errors.New("account disabled")                       // 已停用不能登录或新开操作
 	ErrSessionExpired        = errors.New("session expired")                        // 会话过期，须重新登录
 	ErrLastAdmin             = errors.New("last factory super admin")               // 会把有效厂级超管入口变成零
-	ErrMultiParent           = errors.New("org unit cannot have two parents")       // 树必须保持单父
 	ErrWorkContext           = errors.New("invalid work context")                   // 没选、选了未分配节点、或直属与节点同时选
 	ErrInvalidName           = errors.New("invalid name")                           // 显示名空了或太长
 	ErrDuplicateName         = errors.New("name already exists in this folder")     // 同一文件夹下名字不能重复
@@ -59,7 +55,6 @@ var (
 	ErrTemplateInvalid       = errors.New("content template is invalid")            // 字段表不合法
 	ErrAssetCodeMissing      = errors.New("asset origin code is not assigned")      // 未齐创建端短码，不得新建
 	ErrAssetCodeConflict     = errors.New("asset code already exists")              // 同号不同身份，或同身份编号不一致
-	ErrAssetSourceTaken      = errors.New("asset source already promoted")          // 同一升档源已有厂级；并发升档撞上时回读那条
 	ErrOriginCodeExhausted   = errors.New("origin code exhausted")                  // 短码用尽或编号序号溢出
 	ErrSoftwareInstallFailed = errors.New("software install failed")                // 确认后安装失败，旧版本继续跑
 	ErrSoftwareApplying      = errors.New("software update is applying")            // 上一包还在换、没出结果，不能再确认
@@ -72,16 +67,16 @@ var (
 // known 列出本包全部业务哨兵，Known 只认这些；新增哨兵须一并补进来，测试会核对。
 var known = []error{
 	ErrWANAdminExists, ErrInitialSAExists, ErrLoginNameTaken, ErrNotFound, ErrCycle,
-	ErrDisabledOrgUnit, ErrHasActiveChildren, ErrReferenced, ErrDuplicateAssignment, ErrInvalidRoleScope,
+	ErrDisabledOrgUnit, ErrHasActiveChildren, ErrReferenced, ErrInvalidRoleScope,
 	ErrDuplicateRoleGrant, ErrDuplicateSession, ErrUnauthorized, ErrForbidden, ErrInvalidCredentials,
-	ErrInvalidActivation, ErrAlreadyActivated, ErrAccountPending, ErrAccountDisabled, ErrSessionExpired,
-	ErrLastAdmin, ErrMultiParent, ErrWorkContext, ErrInvalidName, ErrDuplicateName,
+	ErrInvalidActivation, ErrAccountDisabled, ErrSessionExpired,
+	ErrLastAdmin, ErrWorkContext, ErrInvalidName, ErrDuplicateName,
 	ErrInvalidKey, ErrSigningKeyExists, ErrClientKeyMismatch, ErrDeviceSerialRequired, ErrDeviceSerialTaken,
 	ErrDeviceSerialMismatch, ErrStaleRevision, ErrBindingVoid, ErrInvalidGrantDays, ErrRevisionConflict,
 	ErrIntegrity, ErrContentLeaseExpired, ErrAssetNotAvailable, ErrAssetNotCopyable, ErrAssetDependency,
 	ErrInvalidWeldKind, ErrWeldKindMismatch, ErrCornerSlotMismatch, ErrWeldKindInUse, ErrClosureIncomplete, ErrClosureMismatch,
 	ErrClientCacheFull, ErrSyncRetry, ErrInvalidEnrollment, ErrWANUnreachable, ErrFactoryDisabled,
-	ErrFactoryRetired, ErrTemplateInvalid, ErrAssetCodeMissing, ErrAssetCodeConflict, ErrAssetSourceTaken,
+	ErrFactoryRetired, ErrTemplateInvalid, ErrAssetCodeMissing, ErrAssetCodeConflict,
 	ErrOriginCodeExhausted, ErrSoftwareInstallFailed, ErrSoftwareApplying, ErrTooManyAttempts, ErrTooManyRequests,
 	ErrWANSignatureRejected, ErrWrongCurrentPassword,
 }

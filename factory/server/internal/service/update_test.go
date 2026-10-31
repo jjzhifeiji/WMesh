@@ -136,7 +136,7 @@ func TestMatrixSoftware(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 激活初始超管失败就停，避免带着错误继续验
-	if err := facA.Activate(ctx, "sa-a", seedA.ActivationToken, "sa-pass"); err != nil {
+	if err := seedPass(ctx, facA, "sa-a", "sa-pass"); err != nil {
 		// 激活初始超管失败就把原因打出并停掉本例
 		t.Fatal(err)
 	}
@@ -150,9 +150,9 @@ func TestMatrixSoftware(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 建人并授角色，失败则夹具缺这个身份
-	op := mustCreateRole(t, ctx, facA, saA, "op-a", "op-pass", factory.RoleOperator, factory.ScopeFactory, nil)
+	op := mustCreateRole(t, ctx, facA, saA, "op-a", "op-pass", factory.RoleOperator)
 	// 建人并授角色，失败则夹具缺这个身份
-	pe := mustCreateRole(t, ctx, facA, saA, "pe-a", "pe-pass", factory.RoleOperator, factory.ScopeFactory, nil)
+	pe := mustCreateRole(t, ctx, facA, saA, "pe-a", "pe-pass", factory.RoleOperator)
 	// 取当前时刻，用来核对令牌或凭证是否过期
 	now := time.Now().UTC()
 	// 服务器和本机同一时刻，避免时钟本身造成拒绝
@@ -669,14 +669,14 @@ func TestPadClientSoftwarePull(t *testing.T) {
 	// 起一套测试库和厂服务，起不来则本例无法开始
 	h := New(t)
 	// 建厂并种初始超管，失败则本步验收不能继续
-	seed, fac, err := h.Provision(ctx, "sa-pad", "超管")
+	_, fac, err := h.Provision(ctx, "sa-pad", "超管")
 	// 建厂并种初始超管失败就停，避免带着错误继续验
 	if err != nil {
 		// 建厂并种初始超管失败就把原因打出并停掉本例
 		t.Fatal(err)
 	}
 	// 激活初始超管失败就停，避免带着错误继续验
-	if err := fac.Activate(ctx, "sa-pad", seed.ActivationToken, "sa-pass"); err != nil {
+	if err := seedPass(ctx, fac, "sa-pad", "sa-pass"); err != nil {
 		// 激活初始超管失败就把原因打出并停掉本例
 		t.Fatal(err)
 	}
@@ -741,14 +741,14 @@ func TestRunningSoftwareBaseline(t *testing.T) {
 	// 起一套测试库和厂服务，起不来则本例无法开始
 	h := New(t)
 	// 建厂并种初始超管，失败则本步验收不能继续
-	seed, fac, err := h.Provision(ctx, "sa-rb", "超管")
+	_, fac, err := h.Provision(ctx, "sa-rb", "超管")
 	// 建厂并种初始超管失败就停，避免带着错误继续验
 	if err != nil {
 		// 建厂并种初始超管失败就把原因打出并停掉本例
 		t.Fatal(err)
 	}
 	// 激活初始超管失败就停，避免带着错误继续验
-	if err := fac.Activate(ctx, "sa-rb", seed.ActivationToken, "sa-pass"); err != nil {
+	if err := seedPass(ctx, fac, "sa-rb", "sa-pass"); err != nil {
 		// 激活初始超管失败就把原因打出并停掉本例
 		t.Fatal(err)
 	}
@@ -870,14 +870,14 @@ func TestStorageUsage(t *testing.T) {
 	// 起一套测试库和厂服务，起不来则本例无法开始
 	h := New(t)
 	// 建厂并种初始超管，失败则本步验收不能继续
-	seed, fac, err := h.Provision(ctx, "sa-st", "超管")
+	_, fac, err := h.Provision(ctx, "sa-st", "超管")
 	// 建厂并种初始超管失败就停，避免带着错误继续验
 	if err != nil {
 		// 建厂并种初始超管失败就把原因打出并停掉本例
 		t.Fatal(err)
 	}
 	// 激活初始超管失败就停，避免带着错误继续验
-	if err := fac.Activate(ctx, "sa-st", seed.ActivationToken, "sa-pass"); err != nil {
+	if err := seedPass(ctx, fac, "sa-st", "sa-pass"); err != nil {
 		// 激活初始超管失败就把原因打出并停掉本例
 		t.Fatal(err)
 	}
@@ -945,14 +945,14 @@ func TestImageOccupancy(t *testing.T) {
 	// 起一套测试库和厂服务，起不来则本例无法开始
 	h := New(t)
 	// 建厂并种初始超管，失败则本步验收不能继续
-	seed, fac, err := h.Provision(ctx, "sa-img", "超管")
+	_, fac, err := h.Provision(ctx, "sa-img", "超管")
 	// 建厂并种初始超管失败就停，避免带着错误继续验
 	if err != nil {
 		// 建厂并种初始超管失败就把原因打出并停掉本例
 		t.Fatal(err)
 	}
 	// 激活初始超管失败就停，避免带着错误继续验
-	if err := fac.Activate(ctx, "sa-img", seed.ActivationToken, "sa-pass"); err != nil {
+	if err := seedPass(ctx, fac, "sa-img", "sa-pass"); err != nil {
 		// 激活初始超管失败就把原因打出并停掉本例
 		t.Fatal(err)
 	}
@@ -1035,14 +1035,14 @@ func TestApplyFailAudit(t *testing.T) {
 	// 起一套测试库和厂服务，起不来则本例无法开始
 	h := New(t)
 	// 建厂并种初始超管，失败则本步验收不能继续
-	seed, fac, err := h.Provision(ctx, "sa-af", "超管")
+	_, fac, err := h.Provision(ctx, "sa-af", "超管")
 	// 建厂并种初始超管失败就停，避免带着错误继续验
 	if err != nil {
 		// 建厂并种初始超管失败就把原因打出并停掉本例
 		t.Fatal(err)
 	}
 	// 激活初始超管失败就停，避免带着错误继续验
-	if err := fac.Activate(ctx, "sa-af", seed.ActivationToken, "sa-pass"); err != nil {
+	if err := seedPass(ctx, fac, "sa-af", "sa-pass"); err != nil {
 		// 激活初始超管失败就把原因打出并停掉本例
 		t.Fatal(err)
 	}

@@ -3,12 +3,10 @@ package service_test
 
 import (
 	"context"
-	"errors"
 	"testing"
 	"time"
 
 	"wmesh/factory/internal/platform/audit"
-	"wmesh/factory/internal/platform/domain"
 	"wmesh/factory/internal/platform/id"
 	"wmesh/factory/internal/platform/nodekey"
 	factory "wmesh/factory/internal/service"
@@ -31,7 +29,7 @@ func testConvergeMatrix(t *testing.T, run func(string, func(*testing.T))) {
 		t.Fatal(err)
 	}
 	// 开通失败就停，否则后面没有可靠结果。
-	if err := facA.Activate(ctx, "sa-a", seedA.ActivationToken, "sa-pass"); err != nil {
+	if err := seedPass(ctx, facA, "sa-a", "sa-pass"); err != nil {
 		// 把开通的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
@@ -108,16 +106,16 @@ func testConvergeMatrix(t *testing.T, run func(string, func(*testing.T))) {
 	}
 	// 把默认口令改成测试口令，失败说明改密被拒。
 	mustAdoptPassword(t, ctx, facA, "op-a", "op-pass")
-	// 授予角色和作用域，失败说明越权或范围不对。
-	opGrant, err := facA.GrantRole(ctx, saTok, op.ID, factory.RoleOperator, factory.ScopeFactory, nil)
+	// 授予操作员角色，失败说明越权。
+	opGrant, err := facA.GrantRole(ctx, saTok, op.ID, factory.RoleOperator)
 	// 授角色失败就停，否则后面没有可靠结果。
 	if err != nil {
 		// 把授角色的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
-	// 挂组织失败就停，否则后面没有可靠结果。
-	if err := facA.Assign(ctx, saTok, op.ID, shopA.ID); err != nil {
-		// 把挂组织的错误打出来并停住，避免继续往下验。
+	// 设所属组织失败就停，否则后面没有可靠结果。
+	if _, err := facA.SetPersonOrg(ctx, saTok, op.ID, &shopA.ID); err != nil {
+		// 把设所属组织的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
 
@@ -151,7 +149,7 @@ func testConvergeMatrix(t *testing.T, run func(string, func(*testing.T))) {
 		// 先备好错误位，失败分支再写入具体原因。
 		var err error
 		// 写下离线作业事实，失败说明包或人没对上。
-		factA16, err = facA.CreateOfflineFact(ctx, offline, valid, "op-a", "op-pass", factory.WorkContext{OrgUnitID: &shopA.ID})
+		factA16, err = facA.CreateOfflineFact(ctx, offline, valid, "op-a", "op-pass", factory.WorkContext{})
 		// 写离线事实失败就停，否则后面没有可靠结果。
 		if err != nil {
 			// 把写离线事实的错误打出来并停住，避免继续往下验。
@@ -169,14 +167,9 @@ func testConvergeMatrix(t *testing.T, run func(string, func(*testing.T))) {
 		}
 	})
 
-	// 摘组织失败就停，否则后面没有可靠结果。
-	if err := facA.Unassign(ctx, saTok, op.ID, shopA.ID); err != nil {
-		// 把摘组织的错误打出来并停住，避免继续往下验。
-		t.Fatal(err)
-	}
-	// 挂组织失败就停，否则后面没有可靠结果。
-	if err := facA.Assign(ctx, saTok, op.ID, shopB.ID); err != nil {
-		// 把挂组织的错误打出来并停住，避免继续往下验。
+	// 所属组织改到车间B，失败就停，否则后面没有可靠结果。
+	if _, err := facA.SetPersonOrg(ctx, saTok, op.ID, &shopB.ID); err != nil {
+		// 把改所属组织的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
 	// 改上级失败就停，否则后面没有可靠结果。
@@ -192,8 +185,8 @@ func testConvergeMatrix(t *testing.T, run func(string, func(*testing.T))) {
 
 	// 验收条目 16.2，断言不过表示这一条没过。
 	run("16.2", func(t *testing.T) {
-		// 按编号读工作事实，失败说明无权或已不存在。
-		got, err := facA.GetFact(ctx, saTok, factA16.ID)
+		// 按编号读工作事实，失败说明已不存在。
+		got, err := facA.Store().FactByID(ctx, factA16.ID)
 		// 读事实失败就停，否则后面没有可靠结果。
 		if err != nil {
 			// 把读事实的错误打出来并停住，避免继续往下验。
@@ -204,17 +197,12 @@ func testConvergeMatrix(t *testing.T, run func(string, func(*testing.T))) {
 			// 断言没通过就停，结果和这条用例的预期不一致。
 			t.Fatalf("rewritten: %+v", got.OrgPath)
 		}
-		// 改写路径应因越权被拒绝，放行说明没拦住。
-		if err := facA.RewriteFactPath(ctx, saTok, factA16.ID); !errors.Is(err, domain.ErrForbidden) {
-			// 断言没通过就停，结果和这条用例的预期不一致。
-			t.Fatalf("rewrite: %v", err)
-		}
 	})
 
 	// 验收条目 16.3，断言不过表示这一条没过。
 	run("16.3", func(t *testing.T) {
-		// 按作者列出事实，失败说明无权查看名单。
-		listed, err := facA.ListFactsByCreator(ctx, saTok, op.ID)
+		// 按作者列出事实，失败说明库读不出。
+		listed, err := facA.Store().FactsByCreator(ctx, op.ID)
 		// 列事实失败就停，否则后面没有可靠结果。
 		if err != nil {
 			// 把列事实的错误打出来并停住，避免继续往下验。
@@ -244,10 +232,6 @@ func testConvergeMatrix(t *testing.T, run func(string, func(*testing.T))) {
 
 	// 验收条目 14.2，断言不过表示这一条没过。
 	run("14.2", func(t *testing.T) {
-		// 写离线事实应因上下文非法被拒绝，放行说明没拦住。
-		if _, err := facA.CreateOfflineFact(ctx, offline, valid, "op-a", "op-pass", factory.WorkContext{OrgUnitID: &shopA.ID}); !errors.Is(err, domain.ErrWorkContext) {
-			t.Fatalf("old unit A still allowed: %v", err)
-		}
 		// 离线判定能否作业，失败说明包或授权不齐。
 		ev, err := facA.EvaluateOfflineOp(ctx, offline, valid, "op-a", "op-pass")
 		// 离线判定失败或判定不对就停，说明没达预期。
@@ -271,12 +255,8 @@ func testConvergeMatrix(t *testing.T, run func(string, func(*testing.T))) {
 
 	// 验收条目 14.1，断言不过表示这一条没过。
 	run("14.1", func(t *testing.T) {
-		// 写离线事实应因上下文非法被拒绝，放行说明没拦住。
-		if _, err := facA.CreateOfflineFact(ctx, online, valid, "op-a", "op-pass", factory.WorkContext{OrgUnitID: &shopA.ID}); !errors.Is(err, domain.ErrWorkContext) {
-			t.Fatalf("old unit A: %v", err)
-		}
-		// 写下离线作业事实，失败说明包或人没对上。
-		factB, err := facA.CreateOfflineFact(ctx, online, valid, "op-a", "op-pass", factory.WorkContext{OrgUnitID: &shopB.ID})
+		// 写下离线作业事实，组织跟人现在的所属走，失败说明包或人没对上。
+		factB, err := facA.CreateOfflineFact(ctx, online, valid, "op-a", "op-pass", factory.WorkContext{})
 		// 写离线事实失败就停，否则后面没有可靠结果。
 		if err != nil {
 			// 把写离线事实的错误打出来并停住，避免继续往下验。
@@ -311,8 +291,8 @@ func testConvergeMatrix(t *testing.T, run func(string, func(*testing.T))) {
 			// 停用之后仍能操作，说明停用没有生效。
 			t.Fatalf("disable %+v %v", login, err)
 		}
-		// 按作者列出事实，失败说明无权查看名单。
-		listed, err := facA.ListFactsByCreator(ctx, saTok, op.ID)
+		// 按作者列出事实，失败说明库读不出。
+		listed, err := facA.Store().FactsByCreator(ctx, op.ID)
 		// 列事实失败就停，否则后面没有可靠结果。
 		if err != nil {
 			// 把列事实的错误打出来并停住，避免继续往下验。
@@ -340,8 +320,8 @@ func testConvergeMatrix(t *testing.T, run func(string, func(*testing.T))) {
 			// 把拉审计的错误打出来并停住，避免继续往下验。
 			t.Fatal(err)
 		}
-		// 审计应留下允许或拒绝，缺了说明这步没记账。
-		if !audit.HasResult(rows, "create_fact", audit.Deny) || !audit.HasResult(rows, "create_fact", audit.Allow) {
+		// 审计应留下写事实的允许，缺了说明这步没记账。
+		if !audit.HasResult(rows, "create_fact", audit.Allow) {
 			// 条目 14.1 没对上，这一条矩阵行为偏了。
 			t.Fatal("14.1 audit missing")
 		}
@@ -363,8 +343,8 @@ func testConvergeMatrix(t *testing.T, run func(string, func(*testing.T))) {
 			// 断言没通过就停，结果和这条用例的预期不一致。
 			t.Fatalf("reconnect %+v %v", ev, err)
 		}
-		// 按编号读工作事实，失败说明无权或已不存在。
-		got, err := facA.GetFact(ctx, saTok, factA16.ID)
+		// 按编号读工作事实，失败说明已不存在。
+		got, err := facA.Store().FactByID(ctx, factA16.ID)
 		// 读事实失败就停，否则后面没有可靠结果。
 		if err != nil {
 			// 把读事实的错误打出来并停住，避免继续往下验。

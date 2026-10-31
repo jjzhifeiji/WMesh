@@ -30,7 +30,7 @@ func TestPlatformReplicaSync(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 开通失败就停，否则后面没有可靠结果。
-	if err := fac.Activate(ctx, "sa-a", created.ActivationToken, "sa-pass"); err != nil {
+	if err := seedPass(ctx, fac, "sa-a", "sa-pass"); err != nil {
 		// 把开通的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}

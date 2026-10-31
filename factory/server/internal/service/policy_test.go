@@ -20,21 +20,21 @@ func TestClientPolicy(t *testing.T) {
 	// 拉起隔离厂库，起不来说明测试库还没就绪。
 	h := New(t)
 	// 建厂并签发超管激活码，失败则没有厂可测。
-	seed, fac, err := h.Provision(ctx, "sa", "超管")
+	_, fac, err := h.Provision(ctx, "sa", "超管")
 	// 建厂失败就停，否则后面没有可靠结果。
 	if err != nil {
 		// 把建厂的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
 	// 开通失败就停，否则后面没有可靠结果。
-	if err := fac.Activate(ctx, "sa", seed.ActivationToken, "sa-pass"); err != nil {
+	if err := seedPass(ctx, fac, "sa", "sa-pass"); err != nil {
 		// 把开通的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
 	// 登录并取出令牌，失败说明账号没有开通成功。
 	saTok := mustLogin(t, ctx, fac, "sa", "sa-pass")
 	// 建人并授好角色，失败说明后面没有账号可用。
-	op := mustCreateRole(t, ctx, fac, saTok, "op", "op-pass", factory.RoleOperator, factory.ScopeFactory, nil)
+	op := mustCreateRole(t, ctx, fac, saTok, "op", "op-pass", factory.RoleOperator)
 
 	// 读回客户端策略，失败说明没权读或没设过。
 	got, err := fac.GetClientPolicy(ctx, saTok)
@@ -177,8 +177,8 @@ func TestClientPolicy(t *testing.T) {
 		// 应存在的记录没有出现，说明这一步没落下。
 		t.Fatalf("missing set_client_policy: %s", dump)
 	}
-	// 激活码应是八位，位数不对说明签发坏了。
-	if audit.ContainsAny(dump, "sa-pass", "op-pass", seed.ActivationToken, saTok) {
+	// 审计里不应出现口令或会话令牌，出现了就算泄密。
+	if audit.ContainsAny(dump, "sa-pass", "op-pass", saTok) {
 		// 结果里出现了不该有的敏感词，说明已经泄密。
 		t.Fatalf("secret leaked")
 	}

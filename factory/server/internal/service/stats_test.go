@@ -30,15 +30,15 @@ func TestWeldStatsSeparatePeople(t *testing.T) {
 	ctx := context.Background()
 	// 拉起隔离厂库，起不来说明测试库还没就绪。
 	h := New(t)
-	// 建厂并签发超管激活码，失败则没有厂可测。
-	created, fac, err := h.Provision(ctx, "sa-a", "超管A")
+	// 建厂并写下初始超管，失败则没有厂可测。
+	_, fac, err := h.Provision(ctx, "sa-a", "超管A")
 	// 建厂失败就停，否则后面没有可靠结果。
 	if err != nil {
 		// 把建厂的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
 	// 开通失败就停，否则后面没有可靠结果。
-	if err := fac.Activate(ctx, "sa-a", created.ActivationToken, "sa-pass"); err != nil {
+	if err := seedPass(ctx, fac, "sa-a", "sa-pass"); err != nil {
 		// 把开通的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
@@ -78,22 +78,22 @@ func TestWeldStatsSeparatePeople(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 授角色失败就停，否则后面没有可靠结果。
-	if _, err := fac.GrantRole(ctx, saTok, pa.ID, factory.RoleOperator, factory.ScopeOrgUnit, &shop.ID); err != nil {
+	if _, err := fac.GrantRole(ctx, saTok, pa.ID, factory.RoleOperator); err != nil {
 		// 把授角色的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
 	// 授角色失败就停，否则后面没有可靠结果。
-	if _, err := fac.GrantRole(ctx, saTok, pb.ID, factory.RoleOperator, factory.ScopeOrgUnit, &shopB.ID); err != nil {
+	if _, err := fac.GrantRole(ctx, saTok, pb.ID, factory.RoleOperator); err != nil {
 		// 把授角色的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
-	// 挂组织失败就停，否则后面没有可靠结果。
-	if err := fac.Assign(ctx, saTok, pa.ID, shop.ID); err != nil {
+	// 归组织失败就停，否则后面没有可靠结果。
+	if _, err := fac.SetPersonOrg(ctx, saTok, pa.ID, &shop.ID); err != nil {
 		// 把挂组织的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
-	// 挂组织失败就停，否则后面没有可靠结果。
-	if err := fac.Assign(ctx, saTok, pb.ID, shopB.ID); err != nil {
+	// 归组织失败就停，否则后面没有可靠结果。
+	if _, err := fac.SetPersonOrg(ctx, saTok, pb.ID, &shopB.ID); err != nil {
 		// 把挂组织的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
@@ -123,20 +123,20 @@ func TestWeldStatsSeparatePeople(t *testing.T) {
 	day2 := time.Date(2026, 9, 17, 8, 0, 0, 0, time.UTC)
 	// 装甲的焊接事实，串到乙的统计里就算没分开。
 	factA := factory.WeldFact{
-		ID: idA, CreatorID: pa.ID, OrgUnitID: &shop.ID, OrgPath: sess.Work.OrgPath,
+		ID: idA, CreatorID: pa.ID,
 		ProjectID: &projA, ProjectName: "单层-梁1", WeldKind: "single",
 		LengthMM: 1200, DurationSec: 60, OccurredAt: day1,
 	}
-	// 用平板登录厂服，失败说明账号没有对上。
+	// 用平板登录厂服，登录快照里的组织是此人现在的所属组织。
 	sessB, err := fac.LoginPad(ctx, "op-b", "b-pass")
-	// 平板登录失败就停，否则后面没有可靠结果。
-	if err != nil {
-		// 把平板登录的错误打出来并停住，避免继续往下验。
-		t.Fatal(err)
+	// 平板登录失败或组织不对就停，说明没达预期。
+	if err != nil || sessB.Work.OrgUnitID == nil || *sessB.Work.OrgUnitID != shopB.ID {
+		// 断言没通过就停，结果和这条用例的预期不一致。
+		t.Fatalf("b work: %+v %v", sessB.Work, err)
 	}
 	// 装乙的焊接事实，串到甲的统计里就算没分开。
 	factB := factory.WeldFact{
-		ID: idB, CreatorID: pb.ID, OrgUnitID: &shopB.ID, OrgPath: sessB.Work.OrgPath,
+		ID: idB, CreatorID: pb.ID,
 		ProjectID: &projB, ProjectName: "多层-箱体", WeldKind: "multilayer",
 		LengthMM: 800, DurationSec: 40, OccurredAt: day2,
 	}
@@ -215,25 +215,44 @@ func TestWeldStatsSeparatePeople(t *testing.T) {
 		t.Fatalf("a report: %+v %v", own, err)
 	}
 	// 新建厂内人员，失败说明登录名冲突或越权。
-	lead, err := fac.CreatePerson(ctx, saTok, "lead-a", "车间A负责人")
+	adm, err := fac.CreatePerson(ctx, saTok, "adm-a", "管理员")
 	// 建人员失败就停，否则后面没有可靠结果。
 	if err != nil {
 		// 把建人员的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
-	// 授角色失败就停，否则后面没有可靠结果。
-	if _, err := fac.GrantRole(ctx, saTok, lead.ID, factory.RoleOrgLead, factory.ScopeOrgUnit, &shop.ID); err != nil {
+	// 授管理员失败就停，否则后面没有可靠结果。
+	if _, err := fac.GrantRole(ctx, saTok, adm.ID, factory.RoleOrgAdmin); err != nil {
 		// 把授角色的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
 	// 把默认口令改成测试口令，失败说明改密被拒。
-	leadTok := mustAdoptPassword(t, ctx, fac, "lead-a", "lead-pass")
-	// 拉取焊接统计，失败说明无权或范围是空的。
-	scoped, err := fac.ListWeldReport(ctx, leadTok, "", nil, nil, time.UTC)
+	admTok := mustAdoptPassword(t, ctx, fac, "adm-a", "adm-pass")
+	// 管理员看全厂，两个人都在。
+	scoped, err := fac.ListWeldReport(ctx, admTok, "", nil, nil, time.UTC)
 	// 拉焊统计失败或条数不对就停，说明没达预期。
-	if err != nil || len(scoped) != 1 || scoped[0].PersonID == nil || *scoped[0].PersonID != pa.ID {
+	if err != nil || len(scoped) != 2 {
 		// 断言没通过就停，结果和这条用例的预期不一致。
-		t.Fatalf("lead report: %+v %v", scoped, err)
+		t.Fatalf("admin report: %+v %v", scoped, err)
+	}
+	// 按组织看，两人分在两个车间。
+	byOrg, err := fac.ListWeldReport(ctx, admTok, "org", nil, nil, time.UTC)
+	// 拉焊统计失败或不是两行就停。
+	if err != nil || len(byOrg) != 2 {
+		// 断言没通过就停，结果和这条用例的预期不一致。
+		t.Fatalf("admin org report: %+v %v", byOrg, err)
+	}
+	// 把焊工B调到车间A，旧焊次跟着人走。
+	if _, err := fac.SetPersonOrg(ctx, saTok, pb.ID, &shop.ID); err != nil {
+		// 把改组织的错误打出来并停住，避免继续往下验。
+		t.Fatal(err)
+	}
+	// 再按组织看，只剩车间A一行且两次都在。
+	byOrg, err = fac.ListWeldReport(ctx, admTok, "org", nil, nil, time.UTC)
+	// 拉焊统计失败、行数或合计不对就停。
+	if err != nil || len(byOrg) != 1 || byOrg[0].OrgUnitID == nil || *byOrg[0].OrgUnitID != shop.ID || byOrg[0].RunCount != 2 || byOrg[0].LengthMM != 2000 {
+		// 断言没通过就停，组织没按人现在的所属组织算。
+		t.Fatalf("org after move: %+v %v", byOrg, err)
 	}
 	// 按编号取焊接事实，取不到说明没刷进库。
 	got, err := fac.Store().WeldFactByID(ctx, idA)
@@ -255,15 +274,15 @@ func TestWeldDemoSeed(t *testing.T) {
 	ctx := context.Background()
 	// 拉起隔离厂库，起不来说明测试库还没就绪。
 	h := New(t)
-	// 建厂并签发超管激活码，失败则没有厂可测。
-	created, fac, err := h.Provision(ctx, "sa-d", "超管")
+	// 建厂并写下初始超管，失败则没有厂可测。
+	_, fac, err := h.Provision(ctx, "sa-d", "超管")
 	// 建厂失败就停，否则后面没有可靠结果。
 	if err != nil {
 		// 把建厂的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
 	// 开通失败就停，否则后面没有可靠结果。
-	if err := fac.Activate(ctx, "sa-d", created.ActivationToken, "sa-pass"); err != nil {
+	if err := seedPass(ctx, fac, "sa-d", "sa-pass"); err != nil {
 		// 把开通的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
@@ -282,7 +301,7 @@ func TestWeldDemoSeed(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 授角色失败就停，否则后面没有可靠结果。
-	if _, err := fac.GrantRole(ctx, saTok, op.ID, factory.RoleOperator, factory.ScopeFactory, nil); err != nil {
+	if _, err := fac.GrantRole(ctx, saTok, op.ID, factory.RoleOperator); err != nil {
 		// 把授角色的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
@@ -428,7 +447,7 @@ func TestWeldFlushRejectsOutOfRange(t *testing.T) {
 	ctx := context.Background()
 	// 拉起隔离厂库，起不来说明测试库还没就绪。
 	h := New(t)
-	// 建厂并签发超管激活码，失败则没有厂可测。
+	// 建厂并写下初始超管，失败则没有厂可测。
 	created, fac, err := h.Provision(ctx, "sa-cap", "超管")
 	// 建厂失败就停，否则后面没有可靠结果。
 	if err != nil {
@@ -436,7 +455,7 @@ func TestWeldFlushRejectsOutOfRange(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 开通失败就停，否则后面没有可靠结果。
-	if err := fac.Activate(ctx, "sa-cap", created.ActivationToken, "sa-pass"); err != nil {
+	if err := seedPass(ctx, fac, "sa-cap", "sa-pass"); err != nil {
 		// 把开通的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
@@ -453,7 +472,7 @@ func TestWeldFlushRejectsOutOfRange(t *testing.T) {
 	mk := func(length, dur int64, name string) factory.WeldFact {
 		// 交回带新身份的焊事实，创建人是超管本人。
 		return factory.WeldFact{
-			ID: id.New(), CreatorID: created.SuperAdminID, OrgPath: []factory.PathNode{},
+			ID: id.New(), CreatorID: created.SuperAdminID,
 			ProjectName: name, WeldKind: "single", LengthMM: length, DurationSec: dur, OccurredAt: at,
 		}
 	}
@@ -662,16 +681,11 @@ func weldRawFactory(t *testing.T, ctx context.Context) (*factory.Service, *gorm.
 		// 把写短码的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
-	// 写入首个超管并拿激活码。
-	acc, token, err := fac.BootstrapInitial(ctx, "sa-raw", "超管")
+	// 写入首个超管，口令当场有效。
+	acc, err := fac.AcceptEnrollment(ctx, id.New(), "sa-raw", "超管", "sa-pass")
 	// 写首个超管失败就停，否则后面没有可靠结果。
 	if err != nil {
 		// 把写超管的错误打出来并停住，避免继续往下验。
-		t.Fatal(err)
-	}
-	// 开通失败就停，否则后面没有可靠结果。
-	if err := fac.Activate(ctx, "sa-raw", token, "sa-pass"); err != nil {
-		// 把开通的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
 	// 登录换取会话令牌，失败说明口令或状态不对。
@@ -688,9 +702,9 @@ func weldRawFactory(t *testing.T, ctx context.Context) (*factory.Service, *gorm.
 func insertRawWeld(t *testing.T, db *gorm.DB, facID, creator uuid.UUID, name, kind string, length, dur int64, at time.Time) {
 	// 标成辅助步骤，失败时行号指向真正的用例。
 	t.Helper()
-	// 用原生 SQL 写一行厂直属焊事实，不经汇聚口的上限校验。
-	err := db.Exec(`INSERT INTO weld_facts (id, creator_id, factory_id, org_path, project_name, weld_kind, length_mm, duration_sec, occurred_at)
-		VALUES (?, ?, ?, CAST('[]' AS jsonb), ?, ?, ?, ?, ?)`, id.New(), creator, facID, name, kind, length, dur, at).Error
+	// 用原生 SQL 写一行焊事实，不经汇聚口的上限校验。
+	err := db.Exec(`INSERT INTO weld_facts (id, creator_id, factory_id, project_name, weld_kind, length_mm, duration_sec, occurred_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, id.New(), creator, facID, name, kind, length, dur, at).Error
 	// 写不进去就停，后面断言都没意义。
 	if err != nil {
 		// 把写库的错误打出来并停住，避免继续往下验。
@@ -704,7 +718,7 @@ func TestWeldFlushHidesInternalError(t *testing.T) {
 	ctx := context.Background()
 	// 拉起隔离厂库，起不来说明测试库还没就绪。
 	h := New(t)
-	// 建厂并签发超管激活码，失败则没有厂可测。
+	// 建厂并写下初始超管，失败则没有厂可测。
 	created, fac, err := h.Provision(ctx, "sa-nul", "超管")
 	// 建厂失败就停，否则后面没有可靠结果。
 	if err != nil {
@@ -712,7 +726,7 @@ func TestWeldFlushHidesInternalError(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 开通失败就停，否则后面没有可靠结果。
-	if err := fac.Activate(ctx, "sa-nul", created.ActivationToken, "sa-pass"); err != nil {
+	if err := seedPass(ctx, fac, "sa-nul", "sa-pass"); err != nil {
 		// 把开通的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
@@ -725,7 +739,7 @@ func TestWeldFlushHidesInternalError(t *testing.T) {
 	}
 	// 正常的一条，先收下，后面拿同身份改焊长造冲突。
 	good := factory.WeldFact{
-		ID: id.New(), CreatorID: created.SuperAdminID, OrgPath: []factory.PathNode{},
+		ID: id.New(), CreatorID: created.SuperAdminID,
 		ProjectName: "工程A", WeldKind: "single", LengthMM: 10, DurationSec: 5,
 		OccurredAt: time.Date(2026, 9, 18, 8, 0, 0, 0, time.UTC),
 	}

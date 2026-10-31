@@ -24,14 +24,14 @@ func TestDeleteOtherAppSessionsKeepsNewest(t *testing.T) {
 	exp := time.Now().UTC().Add(time.Hour)
 
 	// 建本人账号，会话要挂在他名下。
-	op, err := s.CreatePerson(ctx, "op", "操作员", false)
+	op, err := s.CreatePerson(ctx, "op", "操作员", "", false)
 	// 建账号失败就停测，避免后面没有前提。
 	if err != nil {
 		// 建本人账号失败就停测。
 		t.Fatalf("person: %v", err)
 	}
 	// 建另一个人，验只删本人的会话。
-	other, err := s.CreatePerson(ctx, "op2", "别人", false)
+	other, err := s.CreatePerson(ctx, "op2", "别人", "", false)
 	// 建账号失败就停测，避免后面没有前提。
 	if err != nil {
 		// 建另一个人失败就停测。

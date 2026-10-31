@@ -19,21 +19,21 @@ func TestCopyFSIntoDeepDescendant(t *testing.T) {
 	// 起一套隔离厂库，起不来则本用例没有库可测。
 	h := New(t)
 	// 开通本厂，供后面步骤使用，失败则前提断了。
-	seed, fac, err := h.Provision(ctx, "sa", "超管")
+	_, fac, err := h.Provision(ctx, "sa", "超管")
 	// 开通本厂没成功，后面的断言就没有依据。
 	if err != nil {
 		// 开通本厂失败即停，不能把这一步的失败当成通过。
 		t.Fatal(err)
 	}
 	// 激活账号没成功，后面的断言就没有依据。
-	if err := fac.Activate(ctx, "sa", seed.ActivationToken, "sa-pass"); err != nil {
+	if err := seedPass(ctx, fac, "sa", "sa-pass"); err != nil {
 		// 激活账号失败即停，不能把这一步的失败当成通过。
 		t.Fatal(err)
 	}
 	// 登录取会话，供后面步骤使用，失败则前提断了。
 	sa := mustLogin(t, ctx, fac, "sa", "sa-pass")
 	// 建人并授角色，供后面步骤使用，失败则前提断了。
-	pe := mustCreateRole(t, ctx, fac, sa, "pe", "pe-pass", factory.RoleOperator, factory.ScopeFactory, nil)
+	pe := mustCreateRole(t, ctx, fac, sa, "pe", "pe-pass", factory.RoleOrgAdmin)
 	// 取厂级工艺树的根，链从这里往下挂。
 	root, err := fac.Store().EnsureFSRoot(ctx, store.KindProcess, store.FSTreeFactory, nil)
 	// 取根失败就停测，后面没有挂点。

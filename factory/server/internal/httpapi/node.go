@@ -9,59 +9,21 @@ import (
 	"wmesh/factory/internal/service"
 )
 
-// Client 绑定、运行许可。
+// 设备名录、昵称和示教器登录。
 func (h *Handler) mountNode(mux *http.ServeMux) {
 	// 列出本厂已经绑定的现场设备。
 	mux.HandleFunc("GET /v1/factories/{id}/clients", h.listClients)
-	// 修改本厂设备的显示名。
+	// 修改本厂设备的昵称，设备名由 WAN 定。
 	mux.HandleFunc("PATCH /v1/factories/{id}/clients/{clientId}", h.renameClient)
-	// 本厂超管把读到的机械臂号钉到已绑定设备，已钉别的号拒绝。
-	mux.HandleFunc("POST /v1/factories/{id}/clients/{clientId}/device", h.registerDevice)
-	// 在已钉号的本机登录并领取解封钥。
-	mux.HandleFunc("POST /v1/factories/{id}/clients/{clientId}/login", h.loginOnClient)
 	// 厂网登录，不校验当时的机械臂号。
 	mux.HandleFunc("POST /v1/factories/{id}/pad/login", h.loginPad)
 	// 补记一次现场，回到厂网才可能送到。
 	mux.HandleFunc("POST /v1/factories/{id}/pad/login-log", h.reportPadLogin)
-	// 作废绑定，这台设备不能再作业。
-	mux.HandleFunc("POST /v1/factories/{id}/clients/{clientId}/void", h.voidClient)
-	// 签发一段允许运行的时间窗。
-	mux.HandleFunc("POST /v1/factories/{id}/clients/{clientId}/runtime", h.issueRuntime)
-	// 收回运行许可，窗口内不再允许作业。
-	mux.HandleFunc("POST /v1/factories/{id}/clients/{clientId}/runtime/revoke", h.revokeRuntime)
-	// 列出本厂已经签发的运行许可。
-	mux.HandleFunc("GET /v1/factories/{id}/runtime-grants", h.listRuntime)
-	// 登录仍有效才返回签发公钥。
-	mux.HandleFunc("GET /v1/factories/{id}/signing-key", h.signingPublicKey)
 }
 
-// 只改设备显示名，绑定身份不变。
+// 只改设备昵称，设备名和绑定身份不变。
 type renameClientReq struct {
-	Name string `json:"name"` // 给人看的新名字
-}
-
-// 运行许可签多少天；起止由服务器按自己的钟算。
-type issueWindowReq struct {
-	Days int `json:"days"` // 有效天数，1～365
-}
-
-// 要钉到这台设备上的机械臂号。
-type deviceSerialReq struct {
-	DeviceSerial string `json:"deviceSerial"` // 从设备读到的机械臂识别号
-}
-
-// 在已钉设备上登录的口令和现场。
-type clientLoginReq struct {
-	DeviceSerial       string `json:"deviceSerial"`       // 本次读到的机械臂识别号
-	LoginName          string `json:"loginName"`          // 本厂登录名
-	Password           string `json:"password"`           // 日常密码，不进审计
-	AppVersion         int64  `json:"appVersion"`         // 示教器 versionCode；0 表示没报
-	AppVersionName     string `json:"appVersionName"`     // 示教器 versionName
-	DeviceModel        string `json:"deviceModel"`        // 平板型号
-	DeviceManufacturer string `json:"deviceManufacturer"` // 平板厂商
-	AndroidRelease     string `json:"androidRelease"`     // 平板系统版本
-	NetworkName        string `json:"networkName"`        // 当时 WiFi 名
-	ClientID           string `json:"clientId"`           // 已匹配本机；路径优先
+	Name string `json:"name"` // 新昵称
 }
 
 // 厂网登录，不要求当时连着机械臂。
@@ -90,11 +52,6 @@ type padLoginLogReq struct {
 	ClientID           string `json:"clientId"`           // 已匹配本机
 }
 
-// 只回签发公钥，私钥不能离开厂内。
-type signingKeyResp struct {
-	PublicKey []byte `json:"publicKey"` // 本厂签发公钥，无私钥
-}
-
 // 列出本厂已绑定现场设备。
 func (h *Handler) listClients(w http.ResponseWriter, r *http.Request) {
 	// 列出本厂已绑定现场设备。
@@ -109,78 +66,6 @@ func (h *Handler) listClients(w http.ResponseWriter, r *http.Request) {
 		}
 		// 通过之后把结果回给调用方。
 		writeJSON(w, http.StatusOK, rows)
-	})
-}
-
-// 本厂超管把读到的机械臂号钉到已绑定设备，已钉别的号拒绝。
-func (h *Handler) registerDevice(w http.ResponseWriter, r *http.Request) {
-	// 把读到的机械臂号钉上，空号则拒绝。
-	h.withFactory(w, r, func(svc *service.Service) {
-		// 设备编号必须合法，否则拒绝这次办理。
-		clientID, err := uuid.Parse(r.PathValue("clientId"))
-		// 解析失败则拒绝，不用这个残缺的值继续。
-		if err != nil {
-			// 编号不合法，回非法请求并不进入业务。
-			writeBadRequest(w, errInvalidID)
-			return
-		}
-		// 承接要钉上的机械臂号。
-		var req deviceSerialReq
-		// 正文无法解析则拒绝，不进入业务。
-		if err := decodeJSON(r, &req); err != nil {
-			// 请求不合法，回非法请求并不进入业务。
-			writeBadRequest(w, err)
-			return
-		}
-		// 把机械臂号钉到设备上，空号则拒绝。
-		row, err := svc.Node.RegisterDevice(r.Context(), bearer(r), clientID, req.DeviceSerial)
-		// 上一步没通过则停止，不把失败写成成功。
-		if err != nil {
-			// 把失败译成状态回给调用方，不写成功。
-			writeErr(w, err)
-			return
-		}
-		// 通过之后把结果回给调用方。
-		writeJSON(w, http.StatusOK, row)
-	})
-}
-
-// 本厂账号在已钉设备号的本机登录并领取解封钥。
-func (h *Handler) loginOnClient(w http.ResponseWriter, r *http.Request) {
-	// 本厂账号在已钉设备号的本机登录并领取解封钥。
-	h.withFactory(w, r, func(svc *service.Service) {
-		// 设备编号必须合法，否则拒绝这次办理。
-		clientID, err := uuid.Parse(r.PathValue("clientId"))
-		// 解析失败则拒绝，不用这个残缺的值继续。
-		if err != nil {
-			// 编号不合法，回非法请求并不进入业务。
-			writeBadRequest(w, errInvalidID)
-			return
-		}
-		// 承接本机登录的口令和现场。
-		var req clientLoginReq
-		// 正文无法解析则拒绝，不进入业务。
-		if err := decodeJSON(r, &req); err != nil {
-			// 请求不合法，回非法请求并不进入业务。
-			writeBadRequest(w, err)
-			return
-		}
-		// 在已钉号的本机登录，并领取解封钥。
-		sess, err := svc.Node.LoginOnClient(r.Context(), clientID, req.DeviceSerial, req.LoginName, req.Password)
-		// 上一步没通过则停止，不把失败写成成功。
-		if err != nil {
-			// 把失败译成状态回给调用方，不写成功。
-			writeErr(w, err)
-			return
-		}
-		// 记下路径里已核对过的设备，正文自报不再替换。
-		cid := clientID
-		// 补记现场，记失败也不推翻刚完成的登录。
-		_ = svc.Node.RecordAppLogin(r.Context(), sess.Account.ID, loginSnap(service.LoginKindClient, req.AppVersion, req.AppVersionName, req.DeviceSerial, req.DeviceModel, req.DeviceManufacturer, req.AndroidRelease, req.NetworkName, req.ClientID, &cid))
-		// 决定回给平板的通道地址，配置优先。
-		sess.MqttURL = h.clientMQTTURL(r)
-		// 通过之后把结果回给调用方。
-		writeJSON(w, http.StatusOK, sess)
 	})
 }
 
@@ -268,126 +153,6 @@ func (h *Handler) renameClient(w http.ResponseWriter, r *http.Request) {
 		}
 		// 通过之后把结果回给调用方。
 		writeJSON(w, http.StatusOK, row)
-	})
-}
-
-// 作废本厂绑定，设备不再可用。
-func (h *Handler) voidClient(w http.ResponseWriter, r *http.Request) {
-	// 作废绑定之后，这台设备不能再作业。
-	h.withFactory(w, r, func(svc *service.Service) {
-		// 设备编号必须合法，否则拒绝这次办理。
-		clientID, err := uuid.Parse(r.PathValue("clientId"))
-		// 解析失败则拒绝，不用这个残缺的值继续。
-		if err != nil {
-			// 编号不合法，回非法请求并不进入业务。
-			writeBadRequest(w, errInvalidID)
-			return
-		}
-		// 被拒绝则停止，不继续写成功响应。
-		if err := svc.Node.VoidClientBinding(r.Context(), bearer(r), clientID); err != nil {
-			// 把失败译成状态回给调用方，不写成功。
-			writeErr(w, err)
-			return
-		}
-		// 办理成功，且没有正文需要返回。
-		w.WriteHeader(http.StatusNoContent)
-	})
-}
-
-// 签发运行许可窗口。
-func (h *Handler) issueRuntime(w http.ResponseWriter, r *http.Request) {
-	// 按签发去办，天数不合法会在里面拒绝。
-	h.writeRuntime(w, r, true)
-}
-
-// 收回运行许可窗口。
-func (h *Handler) revokeRuntime(w http.ResponseWriter, r *http.Request) {
-	// 按收回去办，天数不合法会在里面拒绝。
-	h.writeRuntime(w, r, false)
-}
-
-// 签发或收回运行许可窗口。
-func (h *Handler) writeRuntime(w http.ResponseWriter, r *http.Request, canRun bool) {
-	// 签发或收回运行许可窗口。
-	h.withFactory(w, r, func(svc *service.Service) {
-		// 设备编号必须合法，否则拒绝这次办理。
-		clientID, err := uuid.Parse(r.PathValue("clientId"))
-		// 解析失败则拒绝，不用这个残缺的值继续。
-		if err != nil {
-			// 编号不合法，回非法请求并不进入业务。
-			writeBadRequest(w, errInvalidID)
-			return
-		}
-		// 承接许可天数；带旧的起止字段会被当未知字段拒绝。
-		var req issueWindowReq
-		// 正文无法解析则拒绝，不进入业务。
-		if err := decodeJSON(r, &req); err != nil {
-			// 请求不合法，回非法请求并不进入业务。
-			writeBadRequest(w, err)
-			return
-		}
-		// 先放空许可，签发或收回之后再填。
-		var cred service.RuntimeCred
-		// 允许运行才签发窗口，否则改为收回。
-		if canRun {
-			// 签发允许运行的天数，起止由服务器定。
-			cred, err = svc.Node.IssueRuntimeGrant(r.Context(), bearer(r), clientID, req.Days)
-			// 不签发时改为收回，同一窗口不能两可。
-		} else {
-			// 收回运行许可，起止同样由服务器定。
-			cred, err = svc.Node.RevokeRuntimeGrant(r.Context(), bearer(r), clientID, req.Days)
-		}
-		// 失败则停止，不把这一步当成成功。
-		if err != nil {
-			// 把失败译成状态回给调用方，不写成功。
-			writeErr(w, err)
-			return
-		}
-		// 创建成功，把新记录回给调用方。
-		writeJSON(w, http.StatusCreated, service.RuntimeGrantView{
-			ClientID: cred.ClientID, Revision: cred.Revision, CanRun: cred.CanRun,
-			NotBefore: cred.NotBefore, NotAfter: cred.NotAfter,
-		})
-	})
-}
-
-// 列出本厂运行许可。
-func (h *Handler) listRuntime(w http.ResponseWriter, r *http.Request) {
-	// 列出本厂运行许可，未登录则拒绝。
-	h.withFactory(w, r, func(svc *service.Service) {
-		// 列出本厂已经签发的运行许可。
-		rows, err := svc.Node.ListRuntimeGrants(r.Context(), bearer(r))
-		// 上一步没通过则停止，不把失败写成成功。
-		if err != nil {
-			// 把失败译成状态回给调用方，不写成功。
-			writeErr(w, err)
-			return
-		}
-		// 通过之后把结果回给调用方。
-		writeJSON(w, http.StatusOK, rows)
-	})
-}
-
-// 登录有效才返回本厂签发公钥，无私钥。
-func (h *Handler) signingPublicKey(w http.ResponseWriter, r *http.Request) {
-	// 登录有效才返回本厂签发公钥，无私钥。
-	h.withFactory(w, r, func(svc *service.Service) {
-		// 会话无效或账号停用则拒绝，不再继续。
-		if _, err := svc.Auth.RequireActive(r.Context(), bearer(r)); err != nil {
-			// 把失败译成状态回给调用方，不写成功。
-			writeErr(w, err)
-			return
-		}
-		// 取出签发公钥，私钥不会离开厂内。
-		pub, err := svc.Node.SigningPublicKey(r.Context())
-		// 上一步没通过则停止，不把失败写成成功。
-		if err != nil {
-			// 把失败译成状态回给调用方，不写成功。
-			writeErr(w, err)
-			return
-		}
-		// 通过之后把结果回给调用方。
-		writeJSON(w, http.StatusOK, signingKeyResp{PublicKey: pub})
 	})
 }
 

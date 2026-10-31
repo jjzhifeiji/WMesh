@@ -1,4 +1,4 @@
-// HTTP 适配：厂内引导、激活、登录、名册与组织人员。
+// HTTP 适配：建厂、登录、名册与组织人员。
 package httpapi_test
 
 import (
@@ -15,6 +15,8 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"time"
+
+	"github.com/google/uuid"
 
 	"wmesh/factory/internal/httpapi"
 	"wmesh/factory/internal/hub"
@@ -44,7 +46,7 @@ func TestFactoryHTTP(t *testing.T) {
 		h.Close()
 	})
 	// 拉起临时服务，测完由清理关掉。
-	srv := httptest.NewServer(httpapi.New(h, "boot-secret", "").Router())
+	srv := httptest.NewServer(httpapi.New(h, "").Router())
 	// 测完关闭临时服务，把端口让出来。
 	t.Cleanup(srv.Close)
 	// 拼出本厂前缀，后面的路径都接在后面。
@@ -78,39 +80,15 @@ func TestFactoryHTTP(t *testing.T) {
 		// 与预期不符就停测，避免后面连环误判。
 		t.Fatalf("unknown api %d %s", code, body)
 	}
-	// 用共享密码建厂，激活码只出现在回包。
-	code, body = do(t, srv, "POST", "/internal/bootstrap", "", `{"factoryId":"`+fid.String()+`","saLogin":"sa","saDisplay":"超管"}`)
-	// 不是未授权则本测失败。
-	if code != http.StatusUnauthorized {
-		// 与预期不符就停测，避免后面连环误判。
-		t.Fatalf("anon bootstrap %d %s", code, body)
-	}
-	// 用共享密码建厂，激活码只出现在回包。
-	code, body = do(t, srv, "POST", "/internal/bootstrap", "boot-secre", `{"factoryId":"`+fid.String()+`","saLogin":"sa","saDisplay":"超管"}`)
-	// 不是未授权则本测失败。
-	if code != http.StatusUnauthorized {
-		// 与预期不符就停测，避免后面连环误判。
-		t.Fatalf("wrong token bootstrap %d %s", code, body)
-	}
-	// 用共享密码建厂，激活码只出现在回包。
+	// 内部建厂口子已撤，应落到兜底的找不到。
 	code, body = do(t, srv, "POST", "/internal/bootstrap", "boot-secret", `{"factoryId":"`+fid.String()+`","saLogin":"sa","saDisplay":"超管"}`)
-	// 不是已创建则本测失败。
-	if code != http.StatusCreated {
+	// 不是找不到则本测失败。
+	if code != http.StatusNotFound {
 		// 与预期不符就停测，避免后面连环误判。
-		t.Fatalf("bootstrap %d %s", code, body)
+		t.Fatalf("bootstrap gone %d %s", code, body)
 	}
-	// 按工厂打开已有库，没有库就当未初始化。
-	svc, err := h.Service(context.Background(), fid)
-	// 这一步失败则停测，避免在坏结果上继续。
-	if err != nil {
-		// 与预期不符就停测，避免后面连环误判。
-		t.Fatalf("service: %v", err)
-	}
-	// HTTP 测不连 WAN，自签租约才能写资产。
-	if err := svc.Store().GrantLocalLease(context.Background()); err != nil {
-		// 与预期不符就停测，避免后面连环误判。
-		t.Fatalf("lease: %v", err)
-	}
+	// 按约定身份建厂，初始超管当场有效。
+	svc, _ := enrollSA(t, h, fid)
 	// 厂短码写不进去则停测。
 	if err := svc.Store().PutFactoryShortCode(context.Background(), "F01"); err != nil {
 		// 与预期不符就停测，避免后面连环误判。
@@ -121,26 +99,19 @@ func TestFactoryHTTP(t *testing.T) {
 		// 与预期不符就停测，避免后面连环误判。
 		t.Fatalf("anon big legacy %d %s", c, b)
 	}
-	// 取出激活码，启用账号时要用。
-	act := gjson(t, body, "activationToken")
-	// 激活码必须是固定位数，否则本测失败。
-	if len(act) != 8 {
-		// 与预期不符就停测，避免后面连环误判。
-		t.Fatalf("activation code len %d %s", len(act), act)
-	}
-	// 登录并取得会话，口令错误应当被拒绝。
-	code, body = do(t, srv, "POST", base+"/login", "", `{"loginName":"sa","password":"secret"}`)
+	// 口令错误应当被拒绝。
+	code, body = do(t, srv, "POST", base+"/login", "", `{"loginName":"sa","password":"wrong"}`)
 	// 不是未授权则本测失败。
 	if code != http.StatusUnauthorized {
 		// 与预期不符就停测，避免后面连环误判。
-		t.Fatalf("pending login %d %s", code, body)
+		t.Fatalf("wrong password login %d %s", code, body)
 	}
-	// 用激活码启用账号，错码应当被拒绝。
-	code, body = do(t, srv, "POST", base+"/activate", "", `{"loginName":"sa","activationToken":"`+act+`","password":"secret"}`)
-	// 不是无内容则本测失败。
-	if code != http.StatusNoContent {
+	// 激活口子已撤，应落到兜底的找不到。
+	code, body = do(t, srv, "POST", base+"/activate", "", `{"loginName":"sa","activationToken":"x","password":"secret"}`)
+	// 不是找不到则本测失败。
+	if code != http.StatusNotFound {
 		// 与预期不符就停测，避免后面连环误判。
-		t.Fatalf("activate %d %s", code, body)
+		t.Fatalf("activate gone %d %s", code, body)
 	}
 	// 登录并取得会话，口令错误应当被拒绝。
 	code, body = do(t, srv, "POST", base+"/login", "", `{"loginName":"sa","password":"secret"}`)
@@ -261,19 +232,54 @@ func TestFactoryHTTP(t *testing.T) {
 		// 与预期不符就停测，避免后面连环误判。
 		t.Fatalf("reset default password missing: %s", body)
 	}
-	// 授予角色，超出作用域应当被拒绝。
+	// 旧格式还带作用域，多出的字段应当被拒绝。
 	code, body = do(t, srv, "POST", base+"/grants", tok, `{"personId":"`+personID+`","role":"operator","scopeKind":"org_unit","orgUnitId":"`+unitID+`"}`)
+	// 不是非法请求则本测失败。
+	if code != http.StatusBadRequest {
+		// 与预期不符就停测，避免后面连环误判。
+		t.Fatalf("scoped grant %d %s", code, body)
+	}
+	// 授予角色，只带人和角色。
+	code, body = do(t, srv, "POST", base+"/grants", tok, `{"personId":"`+personID+`","role":"operator"}`)
 	// 不是已创建则本测失败。
 	if code != http.StatusCreated {
 		// 与预期不符就停测，避免后面连环误判。
 		t.Fatalf("grant %d %s", code, body)
 	}
-	// 调整岗位，一个人不能同时挂两处。
+	// 分配口子已撤，应落到兜底的找不到。
 	code, body = do(t, srv, "POST", base+"/assignments", tok, `{"personId":"`+personID+`","orgUnitId":"`+unitID+`"}`)
+	// 不是找不到则本测失败。
+	if code != http.StatusNotFound {
+		// 与预期不符就停测，避免后面连环误判。
+		t.Fatalf("assign gone %d %s", code, body)
+	}
+	// 把人归到一车间。
+	code, body = do(t, srv, "POST", base+"/people/"+personID+"/org", tok, `{"orgUnitId":"`+unitID+`"}`)
+	// 不是成功或回包没带所属组织则失败。
+	if code != http.StatusOK || gjson(t, body, "account.orgUnitId") != unitID {
+		// 与预期不符就停测，避免后面连环误判。
+		t.Fatalf("set person org %d %s", code, body)
+	}
+	// 名册里这个人应带上所属组织。
+	code, body = do(t, srv, "GET", base+"/catalog", tok, "")
+	// 不是成功或没带所属组织则失败。
+	if code != http.StatusOK || !strings.Contains(body, `"orgUnitId":"`+unitID+`"`) {
+		// 与预期不符就停测，避免后面连环误判。
+		t.Fatalf("catalog person org %d %s", code, body)
+	}
+	// 改名组织节点。
+	code, body = do(t, srv, "POST", base+"/org-units/"+unitID+"/rename", tok, `{"name":"一车间改"}`)
 	// 不是无内容则本测失败。
 	if code != http.StatusNoContent {
 		// 与预期不符就停测，避免后面连环误判。
-		t.Fatalf("assign %d %s", code, body)
+		t.Fatalf("rename unit %d %s", code, body)
+	}
+	// 超管改这个人的显示名。
+	code, body = do(t, srv, "POST", base+"/people/"+personID+"/display-name", tok, `{"displayName":"操作员改"}`)
+	// 不是成功或显示名没改则失败。
+	if code != http.StatusOK || gjson(t, body, "account.displayName") != "操作员改" {
+		// 与预期不符就停测，避免后面连环误判。
+		t.Fatalf("person display name %d %s", code, body)
 	}
 	// 办理组织节点，无上级则挂在工厂下。
 	code, body = do(t, srv, "DELETE", base+"/org-units/"+unitID, tok, "")
@@ -322,37 +328,12 @@ func TestFactoryHTTP(t *testing.T) {
 		// 与预期不符就停测，避免后面连环误判。
 		t.Fatalf("list clients %d %s", code, body)
 	}
-	// 旧格式的生效时间，用来验服务端不再收浏览器起止。
-	nb := time.Now().UTC().Add(-time.Hour).Format(time.RFC3339)
-	// 旧格式的失效时间，用来验服务端不再收浏览器起止。
-	na := time.Now().UTC().Add(24 * time.Hour).Format(time.RFC3339)
-	// 还按旧格式自带起止，服务端不再采信浏览器时钟。
-	code, body = do(t, srv, "POST", base+"/clients/"+cid+"/runtime", tok, `{"notBefore":"`+nb+`","notAfter":"`+na+`"}`)
-	// 旧字段属于未知字段，不是非法请求则失败。
-	if code != http.StatusBadRequest {
-		// 与预期不符就停测，避免后面连环误判。
-		t.Fatalf("legacy runtime window %d %s", code, body)
-	}
-	// 天数为零的签发，应当按天数越界拒绝。
-	code, body = do(t, srv, "POST", base+"/clients/"+cid+"/runtime", tok, `{"days":0}`)
-	// 不是非法请求，或错误不是天数越界则失败。
-	if code != http.StatusBadRequest || gjson(t, body, "error") != "runtime grant days out of range" {
-		// 与预期不符就停测，避免后面连环误判。
-		t.Fatalf("runtime days 0 %d %s", code, body)
-	}
-	// 只传天数签发运行许可，起止由服务器算。
+	// 运行许可签发口子已撤，应落到兜底的找不到。
 	code, body = do(t, srv, "POST", base+"/clients/"+cid+"/runtime", tok, `{"days":1}`)
-	// 不是已创建，或正文与预期不符则失败。
-	if code != http.StatusCreated || !strings.Contains(body, `"canRun":true`) || strings.Contains(body, "payload") {
+	// 不是找不到则本测失败。
+	if code != http.StatusNotFound {
 		// 与预期不符就停测，避免后面连环误判。
-		t.Fatalf("issue runtime %d %s", code, body)
-	}
-	// 从回包取出失效时间，核对是否按服务器时钟加一天。
-	notAfter, err := time.Parse(time.RFC3339, gjson(t, body, "notAfter"))
-	// 解析失败或离服务器现在加一天太远则失败。
-	if err != nil || notAfter.Sub(time.Now().UTC().Add(24*time.Hour)).Abs() > time.Minute {
-		// 与预期不符就停测，避免后面连环误判。
-		t.Fatalf("runtime notAfter %v %v %s", notAfter, err, body)
+		t.Fatalf("runtime gone %d %s", code, body)
 	}
 	// 读取当前登录人，未登录应当被拒绝。
 	code, body = do(t, srv, "GET", base+"/me", tok, "")
@@ -363,30 +344,37 @@ func TestFactoryHTTP(t *testing.T) {
 	}
 	// 从回包取出字段，供下一步继续使用。
 	saID := gjson(t, body, "id")
-	// 读取签发公钥，未登录应当被拒绝。
+	// 签发公钥口子已撤，应落到兜底的找不到。
 	code, body = do(t, srv, "GET", base+"/signing-key", tok, "")
-	// 不是成功，或正文与预期不符则失败。
-	if code != http.StatusOK || !strings.Contains(body, "publicKey") {
+	// 不是找不到则本测失败。
+	if code != http.StatusNotFound {
 		// 与预期不符就停测，避免后面连环误判。
-		t.Fatalf("signing key %d %s", code, body)
+		t.Fatalf("signing key gone %d %s", code, body)
+	}
+	// 超管改自己的显示名。
+	code, body = do(t, srv, "POST", base+"/me/display-name", tok, `{"displayName":"超管改"}`)
+	// 不是成功或显示名没改则失败。
+	if code != http.StatusOK || gjson(t, body, "displayName") != "超管改" {
+		// 与预期不符就停测，避免后面连环误判。
+		t.Fatalf("my display name %d %s", code, body)
 	}
 
 	// 授予角色，超出作用域应当被拒绝。
-	code, body = do(t, srv, "POST", base+"/grants", tok, `{"personId":"`+saID+`","role":"operator","scopeKind":"factory"}`)
+	code, body = do(t, srv, "POST", base+"/grants", tok, `{"personId":"`+saID+`","role":"operator"}`)
 	// 不是已创建则本测失败。
 	if code != http.StatusCreated {
 		// 与预期不符就停测，避免后面连环误判。
 		t.Fatalf("grant op %d %s", code, body)
 	}
-	// 查询可以用来新建的工作位置。
+	// 新建位置查询口子已撤，应落到兜底的找不到。
 	code, body = do(t, srv, "GET", base+"/asset-author-context", tok, "")
-	// 不是成功，或正文与预期不符则失败。
-	if code != http.StatusOK || !strings.Contains(body, `"allowDirect":true`) {
+	// 不是找不到则本测失败。
+	if code != http.StatusNotFound {
 		// 与预期不符就停测，避免后面连环误判。
-		t.Fatalf("author context %d %s", code, body)
+		t.Fatalf("author context gone %d %s", code, body)
 	}
 	// 办理工艺或工程，正文按权限才可见。
-	code, body = do(t, srv, "POST", base+"/assets", tok, `{"kind":"process","level":"factory","name":"焊A","content":"secret-body","direct":true}`)
+	code, body = do(t, srv, "POST", base+"/assets", tok, `{"kind":"process","level":"factory","name":"焊A","content":"secret-body"}`)
 	// 不是已创建，或正文与预期不符则失败。
 	if code != http.StatusCreated || !strings.Contains(body, `"copyable":true`) {
 		// 与预期不符就停测，避免后面连环误判。
@@ -394,10 +382,10 @@ func TestFactoryHTTP(t *testing.T) {
 	}
 	// 从回包取出字段，供下一步继续使用。
 	pid := gjson(t, body, "id")
-	// 办理工艺或工程，正文按权限才可见。
-	code, body = do(t, srv, "POST", base+"/assets", tok, `{"kind":"process","level":"factory","name":"密焊","content":"secret-tight","direct":true,"copyable":false}`)
-	// 不是已创建，或正文与预期不符则失败。
-	if code != http.StatusCreated || !strings.Contains(body, `"copyable":false`) || gjson(t, body, "revision") != "1" {
+	// 厂端不能再设不可复制，带上旧字段应当被拒绝。
+	code, body = do(t, srv, "POST", base+"/assets", tok, `{"kind":"process","level":"factory","name":"密焊","content":"secret-tight","copyable":false}`)
+	// 不是非法请求则本测失败。
+	if code != http.StatusBadRequest {
 		// 与预期不符就停测，避免后面连环误判。
 		t.Fatalf("create tight process %d %s", code, body)
 	}
@@ -497,7 +485,7 @@ func TestFactoryHTTP(t *testing.T) {
 	// 从回包取出字段，供下一步继续使用。
 	rev := gjson(t, body, "revision")
 	// 办理工艺或工程，正文按权限才可见。
-	code, body = do(t, srv, "POST", base+"/assets", tok, `{"kind":"project","level":"factory","name":"工程A","content":"job","direct":true,"deps":[{"id":"`+pid+`","revision":`+rev+`,"digest":"`+digest+`"}]}`)
+	code, body = do(t, srv, "POST", base+"/assets", tok, `{"kind":"project","level":"factory","name":"工程A","content":"job","deps":[{"id":"`+pid+`","revision":`+rev+`,"digest":"`+digest+`"}]}`)
 	// 不是已创建则本测失败。
 	if code != http.StatusCreated {
 		// 与预期不符就停测，避免后面连环误判。
@@ -513,7 +501,7 @@ func TestFactoryHTTP(t *testing.T) {
 		t.Fatalf("set deps %d %s", code, body)
 	}
 	// 办理工艺或工程，正文按权限才可见。
-	code, body = do(t, srv, "POST", base+"/assets", tok, `{"kind":"process","level":"personal","name":"个人焊","content":"mine","direct":true}`)
+	code, body = do(t, srv, "POST", base+"/assets", tok, `{"kind":"process","level":"personal","name":"个人焊","content":"mine"}`)
 	// 不是已创建则本测失败。
 	if code != http.StatusCreated {
 		// 与预期不符就停测，避免后面连环误判。
@@ -528,12 +516,19 @@ func TestFactoryHTTP(t *testing.T) {
 		// 与预期不符就停测，避免后面连环误判。
 		t.Fatalf("publish personal %d %s", code, body)
 	}
-	// 升到厂级，不可复制时应当被拒绝。
+	// 升到厂级，不带正文挂厂级树根，复制成新草稿。
 	code, body = do(t, srv, "POST", base+"/assets/"+persID+"/promote", tok, "")
-	// 不是已创建，或正文与预期不符则失败。
-	if code != http.StatusCreated || strings.Contains(body, "mine") {
+	// 不是已创建、正文漏出或不是新身份的草稿则失败。
+	if code != http.StatusCreated || strings.Contains(body, "mine") || gjson(t, body, "id") == persID || gjson(t, body, "status") != "draft" || gjson(t, body, "level") != "factory" {
 		// 与预期不符就停测，避免后面连环误判。
 		t.Fatalf("promote %d %s", code, body)
+	}
+	// 再升一次，每次都复制一份新的厂级草稿。
+	code, body = do(t, srv, "POST", base+"/assets/"+persID+"/promote", tok, `{"folderId":""}`)
+	// 不是已创建则本测失败。
+	if code != http.StatusCreated {
+		// 与预期不符就停测，避免后面连环误判。
+		t.Fatalf("promote again %d %s", code, body)
 	}
 	// 删除对象，仍被引用时应当冲突。
 	code, body = do(t, srv, "POST", base+"/assets/"+pid+"/delete", tok, "")
@@ -543,7 +538,7 @@ func TestFactoryHTTP(t *testing.T) {
 		t.Fatalf("delete referenced %d %s", code, body)
 	}
 	// 办理工艺或工程，正文按权限才可见。
-	code, body = do(t, srv, "POST", base+"/assets", tok, `{"kind":"process","level":"factory","name":"可删","content":"gone","direct":true}`)
+	code, body = do(t, srv, "POST", base+"/assets", tok, `{"kind":"process","level":"factory","name":"可删","content":"gone"}`)
 	// 不是已创建则本测失败。
 	if code != http.StatusCreated {
 		// 与预期不符就停测，避免后面连环误判。
@@ -710,41 +705,15 @@ func TestFactorySoftwareHTTP(t *testing.T) {
 		h.Close()
 	})
 	// 拉起临时服务，测完由清理关掉。
-	srv := httptest.NewServer(httpapi.New(h, "boot-secret", "").Router())
+	srv := httptest.NewServer(httpapi.New(h, "").Router())
 	// 测完关闭临时服务，把端口让出来。
 	t.Cleanup(srv.Close)
 	// 拼出本厂前缀，后面的路径都接在后面。
 	base := "/v1/factories/" + fid.String()
-	// 用共享密码建厂，激活码只出现在回包。
-	code, body := do(t, srv, "POST", "/internal/bootstrap", "boot-secret", `{"factoryId":"`+fid.String()+`","saLogin":"sa","saDisplay":"超管"}`)
-	// 不是已创建则本测失败。
-	if code != http.StatusCreated {
-		// 与预期不符就停测，避免后面连环误判。
-		t.Fatalf("bootstrap %d %s", code, body)
-	}
-	// 按工厂打开已有库，没有库就当未初始化。
-	svc, err := h.Service(context.Background(), fid)
-	// 这一步失败则停测，避免在坏结果上继续。
-	if err != nil {
-		// 与预期不符就停测，避免后面连环误判。
-		t.Fatalf("service: %v", err)
-	}
-	// 租约写不进去则停测，后面读正文会失败。
-	if err := svc.Store().GrantLocalLease(context.Background()); err != nil {
-		// 与预期不符就停测，避免后面连环误判。
-		t.Fatalf("lease: %v", err)
-	}
-	// 取出激活码，启用账号时要用。
-	act := gjson(t, body, "activationToken")
-	// 用激活码启用账号，错码应当被拒绝。
-	code, body = do(t, srv, "POST", base+"/activate", "", `{"loginName":"sa","activationToken":"`+act+`","password":"secret"}`)
-	// 不是无内容则本测失败。
-	if code != http.StatusNoContent {
-		// 与预期不符就停测，避免后面连环误判。
-		t.Fatalf("activate %d %s", code, body)
-	}
+	// 按约定身份建厂，初始超管当场有效。
+	svc, _ := enrollSA(t, h, fid)
 	// 登录并取得会话，口令错误应当被拒绝。
-	code, body = do(t, srv, "POST", base+"/login", "", `{"loginName":"sa","password":"secret"}`)
+	code, body := do(t, srv, "POST", base+"/login", "", `{"loginName":"sa","password":"secret"}`)
 	// 不是成功则本测失败。
 	if code != http.StatusOK {
 		// 与预期不符就停测，避免后面连环误判。
@@ -849,41 +818,15 @@ func TestPadClientSoftwareHTTP(t *testing.T) {
 		h.Close()
 	})
 	// 拉起临时服务，测完由清理关掉。
-	srv := httptest.NewServer(httpapi.New(h, "boot-secret", "").Router())
+	srv := httptest.NewServer(httpapi.New(h, "").Router())
 	// 测完关闭临时服务，把端口让出来。
 	t.Cleanup(srv.Close)
 	// 拼出本厂前缀，后面的路径都接在后面。
 	base := "/v1/factories/" + fid.String()
-	// 用共享密码建厂，激活码只出现在回包。
-	code, body := do(t, srv, "POST", "/internal/bootstrap", "boot-secret", `{"factoryId":"`+fid.String()+`","saLogin":"sa","saDisplay":"超管"}`)
-	// 不是已创建则本测失败。
-	if code != http.StatusCreated {
-		// 与预期不符就停测，避免后面连环误判。
-		t.Fatalf("bootstrap %d %s", code, body)
-	}
-	// 按工厂打开已有库，没有库就当未初始化。
-	svc, err := h.Service(context.Background(), fid)
-	// 这一步失败则停测，避免在坏结果上继续。
-	if err != nil {
-		// 与预期不符就停测，避免后面连环误判。
-		t.Fatalf("service: %v", err)
-	}
-	// 租约写不进去则停测，后面读正文会失败。
-	if err := svc.Store().GrantLocalLease(context.Background()); err != nil {
-		// 与预期不符就停测，避免后面连环误判。
-		t.Fatalf("lease: %v", err)
-	}
-	// 取出激活码，启用账号时要用。
-	act := gjson(t, body, "activationToken")
-	// 用激活码启用账号，错码应当被拒绝。
-	code, body = do(t, srv, "POST", base+"/activate", "", `{"loginName":"sa","activationToken":"`+act+`","password":"secret"}`)
-	// 不是无内容则本测失败。
-	if code != http.StatusNoContent {
-		// 与预期不符就停测，避免后面连环误判。
-		t.Fatalf("activate %d %s", code, body)
-	}
+	// 按约定身份建厂，初始超管当场有效。
+	svc, _ := enrollSA(t, h, fid)
 	// 登录并取得会话，口令错误应当被拒绝。
-	code, body = do(t, srv, "POST", base+"/pad/login", "", `{"loginName":"sa","password":"secret"}`)
+	code, body := do(t, srv, "POST", base+"/pad/login", "", `{"loginName":"sa","password":"secret"}`)
 	// 不是成功则本测失败。
 	if code != http.StatusOK {
 		// 与预期不符就停测，避免后面连环误判。
@@ -942,4 +885,25 @@ func TestPadClientSoftwareHTTP(t *testing.T) {
 		// 与预期不符就停测，避免后面连环误判。
 		t.Fatalf("missing %d %s", code, body)
 	}
+}
+
+// enrollSA 按约定身份建厂并写入初始超管 sa / secret，自签租约后交回厂服务和超管身份。
+func enrollSA(t *testing.T, h *hub.Hub, fid uuid.UUID) (*service.Service, uuid.UUID) {
+	// 标成辅助函数，失败时栈指向真正的用例。
+	t.Helper()
+	// 现发初始超管身份。
+	saID := id.New()
+	// 建厂并写入初始超管，当场有效。
+	svc, err := h.Enroll(context.Background(), fid, saID, "sa", "超管", "secret")
+	// 建厂失败则停测。
+	if err != nil {
+		// 与预期不符就停测，避免后面连环误判。
+		t.Fatalf("enroll: %v", err)
+	}
+	// HTTP 测不连 WAN，自签租约才能写资产。
+	if err := svc.Store().GrantLocalLease(context.Background()); err != nil {
+		// 与预期不符就停测，避免后面连环误判。
+		t.Fatalf("lease: %v", err)
+	}
+	return svc, saID
 }

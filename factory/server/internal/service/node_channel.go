@@ -63,49 +63,6 @@ func (s *Node) AuthClientMQTT(ctx context.Context, clientID uuid.UUID, token str
 	return acc, nil
 }
 
-// ClientInbox 登录人在这台上要对账的策略和获准闭包；不含正文。
-func (s *Closure) ClientInbox(ctx context.Context, token string, clientID uuid.UUID) (ClientInbox, error) {
-	// 当前登录人必须是这台的操作员
-	acc, cli, err := s.requireClientOperator(ctx, token, clientID)
-	// 没占这台操作员位则拒绝
-	if err != nil {
-		// 记下本机对账被拒绝，写失败不改变结果
-		_ = s.audit(ctx, actorOf(acc), nil, "client_inbox", clientID.String(), audit.Deny)
-		return ClientInbox{}, err
-	}
-	// 操作员身份已经核对过，这里只用策略和清单
-	_ = cli
-	// 读对本厂全部本机生效的策略
-	pol, err := s.store.ClientPolicy(ctx)
-	// 策略读失败，不能改或下发
-	if err != nil {
-		return ClientInbox{}, err
-	}
-	// 没有签发钥就生成一对，私钥不外送
-	key, err := s.ensureSigningKey(ctx)
-	// 签发钥备不齐，不能发运行凭证
-	if err != nil {
-		return ClientInbox{}, err
-	}
-	// 先装上策略和签发公钥，闭包清单随后再填
-	out := ClientInbox{Policy: pol, Closures: []ClosureRef{}, SigningPublicKey: key.PublicKey}
-	// 策略只要当前工程时，清单里不带其它份
-	if pol.CacheScope == CacheScopeCurrent {
-		// 本机对账成功后记审计，再把结果交回
-		return out, s.audit(ctx, &acc.ID, nil, "client_inbox", clientID.String(), audit.Allow)
-	}
-	// 收集该机授权工程和本人个人工程
-	refs, err := s.listAuthorizedRefs(ctx, acc, clientID)
-	// 清单收不齐则不返回残缺对账
-	if err != nil {
-		return ClientInbox{}, err
-	}
-	// 填上获准闭包清单，里面没有正文
-	out.Closures = refs
-	// 本机对账成功后记审计，再把结果交回
-	return out, s.audit(ctx, &acc.ID, nil, "client_inbox", clientID.String(), audit.Allow)
-}
-
 // PadClientInbox 厂网登录拉本人可用的工艺/工程清单，别人的个人级不给；不要求已绑设备。
 func (s *Closure) PadClientInbox(ctx context.Context, token string) (ClientInbox, error) {
 	// 先确认会话仍有效，过期或停用直接拒绝
@@ -138,68 +95,6 @@ func (s *Closure) PadClientInbox(ctx context.Context, token string) (ClientInbox
 	out := ClientInbox{Policy: pol, Closures: refs, SigningPublicKey: key.PublicKey}
 	// 厂网对账成功后记审计，再把结果交回
 	return out, s.audit(ctx, &acc.ID, nil, "pad_inbox", acc.ID.String(), audit.Allow)
-}
-
-// PullClientClosure 组包后另造过站 DEK 封给这台已登录本机；厂库信封不原样拷。
-func (s *Closure) PullClientClosure(ctx context.Context, token string, clientID, projectID uuid.UUID) (TransitClosure, error) {
-	// 当前登录人必须是这台的操作员
-	acc, _, err := s.requireClientOperator(ctx, token, clientID)
-	// 收成文本身份，供审计或对账对准
-	target := projectID.String() + " client=" + clientID.String()
-	// 没占这台操作员位则拒绝
-	if err != nil {
-		// 记下本机拉包被拒绝，写失败不改变结果
-		_ = s.audit(ctx, actorOf(acc), nil, "pull_closure", target, audit.Deny)
-		return TransitClosure{}, err
-	}
-	// 拉不到这份就拒绝组包
-	if err := s.assertPullable(ctx, acc, clientID, projectID); err != nil {
-		// 记下本机拉包被拒绝，写失败不改变结果
-		_ = s.audit(ctx, &acc.ID, nil, "pull_closure", target, audit.Deny)
-		return TransitClosure{}, err
-	}
-	// 装上要组包的工程根
-	root, err := s.loadRootForPack(ctx, projectID)
-	// 根读不到则不能组包
-	if err != nil {
-		// 记下本机拉包被拒绝，写失败不改变结果
-		_ = s.audit(ctx, &acc.ID, nil, "pull_closure", target, audit.Deny)
-		return TransitClosure{}, err
-	}
-	// 按根组出钉死修订的闭包
-	snap, err := s.packFromMember(ctx, root)
-	// 组包失败则拒绝下发
-	if err != nil {
-		// 记下本机拉包被拒绝，写失败不改变结果
-		_ = s.audit(ctx, &acc.ID, nil, "pull_closure", target, audit.Deny)
-		return TransitClosure{}, err
-	}
-	// 另拷一份设备身份再取址，避免指向会被改的变量
-	cid := clientID
-	// 钉到这台本机，别的设备拉不到
-	snap.TargetClientID = &cid
-	// 过站 DEK 用登录人钥封，不用焊机钥。
-	who, err := s.store.EnsurePersonUnwrapKey(ctx, acc.ID)
-	// 解封钥读不到或长度不对，拒绝继续
-	if err != nil || len(who.UnwrapKey) != contentcrypt.KeySize {
-		// 解封钥读不到或长度不对，记下本机拉包被拒绝，写失败不改变结果
-		_ = s.audit(ctx, &acc.ID, nil, "pull_closure", target, audit.Deny)
-		// 读钥失败则交回错误，长度不对另按无效钥拒绝
-		if err != nil {
-			return TransitClosure{}, err
-		}
-		return TransitClosure{}, domain.ErrForbidden
-	}
-	// 取出本厂稳定身份，封包和审计都要用
-	out, err := sealTransit(s.store.FactoryID(), clientID, who.UnwrapKey, snap)
-	// 读钥失败则交回错误，长度不对另按无效钥拒绝
-	if err != nil {
-		// 记下本机拉包被拒绝，写失败不改变结果
-		_ = s.audit(ctx, &acc.ID, nil, "pull_closure", target, audit.Deny)
-		return TransitClosure{}, err
-	}
-	// 本机拉包成功后记审计，再把结果交回
-	return out, s.audit(ctx, &acc.ID, nil, "pull_closure", target, audit.Allow)
 }
 
 // PadPullClientClosure 厂网登录后拉包：工程和工艺都用登录人钥封过站 DEK；列表外钉住的平台工艺按钉死修订给。
@@ -315,42 +210,6 @@ func (s *Closure) noteUpReject(personID, clientID uuid.UUID) {
 // upRejectLogEvery 被拒的本机上行每满这么多条再记一条日志。
 const upRejectLogEvery = 100
 
-// 当前登录人必须是这台已绑定本机的操作员。
-func (s *kernel) requireClientOperator(ctx context.Context, token string, clientID uuid.UUID) (Account, Client, error) {
-	// 厂网登录人对未作废设备对账
-	acc, cli, err := s.requireBoundClient(ctx, token, clientID)
-	// 设备已作废或未绑定则拒绝
-	if err != nil {
-		return acc, cli, err
-	}
-	// 这台没有使用人或使用人不是当前登录者
-	if cli.OperatorID == nil || *cli.OperatorID != acc.ID {
-		return acc, cli, domain.ErrForbidden
-	}
-	return acc, cli, nil
-}
-
-// 厂网登录人可对账本厂未作废设备；不要求已占操作员位。
-func (s *kernel) requireBoundClient(ctx context.Context, token string, clientID uuid.UUID) (Account, Client, error) {
-	// 先确认会话仍有效，过期或停用直接拒绝
-	acc, err := s.RequireActive(ctx, token)
-	// 会话无效或账号已停用，拒绝继续
-	if err != nil {
-		return Account{}, Client{}, err
-	}
-	// 按身份读本厂这台设备
-	cli, err := s.store.ClientByID(ctx, clientID)
-	// 这台设备不在名录，拒绝
-	if err != nil {
-		return acc, Client{}, err
-	}
-	// 不是有效绑定则拒绝签发、登录或对账
-	if cli.Status != ClientStatusBound {
-		return acc, cli, domain.ErrBindingVoid
-	}
-	return acc, cli, nil
-}
-
 // actorOf 没有账号时审计不记人。
 func actorOf(acc Account) *uuid.UUID {
 	// 会话上还没有人，对账清单按空处理
@@ -360,39 +219,6 @@ func actorOf(acc Account) *uuid.UUID {
 	// 另拷一份身份再取址，避免下一轮把指针改掉
 	id := acc.ID
 	return &id
-}
-
-// 厂级/平台级须有有效授权；个人级仅创建人。
-func (s *Closure) assertPullable(ctx context.Context, acc Account, clientID, projectID uuid.UUID) error {
-	// 装上要组包的工程根
-	root, err := s.loadRootForPack(ctx, projectID)
-	// 根读不到则不能组包
-	if err != nil {
-		return err
-	}
-	// 不是工程则拒绝装袋或授权
-	if root.Kind != KindProject {
-		return domain.ErrForbidden
-	}
-	// 个人级只给创建人，平台级按副本规则
-	if root.Level == AssetLevelPersonal {
-		// 不是创建人则个人级拒绝，或改看授权
-		if root.CreatorID == nil || *root.CreatorID != acc.ID {
-			return domain.ErrForbidden
-		}
-		return nil
-	}
-	// 读这台对该工程是否仍有授权
-	grant, err := s.store.ClientGrant(ctx, projectID, clientID)
-	// 授权读不到或已收回则拒绝下发
-	if err != nil {
-		return err
-	}
-	// 授权已收回则这台不能再收这份工程
-	if !grant.Active {
-		return domain.ErrForbidden
-	}
-	return nil
 }
 
 // 厂网登录只能拉本人清单里的资产，与清单同一套裁剪；不另走下发授权。列表外钉住的平台工艺交回钉死依赖。
@@ -577,76 +403,6 @@ func (s *Closure) refForPad(ctx context.Context, assetID uuid.UUID) (ClosureRef,
 	// 厂网拉包组出工程，工艺另封
 	snap, err := s.packForPad(ctx, assetID)
 	// 组包失败则这次拉包拒绝
-	if err != nil {
-		return ClosureRef{AssetID: root.ID, Revision: root.Revision, Name: root.Name, Level: root.Level}, nil
-	}
-	return ClosureRef{AssetID: snap.AssetID, Revision: snap.Revision, Digest: snap.Digest, Name: root.Name, Level: snap.Level}, nil
-}
-
-// listAuthorizedRefs 收集该机授权工程和登录人个人级可用工程。
-func (s *Closure) listAuthorizedRefs(ctx context.Context, acc Account, clientID uuid.UUID) ([]ClosureRef, error) {
-	// 取这台仍有效的工程授权
-	grants, err := s.store.ListActiveGrantsForClient(ctx, clientID)
-	// 授权读失败，不给残缺对账清单
-	if err != nil {
-		return nil, err
-	}
-	// 按条数决定是空、超限还是继续
-	out := make([]ClosureRef, 0, len(grants))
-	// 用来挡重复，同一份只收一次
-	seen := map[uuid.UUID]struct{}{}
-	// 逐条有效授权看是否盖住目标
-	for _, g := range grants {
-		// 组包得到修订和摘要，失败仍留名称
-		ref, err := s.refForProject(ctx, g.ProjectID)
-		// 连名称都组不出来则这条作废
-		if err != nil {
-			continue
-		}
-		// 把这一条收进结果，漏了清单就不齐
-		out = append(out, ref)
-		// 记下已经收过，后面的重复直接跳过
-		seen[g.ProjectID] = struct{}{}
-	}
-	// 列出本厂正在治理的资产
-	rows, err := s.store.ListGovernedAssets(ctx)
-	// 列表读失败则不返回残缺
-	if err != nil {
-		return nil, err
-	}
-	// 逐行按调用方作用域裁，看不到的丢掉
-	for _, a := range rows {
-		// 这一条不符合就跳过，其它条继续
-		if a.Kind != KindProject || a.Level != AssetLevelPersonal || a.CreatorID != acc.ID || a.Status != AssetAvailable {
-			continue
-		}
-		// 已经收过则跳过，保证一份只出现一次
-		if _, ok := seen[a.ID]; ok {
-			continue
-		}
-		// 组包得到修订和摘要，失败仍留名称
-		ref, err := s.refForProject(ctx, a.ID)
-		// 连名称都组不出来则这条作废
-		if err != nil {
-			continue
-		}
-		// 把这一条收进结果，漏了清单就不齐
-		out = append(out, ref)
-	}
-	return out, nil
-}
-
-// refForProject 组包得到修订和摘要；组包失败仍给出名称。
-func (s *Closure) refForProject(ctx context.Context, projectID uuid.UUID) (ClosureRef, error) {
-	// 装上要组包的工程根
-	root, err := s.loadRootForPack(ctx, projectID)
-	// 根读不到则不能组包
-	if err != nil {
-		return ClosureRef{}, err
-	}
-	// 按根组出钉死修订的闭包
-	snap, err := s.packFromMember(ctx, root)
-	// 组包失败则拒绝下发
 	if err != nil {
 		return ClosureRef{AssetID: root.ID, Revision: root.Revision, Name: root.Name, Level: root.Level}, nil
 	}

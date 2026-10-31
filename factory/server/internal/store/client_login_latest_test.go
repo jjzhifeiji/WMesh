@@ -20,7 +20,7 @@ func TestLatestClientLogins(t *testing.T) {
 	// 按这家厂的稳定身份打开库。
 	s := store.Open(facDB, facID)
 	// 建一名登录人，登录现场要挂在人上。
-	p, err := s.CreatePerson(ctx, "op", "操作员", false)
+	p, err := s.CreatePerson(ctx, "op", "操作员", "", false)
 	// 建人失败就停测，后面没有前提。
 	if err != nil {
 		// 建人失败就停测。

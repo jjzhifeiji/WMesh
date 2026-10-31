@@ -16,7 +16,6 @@ type Config struct {
 	HTTPAddr        string         // 监听地址
 	DSN             string         // 维护库连接串；按工厂身份从这里建/开各厂库，账号需 CREATEDB
 	WebDir          string         // 已构建管理端目录；空表示只提供 API
-	BootstrapToken  string         // 建厂引导共享密码，只用于 /internal/bootstrap；空则关闭该入口
 	WANURL          string         // WAN HTTP 根地址，厂出站认领；空则不能认领
 	WANMQTT         string         // WAN MQTT 地址，空则按 HTTP 主机拼端口
 	WANCAFile       string         // 校验 WAN 证书的 CA 文件；空则用系统根证书
@@ -53,7 +52,6 @@ func Load() (Config, error) {
 		HTTPAddr:       envOr("WMESH_HTTP_ADDR", ":8081"),
 		DSN:            envOr("WMESH_DSN", devDSN),
 		WebDir:         strings.TrimSpace(os.Getenv("WMESH_WEB_DIR")),
-		BootstrapToken: os.Getenv("WMESH_BOOTSTRAP_TOKEN"),
 		WANURL:         strings.TrimSpace(os.Getenv("WMESH_WAN_URL")),
 		WANMQTT:        strings.TrimSpace(os.Getenv("WMESH_WAN_MQTT_URL")),
 		WANCAFile:      strings.TrimSpace(os.Getenv("WMESH_WAN_CA_FILE")),

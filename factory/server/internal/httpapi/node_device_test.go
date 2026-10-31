@@ -1,4 +1,4 @@
-// HTTP 适配：钉机械臂号、本机登录领钥。
+// HTTP 适配：示教器厂网登录、现场登录记录、平板资产与探活；本机旧入口已撤。
 package httpapi_test
 
 import (
@@ -18,7 +18,7 @@ import (
 	"wmesh/factory/internal/platform/testpg"
 )
 
-// 验收机械臂号登录和是否属于本厂。
+// 验收厂网登录、现场记录和设备号是否属于本厂。
 func TestClientDeviceLoginHTTP(t *testing.T) {
 	// 连上测试库并建枢纽，连不上就停测。
 	h, err := hub.New(testpg.AdminDSN())
@@ -37,49 +37,23 @@ func TestClientDeviceLoginHTTP(t *testing.T) {
 		h.Close()
 	})
 	// 拉起临时服务，测完由清理关掉。
-	srv := httptest.NewServer(httpapi.New(h, "boot-secret", "").Router())
+	srv := httptest.NewServer(httpapi.New(h, "").Router())
 	// 测完关闭临时服务，把端口让出来。
 	t.Cleanup(srv.Close)
 	// 拼出本厂前缀，后面的路径都接在后面。
 	base := "/v1/factories/" + fid.String()
 
-	// 用共享密码建厂，激活码只出现在回包。
-	code, body := do(t, srv, "POST", "/internal/bootstrap", "boot-secret", `{"factoryId":"`+fid.String()+`","saLogin":"sa","saDisplay":"超管"}`)
-	// 不是已创建则本测失败。
-	if code != http.StatusCreated {
-		// 与预期不符就停测，避免后面连环误判。
-		t.Fatalf("bootstrap %d %s", code, body)
-	}
-	// 取出人员身份，后面用来对上连接。
-	saID := gjson(t, body, "personId")
-	// 按工厂打开已有库，没有库就当未初始化。
-	svc, err := h.Service(context.Background(), fid)
-	// 这一步失败则停测，避免在坏结果上继续。
-	if err != nil {
-		// 与预期不符就停测，避免后面连环误判。
-		t.Fatalf("service: %v", err)
-	}
-	// 租约写不进去则停测，后面读正文会失败。
-	if err := svc.Store().GrantLocalLease(context.Background()); err != nil {
-		// 与预期不符就停测，避免后面连环误判。
-		t.Fatalf("lease: %v", err)
-	}
+	// 按约定身份建厂，初始超管当场有效。
+	svc, saUUID := enrollSA(t, h, fid)
+	// 转成文本，后面拼路径要用。
+	saID := saUUID.String()
 	// 条件里的调用失败则停止，不回成功。
 	if err := svc.Store().PutFactoryName(context.Background(), "一号厂"); err != nil {
 		// 与预期不符就停测，避免后面连环误判。
 		t.Fatalf("factory name: %v", err)
 	}
-	// 取出激活码，启用账号时要用。
-	act := gjson(t, body, "activationToken")
-	// 用激活码启用账号，错码应当被拒绝。
-	code, body = do(t, srv, "POST", base+"/activate", "", `{"loginName":"sa","activationToken":"`+act+`","password":"secret"}`)
-	// 不是无内容则本测失败。
-	if code != http.StatusNoContent {
-		// 与预期不符就停测，避免后面连环误判。
-		t.Fatalf("activate %d %s", code, body)
-	}
 	// 登录并取得会话，口令错误应当被拒绝。
-	code, body = do(t, srv, "POST", base+"/login", "", `{"loginName":"sa","password":"secret"}`)
+	code, body := do(t, srv, "POST", base+"/login", "", `{"loginName":"sa","password":"secret"}`)
 	// 不是成功则本测失败。
 	if code != http.StatusOK {
 		// 与预期不符就停测，避免后面连环误判。
@@ -108,47 +82,24 @@ func TestClientDeviceLoginHTTP(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// 不带登录钉臂号，应当被拒。
-	code, body = do(t, srv, "POST", base+"/clients/"+cid+"/device", "", `{"deviceSerial":"ARM-1"}`)
-	// 不是未登录则本测失败，厂网谁都能改臂号。
-	if code != http.StatusUnauthorized {
-		// 与预期不符就停测，避免后面连环误判。
-		t.Fatalf("anon pin %d %s", code, body)
-	}
-	// 读回设备名录，看匿名那次有没有把号钉上。
-	code, body = do(t, srv, "GET", base+"/clients", tok, "")
-	// 读不到，或名录里已出现臂号，则本测失败。
-	if code != http.StatusOK || strings.Contains(body, `"deviceSerial"`) {
-		// 与预期不符就停测，避免后面连环误判。
-		t.Fatalf("anon pin left serial %d %s", code, body)
-	}
-	// 把机械臂号钉到这台设备上。
-	code, body = do(t, srv, "POST", base+"/clients/"+cid+"/device", tok, `{"deviceSerial":""}`)
-	// 不是非法请求则本测失败。
-	if code != http.StatusBadRequest {
-		// 与预期不符就停测，避免后面连环误判。
-		t.Fatalf("empty serial %d %s", code, body)
-	}
-	// 把机械臂号钉到这台设备上。
+	// 厂端钉臂号的旧入口已撤，应落到兜底的找不到。
 	code, body = do(t, srv, "POST", base+"/clients/"+cid+"/device", tok, `{"deviceSerial":"ARM-1"}`)
-	// 状态不对，或回包泄出了不该给的秘密。
-	if code != http.StatusOK || gjson(t, body, "deviceSerial") != "ARM-1" || strings.Contains(body, "unwrapKey") {
+	// 不是找不到则本测失败。
+	if code != http.StatusNotFound {
 		// 与预期不符就停测，避免后面连环误判。
-		t.Fatalf("pin %d %s", code, body)
+		t.Fatalf("old pin %d %s", code, body)
 	}
-	// 已钉 ARM-1 再换别的号，应当被拒。
-	code, body = do(t, srv, "POST", base+"/clients/"+cid+"/device", tok, `{"deviceSerial":"ARM-2"}`)
-	// 不是非法请求则本测失败，已钉的号被悄悄覆盖。
-	if code != http.StatusBadRequest {
-		// 与预期不符就停测，避免后面连环误判。
-		t.Fatalf("overwrite %d %s", code, body)
+	// 臂号随 WAN 绑定帧来，测试直接在库里钉上。
+	if _, err := svc.Store().PinDeviceSerial(context.Background(), uuid.MustParse(cid), "ARM-1", false); err != nil {
+		// 钉号失败就停测。
+		t.Fatalf("pin: %v", err)
 	}
-	// 读回设备名录，确认号仍是 ARM-1。
+	// 读回设备名录，号应是 ARM-1，回包不带解封钥。
 	code, body = do(t, srv, "GET", base+"/clients", tok, "")
-	// 读不到，或号已不是 ARM-1，则本测失败。
-	if code != http.StatusOK || !strings.Contains(body, `"deviceSerial":"ARM-1"`) {
+	// 读不到、号不对或泄出解封钥则本测失败。
+	if code != http.StatusOK || !strings.Contains(body, `"deviceSerial":"ARM-1"`) || strings.Contains(body, "unwrapKey") {
 		// 与预期不符就停测，避免后面连环误判。
-		t.Fatalf("serial after overwrite %d %s", code, body)
+		t.Fatalf("serial listed %d %s", code, body)
 	}
 
 	// 登录并取得会话，口令错误应当被拒绝。
@@ -226,27 +177,20 @@ func TestClientDeviceLoginHTTP(t *testing.T) {
 		// 与预期不符就停测，避免后面连环误判。
 		t.Fatalf("pad inbox %d %s", code, body)
 	}
-	// 拉取对账清单，正文不应当出现。
+	// 本机收件箱旧入口已撤，应落到兜底的找不到。
 	code, body = do(t, srv, "GET", base+"/clients/"+cid+"/inbox", padTok, "")
-	// 不是禁止则本测失败。
-	if code != http.StatusForbidden {
+	// 不是找不到则本测失败。
+	if code != http.StatusNotFound {
 		// 与预期不符就停测，避免后面连环误判。
-		t.Fatalf("pad token on client inbox %d %s", code, body)
+		t.Fatalf("old client inbox %d %s", code, body)
 	}
 
-	// 登录并取得会话，口令错误应当被拒绝。
-	code, body = do(t, srv, "POST", base+"/clients/"+cid+"/login", "", `{"deviceSerial":"ARM-9","loginName":"sa","password":"secret"}`)
-	// 不是非法请求则本测失败。
-	if code != http.StatusBadRequest {
-		// 与预期不符就停测，避免后面连环误判。
-		t.Fatalf("mismatch %d %s", code, body)
-	}
-	// 登录并取得会话，口令错误应当被拒绝。
+	// 本机登录领钥的旧入口已撤，应落到兜底的找不到。
 	code, body = do(t, srv, "POST", base+"/clients/"+cid+"/login", "", `{"deviceSerial":"ARM-1","loginName":"sa","password":"secret"}`)
-	// 状态不对，或回包泄出了不该给的秘密。
-	if code != http.StatusOK || gjson(t, body, "token") == "" || gjson(t, body, "unwrapKey") == "" || !strings.Contains(body, `"persistUnwrapKey":false`) {
+	// 不是找不到则本测失败。
+	if code != http.StatusNotFound {
 		// 与预期不符就停测，避免后面连环误判。
-		t.Fatalf("client login %d %s", code, body)
+		t.Fatalf("old client login %d %s", code, body)
 	}
 
 	// 局域网探活，看设备号是否属于本厂。

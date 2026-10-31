@@ -405,7 +405,7 @@ func pushFactory(t *testing.T, ctx context.Context) (*factory.Service, string, u
 	t.Helper()
 	// 拉起隔离厂库，起不来说明测试库还没就绪。
 	h := New(t)
-	// 建厂并签发超管激活码，失败则没有厂可测。
+	// 建厂并写下初始超管，失败则没有厂可测。
 	created, fac, err := h.Provision(ctx, "sa-push", "超管")
 	// 建厂失败就停，否则后面没有可靠结果。
 	if err != nil {
@@ -413,7 +413,7 @@ func pushFactory(t *testing.T, ctx context.Context) (*factory.Service, string, u
 		t.Fatal(err)
 	}
 	// 开通失败就停，否则后面没有可靠结果。
-	if err := fac.Activate(ctx, "sa-push", created.ActivationToken, "sa-pass"); err != nil {
+	if err := seedPass(ctx, fac, "sa-push", "sa-pass"); err != nil {
 		// 把开通的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
@@ -431,7 +431,7 @@ func pushFactory(t *testing.T, ctx context.Context) (*factory.Service, string, u
 func pushWeld(creator uuid.UUID, length int64) factory.WeldFact {
 	// 交回带新身份的焊事实，同一天同工程同模式。
 	return factory.WeldFact{
-		ID: id.New(), CreatorID: creator, OrgPath: []factory.PathNode{},
+		ID: id.New(), CreatorID: creator,
 		ProjectName: "工程A", WeldKind: "single", LengthMM: length, DurationSec: 1,
 		OccurredAt: time.Date(2026, 9, 18, 8, 0, 0, 0, time.UTC),
 	}

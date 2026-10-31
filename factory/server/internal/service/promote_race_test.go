@@ -1,4 +1,4 @@
-// 验收同一个人级源并发升厂级：只留一条厂级，各路都成功并指向同一条。
+// 验收同一个人级源并发升厂级：各路都成功，各自另起一份厂级草稿，身份和编号不撞。
 package service_test
 
 import (
@@ -15,7 +15,7 @@ import (
 	"wmesh/factory/internal/store"
 )
 
-// 同一个人级几路同时升厂级，撞唯一索引的那路回读已有行按摘要跳过，库里只一条带源厂级。
+// 同一个人级几路同时升厂级，每路都另起一份，库里带这个源的厂级条数等于路数。
 func TestPromoteToFactoryConcurrentSameSource(t *testing.T) {
 	// 准备无取消的上下文，后面每次调用都挂在上面。
 	ctx := context.Background()
@@ -48,26 +48,19 @@ func TestPromoteToFactoryConcurrentSameSource(t *testing.T) {
 		// 把写短码的错误打出来并停住。
 		t.Fatal(err)
 	}
-	// 写入首个超管并拿到激活码。
-	_, act, err := fac.BootstrapInitial(ctx, "sa-a", "超管A")
-	// 写首个超管失败就停，后面没有人能登录。
-	if err != nil {
+	// 写入首个超管，口令用默认口令，失败后面没有人能登录。
+	if _, err := fac.AcceptEnrollment(ctx, id.New(), "sa-a", "超管A", personPass("sa-a")); err != nil {
 		// 把建超管的错误打出来并停住。
 		t.Fatal(err)
 	}
-	// 开通失败就停，否则后面没有可靠结果。
-	if err := fac.Activate(ctx, "sa-a", act, "sa-pass"); err != nil {
-		// 把开通的错误打出来并停住，避免继续往下验。
-		t.Fatal(err)
-	}
 	// 登录并取出令牌，失败说明账号没有开通成功。
-	sa := mustLogin(t, ctx, fac, "sa-a", "sa-pass")
-	// 建人并授好角色，升厂级要有制作权。
-	pe := mustCreateRole(t, ctx, fac, sa, "pe-a", "pe-pass", factory.RoleOperator, factory.ScopeFactory, nil)
+	sa := mustLogin(t, ctx, fac, "sa-a", personPass("sa-a"))
+	// 建人并授好管理员，升厂级要有制作权。
+	pe := mustCreateRole(t, ctx, fac, sa, "pe-a", "pe-pass", factory.RoleOrgAdmin)
 	// 跑几轮，首轮顺带拨好连接，后几轮真撞在一起。
 	for round := range rounds {
 		// 每轮新建一份个人级工艺，各路都升它。
-		proc, err := fac.CreatePersonalProcess(ctx, pe.tok, factory.WorkContext{Direct: true}, fmt.Sprintf("并发升档工艺%d", round), []byte(`{"name":"race"}`))
+		proc, err := fac.CreatePersonalProcess(ctx, pe.tok, factory.WorkContext{}, fmt.Sprintf("并发升档工艺%d", round), []byte(`{"name":"race"}`))
 		// 建工艺失败就停，否则后面没有源可升。
 		if err != nil {
 			// 把建工艺的错误打出来并停住，避免继续往下验。
@@ -91,8 +84,8 @@ func TestPromoteToFactoryConcurrentSameSource(t *testing.T) {
 				defer wg.Done()
 				// 等发令枪，让各路尽量同时查同时插。
 				<-gate
-				// 升同一份个人级，撞索引的那路应回读已有行。
-				got, err := fac.PromoteToFactory(ctx, pe.tok, proc.ID)
+				// 升同一份个人级到厂级树根，每路都该另起一份。
+				got, err := fac.PromoteToFactory(ctx, pe.tok, proc.ID, uuid.Nil)
 				// 记下这一路的身份和错误。
 				ids[w], errs[w] = got.ID, err
 			}()
@@ -101,19 +94,23 @@ func TestPromoteToFactoryConcurrentSameSource(t *testing.T) {
 		close(gate)
 		// 等全部升档回来。
 		wg.Wait()
-		// 逐路核对，各路都要成功并指向同一条厂级。
+		// 记下各路拿到的身份，查有没有撞身份。
+		seen := map[uuid.UUID]bool{}
+		// 逐路核对，各路都要成功并各得一份新厂级。
 		for w := range ways {
-			// 有一路失败说明撞索引后没回读已有行；身份不同说明同源升出两条。
-			if errs[w] != nil || ids[w] != ids[0] {
+			// 有一路失败说明并发插入互相顶掉；身份重复说明两路落到同一条。
+			if errs[w] != nil || seen[ids[w]] {
 				// 带上轮号和这一路的结果停住。
-				t.Fatalf("round %d way %d: id %s want %s err %v", round, w, ids[w], ids[0], errs[w])
+				t.Fatalf("round %d way %d: id %s err %v", round, w, ids[w], errs[w])
 			}
+			// 记上这一路的身份。
+			seen[ids[w]] = true
 		}
 		// 准备承接数出来的条数。
 		var n int64
-		// 数库里带这个源的厂级，必须只有一条。
-		if err := db.Raw("SELECT COUNT(*) FROM assets WHERE source_id = ?", proc.ID).Scan(&n).Error; err != nil || n != 1 {
-			// 同一源留下了多条厂级就停。
+		// 数库里带这个源的厂级，条数应等于路数。
+		if err := db.Raw("SELECT COUNT(*) FROM assets WHERE source_id = ?", proc.ID).Scan(&n).Error; err != nil || n != ways {
+			// 条数对不上说明有路没落库或多落了。
 			t.Fatalf("round %d factory rows for source %d %v", round, n, err)
 		}
 	}

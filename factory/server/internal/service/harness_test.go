@@ -16,12 +16,11 @@ import (
 	"wmesh/factory/internal/store"
 )
 
-// 建厂夹具带回的厂编号、超管和激活码。
+// 建厂夹具带回的厂编号和超管。
 type Seeded struct {
 	ID uuid.UUID // 本厂稳定身份
 	// 首个超管的账号编号，用来核对是谁建的厂。
-	SuperAdminID    uuid.UUID
-	ActivationToken string // 一次性 8 位激活码，只给夹具
+	SuperAdminID uuid.UUID
 }
 
 // 隔离厂库夹具，只连本厂测试库。
@@ -64,15 +63,31 @@ func (h *Harness) Provision(ctx context.Context, saLogin, saDisplay string) (See
 	if err := svc.Store().PutFactoryShortCode(ctx, short); err != nil {
 		return Seeded{}, nil, err
 	}
-	// 写入首个超管，失败说明厂库还不能开张。
-	acc, token, err := svc.BootstrapInitial(ctx, saLogin, saDisplay)
+	// 写入首个超管，口令先用默认口令，失败说明厂库还不能开张。
+	acc, err := svc.AcceptEnrollment(ctx, id.New(), saLogin, saDisplay, personPass(saLogin))
 	// 写首个超管失败就把错误交回，避免留下半成品。
 	if err != nil {
 		return Seeded{}, nil, err
 	}
 	// 记下这座厂的服务，后面按编号还要取回。
 	h.factories[facID] = svc
-	return Seeded{ID: facID, SuperAdminID: acc.ID, ActivationToken: token}, svc, nil
+	return Seeded{ID: facID, SuperAdminID: acc.ID}, svc, nil
+}
+
+// seedPass 把建厂夹具里超管的默认口令改成测试口令。
+func seedPass(ctx context.Context, fac *service.Service, login, pass string) error {
+	// 先用默认口令登录，拿会话去改口令。
+	tok, err := fac.Login(ctx, login, personPass(login))
+	// 登录不上就交回，后面没法改口令。
+	if err != nil {
+		return err
+	}
+	// 本来就是默认口令就不必再改。
+	if pass == personPass(login) {
+		return nil
+	}
+	// 改成测试口令，失败交回给用例。
+	return fac.ChangePassword(ctx, tok, personPass(login), pass)
 }
 
 // 按编号取回已建的厂服务，没有则说明没建过。

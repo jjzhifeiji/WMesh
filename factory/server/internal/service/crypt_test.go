@@ -24,21 +24,21 @@ func TestContentLeaseAndEnvelope(t *testing.T) {
 	// 起一套隔离厂库，起不来则本用例没有库可测。
 	h := New(t)
 	// 开通本厂，供后面步骤使用，失败则前提断了。
-	seed, fac, err := h.Provision(ctx, "sa", "超管")
+	_, fac, err := h.Provision(ctx, "sa", "超管")
 	// 开通本厂没成功，后面的断言就没有依据。
 	if err != nil {
 		// 开通本厂失败即停，不能把这一步的失败当成通过。
 		t.Fatal(err)
 	}
-	// 激活账号没成功，后面的断言就没有依据。
-	if err := fac.Activate(ctx, "sa", seed.ActivationToken, "sa-pass"); err != nil {
-		// 激活账号失败即停，不能把这一步的失败当成通过。
+	// 改测试口令没成功，后面的断言就没有依据。
+	if err := seedPass(ctx, fac, "sa", "sa-pass"); err != nil {
+		// 改测试口令失败即停，不能把这一步的失败当成通过。
 		t.Fatal(err)
 	}
 	// 登录取会话，供后面步骤使用，失败则前提断了。
 	tok := mustLogin(t, ctx, fac, "sa", "sa-pass")
 	// 建厂级工艺，供后面步骤使用，失败则前提断了。
-	row, err := fac.CreateFactoryProcess(ctx, tok, store.WorkContext{Direct: true}, "焊", []byte(`{"a":1}`))
+	row, err := fac.CreateFactoryProcess(ctx, tok, store.WorkContext{}, "焊", []byte(`{"a":1}`))
 	// 建厂级工艺没成功，后面的断言就没有依据。
 	if err != nil {
 		// 建厂级工艺失败即停，不能把这一步的失败当成通过。
@@ -75,21 +75,21 @@ func TestContentLeaseAndEnvelope(t *testing.T) {
 	}
 
 	// 开通本厂，供后面步骤使用，失败则前提断了。
-	other, facB, err := h.Provision(ctx, "sb", "超管B")
+	_, facB, err := h.Provision(ctx, "sb", "超管B")
 	// 开通本厂没成功，后面的断言就没有依据。
 	if err != nil {
 		// 开通本厂失败即停，不能把这一步的失败当成通过。
 		t.Fatal(err)
 	}
-	// 激活账号没成功，后面的断言就没有依据。
-	if err := facB.Activate(ctx, "sb", other.ActivationToken, "sb-pass"); err != nil {
-		// 激活账号失败即停，不能把这一步的失败当成通过。
+	// 改测试口令没成功，后面的断言就没有依据。
+	if err := seedPass(ctx, facB, "sb", "sb-pass"); err != nil {
+		// 改测试口令失败即停，不能把这一步的失败当成通过。
 		t.Fatal(err)
 	}
 	// 登录取会话，供后面步骤使用，失败则前提断了。
 	tokB := mustLogin(t, ctx, facB, "sb", "sb-pass")
 	// 建厂级工艺，供后面步骤使用，失败则前提断了。
-	rowB, err := facB.CreateFactoryProcess(ctx, tokB, store.WorkContext{Direct: true}, "焊B", []byte(`{"b":1}`))
+	rowB, err := facB.CreateFactoryProcess(ctx, tokB, store.WorkContext{}, "焊B", []byte(`{"b":1}`))
 	// 建厂级工艺没成功，后面的断言就没有依据。
 	if err != nil {
 		// 建厂级工艺失败即停，不能把这一步的失败当成通过。
@@ -127,15 +127,15 @@ func TestContentLeaseMetaAndRestore(t *testing.T) {
 	// 起一套隔离厂库，起不来则本用例没有库可测。
 	h := New(t)
 	// 开通本厂，供后面步骤使用，失败则前提断了。
-	seed, fac, err := h.Provision(ctx, "sa", "超管")
+	_, fac, err := h.Provision(ctx, "sa", "超管")
 	// 开通本厂没成功，后面的断言就没有依据。
 	if err != nil {
 		// 开通本厂失败即停，不能把这一步的失败当成通过。
 		t.Fatal(err)
 	}
-	// 激活账号没成功，后面的断言就没有依据。
-	if err := fac.Activate(ctx, "sa", seed.ActivationToken, "sa-pass"); err != nil {
-		// 激活账号失败即停，不能把这一步的失败当成通过。
+	// 改测试口令没成功，后面的断言就没有依据。
+	if err := seedPass(ctx, fac, "sa", "sa-pass"); err != nil {
+		// 改测试口令失败即停，不能把这一步的失败当成通过。
 		t.Fatal(err)
 	}
 	// 登录取会话，供后面步骤使用，失败则前提断了。
@@ -148,7 +148,7 @@ func TestContentLeaseMetaAndRestore(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 建厂级工艺，供后面步骤使用，失败则前提断了。
-	row, err := fac.CreateFactoryProcess(ctx, tok, store.WorkContext{Direct: true}, "焊", []byte(`{"a":1}`))
+	row, err := fac.CreateFactoryProcess(ctx, tok, store.WorkContext{}, "焊", []byte(`{"a":1}`))
 	// 建厂级工艺没成功，后面的断言就没有依据。
 	if err != nil {
 		// 建厂级工艺失败即停，不能把这一步的失败当成通过。
@@ -167,7 +167,7 @@ func TestContentLeaseMetaAndRestore(t *testing.T) {
 		t.Fatalf("read %v", err)
 	}
 	// 没有租约时新建工艺必须因到期被拒绝。
-	if _, err := fac.CreateFactoryProcess(ctx, tok, store.WorkContext{Direct: true}, "焊2", []byte(`{"b":1}`)); !errors.Is(err, domain.ErrContentLeaseExpired) {
+	if _, err := fac.CreateFactoryProcess(ctx, tok, store.WorkContext{}, "焊2", []byte(`{"b":1}`)); !errors.Is(err, domain.ErrContentLeaseExpired) {
 		t.Fatalf("create without lease %v", err)
 	}
 	// 没有租约时给资产改名必须因到期被拒绝。
@@ -236,15 +236,15 @@ func TestLegacyPlainSealedOnLease(t *testing.T) {
 	// 起一套隔离厂库，起不来则本用例没有库可测。
 	h := New(t)
 	// 开通本厂，供后面步骤使用，失败则前提断了。
-	seed, fac, err := h.Provision(ctx, "sa", "超管")
+	_, fac, err := h.Provision(ctx, "sa", "超管")
 	// 开通本厂没成功，后面的断言就没有依据。
 	if err != nil {
 		// 开通本厂失败即停，不能把这一步的失败当成通过。
 		t.Fatal(err)
 	}
-	// 激活账号没成功，后面的断言就没有依据。
-	if err := fac.Activate(ctx, "sa", seed.ActivationToken, "sa-pass"); err != nil {
-		// 激活账号失败即停，不能把这一步的失败当成通过。
+	// 改测试口令没成功，后面的断言就没有依据。
+	if err := seedPass(ctx, fac, "sa", "sa-pass"); err != nil {
+		// 改测试口令失败即停，不能把这一步的失败当成通过。
 		t.Fatal(err)
 	}
 	// 登录取会话，供后面步骤使用，失败则前提断了。
@@ -252,7 +252,7 @@ func TestLegacyPlainSealedOnLease(t *testing.T) {
 	// 准备明文样本，封存之后盘上不应再看见原文。
 	plain := []byte(`{"legacy":1}`)
 	// 建厂级工艺，供后面步骤使用，失败则前提断了。
-	row, err := fac.CreateFactoryProcess(ctx, tok, store.WorkContext{Direct: true}, "旧明文", plain)
+	row, err := fac.CreateFactoryProcess(ctx, tok, store.WorkContext{}, "旧明文", plain)
 	// 建厂级工艺没成功，后面的断言就没有依据。
 	if err != nil {
 		// 建厂级工艺失败即停，不能把这一步的失败当成通过。
@@ -304,9 +304,9 @@ func TestAcceptLegacyPlainClosure(t *testing.T) {
 		// 开通本厂失败即停，不能把这一步的失败当成通过。
 		t.Fatal(err)
 	}
-	// 激活账号没成功，后面的断言就没有依据。
-	if err := fac.Activate(ctx, "sa", seed.ActivationToken, "sa-pass"); err != nil {
-		// 激活账号失败即停，不能把这一步的失败当成通过。
+	// 改测试口令没成功，后面的断言就没有依据。
+	if err := seedPass(ctx, fac, "sa", "sa-pass"); err != nil {
+		// 改测试口令失败即停，不能把这一步的失败当成通过。
 		t.Fatal(err)
 	}
 	// 登录取会话，供后面步骤使用，失败则前提断了。
@@ -361,9 +361,9 @@ func TestAcceptMixedTransitClosure(t *testing.T) {
 		// 开通本厂失败即停，不能把这一步的失败当成通过。
 		t.Fatal(err)
 	}
-	// 激活账号没成功，后面的断言就没有依据。
-	if err := fac.Activate(ctx, "sa", seed.ActivationToken, "sa-pass"); err != nil {
-		// 激活账号失败即停，不能把这一步的失败当成通过。
+	// 改测试口令没成功，后面的断言就没有依据。
+	if err := seedPass(ctx, fac, "sa", "sa-pass"); err != nil {
+		// 改测试口令失败即停，不能把这一步的失败当成通过。
 		t.Fatal(err)
 	}
 	// 登录取会话，供后面步骤使用，失败则前提断了。
@@ -449,15 +449,15 @@ func TestInsertReplicaSealsAndNeedsLease(t *testing.T) {
 	// 起一套隔离厂库，起不来则本用例没有库可测。
 	h := New(t)
 	// 开通本厂，供后面步骤使用，失败则前提断了。
-	seed, fac, err := h.Provision(ctx, "sa", "超管")
+	_, fac, err := h.Provision(ctx, "sa", "超管")
 	// 开通本厂没成功，后面的断言就没有依据。
 	if err != nil {
 		// 开通本厂失败即停，不能把这一步的失败当成通过。
 		t.Fatal(err)
 	}
-	// 激活账号没成功，后面的断言就没有依据。
-	if err := fac.Activate(ctx, "sa", seed.ActivationToken, "sa-pass"); err != nil {
-		// 激活账号失败即停，不能把这一步的失败当成通过。
+	// 改测试口令没成功，后面的断言就没有依据。
+	if err := seedPass(ctx, fac, "sa", "sa-pass"); err != nil {
+		// 改测试口令失败即停，不能把这一步的失败当成通过。
 		t.Fatal(err)
 	}
 	// 解析写死的标识，格式不对这条会直接中断。

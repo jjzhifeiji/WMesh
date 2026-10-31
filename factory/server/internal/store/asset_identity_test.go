@@ -34,7 +34,7 @@ func TestGovernedAssetIdentityGuard(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 建一名创建人，原件都记在他名下。
-	p, err := s.CreatePerson(ctx, "op", "操作员", false)
+	p, err := s.CreatePerson(ctx, "op", "操作员", "", false)
 	// 建账号失败就停测，避免后面没有前提。
 	if err != nil {
 		// 建账号失败就停测。

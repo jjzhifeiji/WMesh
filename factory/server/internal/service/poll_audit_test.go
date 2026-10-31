@@ -17,15 +17,15 @@ func TestPollReadsSkipAllowAudit(t *testing.T) {
 	ctx := context.Background()
 	// 拉起隔离厂库，起不来说明测试库还没就绪。
 	h := New(t)
-	// 建厂并签发超管激活码，失败则没有厂可测。
-	seed, fac, err := h.Provision(ctx, "sa", "超管")
+	// 建厂并种初始超管，失败则没有厂可测。
+	_, fac, err := h.Provision(ctx, "sa", "超管")
 	// 建厂失败就停，否则后面没有可靠结果。
 	if err != nil {
 		// 把建厂的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
 	// 开通失败就停，否则后面没有可靠结果。
-	if err := fac.Activate(ctx, "sa", seed.ActivationToken, "sa-pass"); err != nil {
+	if err := seedPass(ctx, fac, "sa", "sa-pass"); err != nil {
 		// 把开通的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
@@ -51,11 +51,6 @@ func TestPollReadsSkipAllowAudit(t *testing.T) {
 		if _, err := fac.ListClients(ctx, sa); err != nil {
 			// 把第几轮的错误打出来并停住。
 			t.Fatalf("sa clients #%d: %v", i+1, err)
-		}
-		// 超管读运行凭证摘要失败就停，只读查询不该出错。
-		if _, err := fac.ListRuntimeGrants(ctx, sa); err != nil {
-			// 把第几轮的错误打出来并停住。
-			t.Fatalf("sa runtime #%d: %v", i+1, err)
 		}
 		// 超管读工艺目录失败就停，轮询读不该出错。
 		if _, err := fac.ListFS(ctx, sa, factory.KindProcess); err != nil {

@@ -116,14 +116,14 @@ func TestPadClientSoftwareStream(t *testing.T) {
 	// 起一套测试库和厂服务，起不来则本例无法开始
 	h := New(t)
 	// 建厂并种初始超管，失败则本步验收不能继续
-	seed, fac, err := h.Provision(ctx, "sa-apk", "超管")
+	_, fac, err := h.Provision(ctx, "sa-apk", "超管")
 	// 建厂并种初始超管失败就停，避免带着错误继续验
 	if err != nil {
 		// 建厂失败就把原因打出并停掉本例
 		t.Fatal(err)
 	}
 	// 激活初始超管失败就停，避免带着错误继续验
-	if err := fac.Activate(ctx, "sa-apk", seed.ActivationToken, "sa-pass"); err != nil {
+	if err := seedPass(ctx, fac, "sa-apk", "sa-pass"); err != nil {
 		// 激活失败就把原因打出并停掉本例
 		t.Fatal(err)
 	}

@@ -111,7 +111,7 @@ func run(ctx context.Context, log *slog.Logger) error {
 	}
 
 	// 装配账号接口，引导口令只在这里核对。
-	api := httpapi.New(h, cfg.BootstrapToken, cfg.WANURL)
+	api := httpapi.New(h, cfg.WANURL)
 	// 探活带回构建号，便于对上发布包。
 	api.Version = version
 	// 登录时把设备通道地址回给平板。

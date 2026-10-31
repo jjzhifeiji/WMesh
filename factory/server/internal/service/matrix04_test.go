@@ -24,10 +24,9 @@ var matrix04IDs = []string{
 	"3.1", "3.2", "3.3",
 	"4.1", "4.2", "4.3",
 	"5.1", "5.4",
-	"6.1", "6.2", "6.3",
-	"7.1", "7.2", "7.3", "7.4", "7.5", "7.6",
+	"6.1", "6.2",
+	"7.1", "7.2", "7.3", "7.5",
 	"8.1", "8.2", "8.3",
-	"9.1", "9.2",
 	"10.1", "10.2", "10.3",
 	"11.1", "11.2", "11.3", "11.4",
 	"12.1", "12.2", "12.3",
@@ -95,14 +94,10 @@ type env04 struct {
 	pe2 namedAcc
 	// 厂A操作员，负责本机激活，越权即失败
 	op namedAcc
-	// 厂A审计员，执行下发应当被拒绝
+	// 厂A只有管理员角色的人，执行下发应当被拒绝
 	aud namedAcc
 	// 厂B工程师，读厂A工程应当被拒绝
 	peB namedAcc
-	// 车间工程师，下发厂级工程应当被拒绝
-	peShop namedAcc
-	// 车间组织，用来把权限限制在本车间
-	shop factory.OrgUnit
 	// 直属厂的工作上下文，不挂任何车间
 	direct factory.WorkContext
 	// 当前时刻，用来签发还没过期的凭证
@@ -131,7 +126,7 @@ func newEnv04(t *testing.T) *env04 {
 		t.Fatal(err)
 	}
 	// 激活初始超管失败就停，避免带着错误继续验
-	if err := facA.Activate(ctx, "sa-a", seed.ActivationToken, "sa-pass"); err != nil {
+	if err := seedPass(ctx, facA, "sa-a", "sa-pass"); err != nil {
 		// 激活初始超管失败就把原因打出并停掉本例
 		t.Fatal(err)
 	}
@@ -145,7 +140,7 @@ func newEnv04(t *testing.T) *env04 {
 		t.Fatal(err)
 	}
 	// 激活初始超管失败就停，避免带着错误继续验
-	if err := facB.Activate(ctx, "sa-b", seedB.ActivationToken, "sa-b-pass"); err != nil {
+	if err := seedPass(ctx, facB, "sa-b", "sa-b-pass"); err != nil {
 		// 激活初始超管失败就把原因打出并停掉本例
 		t.Fatal(err)
 	}
@@ -154,36 +149,13 @@ func newEnv04(t *testing.T) *env04 {
 	// 装上两厂服务和角色，缺一项则闭包夹具不完整
 	e := &env04{
 		ctx: ctx, seed: seed, fac: facA, seedB: seedB, facB: facB, sa: saA, saB: saB,
-		pe:     mustCreateRole(t, ctx, facA, saA, "pe-a", "pe-pass", factory.RoleOperator, factory.ScopeFactory, nil),
-		pe2:    mustCreateRole(t, ctx, facA, saA, "pe-a2", "pe2-pass", factory.RoleOperator, factory.ScopeFactory, nil),
-		op:     mustCreateRole(t, ctx, facA, saA, "op-a", "op-pass", factory.RoleOperator, factory.ScopeFactory, nil),
-		aud:    mustCreateRole(t, ctx, facA, saA, "aud-a", "aud-pass", factory.RoleAuditor, factory.ScopeFactory, nil),
-		peB:    mustCreateRole(t, ctx, facB, saB, "pe-b", "pe-b-pass", factory.RoleOperator, factory.ScopeFactory, nil),
-		direct: factory.WorkContext{Direct: true},
+		pe:     withOperate(t, ctx, facA, saA, mustCreateRole(t, ctx, facA, saA, "pe-a", "pe-pass", factory.RoleOrgAdmin)),
+		pe2:    withOperate(t, ctx, facA, saA, mustCreateRole(t, ctx, facA, saA, "pe-a2", "pe2-pass", factory.RoleOrgAdmin)),
+		op:     mustCreateRole(t, ctx, facA, saA, "op-a", "op-pass", factory.RoleOperator),
+		aud:    mustCreateRole(t, ctx, facA, saA, "aud-a", "aud-pass", factory.RoleOrgAdmin),
+		peB:    withOperate(t, ctx, facB, saB, mustCreateRole(t, ctx, facB, saB, "pe-b", "pe-b-pass", factory.RoleOrgAdmin)),
+		direct: factory.WorkContext{},
 		secret: []byte("closure-body-secret"),
-	}
-	// 建立组织，失败则本步验收不能继续
-	site, err := facA.CreateOrgUnit(ctx, saA, "场地", nil)
-	// 建立组织失败就停，避免带着错误继续验
-	if err != nil {
-		// 建立组织失败就把原因打出并停掉本例
-		t.Fatal(err)
-	}
-	// 建立组织，失败则本步验收不能继续
-	shop, err := facA.CreateOrgUnit(ctx, saA, "车间A", &site.ID)
-	// 建立组织失败就停，避免带着错误继续验
-	if err != nil {
-		// 建立组织失败就把原因打出并停掉本例
-		t.Fatal(err)
-	}
-	// 记下车间，后面按车间范围做越权验证
-	e.shop = shop
-	// 建人并授角色，失败则夹具缺这个身份
-	e.peShop = mustCreateRole(t, ctx, facA, saA, "pe-shop", "shop-pass", factory.RoleOperator, factory.ScopeOrgUnit, &shop.ID)
-	// 分配到组织失败就停，避免带着错误继续验
-	if err := facA.Assign(ctx, saA, e.peShop.acc.ID, shop.ID); err != nil {
-		// 分配到组织失败就把原因打出并停掉本例
-		t.Fatal(err)
 	}
 	// 取当前时刻，用来核对令牌或凭证是否过期
 	e.now = time.Now().UTC()
@@ -192,6 +164,18 @@ func newEnv04(t *testing.T) *env04 {
 	// 把时刻往后推，没成功则本步验收失败
 	e.nb, e.na = e.now.Add(-time.Hour), e.now.Add(24*time.Hour)
 	return e
+}
+
+// 给管理员再授操作员，工程师既要制作厂级又要组包下发
+func withOperate(t *testing.T, ctx context.Context, fac *factory.Service, saTok string, acc namedAcc) namedAcc {
+	// 标成辅助函数，失败栈落到调用方
+	t.Helper()
+	// 补授操作员失败就停，避免带着错误继续验
+	if _, err := fac.GrantRole(ctx, saTok, acc.acc.ID, factory.RoleOperator); err != nil {
+		// 补授操作员失败就把原因打出并停掉本例
+		t.Fatal(err)
+	}
+	return acc
 }
 
 // 起草并发布厂级工艺，失败则组包没有这条依赖
@@ -712,59 +696,6 @@ func testClosureDistribute(t *testing.T, run func(string, func(*testing.T))) {
 			t.Fatalf("grant: %v", err)
 		}
 	})
-	// 验收平台级副本不能再转发他厂，转成即失败
-	run("6.3", func(t *testing.T) {
-		// 期望把副本转发给他厂被拒为越权，放行即失败
-		if err := e.fac.ForwardToFactory(e.ctx, e.pe.tok, platProj.ID, e.seedB.ID); !errors.Is(err, domain.ErrForbidden) {
-			// 没拒成越权就失败，并打出实际错误
-			t.Fatalf("got %v", err)
-		}
-	})
-	// 验收平台级副本不能改可复制或升档，改成即失败
-	run("9.1", func(t *testing.T) {
-		// 期望改副本可复制被拒为越权，放行即失败
-		if err := e.fac.SetReplicaCopyable(e.ctx, e.pe.tok, platProj.ID, true); !errors.Is(err, domain.ErrForbidden) {
-			// 可复制标记被改掉就失败，副本应只读
-			t.Fatalf("copyable: %v", err)
-		}
-		// 期望把副本升档被拒为越权，放行即失败
-		if err := e.fac.PromoteReplica(e.ctx, e.pe.tok, platProj.ID); !errors.Is(err, domain.ErrForbidden) {
-			// 升档没有被拒就失败
-			t.Fatalf("promote: %v", err)
-		}
-		// 准备可复制的平台正文，厂里改标记应当被拒
-		body := []byte("plat-copyable")
-		// 另做一份成员，用来替换或对照原闭包
-		m := factory.ClosureMember{
-			ID: id.New(), Kind: factory.KindProcess, Level: factory.AssetLevelPlatform, Name: "可复制平台工艺",
-			Status: factory.AssetAvailable, Copyable: true, Revision: 1, Content: body, Digest: digest.Sum(body),
-		}
-		// 封一份闭包快照失败就停，避免带着错误继续验
-		if err := e.fac.AcceptPlatformDelivery(e.ctx, sealSnap(factory.KindProcess, m, nil, &fid, nil)); err != nil {
-			// 封一份闭包快照失败就把原因打出并停掉本例
-			t.Fatal(err)
-		}
-		// 读平台副本，失败则本步验收不能继续
-		got, err := e.fac.GetReplica(e.ctx, e.pe.tok, m.ID, 1)
-		// 读平台副本失败就停，避免带着错误继续验
-		if err != nil || !got.Copyable {
-			// 可复制标记不符就把实际值打出并停掉本例
-			t.Fatalf("%+v %v", got, err)
-		}
-		// 期望改副本可复制被拒为越权，放行即失败
-		if err := e.fac.SetReplicaCopyable(e.ctx, e.pe.tok, m.ID, false); !errors.Is(err, domain.ErrForbidden) {
-			// 收紧副本可复制没有被拒就失败
-			t.Fatalf("tighten replica: %v", err)
-		}
-	})
-	// 验收平台级不能转发给未授权厂，转成即失败
-	run("9.2", func(t *testing.T) {
-		// 期望把副本转发给他厂被拒为越权，放行即失败
-		if err := e.fac.ForwardToFactory(e.ctx, e.sa, platProj.ID, e.seedB.ID); !errors.Is(err, domain.ErrForbidden) {
-			// 没拒成越权就失败，并打出实际错误
-			t.Fatalf("got %v", err)
-		}
-	})
 
 	// 验收厂级工程能依赖已到达的平台工艺，建不成即失败
 	run("10.1", func(t *testing.T) {
@@ -823,25 +754,17 @@ func testClosureDistribute(t *testing.T, run func(string, func(*testing.T))) {
 			t.Fatalf("ungranted: %v", err)
 		}
 	})
-	// 验收审计员和超管不能下发，下发成功即失败
+	// 验收只有管理员角色不能下发，超管拥有全部权限可以下发
 	run("7.3", func(t *testing.T) {
 		// 期望把闭包下发到焊机被拒为越权，放行即失败
 		if err := e.fac.DistributeToClient(e.ctx, e.aud.tok, proj.ID, cid, &bag, e.clocks); !errors.Is(err, domain.ErrForbidden) {
 			// 这个身份的结果不符合预期，放行或做错即失败
 			t.Fatalf("aud: %v", err)
 		}
-		// 期望把闭包下发到焊机被拒为越权，放行即失败
-		if err := e.fac.DistributeToClient(e.ctx, e.sa, proj.ID, cid, &bag, e.clocks); !errors.Is(err, domain.ErrForbidden) {
+		// 超管下发应放行，拒了说明超管没拿到操作权
+		if err := e.fac.DistributeToClient(e.ctx, e.sa, proj.ID, cid, &bag, e.clocks); err != nil {
 			// 这个身份的结果不符合预期，放行或做错即失败
 			t.Fatalf("sa: %v", err)
-		}
-	})
-	// 验收车间工程师不能下发厂级工程，下发成功即失败
-	run("7.4", func(t *testing.T) {
-		// 期望把闭包下发到焊机被拒为越权，放行即失败
-		if err := e.fac.DistributeToClient(e.ctx, e.peShop.tok, proj.ID, cid, &bag, e.clocks); !errors.Is(err, domain.ErrForbidden) {
-			// 这个身份的结果不符合预期，放行或做错即失败
-			t.Fatalf("shop: %v", err)
 		}
 	})
 	// 验收厂级工程师能下发已收平台级，袋里没有即失败
@@ -855,14 +778,6 @@ func testClosureDistribute(t *testing.T, run func(string, func(*testing.T))) {
 		if err := e.fac.DistributeToClient(e.ctx, e.pe.tok, platProj.ID, cid, &bag, e.clocks); err != nil {
 			// 把闭包下发到焊机失败就把原因打出并停掉本例
 			t.Fatal(err)
-		}
-	})
-	// 验收车间工程师不能下发平台级，下发成功即失败
-	run("7.6", func(t *testing.T) {
-		// 期望把闭包下发到焊机被拒为越权，放行即失败
-		if err := e.fac.DistributeToClient(e.ctx, e.peShop.tok, platProj.ID, cid, &bag, e.clocks); !errors.Is(err, domain.ErrForbidden) {
-			// 没拒成越权就失败，并打出实际错误
-			t.Fatalf("got %v", err)
 		}
 	})
 	// 验收含平台工艺的闭包能下发到焊机，没有即失败

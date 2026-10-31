@@ -6,11 +6,14 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/google/uuid"
+
 	"wmesh/factory/internal/platform/contentcrypt"
 	"wmesh/factory/internal/platform/digest"
 	"wmesh/factory/internal/platform/domain"
 	"wmesh/factory/internal/platform/id"
 	factory "wmesh/factory/internal/service"
+	"wmesh/factory/internal/store"
 )
 
 // 升档名单要含本厂全部级别，漏级别说明没列全。
@@ -27,16 +30,16 @@ func TestPromotableForChannel(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 开通失败就停，否则后面没有可靠结果。
-	if err := fac.Activate(ctx, "sa", seed.ActivationToken, "sa-pass"); err != nil {
+	if err := seedPass(ctx, fac, "sa", "sa-pass"); err != nil {
 		// 把开通的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
 	// 登录并取出令牌，失败说明账号没有开通成功。
 	sa := mustLogin(t, ctx, fac, "sa", "sa-pass")
 	// 建人并授好角色，失败说明后面没有账号可用。
-	pe := mustCreateRole(t, ctx, fac, sa, "pe", "pe-pass", factory.RoleOperator, factory.ScopeFactory, nil)
+	pe := mustCreateRole(t, ctx, fac, sa, "pe", "pe-pass", factory.RoleOrgAdmin)
 	// 标明直接作业上下文，后面新建资产都挂在这里。
-	direct := factory.WorkContext{Direct: true}
+	direct := factory.WorkContext{}
 	// 准备这段正文字节，读回对不上说明没写进去。
 	body := []byte("factory-body")
 
@@ -144,23 +147,23 @@ func TestPromotableProjectsAllStatuses(t *testing.T) {
 	// 拉起隔离厂库，起不来说明测试库还没就绪。
 	h := New(t)
 	// 建厂并签发超管激活码，失败则没有厂可测。
-	seed, fac, err := h.Provision(ctx, "sa", "超管")
+	_, fac, err := h.Provision(ctx, "sa", "超管")
 	// 建厂失败就停，否则后面没有可靠结果。
 	if err != nil {
 		// 把建厂的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
 	// 开通失败就停，否则后面没有可靠结果。
-	if err := fac.Activate(ctx, "sa", seed.ActivationToken, "sa-pass"); err != nil {
+	if err := seedPass(ctx, fac, "sa", "sa-pass"); err != nil {
 		// 把开通的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
 	// 登录并取出令牌，失败说明账号没有开通成功。
 	sa := mustLogin(t, ctx, fac, "sa", "sa-pass")
 	// 建人并授好角色，失败说明后面没有账号可用。
-	pe := mustCreateRole(t, ctx, fac, sa, "pe", "pe-pass", factory.RoleOperator, factory.ScopeFactory, nil)
+	pe := mustCreateRole(t, ctx, fac, sa, "pe", "pe-pass", factory.RoleOrgAdmin)
 	// 标明直接作业上下文，后面新建资产都挂在这里。
-	direct := factory.WorkContext{Direct: true}
+	direct := factory.WorkContext{}
 	// 准备这段正文字节，读回对不上说明没写进去。
 	body := []byte("job")
 
@@ -248,5 +251,108 @@ func TestPromotableProjectsAllStatuses(t *testing.T) {
 	if snap, err := fac.SnapshotForChannel(ctx, off.ID); err != nil || snap.Status != factory.AssetDisabled {
 		// 停用之后仍能操作，说明停用没有生效。
 		t.Fatalf("disabled snap %+v %v", snap, err)
+	}
+}
+
+// 升档落进所选厂级文件夹成草稿，再升另起一份；非创建人的管理员升不了别人的个人级。
+func TestPromoteIntoFolderAsDraft(t *testing.T) {
+	// 准备无取消的上下文，后面每次调用都挂在上面。
+	ctx := context.Background()
+	// 拉起隔离厂库，起不来说明测试库还没就绪。
+	h := New(t)
+	// 建厂并写下超管，失败则没有厂可测。
+	_, fac, err := h.Provision(ctx, "sa", "超管")
+	// 建厂失败就停，否则后面没有可靠结果。
+	if err != nil {
+		// 把建厂的错误打出来并停住，避免继续往下验。
+		t.Fatal(err)
+	}
+	// 改测试口令失败就停，否则后面没有可靠结果。
+	if err := seedPass(ctx, fac, "sa", "sa-pass"); err != nil {
+		// 把改口令的错误打出来并停住，避免继续往下验。
+		t.Fatal(err)
+	}
+	// 登录并取出令牌，失败说明账号没有开通成功。
+	sa := mustLogin(t, ctx, fac, "sa", "sa-pass")
+	// 建管理员，他自己的个人级可以升到厂级。
+	pe := mustCreateRole(t, ctx, fac, sa, "pe", "pe-pass", factory.RoleOrgAdmin)
+	// 再建一位管理员，他不是源的创建人。
+	pe2 := mustCreateRole(t, ctx, fac, sa, "pe2", "pe2-pass", factory.RoleOrgAdmin)
+	// 列出可见目录，用来认出厂级根夹。
+	nodes, err := fac.ListFS(ctx, pe.tok, factory.KindProcess)
+	// 列目录失败就停，后面没法建夹。
+	if err != nil {
+		// 把列目录的错误打出来并停住。
+		t.Fatal(err)
+	}
+	// 留出厂级根夹，建目标夹要从这里开始。
+	var factoryRoot factory.FSNodeView
+	// 逐个目录节点查看，认出厂级根。
+	for _, n := range nodes {
+		// 无父节点的厂级夹就是厂级根。
+		if n.NodeKind == store.FSNodeFolder && n.TreeLevel == store.FSTreeFactory && n.ParentID == nil {
+			// 命中厂级根就记下来。
+			factoryRoot = n
+		}
+	}
+	// 目录里必须有厂级根夹，否则后面没法往下建。
+	if factoryRoot.ID == uuid.Nil {
+		// 认不出厂级根就停，后面没法建夹。
+		t.Fatal("missing factory root")
+	}
+	// 在厂级根下建目标夹，升档要落到这里。
+	folder, err := fac.CreateFSFolder(ctx, pe.tok, factoryRoot.ID, "升档夹")
+	// 建夹失败就停，后面没有目标可选。
+	if err != nil {
+		// 把建夹的错误打出来并停住。
+		t.Fatal(err)
+	}
+	// 新建一份个人工艺，作为升档的源。
+	src, err := fac.CreatePersonalProcess(ctx, pe.tok, factory.WorkContext{}, "个人源", []byte(`{"name":"src"}`))
+	// 建个人工艺失败就停，否则后面没有源可升。
+	if err != nil {
+		// 把建个人工艺的错误打出来并停住。
+		t.Fatal(err)
+	}
+	// 升到所选文件夹，应落成新身份的厂级草稿。
+	first, err := fac.PromoteToFactory(ctx, pe.tok, src.ID, folder.ID)
+	// 升档失败或没落成厂级草稿就停。
+	if err != nil || first.ID == src.ID || first.Level != factory.AssetLevelFactory || first.Status != factory.AssetDraft {
+		// 升出来的不是厂级草稿，口径偏了。
+		t.Fatalf("promote into folder %+v %v", first, err)
+	}
+	// 再升一次，应另起一份，不回写第一份。
+	second, err := fac.PromoteToFactory(ctx, pe.tok, src.ID, folder.ID)
+	// 再升失败或撞了第一份的身份或编号就停。
+	if err != nil || second.ID == first.ID || second.Code == first.Code || second.Status != factory.AssetDraft {
+		// 再升没另起一份，说明还在覆盖旧稿。
+		t.Fatalf("second promote %+v %v", second, err)
+	}
+	// 重新列目录，核对两份都挂在所选夹下。
+	nodes, err = fac.ListFS(ctx, pe.tok, factory.KindProcess)
+	// 列目录失败就停，后面核不了落点。
+	if err != nil {
+		// 把列目录的错误打出来并停住。
+		t.Fatal(err)
+	}
+	// 记下落在所选夹下的资产。
+	under := map[uuid.UUID]bool{}
+	// 逐个节点看文件挂在哪个夹下。
+	for _, n := range nodes {
+		// 只看挂在目标夹下的文件。
+		if n.AssetID != nil && n.ParentID != nil && *n.ParentID == folder.ID {
+			// 记上这份资产。
+			under[*n.AssetID] = true
+		}
+	}
+	// 两份升出来的厂级都要在所选夹下。
+	if !under[first.ID] || !under[second.ID] {
+		// 有一份没落进所选夹，说明落点不对。
+		t.Fatalf("promoted not in folder: %v", under)
+	}
+	// 不是创建人的管理员升别人的个人级必须被拒。
+	if _, err := fac.PromoteToFactory(ctx, pe2.tok, src.ID, folder.ID); !errors.Is(err, domain.ErrForbidden) {
+		// 放行说明别人的个人级被借升档拿走了。
+		t.Fatalf("non-creator admin promote: %v", err)
 	}
 }

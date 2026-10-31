@@ -131,18 +131,23 @@ func (s *kernel) loadCheckedMeta(ctx context.Context, id uuid.UUID) (Asset, erro
 	return s.store.GovernedAssetMetaByID(ctx, id)
 }
 
-// canAuthorFactory 本厂有效账号都能制作、改厂级。
-func (s *kernel) canAuthorFactory(ctx context.Context, acc Account, unit *uuid.UUID) error {
-	// 厂级制作不看上下文，参数留着对齐别的入口。
-	_ = ctx
-	// 本厂有效账号都能制作，这里不再分人。
-	_ = acc
-	// 不看组织节点，管理员或有效账号即可。
-	_ = unit
+// canAuthorFactory 厂级的制作和修改只给超管或管理员。
+func (s *kernel) canAuthorFactory(ctx context.Context, acc Account) error {
+	// 厂级工艺工程归管理员管
+	return s.can(ctx, acc, permManageAssets)
+}
+
+// canAuthorLevel 按级别核制作权：厂级要管理员，个人级本厂有效账号都能建。
+func (s *kernel) canAuthorLevel(ctx context.Context, acc Account, level string) error {
+	// 厂级要管理员，个人级不再拦
+	if level == AssetLevelFactory {
+		// 厂级交给管理员口径判
+		return s.canAuthorFactory(ctx, acc)
+	}
 	return nil
 }
 
-// canTouchPersonal 个人级正文：创建人、工厂超管或整厂组织管理员。
+// canTouchPersonal 个人级：只有创建人和工厂超管。
 func (s *kernel) canTouchPersonal(ctx context.Context, acc Account, a Asset) error {
 	// 不是个人级就放行，厂级不在这里拦人。
 	if a.Level != AssetLevelPersonal {
@@ -152,105 +157,28 @@ func (s *kernel) canTouchPersonal(ctx context.Context, acc Account, a Asset) err
 	if acc.ID == a.CreatorID {
 		return nil
 	}
-	// 只认整厂管理员，节点管理员不能碰下属个人级，和个人树同口径。
-	return s.can(ctx, acc, permManageOrg, nil)
+	// 其余只认超管，和个人文件夹同口径。
+	return s.can(ctx, acc, permManageAccount)
 }
 
-// opCovers 下发按操作员作用域；制作不走这里。
-func (s *kernel) opCovers(ctx context.Context, acc Account, unit *uuid.UUID) error {
-	// 读出当前人的授权，再判断角色。
-	grants, err := s.grantsOf(ctx, acc.ID)
-	// 授权读不到则拒绝，不当成没权限放过。
-	if err != nil {
-		return err
-	}
-	// 只留下操作员授权，制作权不在这里看。
-	op := withRoles(grants, RoleOperator)
-	// 没指定节点时，只接受整厂范围的操作员。
-	if unit == nil {
-		// 逐条看操作员授权里有没有整厂范围。
-		for _, g := range op {
-			// 整厂操作员可以不挂节点就通过。
-			if g.ScopeKind == ScopeFactory {
-				return nil
-			}
-		}
-		return domain.ErrForbidden
-	}
-	// 计算操作员授权是否盖住目标节点。
-	ok, err := s.covers(ctx, op, unit)
-	// 覆盖关系算不清则拒绝下发。
-	if err != nil {
-		return err
-	}
-	// 作用域盖住了就允许，没盖住下面会拒绝。
-	if ok {
-		return nil
-	}
-	return domain.ErrForbidden
-}
-
-// resolveAuthorContext 选定制作时工作位置并冻结当时路径。
-func (s *Assets) resolveAuthorContext(ctx context.Context, acc Account, wc WorkContext) (*uuid.UUID, []PathNode, error) {
-	// 直属和节点只能二选一，两个都有或都没有则拒绝。
-	if wc.Direct == (wc.OrgUnitID != nil) {
-		return nil, nil, domain.ErrWorkContext
-	}
-	// 直属工厂不挂节点，先确认能做厂级。
-	if wc.Direct {
-		// 没有制作权则拒绝，不改这份资产。
-		if err := s.canAuthorFactory(ctx, acc, nil); err != nil {
-			return nil, []PathNode{}, err
-		}
-		return nil, []PathNode{}, nil
-	}
-	// 读出组织节点，停用的不能当工作位置。
-	unit, err := s.store.Unit(ctx, *wc.OrgUnitID)
-	// 节点读不到则不能在这里制作。
-	if err != nil {
-		return wc.OrgUnitID, nil, err
-	}
-	// 停用的组织节点不能再当新的工作位置。
-	if unit.Status != StatusActive {
-		return &unit.ID, nil, domain.ErrDisabledOrgUnit // 停用节点不能再当新上下文
-	}
-	// 必须是当前有效分配。
-	ok, err := s.store.HasActiveAssignment(ctx, acc.ID, unit.ID)
-	// 分配查不到则不能用这个工作位置。
-	if err != nil {
-		return &unit.ID, nil, err
-	}
-	// 不是当前有效分配则拒绝，不能借旧节点制作。
-	if !ok {
-		return &unit.ID, nil, domain.ErrWorkContext
-	}
-	// 没有制作权则拒绝，不改这份资产。
-	if err := s.canAuthorFactory(ctx, acc, &unit.ID); err != nil {
-		return &unit.ID, nil, err
-	}
-	// 冻结当时组织路径。
-	path, err := s.store.PathSnapshot(ctx, unit.ID)
-	// 路径冻结失败则拒绝，避免残缺快照。
-	if err != nil {
-		return &unit.ID, nil, err
-	}
-	return &unit.ID, path, nil
+// opCovers 下发和组包要操作权；制作不走这里。
+func (s *kernel) opCovers(ctx context.Context, acc Account) error {
+	// 示教器作业归操作员
+	return s.can(ctx, acc, permOperate)
 }
 
 // insertAuthored 套模版后落草稿；工程依赖从参数补齐。
 func (s *Assets) insertAuthored(ctx context.Context, acc Account, wc WorkContext, kind, level, name string, content []byte, deps []AssetDep, copyable bool, weldKind ...string) (Asset, error) {
-	// 定下制作时的工作位置，并准备冻结路径。
-	unitID, path, err := s.resolveAuthorContext(ctx, acc, wc)
-	// 工作位置不合法则拒绝，并补记审计。
-	if err != nil {
+	// 按级别核制作权，没有则拒绝。
+	if err := s.canAuthorLevel(ctx, acc, level); err != nil {
 		// 创建被拒时补记审计，写失败仍维持拒绝。
-		_ = s.auditAt(ctx, &acc.ID, "create_asset", kind, audit.Deny, unitID, path)
+		_ = s.auditAt(ctx, &acc.ID, "create_asset", kind, audit.Deny)
 		return Asset{}, err
 	}
 	// 目标文件夹先核写权限，不过就记拒绝，不建资产。
 	if err := s.checkNewAssetFolder(ctx, acc, wc.FolderID); err != nil {
 		// 创建被拒时补记审计，写失败仍维持拒绝。
-		_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny, unitID, path)
+		_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny)
 		return Asset{}, err
 	}
 	// 把作业类型收成合法值，不合法就拒绝。
@@ -258,7 +186,7 @@ func (s *Assets) insertAuthored(ctx context.Context, acc Account, wc WorkContext
 	// 作业类型不合法则拒绝，并补记审计。
 	if err != nil {
 		// 创建被拒时补记审计，写失败仍维持拒绝。
-		_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny, unitID, path)
+		_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny)
 		return Asset{}, err
 	}
 	// 按当前模版整理正文，套不上就拒绝。
@@ -266,7 +194,7 @@ func (s *Assets) insertAuthored(ctx context.Context, acc Account, wc WorkContext
 	// 正文套不上模版则记拒绝。
 	if err != nil {
 		// 创建被拒时补记审计，写失败仍维持拒绝。
-		_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny, unitID, path)
+		_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny)
 		return Asset{}, err
 	}
 	// 工程要补依赖并核对焊道，工艺不走这段。
@@ -274,7 +202,7 @@ func (s *Assets) insertAuthored(ctx context.Context, acc Account, wc WorkContext
 		// 焊道对不上则拒绝，并补记审计。
 		if err := assertProjectWeldKind(weld, content); err != nil {
 			// 创建被拒时补记审计，写失败仍维持拒绝。
-			_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny, unitID, path)
+			_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny)
 			return Asset{}, err
 		}
 		// 参数里选过的工艺补进依赖，钉当前修订。
@@ -282,7 +210,7 @@ func (s *Assets) insertAuthored(ctx context.Context, acc Account, wc WorkContext
 		// 依赖钉不到当前可用工艺则记拒绝。
 		if err != nil {
 			// 创建被拒时补记审计，写失败仍维持拒绝。
-			_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny, unitID, path)
+			_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny)
 			return Asset{}, err
 		}
 		// 个人工程只能钉自己的工艺或厂级可用工艺。
@@ -297,68 +225,68 @@ func (s *Assets) insertAuthored(ctx context.Context, acc Account, wc WorkContext
 		// 依赖不合格则拒绝，并补记审计。
 		if err != nil {
 			// 创建被拒时补记审计，写失败仍维持拒绝。
-			_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny, unitID, path)
+			_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny)
 			return Asset{}, err
 		}
 		// 焊道类型对不上则记拒绝。
 		if err := s.assertDepsWeldKind(ctx, weld, deps); err != nil {
 			// 创建被拒时补记审计，写失败仍维持拒绝。
-			_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny, unitID, path)
+			_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny)
 			return Asset{}, err
 		}
 		// 套完后工程引用须落在已声明依赖里。
 		if err := s.assertProjectProcessIDs(ctx, content, deps); err != nil {
 			// 创建被拒时补记审计，写失败仍维持拒绝。
-			_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny, unitID, path)
+			_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny)
 			return Asset{}, err
 		}
 		// 工艺槽（含包角组）不挂包角工艺，免得示教器焊接时缺工艺。
 		if err := s.assertCornerSlots(ctx, content); err != nil {
 			// 创建被拒时补记审计，写失败仍维持拒绝。
-			_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny, unitID, path)
+			_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny)
 			return Asset{}, err
 		}
 	}
 	// 校验都过了才落成一条资产，并在同一笔里挂进目标文件夹。
-	return s.insertGovernedAt(ctx, acc, unitID, path, assetPlace{ParentID: wc.FolderID}, kind, level, name, content, deps, copyable, weld)
+	return s.insertGovernedAt(ctx, acc, assetPlace{ParentID: wc.FolderID}, kind, level, name, content, deps, copyable, weld)
 }
 
 // insertGoverned 落一条草稿并挂到对应树根；调用方已决定是否套过模版。
-func (s *Assets) insertGoverned(ctx context.Context, acc Account, unitID *uuid.UUID, path []PathNode, kind, level, name string, content []byte, deps []AssetDep, copyable bool, weldKind ...string) (Asset, error) {
+func (s *Assets) insertGoverned(ctx context.Context, acc Account, kind, level, name string, content []byte, deps []AssetDep, copyable bool, weldKind ...string) (Asset, error) {
 	// 不指定文件夹，文件挂到对应树根。
-	return s.insertGovernedAt(ctx, acc, unitID, path, assetPlace{}, kind, level, name, content, deps, copyable, weldKind...)
+	return s.insertGovernedAt(ctx, acc, assetPlace{}, kind, level, name, content, deps, copyable, weldKind...)
 }
 
 // insertGovernedAt 落一条草稿并挂到指定位置；挂不上则资产一起回滚。
-func (s *Assets) insertGovernedAt(ctx context.Context, acc Account, unitID *uuid.UUID, path []PathNode, at assetPlace, kind, level, name string, content []byte, deps []AssetDep, copyable bool, weldKind ...string) (Asset, error) {
+func (s *Assets) insertGovernedAt(ctx context.Context, acc Account, at assetPlace, kind, level, name string, content []byte, deps []AssetDep, copyable bool, weldKind ...string) (Asset, error) {
 	// 把作业类型收成合法值，不合法就拒绝。
 	weld, err := store.NormalizeWeldKind(firstWeldKind(weldKind))
 	// 作业类型不合法则拒绝，并补记审计。
 	if err != nil {
 		// 创建被拒时补记审计，写失败仍维持拒绝。
-		_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny, unitID, path)
+		_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny)
 		return Asset{}, err
 	}
 	// 写入本厂原件，成功还要记审计。
-	return s.putGoverned(ctx, acc, unitID, path, at, Asset{
+	return s.putGoverned(ctx, acc, at, Asset{
 		Kind: kind, Level: level, Name: name, Status: AssetDraft, Copyable: assetCopyable(kind, copyable), WeldKind: weld,
 		Content: content, Digest: digest.Sum(content), CreatorID: acc.ID,
-		OrgUnitID: unitID, OrgPath: path, Deps: deps,
+		Deps: deps,
 	})
 }
 
 // putGoverned 写入本厂原件并挂目录；状态由调用方决定，管理后台新建仍走草稿。
-func (s *Assets) putGoverned(ctx context.Context, acc Account, unitID *uuid.UUID, path []PathNode, at assetPlace, in Asset) (Asset, error) {
+func (s *Assets) putGoverned(ctx context.Context, acc Account, at assetPlace, in Asset) (Asset, error) {
 	// 原件和文件节点同一事务写入，挂不上就一起回滚。
 	row, err := s.store.InsertGovernedAssetInto(ctx, in, at.ParentID, at.OrRoot)
 	// 落库失败则记拒绝，不假装已经建成。
 	if err != nil {
 		// 创建被拒时补记审计，写失败仍维持拒绝。
-		_ = s.auditAt(ctx, &acc.ID, "create_asset", in.Name, audit.Deny, unitID, path)
+		_ = s.auditAt(ctx, &acc.ID, "create_asset", in.Name, audit.Deny)
 		return Asset{}, err
 	}
 	// 成功必须记上审计，没记上则本次不算做成。
-	if err := s.auditAt(ctx, &acc.ID, "create_asset", assetTarget(row.ID, row.Revision), audit.Allow, unitID, path); err != nil {
+	if err := s.auditAt(ctx, &acc.ID, "create_asset", assetTarget(row.ID, row.Revision), audit.Allow); err != nil {
 		return Asset{}, err
 	}
 	// 去掉正文再返回，避免工艺参数外泄。
@@ -421,20 +349,12 @@ func (s *Assets) CreatePadIn(ctx context.Context, token, level, kind, name strin
 			return Asset{}, err
 		}
 	}
-	// 定下制作时的工作位置，并准备冻结路径。
-	unitID, path, err := s.resolveAuthorContext(ctx, acc, WorkContext{Direct: true})
-	// 工作位置不合法则拒绝，并补记审计。
-	if err != nil {
-		// 创建被拒时补记审计，写失败仍维持拒绝。
-		_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny, unitID, path)
-		return Asset{}, err
-	}
 	// 目标文件夹不在或不可写就改挂树根，只有库错误才拒绝。
 	parentID, err = s.padNewAssetFolder(ctx, acc, parentID)
 	// 核目录时库出错则拒绝，并补记审计。
 	if err != nil {
 		// 创建被拒时补记审计，写失败仍维持拒绝。
-		_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny, unitID, path)
+		_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny)
 		return Asset{}, err
 	}
 	// 取出调用方给的作业类型，空的后面再推断。
@@ -449,7 +369,7 @@ func (s *Assets) CreatePadIn(ctx context.Context, token, level, kind, name strin
 	// 作业类型不合法则拒绝，并补记审计。
 	if err != nil {
 		// 创建被拒时补记审计，写失败仍维持拒绝。
-		_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny, unitID, path)
+		_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny)
 		return Asset{}, err
 	}
 	// 工程要先去掉路径、补依赖并核对焊道。
@@ -457,13 +377,13 @@ func (s *Assets) CreatePadIn(ctx context.Context, token, level, kind, name strin
 		// 仍带工艺路径则记拒绝，避免把参数拆出去。
 		if err := contenttpl.RejectProcessPath(content); err != nil {
 			// 创建被拒时补记审计，写失败仍维持拒绝。
-			_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny, unitID, path)
+			_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny)
 			return Asset{}, domain.ErrForbidden
 		}
 		// 焊道对不上则拒绝，并补记审计。
 		if err := assertProjectWeldKind(weld, content); err != nil {
 			// 创建被拒时补记审计，写失败仍维持拒绝。
-			_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny, unitID, path)
+			_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny)
 			return Asset{}, err
 		}
 		// 把正文里点到的工艺补进依赖，并钉当前修订。
@@ -471,7 +391,7 @@ func (s *Assets) CreatePadIn(ctx context.Context, token, level, kind, name strin
 		// 依赖钉不到当前可用工艺则记拒绝。
 		if err != nil {
 			// 创建被拒时补记审计，写失败仍维持拒绝。
-			_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny, unitID, path)
+			_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny)
 			return Asset{}, err
 		}
 		// 依赖规则分级别，和网页新建保持同一口径。
@@ -486,27 +406,27 @@ func (s *Assets) CreatePadIn(ctx context.Context, token, level, kind, name strin
 		// 依赖不合格则拒绝，并补记审计。
 		if err != nil {
 			// 创建被拒时补记审计，写失败仍维持拒绝。
-			_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny, unitID, path)
+			_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny)
 			return Asset{}, err
 		}
 		// 焊道类型对不上则记拒绝。
 		if err := s.assertDepsWeldKind(ctx, weld, deps); err != nil {
 			// 创建被拒时补记审计，写失败仍维持拒绝。
-			_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny, unitID, path)
+			_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny)
 			return Asset{}, err
 		}
 		// 有引用对不上依赖则拒绝，并补记审计。
 		if err := s.assertProjectProcessIDs(ctx, content, deps); err != nil {
 			// 创建被拒时补记审计，写失败仍维持拒绝。
-			_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny, unitID, path)
+			_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny)
 			return Asset{}, err
 		}
 	}
 	// 写入本厂原件并挂目录，事务里挂不上也退回树根。
-	return s.putGoverned(ctx, acc, unitID, path, assetPlace{ParentID: parentID, OrRoot: true}, Asset{
+	return s.putGoverned(ctx, acc, assetPlace{ParentID: parentID, OrRoot: true}, Asset{
 		ID: id, Kind: kind, Level: level, Name: name, Code: strings.TrimSpace(code),
 		Status: AssetAvailable, Copyable: true, WeldKind: weld, Content: content, Digest: digest.Sum(content),
-		CreatorID: acc.ID, OrgUnitID: unitID, OrgPath: path, Deps: deps,
+		CreatorID: acc.ID, Deps: deps,
 	})
 }
 
@@ -555,16 +475,14 @@ func (s *Assets) CopyProcess(ctx context.Context, token string, assetID uuid.UUI
 		// 源是个人级则副本仍归本人，不升成厂级。
 		level = AssetLevelPersonal
 	}
-	// 定下制作时的工作位置，并准备冻结路径。
-	unitID, path, err := s.resolveAuthorContext(ctx, acc, WorkContext{Direct: true})
-	// 工作位置不合法则拒绝，并补记审计。
-	if err != nil {
+	// 按级别核制作权，没有则拒绝。
+	if err := s.canAuthorLevel(ctx, acc, level); err != nil {
 		// 创建被拒时补记审计，写失败仍维持拒绝。
-		_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny, unitID, path)
+		_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny)
 		return Asset{}, err
 	}
 	// 校验都过了才落成一条资产。
-	row, err := s.insertGoverned(ctx, acc, unitID, path, KindProcess, level, name, src.Content, nil, true, src.WeldKind)
+	row, err := s.insertGoverned(ctx, acc, KindProcess, level, name, src.Content, nil, true, src.WeldKind)
 	// 落库失败则创建不算成功。
 	if err != nil {
 		return Asset{}, err
@@ -1173,48 +1091,10 @@ func (s *kernel) canApplyApp(ctx context.Context, acc Account, a Asset) error {
 	}
 }
 
-// canPadAdmin 超管或任一组织管理员即可改、建厂级，不看组织路径。
+// canPadAdmin 超管或管理员即可改、建厂级。
 func (s *kernel) canPadAdmin(ctx context.Context, acc Account) error {
-	// 读出当前人的授权，再判断角色。
-	grants, err := s.grantsOf(ctx, acc.ID)
-	// 授权读不到则拒绝，不当成没权限放过。
-	if err != nil {
-		return err
-	}
-	// 工厂超管可以直接建、改厂级。
-	if isFactorySA(grants) {
-		return nil
-	}
-	// 逐条授权，找到组织管理员即可。
-	for _, g := range grants {
-		// 任一组织管理员即可，不必盖住具体节点。
-		if g.Role == RoleOrgAdmin {
-			return nil
-		}
-	}
-	return domain.ErrForbidden
-}
-
-// SetAssetCopyable 未停用工艺可改可复制；工程没有这项。
-func (s *Assets) SetAssetCopyable(ctx context.Context, token string, assetID uuid.UUID, expected int64, copyable bool) (Asset, error) {
-	// 核对登录仍有效，后面的操作都靠这次会话。
-	acc, err := s.RequireActive(ctx, token)
-	// 登录已失效则拒绝，避免未登录的人继续。
-	if err != nil {
-		return Asset{}, err
-	}
-	// 只允许未停用的工艺改可复制，工程没有这项。
-	return s.mutateAsset(ctx, acc, assetID, expected, "update_asset", func(cur Asset) (store.AssetWrite, error) {
-		// 只有工艺能改可复制，工程没有这项。
-		if cur.Kind != KindProcess {
-			return store.AssetWrite{}, domain.ErrForbidden
-		}
-		// 停用的工艺不能改可复制。
-		if cur.Status == AssetDisabled {
-			return store.AssetWrite{}, domain.ErrAssetNotAvailable
-		}
-		return store.AssetWrite{Name: cur.Name, Digest: cur.Digest, Copyable: copyable, Status: cur.Status, Deps: cur.Deps, KeepContent: true}, nil
-	})
+	// 和管理端同一口径
+	return s.canAuthorFactory(ctx, acc)
 }
 
 // SetAssetWeldKind 未停用的本厂工艺或工程可改作业类型；在用工艺不许换，工程正文对不上时换成空焊道。
@@ -1417,8 +1297,8 @@ func (s *Assets) DeleteAsset(ctx context.Context, token string, assetID uuid.UUI
 		_ = s.audit(ctx, &acc.ID, nil, "delete_asset", assetID.String(), audit.Deny)
 		return err
 	}
-	// 没有制作权则记拒绝，不改这份资产。
-	if err := s.canAuthorFactory(ctx, acc, cur.OrgUnitID); err != nil {
+	// 按级别核制作权：厂级要管理员，个人级另验创建人或超管。
+	if err := s.canAuthorLevel(ctx, acc, cur.Level); err != nil {
 		// 删除被拒时补记审计，写失败仍不删。
 		_ = s.audit(ctx, &acc.ID, nil, "delete_asset", assetTarget(assetID, cur.Revision), audit.Deny)
 		return err
@@ -1461,8 +1341,8 @@ func (s *kernel) mutateAsset(ctx context.Context, acc Account, assetID uuid.UUID
 		_ = s.audit(ctx, &acc.ID, nil, action, assetTarget(assetID, expected), audit.Deny)
 		return Asset{}, err
 	}
-	// 没有制作权则记拒绝，不改这份资产。
-	if err := s.canAuthorFactory(ctx, acc, cur.OrgUnitID); err != nil {
+	// 按级别核制作权：厂级要管理员，个人级另验创建人或超管。
+	if err := s.canAuthorLevel(ctx, acc, cur.Level); err != nil {
 		// 这一步被拒时补记审计，写失败仍维持拒绝。
 		_ = s.audit(ctx, &acc.ID, nil, action, assetTarget(assetID, cur.Revision), audit.Deny)
 		return Asset{}, err
@@ -1497,15 +1377,10 @@ func (s *kernel) mutateAsset(ctx context.Context, acc Account, assetID uuid.UUID
 	return stripContent(row), nil
 }
 
-// canViewAssetMeta 个人级元数据给本厂有效账号看；厂级有效账号都能看。
+// canViewAssetMeta 厂级和平台级人人可见；个人级和个人文件夹同一口径，只给创建人和工厂超管。
 func (s *kernel) canViewAssetMeta(ctx context.Context, acc Account, a Asset) error {
-	// 看元数据不再查库，参数留着对齐别的入口。
-	_ = ctx
-	// 本厂有效账号都能看元数据，不再分人。
-	_ = acc
-	// 级别已在外面筛过，这里不再按资产拦。
-	_ = a
-	return nil
+	// 个人级只给创建人和超管，其余级别放行
+	return s.canTouchPersonal(ctx, acc, a)
 }
 
 // listVisibleAssets 厂端列表与平板登录共用同一份可见元数据，不含正文。
@@ -1520,6 +1395,8 @@ func (s *kernel) listVisibleAssets(ctx context.Context, acc Account, kind string
 	if err != nil {
 		return nil, err
 	}
+	// 超管能看全部个人级，只判一次。
+	sa := s.isComputerAdmin(ctx, acc)
 	// 先攒当前人能看的条目，正文稍后去掉。
 	visible := []Asset{}
 	// 逐条看本厂原件，种类或权限不合就跳过。
@@ -1528,13 +1405,9 @@ func (s *kernel) listVisibleAssets(ctx context.Context, acc Account, kind string
 		if kind != "" && a.Kind != kind {
 			continue
 		}
-		// 无权看的跳过，其它错误则整份失败。
-		if err := s.canViewAssetMeta(ctx, acc, a); err != nil {
-			// 无权或不许用则按这个原因停下，不误当成别的错。
-			if errors.Is(err, domain.ErrForbidden) {
-				continue
-			}
-			return nil, err
+		// 别人的个人级只给超管看，和个人文件夹同口径。
+		if a.Level == AssetLevelPersonal && a.CreatorID != acc.ID && !sa {
+			continue
 		}
 		// 去掉正文再返回，避免工艺参数外泄。
 		visible = append(visible, stripContent(a))
@@ -1695,8 +1568,8 @@ func (s *Assets) ReadAssetContent(ctx context.Context, token string, assetID uui
 	return a.Content, nil
 }
 
-// PromoteToFactory 把可复制的未停用个人级升为厂级，草稿也可升；再升时目标停用则拒，摘要与作业类型同则跳过，否则覆盖并保留目标状态与可复制。
-func (s *Assets) PromoteToFactory(ctx context.Context, token string, assetID uuid.UUID) (Asset, error) {
+// PromoteToFactory 把未停用的个人级复制一份到所选厂级文件夹，落成草稿，改好再发布；每次升都另起一份，不回写。
+func (s *Assets) PromoteToFactory(ctx context.Context, token string, assetID, folderID uuid.UUID) (Asset, error) {
 	// 核对登录仍有效，后面的操作都靠这次会话。
 	acc, err := s.RequireActive(ctx, token)
 	// 登录已失效则拒绝，避免未登录的人继续。
@@ -1711,93 +1584,51 @@ func (s *Assets) PromoteToFactory(ctx context.Context, token string, assetID uui
 		_ = s.audit(ctx, &acc.ID, nil, "promote_asset", assetID.String(), audit.Deny)
 		return Asset{}, err
 	}
-	// 没有制作权则记拒绝，不改这份资产。
-	if err := s.canAuthorFactory(ctx, acc, src.OrgUnitID); err != nil {
-		// 升档被拒时补记审计，写失败仍维持拒绝。
-		_ = s.audit(ctx, &acc.ID, nil, "promote_asset", assetTarget(src.ID, src.Revision), audit.Deny)
-		return Asset{}, err
-	}
 	// 只有个人级能升厂级，厂级和平台级拒绝。
 	if src.Level != AssetLevelPersonal {
 		// 升档被拒时补记审计，写失败仍维持拒绝。
 		_ = s.audit(ctx, &acc.ID, nil, "promote_asset", assetTarget(src.ID, src.Revision), audit.Deny)
 		return Asset{}, domain.ErrForbidden
 	}
-	// 停用不能升；草稿可以，厂级新条目仍记可用。
+	// 个人级只给创建人和超管碰；还要有厂级制作权。
+	if err := s.canTouchPersonal(ctx, acc, src); err != nil {
+		// 升档被拒时补记审计，写失败仍维持拒绝。
+		_ = s.audit(ctx, &acc.ID, nil, "promote_asset", assetTarget(src.ID, src.Revision), audit.Deny)
+		return Asset{}, err
+	}
+	// 没有厂级制作权则记拒绝。
+	if err := s.canAuthorFactory(ctx, acc); err != nil {
+		// 升档被拒时补记审计，写失败仍维持拒绝。
+		_ = s.audit(ctx, &acc.ID, nil, "promote_asset", assetTarget(src.ID, src.Revision), audit.Deny)
+		return Asset{}, err
+	}
+	// 停用不能升；草稿可以。
 	if src.Status == AssetDisabled {
 		// 升档被拒时补记审计，写失败仍维持拒绝。
 		_ = s.audit(ctx, &acc.ID, nil, "promote_asset", assetTarget(src.ID, src.Revision), audit.Deny)
 		return Asset{}, domain.ErrAssetNotAvailable
 	}
-	// 不可复制的工艺拒绝升厂级，避免参数外带。
-	if src.Kind == KindProcess && !src.Copyable {
-		// 升档被拒时补记审计，写失败仍维持拒绝。
-		_ = s.audit(ctx, &acc.ID, nil, "promote_asset", assetTarget(src.ID, src.Revision), audit.Deny)
-		return Asset{}, domain.ErrAssetNotCopyable
-	}
-	// 失败则记拒绝并停下，不继续往下改。
+	// 工程依赖须已是可用厂级工艺。
 	if err := s.assertPromoteToFactoryDeps(ctx, src); err != nil {
 		// 升档被拒时补记审计，写失败仍维持拒绝。
 		_ = s.audit(ctx, &acc.ID, nil, "promote_asset", assetTarget(src.ID, src.Revision), audit.Deny)
 		return Asset{}, err
 	}
-	// 记下源修订，覆盖或新建时带到厂级。
-	rev := src.Revision
-	// 已升过则按摘要和作业类型跳过或覆盖。
-	existing, err := s.store.GovernedAssetBySourceID(ctx, src.ID)
-	// 还没升过就先复制一条新身份的厂级。
-	if errors.Is(err, domain.ErrNotFound) {
-		// 第一次升档复制新身份。
-		row, ierr := s.store.InsertGovernedAsset(ctx, Asset{
-			Kind: src.Kind, Level: AssetLevelFactory, Name: src.Name, Status: AssetAvailable, Copyable: true, WeldKind: src.WeldKind,
-			Content: src.Content, Digest: src.Digest, CreatorID: acc.ID,
-			OrgUnitID: src.OrgUnitID, OrgPath: src.OrgPath,
-			SourceID: &src.ID, SourceRevision: &rev, Deps: src.Deps,
-		})
-		// 插成了就记允许并返回新厂级。
-		if ierr == nil {
-			// 成功必须记上审计，没记上则本次不算做成。
-			if err := s.audit(ctx, &acc.ID, nil, "promote_asset", assetTarget(row.ID, row.Revision)+" from "+assetTarget(src.ID, src.Revision), audit.Allow); err != nil {
-				return Asset{}, err
-			}
-			// 去掉正文再返回，避免工艺参数外泄。
-			return stripContent(row), nil
-		}
-		// 不是同源被并发升档先插上，就记拒绝并停下。
-		if !errors.Is(ierr, domain.ErrAssetSourceTaken) {
-			// 升档被拒时补记审计，写失败仍维持拒绝。
-			_ = s.audit(ctx, &acc.ID, nil, "promote_asset", assetTarget(src.ID, src.Revision), audit.Deny)
-			return Asset{}, ierr
-		}
-		// 同源已有一条，回读那条再按摘要跳过或覆盖，不另起一条。
-		existing, err = s.store.GovernedAssetBySourceID(ctx, src.ID)
-	}
-	// 读已有厂级出错则把库错误抛回，避免当成没有。
-	if err != nil {
+	// 目标文件夹先核写权限，空则挂厂级树根。
+	if err := s.checkNewAssetFolder(ctx, acc, folderID); err != nil {
 		// 升档被拒时补记审计，写失败仍维持拒绝。
 		_ = s.audit(ctx, &acc.ID, nil, "promote_asset", assetTarget(src.ID, src.Revision), audit.Deny)
 		return Asset{}, err
 	}
-	// 厂级已停用则拒绝，摘要相同也不放开，免得被源重新放出来。
-	if existing.Status == AssetDisabled {
-		// 升档被拒时补记审计，写失败仍维持拒绝。
-		_ = s.audit(ctx, &acc.ID, nil, "promote_asset", assetTarget(src.ID, src.Revision), audit.Deny)
-		return Asset{}, domain.ErrAssetNotAvailable
-	}
-	// 正文和作业类型都没变才直接用已升的那条。
-	if bytes.Equal(existing.Digest, src.Digest) && existing.WeldKind == src.WeldKind {
-		// 成功必须记上审计，没记上则本次不算做成。
-		if err := s.audit(ctx, &acc.ID, nil, "promote_asset", assetTarget(existing.ID, existing.Revision)+" from "+assetTarget(src.ID, src.Revision), audit.Allow); err != nil {
-			return Asset{}, err
-		}
-		// 去掉正文再返回，避免工艺参数外泄。
-		return stripContent(existing), nil
-	}
-	// 正文或作业类型变了就覆盖厂级；状态和可复制沿用厂级自己的。
-	row, err := s.store.UpdateGovernedAsset(ctx, existing.ID, existing.Revision, store.AssetWrite{
-		Name: src.Name, Content: src.Content, Digest: src.Digest, Copyable: existing.Copyable, Status: existing.Status, WeldKind: src.WeldKind, Deps: src.Deps, SourceRevision: &rev,
-	})
-	// 失败则记拒绝并停下，不继续往下改。
+	// 记下源修订，只当出处。
+	rev := src.Revision
+	// 复制一份新身份的厂级草稿，挂进所选文件夹，同一事务挂不上就一起回滚。
+	row, err := s.store.InsertGovernedAssetInto(ctx, Asset{
+		Kind: src.Kind, Level: AssetLevelFactory, Name: src.Name, Status: AssetDraft, Copyable: true, WeldKind: src.WeldKind,
+		Content: src.Content, Digest: src.Digest, CreatorID: acc.ID,
+		SourceID: &src.ID, SourceRevision: &rev, Deps: src.Deps,
+	}, folderID, false)
+	// 落库失败则记拒绝，不假装已经建成。
 	if err != nil {
 		// 升档被拒时补记审计，写失败仍维持拒绝。
 		_ = s.audit(ctx, &acc.ID, nil, "promote_asset", assetTarget(src.ID, src.Revision), audit.Deny)
@@ -1850,7 +1681,7 @@ func (s *Assets) ExportAssetSnapshot(ctx context.Context, token string, assetID 
 		return AssetSnapshot{}, err
 	}
 	// 没有制作权则记拒绝，不改这份资产。
-	if err := s.canAuthorFactory(ctx, acc, src.OrgUnitID); err != nil {
+	if err := s.canAuthorFactory(ctx, acc); err != nil {
 		// 外送被拒时补记审计，写失败仍不外送。
 		_ = s.audit(ctx, &acc.ID, nil, "export_asset", assetTarget(src.ID, src.Revision), audit.Deny)
 		return AssetSnapshot{}, err
@@ -2007,46 +1838,6 @@ func (s *Assets) SnapshotForChannel(ctx context.Context, assetID uuid.UUID) (Ass
 	return snap, s.audit(ctx, nil, nil, "export_asset", assetTarget(src.ID, src.Revision), audit.Allow)
 }
 
-// AssetAuthorContext 是制作工艺/工程时可选的工作位置。
-type AssetAuthorContext struct {
-	AllowDirect bool      `json:"allowDirect"` // 有效账号可直属工厂
-	OrgUnits    []OrgUnit `json:"orgUnits"`    // 本人已分配的有效节点
-}
-
-// AuthorContext 给出当前账号可用来创建资产的工作位置。
-func (s *Assets) AuthorContext(ctx context.Context, token string) (AssetAuthorContext, error) {
-	// 核对登录仍有效，后面的操作都靠这次会话。
-	acc, err := s.RequireActive(ctx, token)
-	// 登录已失效则拒绝，避免未登录的人继续。
-	if err != nil {
-		return AssetAuthorContext{}, err
-	}
-	// 有效账号默认可直属工厂，节点下面再填。
-	out := AssetAuthorContext{AllowDirect: true, OrgUnits: []OrgUnit{}}
-	// 只收本人已分配的有效节点。
-	assigns, err := s.store.ActiveAssignments(ctx, acc.ID)
-	// 分配读失败则给不出可选工作位置。
-	if err != nil {
-		return AssetAuthorContext{}, err
-	}
-	// 逐条分配取节点，停用的不放进可选项。
-	for _, a := range assigns {
-		// 读出组织节点，停用的不能当工作位置。
-		unit, err := s.store.Unit(ctx, a.OrgUnitID)
-		// 节点读不到则不能在这里制作。
-		if err != nil {
-			return AssetAuthorContext{}, err
-		}
-		// 停用节点不给选，不能再当新的工作位置。
-		if unit.Status != StatusActive {
-			continue
-		}
-		// 有效节点放进可选工作位置。
-		out.OrgUnits = append(out.OrgUnits, unit)
-	}
-	return out, nil
-}
-
 // AssetView 给管理端看的资产行，带创建人名字，不含正文。
 type AssetView struct {
 	Asset                 // 嵌入的资产行，正文已去掉
@@ -2104,30 +1895,4 @@ func (s *Assets) decorateAssets(ctx context.Context, rows []Asset) ([]AssetView,
 		out = append(out, view)
 	}
 	return out, nil
-}
-
-// RehomeAsset 拒绝改挂创建人或创建路径。
-func (s *Assets) RehomeAsset(ctx context.Context, token string, assetID uuid.UUID) error {
-	// 核对登录仍有效，后面的操作都靠这次会话。
-	acc, err := s.RequireActive(ctx, token)
-	// 登录已失效则拒绝，避免未登录的人继续。
-	if err != nil {
-		return err
-	}
-	// 改挂创建路径一律拒绝，并补记审计。
-	_ = s.audit(ctx, &acc.ID, nil, "rehome_asset", assetID.String(), audit.Deny)
-	return domain.ErrForbidden
-}
-
-// CreateProcessFromProject 拒绝把工程自有参数拆成新工艺。
-func (s *Assets) CreateProcessFromProject(ctx context.Context, token string, projectID uuid.UUID) error {
-	// 核对登录仍有效，后面的操作都靠这次会话。
-	acc, err := s.RequireActive(ctx, token)
-	// 登录已失效则拒绝，避免未登录的人继续。
-	if err != nil {
-		return err
-	}
-	// 不许把工程参数拆成新工艺，并补记拒绝。
-	_ = s.audit(ctx, &acc.ID, nil, "create_process_from_project", projectID.String(), audit.Deny)
-	return domain.ErrForbidden
 }

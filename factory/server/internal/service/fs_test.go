@@ -24,14 +24,14 @@ func TestFactoryFS(t *testing.T) {
 	// 起一套隔离厂库，起不来则本用例没有库可测。
 	h := New(t)
 	// 开通本厂，供后面步骤使用，失败则前提断了。
-	seed, fac, err := h.Provision(ctx, "sa", "超管")
+	_, fac, err := h.Provision(ctx, "sa", "超管")
 	// 开通本厂没成功，后面的断言就没有依据。
 	if err != nil {
 		// 开通本厂失败即停，不能把这一步的失败当成通过。
 		t.Fatal(err)
 	}
 	// 激活账号没成功，后面的断言就没有依据。
-	if err := fac.Activate(ctx, "sa", seed.ActivationToken, "sa-pass"); err != nil {
+	if err := seedPass(ctx, fac, "sa", "sa-pass"); err != nil {
 		// 激活账号失败即停，不能把这一步的失败当成通过。
 		t.Fatal(err)
 	}
@@ -40,11 +40,11 @@ func TestFactoryFS(t *testing.T) {
 	// 个人树主人用好认的名字，后面查通道回包里有没有漏出它。
 	const peLogin = "fsowner-liu"
 	// 建人并授角色，供后面步骤使用，失败则前提断了。
-	pe := mustCreateRole(t, ctx, fac, sa, peLogin, "pe-pass", factory.RoleOperator, factory.ScopeFactory, nil)
+	pe := mustCreateRole(t, ctx, fac, sa, peLogin, "pe-pass", factory.RoleOrgAdmin)
 	// 建人并授角色，供后面步骤使用，失败则前提断了。
-	other := mustCreateRole(t, ctx, fac, sa, "ot", "ot-pass", factory.RoleOperator, factory.ScopeFactory, nil)
+	other := mustCreateRole(t, ctx, fac, sa, "ot", "ot-pass", factory.RoleOperator)
 	// 用直属上下文写工艺，不把它挂到车间。
-	direct := factory.WorkContext{Direct: true}
+	direct := factory.WorkContext{}
 
 	// 建个人工艺，供后面步骤使用，失败则前提断了。
 	mine, err := fac.CreatePersonalProcess(ctx, pe.tok, direct, "我的工艺", []byte("p"))
@@ -217,7 +217,7 @@ func TestPlatformFSPathFromWAN(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 激活账号没成功，后面的断言就没有依据。
-	if err := fac.Activate(ctx, "sa", seed.ActivationToken, "sa-pass"); err != nil {
+	if err := seedPass(ctx, fac, "sa", "sa-pass"); err != nil {
 		// 激活账号失败即停，不能把这一步的失败当成通过。
 		t.Fatal(err)
 	}
@@ -383,21 +383,21 @@ func TestPadNestedFS(t *testing.T) {
 	// 起一套隔离厂库，起不来则本用例没有库可测。
 	h := New(t)
 	// 开通本厂，供后面步骤使用，失败则前提断了。
-	seed, fac, err := h.Provision(ctx, "sa", "超管")
+	_, fac, err := h.Provision(ctx, "sa", "超管")
 	// 开通本厂没成功，后面的断言就没有依据。
 	if err != nil {
 		// 开通本厂失败即停，不能把这一步的失败当成通过。
 		t.Fatal(err)
 	}
 	// 激活账号没成功，后面的断言就没有依据。
-	if err := fac.Activate(ctx, "sa", seed.ActivationToken, "sa-pass"); err != nil {
+	if err := seedPass(ctx, fac, "sa", "sa-pass"); err != nil {
 		// 激活账号失败即停，不能把这一步的失败当成通过。
 		t.Fatal(err)
 	}
 	// 登录取会话，供后面步骤使用，失败则前提断了。
 	sa := mustLogin(t, ctx, fac, "sa", "sa-pass")
 	// 建人并授角色，供后面步骤使用，失败则前提断了。
-	op := mustCreateRole(t, ctx, fac, sa, "op", "op-pass", factory.RoleOperator, factory.ScopeFactory, nil)
+	op := mustCreateRole(t, ctx, fac, sa, "op", "op-pass", factory.RoleOperator)
 	// 准备一段正文，读回或检索时要拿它对照。
 	body := []byte(`{"name":"mine","current":170}`)
 	// 先登记 C0008 这台焊机，示教器自带的 C 段号才会被认。
@@ -841,16 +841,16 @@ func TestCopyFS(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 激活账号没成功，后面的断言就没有依据。
-	if err := fac.Activate(ctx, "sa", seed.ActivationToken, "sa-pass"); err != nil {
+	if err := seedPass(ctx, fac, "sa", "sa-pass"); err != nil {
 		// 激活账号失败即停，不能把这一步的失败当成通过。
 		t.Fatal(err)
 	}
 	// 登录取会话，供后面步骤使用，失败则前提断了。
 	sa := mustLogin(t, ctx, fac, "sa", "sa-pass")
 	// 建人并授角色，供后面步骤使用，失败则前提断了。
-	pe := mustCreateRole(t, ctx, fac, sa, "pe", "pe-pass", factory.RoleOperator, factory.ScopeFactory, nil)
+	pe := mustCreateRole(t, ctx, fac, sa, "pe", "pe-pass", factory.RoleOrgAdmin)
 	// 用直属上下文写源工艺，不把它挂到车间。
-	direct := factory.WorkContext{Direct: true}
+	direct := factory.WorkContext{}
 	// 建厂级工艺，供后面步骤使用，失败则前提断了。
 	src, err := fac.CreateFactoryProcess(ctx, pe.tok, direct, "厂级源", []byte("copy-fs"))
 	// 建厂级工艺没成功，后面的断言就没有依据。
@@ -1301,23 +1301,23 @@ func TestCopyFSLongName(t *testing.T) {
 	// 起一套隔离厂库，起不来则本用例没有库可测。
 	h := New(t)
 	// 开通本厂，供后面步骤使用，失败则前提断了。
-	seed, fac, err := h.Provision(ctx, "sa", "超管")
+	_, fac, err := h.Provision(ctx, "sa", "超管")
 	// 开通本厂没成功，后面的断言就没有依据。
 	if err != nil {
 		// 开通本厂失败即停，不能把这一步的失败当成通过。
 		t.Fatal(err)
 	}
 	// 激活账号没成功，后面的断言就没有依据。
-	if err := fac.Activate(ctx, "sa", seed.ActivationToken, "sa-pass"); err != nil {
+	if err := seedPass(ctx, fac, "sa", "sa-pass"); err != nil {
 		// 激活账号失败即停，不能把这一步的失败当成通过。
 		t.Fatal(err)
 	}
 	// 登录取会话，供后面步骤使用，失败则前提断了。
 	sa := mustLogin(t, ctx, fac, "sa", "sa-pass")
 	// 建人并授角色，供后面步骤使用，失败则前提断了。
-	pe := mustCreateRole(t, ctx, fac, sa, "pe", "pe-pass", factory.RoleOperator, factory.ScopeFactory, nil)
+	pe := mustCreateRole(t, ctx, fac, sa, "pe", "pe-pass", factory.RoleOrgAdmin)
 	// 用直属上下文写源工艺，不把它挂到车间。
-	direct := factory.WorkContext{Direct: true}
+	direct := factory.WorkContext{}
 	// 建 64 字的厂级工艺，作为复制源文件。
 	src, err := fac.CreateFactoryProcess(ctx, pe.tok, direct, strings.Repeat("工", 64), []byte("long-fs"))
 	// 建厂级工艺没成功，后面的断言就没有依据。
@@ -1471,23 +1471,23 @@ func TestFactoryFSDeleteFolderAllOrNothing(t *testing.T) {
 	// 起一套隔离厂库，起不来则本用例没有库可测。
 	h := New(t)
 	// 开通本厂，供后面步骤使用，失败则前提断了。
-	seed, fac, err := h.Provision(ctx, "sa", "超管")
+	_, fac, err := h.Provision(ctx, "sa", "超管")
 	// 开通本厂没成功，后面的断言就没有依据。
 	if err != nil {
 		// 开通本厂失败即停，不能把这一步的失败当成通过。
 		t.Fatal(err)
 	}
 	// 激活账号没成功，后面的断言就没有依据。
-	if err := fac.Activate(ctx, "sa", seed.ActivationToken, "sa-pass"); err != nil {
+	if err := seedPass(ctx, fac, "sa", "sa-pass"); err != nil {
 		// 激活账号失败即停，不能把这一步的失败当成通过。
 		t.Fatal(err)
 	}
 	// 登录取会话，供后面步骤使用，失败则前提断了。
 	sa := mustLogin(t, ctx, fac, "sa", "sa-pass")
 	// 建人并授角色，供后面步骤使用，失败则前提断了。
-	pe := mustCreateRole(t, ctx, fac, sa, "pe", "pe-pass", factory.RoleOperator, factory.ScopeFactory, nil)
+	pe := mustCreateRole(t, ctx, fac, sa, "pe", "pe-pass", factory.RoleOrgAdmin)
 	// 用直属上下文写工艺，不把它挂到车间。
-	direct := factory.WorkContext{Direct: true}
+	direct := factory.WorkContext{}
 	// 名字排前面的工艺，不被任何工程引用。
 	free, err := fac.CreateFactoryProcess(ctx, pe.tok, direct, "a-未引用", []byte("free"))
 	// 建未引用工艺没成功，后面的断言就没有依据。
@@ -1612,23 +1612,23 @@ func TestCreateAssetIntoFolder(t *testing.T) {
 	// 起一套隔离厂库，起不来则本用例没有库可测。
 	h := New(t)
 	// 开通本厂，供后面步骤使用，失败则前提断了。
-	seed, fac, err := h.Provision(ctx, "sa", "超管")
+	_, fac, err := h.Provision(ctx, "sa", "超管")
 	// 开通本厂没成功，后面的断言就没有依据。
 	if err != nil {
 		// 开通本厂失败即停，不能把这一步的失败当成通过。
 		t.Fatal(err)
 	}
 	// 激活账号没成功，后面的断言就没有依据。
-	if err := fac.Activate(ctx, "sa", seed.ActivationToken, "sa-pass"); err != nil {
+	if err := seedPass(ctx, fac, "sa", "sa-pass"); err != nil {
 		// 激活账号失败即停，不能把这一步的失败当成通过。
 		t.Fatal(err)
 	}
 	// 登录取超管会话，后面拿它试管理员越主人。
 	sa := mustLogin(t, ctx, fac, "sa", "sa-pass")
 	// 建新建资产的人，他往厂级夹里建工艺。
-	pe := mustCreateRole(t, ctx, fac, sa, "pe", "pe-pass", factory.RoleOperator, factory.ScopeFactory, nil)
+	pe := mustCreateRole(t, ctx, fac, sa, "pe", "pe-pass", factory.RoleOrgAdmin)
 	// 建同事，他的个人夹给别人当挂不上的目标。
-	other := mustCreateRole(t, ctx, fac, sa, "ot", "ot-pass", factory.RoleOperator, factory.ScopeFactory, nil)
+	other := mustCreateRole(t, ctx, fac, sa, "ot", "ot-pass", factory.RoleOperator)
 	// 取厂级工艺树的根，公用夹要建在它下面。
 	root, err := fac.Store().EnsureFSRoot(ctx, factory.KindProcess, store.FSTreeFactory, nil)
 	// 取根失败就停，没有根建不了文件夹。
@@ -1644,7 +1644,7 @@ func TestCreateAssetIntoFolder(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 工作位置带上目标夹，新建时同一笔挂进去。
-	into := factory.WorkContext{Direct: true, FolderID: folder.ID}
+	into := factory.WorkContext{FolderID: folder.ID}
 	// 第一条建进公用夹，名字应原样占位。
 	first, err := fac.CreateFactoryProcess(ctx, pe.tok, into, "同名工艺", []byte("a"))
 	// 第一条建不成就停，挂目录的前提断了。
@@ -1703,7 +1703,7 @@ func TestCreateAssetIntoFolder(t *testing.T) {
 	// 逐个目标试新建个人工艺，都应整笔不建。
 	for _, c := range cases {
 		// 建个人工艺到挂不上的目标，应按原因拒绝。
-		_, err := fac.CreatePersonalProcess(ctx, c.tok, factory.WorkContext{Direct: true, FolderID: c.folder}, "挂不上", []byte("c"))
+		_, err := fac.CreatePersonalProcess(ctx, c.tok, factory.WorkContext{FolderID: c.folder}, "挂不上", []byte("c"))
 		// 放行或错误不对，说明挂目录没在建资产前把关。
 		if !errors.Is(err, c.want) {
 			// 拒绝原因不对即停。
@@ -1719,91 +1719,140 @@ func TestCreateAssetIntoFolder(t *testing.T) {
 	}
 }
 
-// 验收节点组织管理员碰不了下属个人级，整厂管理员和超管仍能读。
-func TestPersonalAssetNodeAdminDenied(t *testing.T) {
+// 验收管理员碰不了别人的个人级，只有创建人和超管能读。
+func TestPersonalAssetAdminDenied(t *testing.T) {
 	// 准备贯穿本用例的上下文，不设截止时间。
 	ctx := context.Background()
 	// 起一套隔离厂库，起不来则本用例没有库可测。
 	h := New(t)
 	// 开通本厂，供后面步骤使用，失败则前提断了。
-	seed, fac, err := h.Provision(ctx, "sa", "超管")
+	_, fac, err := h.Provision(ctx, "sa", "超管")
 	// 开通本厂没成功，后面的断言就没有依据。
 	if err != nil {
 		// 开通本厂失败即停，不能把这一步的失败当成通过。
 		t.Fatal(err)
 	}
-	// 激活账号没成功，后面的断言就没有依据。
-	if err := fac.Activate(ctx, "sa", seed.ActivationToken, "sa-pass"); err != nil {
-		// 激活账号失败即停，不能把这一步的失败当成通过。
+	// 改测试口令没成功，后面的断言就没有依据。
+	if err := seedPass(ctx, fac, "sa", "sa-pass"); err != nil {
+		// 改口令失败即停，不能把这一步的失败当成通过。
 		t.Fatal(err)
 	}
-	// 登录取超管会话，后面建人建车间并对照读正文。
+	// 登录取超管会话，后面建人并对照读正文。
 	sa := mustLogin(t, ctx, fac, "sa", "sa-pass")
-	// 建车间，个人工艺记在它下面，节点管理员只管它。
-	shop, err := fac.CreateOrgUnit(ctx, sa, "车间", nil)
-	// 建车间没成功，后面的断言就没有依据。
-	if err != nil {
-		// 建车间失败即停，不能把这一步的失败当成通过。
-		t.Fatal(err)
-	}
-	// 建车间操作员，他是这条个人工艺的主人。
-	owner := mustCreateRole(t, ctx, fac, sa, "owner", "owner-pass", factory.RoleOperator, factory.ScopeOrgUnit, &shop.ID)
-	// 把主人分到车间，才能用车间当工作上下文。
-	if err := fac.Assign(ctx, sa, owner.acc.ID, shop.ID); err != nil {
-		// 分配失败即停，主人没落在车间里。
-		t.Fatal(err)
-	}
-	// 主人用车间上下文建个人工艺，资产记在车间下。
-	mine, err := fac.CreatePersonalProcess(ctx, owner.tok, factory.WorkContext{OrgUnitID: &shop.ID}, "车间个人工艺", []byte("p"))
+	// 建操作员，他是这条个人工艺的主人。
+	owner := mustCreateRole(t, ctx, fac, sa, "owner", "owner-pass", factory.RoleOperator)
+	// 主人建个人工艺，挂在自己的个人树根。
+	mine, err := fac.CreatePersonalProcess(ctx, owner.tok, factory.WorkContext{}, "个人工艺", []byte("p"))
 	// 建个人工艺没成功，后面的断言就没有依据。
 	if err != nil {
 		// 建个人工艺失败即停，不能把这一步的失败当成通过。
 		t.Fatal(err)
 	}
-	// 资产须记在车间下，否则测不到节点管理员越权。
-	if mine.OrgUnitID == nil || *mine.OrgUnitID != shop.ID {
-		// 没记到车间即停，本用例的前提不成立。
-		t.Fatalf("asset org unit %v want %s", mine.OrgUnitID, shop.ID)
-	}
-	// 主人先读一遍正文，后面拿它对照别人读到的。
+	// 主人先读一遍正文，后面拿它对照超管读到的。
 	want, err := fac.ReadAssetContent(ctx, owner.tok, mine.ID)
 	// 主人读不到自己的正文，后面的对照就没有依据。
 	if err != nil {
 		// 主人读正文失败即停，不能把这一步的失败当成通过。
 		t.Fatal(err)
 	}
-	// 建只管车间的组织管理员，他不该碰下属个人级。
-	shopAdmin := mustCreateRole(t, ctx, fac, sa, "oashop", "oashop-pass", factory.RoleOrgAdmin, factory.ScopeOrgUnit, &shop.ID)
-	// 建整厂组织管理员，他和超管一样能打开个人级。
-	facAdmin := mustCreateRole(t, ctx, fac, sa, "oafac", "oafac-pass", factory.RoleOrgAdmin, factory.ScopeFactory, nil)
-	// 节点管理员读下属个人级正文必须被拒。
-	if _, err := fac.ReadAssetContent(ctx, shopAdmin.tok, mine.ID); !errors.Is(err, domain.ErrForbidden) {
-		// 能读到即停，个人级参数漏给了节点管理员。
-		t.Fatalf("shop admin read: %v", err)
+	// 建管理员，他管厂级制作，但不该碰别人的个人级。
+	admin := mustCreateRole(t, ctx, fac, sa, "oa", "oa-pass", factory.RoleOrgAdmin)
+	// 管理员读别人个人级正文必须被拒。
+	if _, err := fac.ReadAssetContent(ctx, admin.tok, mine.ID); !errors.Is(err, domain.ErrForbidden) {
+		// 能读到即停，个人级参数漏给了管理员。
+		t.Fatalf("admin read: %v", err)
 	}
-	// 节点管理员改下属个人级正文必须被拒。
-	if _, err := fac.UpdateAssetContent(ctx, shopAdmin.tok, mine.ID, mine.Revision, []byte("x")); !errors.Is(err, domain.ErrForbidden) {
-		// 能改即停，别人的个人级被节点管理员覆盖了。
-		t.Fatalf("shop admin update: %v", err)
+	// 管理员改别人个人级正文必须被拒。
+	if _, err := fac.UpdateAssetContent(ctx, admin.tok, mine.ID, mine.Revision, []byte("x")); !errors.Is(err, domain.ErrForbidden) {
+		// 能改即停，别人的个人级被管理员覆盖了。
+		t.Fatalf("admin update: %v", err)
 	}
-	// 节点管理员另存下属个人级工艺必须被拒。
-	if _, err := fac.CopyProcess(ctx, shopAdmin.tok, mine.ID, "节点另存"); !errors.Is(err, domain.ErrForbidden) {
+	// 管理员另存别人个人级工艺必须被拒。
+	if _, err := fac.CopyProcess(ctx, admin.tok, mine.ID, "管理员另存"); !errors.Is(err, domain.ErrForbidden) {
 		// 能另存即停，个人级正文借复制漏了出去。
-		t.Fatalf("shop admin copy: %v", err)
+		t.Fatalf("admin copy: %v", err)
 	}
-	// 节点管理员删下属个人级必须被拒。
-	if err := fac.DeleteAsset(ctx, shopAdmin.tok, mine.ID); !errors.Is(err, domain.ErrForbidden) {
-		// 能删即停，别人的个人级被节点管理员删了。
-		t.Fatalf("shop admin delete: %v", err)
+	// 管理员删别人个人级必须被拒。
+	if err := fac.DeleteAsset(ctx, admin.tok, mine.ID); !errors.Is(err, domain.ErrForbidden) {
+		// 能删即停，别人的个人级被管理员删了。
+		t.Fatalf("admin delete: %v", err)
 	}
-	// 整厂组织管理员和超管都应读到原样正文。
-	for _, tok := range []string{facAdmin.tok, sa} {
-		// 用整厂管理员身份读个人级正文。
-		got, err := fac.ReadAssetContent(ctx, tok, mine.ID)
-		// 读不到或内容变了，说明整厂口径被收窄或被改过。
-		if err != nil || string(got) != string(want) {
-			// 读失败或正文不对即停，打出实际结果。
-			t.Fatalf("factory admin read: %q %v want %q", got, err, want)
+	// 超管应读到原样正文。
+	got, err := fac.ReadAssetContent(ctx, sa, mine.ID)
+	// 读不到或内容变了，说明超管口径被收窄或被改过。
+	if err != nil || string(got) != string(want) {
+		// 读失败或正文不对即停，打出实际结果。
+		t.Fatalf("sa read: %q %v want %q", got, err, want)
+	}
+}
+
+// 验收资产列表里同事看不到别人的个人级，超管能看到。
+func TestPersonalAssetListHiddenFromColleague(t *testing.T) {
+	// 准备贯穿本用例的上下文，不设截止时间。
+	ctx := context.Background()
+	// 起一套隔离厂库，起不来则本用例没有库可测。
+	h := New(t)
+	// 开通本厂，供后面步骤使用，失败则前提断了。
+	_, fac, err := h.Provision(ctx, "sa", "超管")
+	// 开通本厂没成功，后面的断言就没有依据。
+	if err != nil {
+		// 开通本厂失败即停，不能把这一步的失败当成通过。
+		t.Fatal(err)
+	}
+	// 改测试口令没成功，后面的断言就没有依据。
+	if err := seedPass(ctx, fac, "sa", "sa-pass"); err != nil {
+		// 改口令失败即停，不能把这一步的失败当成通过。
+		t.Fatal(err)
+	}
+	// 登录取超管会话，后面建人并对照列表。
+	sa := mustLogin(t, ctx, fac, "sa", "sa-pass")
+	// 建主人，个人工艺记在他名下。
+	owner := mustCreateRole(t, ctx, fac, sa, "owner", "owner-pass", factory.RoleOperator)
+	// 建同事，同为操作员，不该看到别人的个人级。
+	mate := mustCreateRole(t, ctx, fac, sa, "mate", "mate-pass", factory.RoleOperator)
+	// 主人建个人工艺，挂在自己的个人树根。
+	mine, err := fac.CreatePersonalProcess(ctx, owner.tok, factory.WorkContext{}, "私有工艺", []byte("p"))
+	// 建个人工艺没成功，后面的断言就没有依据。
+	if err != nil {
+		// 建个人工艺失败即停，不能把这一步的失败当成通过。
+		t.Fatal(err)
+	}
+	// 按会话列工艺，看列表里有没有这条个人级。
+	listed := func(tok string) bool {
+		// 列本厂工艺元数据，列不出来即停。
+		rows, err := fac.ListAssets(ctx, tok, factory.KindProcess)
+		// 列表失败即停，后面的判断没有依据。
+		if err != nil {
+			// 列表失败即停，打出原因。
+			t.Fatal(err)
 		}
+		// 逐条找这条个人工艺。
+		for _, r := range rows {
+			// 找到就算在列表里。
+			if r.ID == mine.ID {
+				return true
+			}
+		}
+		return false
+	}
+	// 主人自己应在列表里看到。
+	if !listed(owner.tok) {
+		// 主人看不到自己的个人级即停。
+		t.Fatal("owner cannot see own personal asset")
+	}
+	// 同事不能在列表里看到别人的个人级。
+	if listed(mate.tok) {
+		// 同事看到了即停，个人级元数据漏了出去。
+		t.Fatal("colleague sees personal asset")
+	}
+	// 同事直接按编号读元数据也必须被拒。
+	if _, err := fac.GetAsset(ctx, mate.tok, mine.ID); err == nil {
+		// 能读到即停，个人级元数据借编号漏了出去。
+		t.Fatal("colleague get personal asset")
+	}
+	// 超管应在列表里看到。
+	if !listed(sa) {
+		// 超管看不到即停，超管口径被收窄。
+		t.Fatal("sa cannot see personal asset")
 	}
 }

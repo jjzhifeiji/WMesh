@@ -50,7 +50,7 @@ func TestSealPlainRowsBatchedOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 先拿到这一步的结果，后面断言还要用。
-	p, err := s1.CreatePerson(ctx, "pe", "工艺师", false)
+	p, err := s1.CreatePerson(ctx, "pe", "工艺师", "", false)
 	// 建账号失败就停测，避免后面没有前提。
 	if err != nil {
 		// 建账号不符合预期就停测。

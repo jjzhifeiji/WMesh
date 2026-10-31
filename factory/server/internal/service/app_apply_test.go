@@ -22,39 +22,37 @@ func TestApplyAppContent(t *testing.T) {
 	// 拉起隔离厂库，起不来说明测试库还没就绪。
 	h := New(t)
 	// 建厂并签发超管激活码，失败则没有厂可测。
-	seed, fac, err := h.Provision(ctx, "sa-a", "超管A")
+	_, fac, err := h.Provision(ctx, "sa-a", "超管A")
 	// 建厂失败就停，否则后面没有可靠结果。
 	if err != nil {
 		// 把建厂的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
 	// 开通失败就停，否则后面没有可靠结果。
-	if err := fac.Activate(ctx, "sa-a", seed.ActivationToken, "sa-pass"); err != nil {
+	if err := seedPass(ctx, fac, "sa-a", "sa-pass"); err != nil {
 		// 把开通的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
 	// 登录并取出令牌，失败说明账号没有开通成功。
 	sa := mustLogin(t, ctx, fac, "sa-a", "sa-pass")
 	// 建人并授好角色，失败说明后面没有账号可用。
-	op := mustCreateRole(t, ctx, fac, sa, "op-a", "op-pass", factory.RoleOperator, factory.ScopeFactory, nil)
+	op := mustCreateRole(t, ctx, fac, sa, "op-a", "op-pass", factory.RoleOperator)
 	// 建人并授好角色，失败说明后面没有账号可用。
-	other := mustCreateRole(t, ctx, fac, sa, "op-b", "op-b-pass", factory.RoleOperator, factory.ScopeFactory, nil)
+	other := mustCreateRole(t, ctx, fac, sa, "op-b", "op-b-pass", factory.RoleOperator)
 	// 建人并授好角色，失败说明后面没有账号可用。
-	admin := mustCreateRole(t, ctx, fac, sa, "oa-a", "oa-pass", factory.RoleOrgAdmin, factory.ScopeFactory, nil)
-	// 建人并授好角色，失败说明后面没有账号可用。
-	aud := mustCreateRole(t, ctx, fac, sa, "aud-a", "aud-pass", factory.RoleAuditor, factory.ScopeFactory, nil)
+	admin := mustCreateRole(t, ctx, fac, sa, "oa-a", "oa-pass", factory.RoleOrgAdmin)
 	// 标明直接作业上下文，后面新建资产都挂在这里。
-	direct := factory.WorkContext{Direct: true}
+	direct := factory.WorkContext{}
 
 	// 新建一份厂级工艺，失败说明起草入口坏了。
-	proc, err := fac.CreateFactoryProcess(ctx, op.tok, direct, "厂工艺", []byte(`{"n":1}`))
+	proc, err := fac.CreateFactoryProcess(ctx, admin.tok, direct, "厂工艺", []byte(`{"n":1}`))
 	// 建工艺失败就停，否则后面没有可靠结果。
 	if err != nil {
 		// 把建工艺的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
 	// 发布当前修订，失败说明状态不允许发布。
-	proc, err = fac.PublishAsset(ctx, op.tok, proc.ID, proc.Revision)
+	proc, err = fac.PublishAsset(ctx, admin.tok, proc.ID, proc.Revision)
 	// 发布失败就停，否则后面没有可靠结果。
 	if err != nil {
 		// 把发布的错误打出来并停住，避免继续往下验。
@@ -71,11 +69,6 @@ func TestApplyAppContent(t *testing.T) {
 	if _, err := fac.ApplyAppContent(ctx, op.tok, proc.ID, []byte(`{"n":9}`)); !errors.Is(err, domain.ErrForbidden) {
 		// 断言没通过就停，结果和这条用例的预期不一致。
 		t.Fatalf("operator factory: %v", err)
-	}
-	// 提交正文应因越权被拒绝，放行说明没拦住。
-	if _, err := fac.ApplyAppContent(ctx, aud.tok, proc.ID, []byte(`{"n":9}`)); !errors.Is(err, domain.ErrForbidden) {
-		// 审计里缺了这条记录，说明这一步没有记账。
-		t.Fatalf("auditor factory: %v", err)
 	}
 	// 用应用提交正文，失败说明作者或状态不允许。
 	got, err := fac.ApplyAppContent(ctx, admin.tok, proc.ID, []byte(`{"n":9}`))

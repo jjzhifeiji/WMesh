@@ -15,33 +15,26 @@ import (
 )
 
 const (
-	StatusPending  = "pending"  // 待启用：可预写角色，但不能登录
-	StatusActive   = "active"   // 有效：认证后按角色作用域操作
+	StatusActive   = "active"   // 有效：认证后按角色操作
 	StatusDisabled = "disabled" // 已停用：不能新开会话或新开受保护操作
-	StatusEnded    = "ended"    // 分配已取消，行留下做历史
 	StatusRevoked  = "revoked"  // 角色已收回，行留下做历史
 
-	RoleFactorySuperAdmin = "factory_super_admin" // 工厂超级管理员，只能挂 Factory 作用域
-	RoleOrgAdmin          = "org_admin"           // 组织管理员，可挂整厂或某个节点及当前子树
-	RoleOrgLead           = "org_lead"            // 组织负责人，子树只读
-	RoleOperator          = "operator"            // 操作员，可产生运行事实、作用域内下发
-	RoleAuditor           = "auditor"             // 审计员，只读，不能改业务
-
-	ScopeFactory = "factory"  // 覆盖本厂及当时全部组织节点
-	ScopeOrgUnit = "org_unit" // 只覆盖该节点及当时子树
+	RoleFactorySuperAdmin = "factory_super_admin" // 工厂超级管理员，拥有本厂全部权限
+	RoleOrgAdmin          = "org_admin"           // 管理员：厂级工艺工程、报表与审计
+	RoleOperator          = "operator"            // 操作员：示教器上作业、产生焊事实
 
 	SessionKindWeb = "web" // 管理端登录，不计入 APP 在线
 	SessionKindApp = "app" // 示教器登录；名册在线按未过期会话计
 )
 
-// Person 是本厂一个自然人账号，固定只属于本厂库，不属于任何组织节点。
+// Person 是本厂一个自然人账号，固定只属于本厂库；可归一个所属组织节点。
 type Person struct {
 	ID                  uuid.UUID  `gorm:"type:uuid;primaryKey" json:"id"`         // 稳定身份，改名也不变
 	LoginName           string     `gorm:"not null" json:"loginName"`              // 本厂内唯一登录名，不是身份
 	DisplayName         string     `gorm:"not null" json:"displayName"`            // 显示名，可改
-	Status              string     `gorm:"not null" json:"status"`                 // pending / active / disabled
-	PasswordHash        *string    `json:"-"`                                      // 日常密码哈希，只存在本厂；激活前为空
-	ActivationTokenHash *string    `json:"-"`                                      // 一次性 8 位激活码哈希，激活后清空
+	Status              string     `gorm:"not null" json:"status"`                 // active / disabled
+	PasswordHash        *string    `json:"-"`                                      // 日常密码哈希，只存在本厂
+	OrgUnitID           *uuid.UUID `gorm:"type:uuid" json:"orgUnitId"`             // 所属组织节点；空表示厂直属
 	IsInitialSuperAdmin bool       `gorm:"not null" json:"isInitialSuperAdmin"`    // 本厂唯一的 WAN 下发初始超管
 	CreatedAt           time.Time  `gorm:"not null" json:"createdAt"`              // 账号创建时间
 	UnwrapKey           []byte     `json:"-"`                                      // 登录人解封钥；焊机不持钥
@@ -67,14 +60,15 @@ type Session struct {
 // 指定落库表名，避免查询时按类型名去猜。
 func (Session) TableName() string { return "sessions" }
 
-// CreatePerson 写入待启用账号；本厂只能有一名初始超管，登录名本厂唯一。
-func (s *Store) CreatePerson(ctx context.Context, loginName, displayName string, initial bool) (Person, error) {
-	// 组装待启用账号，激活前不放密码。
+// CreatePerson 写入有效账号和日常密码哈希；本厂只能有一名初始超管，登录名本厂唯一。
+func (s *Store) CreatePerson(ctx context.Context, loginName, displayName, passwordHash string, initial bool) (Person, error) {
+	// 组装有效账号，建档时就带上日常密码。
 	row := Person{
 		ID:                  id.New(),
 		LoginName:           loginName,
 		DisplayName:         displayName,
-		Status:              StatusPending,
+		Status:              StatusActive,
+		PasswordHash:        &passwordHash,
 		IsInitialSuperAdmin: initial,
 		CreatedAt:           time.Now().UTC(),
 		KeepPouch:           true,
@@ -94,14 +88,15 @@ func (s *Store) CreatePerson(ctx context.Context, loginName, displayName string,
 	return row, nil
 }
 
-// CreatePersonAt 用 WAN 约定的身份写入待启用账号；身份冲突且已是同一初始超管则返回已有行。
-func (s *Store) CreatePersonAt(ctx context.Context, personID uuid.UUID, loginName, displayName string, initial bool) (Person, error) {
-	// 组装待启用账号，激活前不放密码。
+// CreatePersonAt 用 WAN 约定的身份写入有效账号；身份冲突且已是同一初始超管则返回已有行。
+func (s *Store) CreatePersonAt(ctx context.Context, personID uuid.UUID, loginName, displayName, passwordHash string, initial bool) (Person, error) {
+	// 组装有效账号，建档时就带上自设密码。
 	row := Person{
 		ID:                  personID,
 		LoginName:           loginName,
 		DisplayName:         displayName,
-		Status:              StatusPending,
+		Status:              StatusActive,
+		PasswordHash:        &passwordHash,
 		IsInitialSuperAdmin: initial,
 		CreatedAt:           time.Now().UTC(),
 		KeepPouch:           true,
@@ -131,6 +126,43 @@ func (s *Store) CreatePersonAt(ctx context.Context, personID uuid.UUID, loginNam
 func (s *Store) SetKeepPouch(ctx context.Context, personID uuid.UUID, keep bool) error {
 	// 只改点名的列，避免把别的字段写成零值。
 	res := s.db.WithContext(ctx).Model(&Person{}).Where("id = ?", personID).Update("keep_pouch", keep)
+	// 更新失败则交回库错误，不能当成已经改完。
+	if res.Error != nil {
+		return res.Error
+	}
+	// 没有改到行就当目标不存在。
+	if res.RowsAffected == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}
+
+// SetPersonOrg 改这个人的所属组织；unitID 空表示厂直属，节点须仍有效。
+func (s *Store) SetPersonOrg(ctx context.Context, personID uuid.UUID, unitID *uuid.UUID) error {
+	// 归到节点时节点须仍有效，停用的不能再收人。
+	if unitID != nil {
+		// 节点停用或不存在就停，不把人挂上去。
+		if err := s.assertUnitActive(ctx, *unitID); err != nil {
+			return err
+		}
+	}
+	// 只改所属组织一列，避免把别的字段写成零值。
+	res := s.db.WithContext(ctx).Model(&Person{}).Where("id = ?", personID).Update("org_unit_id", unitID)
+	// 更新失败则交回库错误，不能当成已经改完。
+	if res.Error != nil {
+		return res.Error
+	}
+	// 没有改到行就当目标不存在。
+	if res.RowsAffected == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}
+
+// SetDisplayName 只改显示名。
+func (s *Store) SetDisplayName(ctx context.Context, personID uuid.UUID, displayName string) error {
+	// 只改点名的列，避免把别的字段写成零值。
+	res := s.db.WithContext(ctx).Model(&Person{}).Where("id = ?", personID).Update("display_name", displayName)
 	// 更新失败则交回库错误，不能当成已经改完。
 	if res.Error != nil {
 		return res.Error
@@ -344,42 +376,6 @@ func (s *Store) EnsurePersonUnwrapKey(ctx context.Context, personID uuid.UUID) (
 	return out, err
 }
 
-// ActivatePerson 把待启用改成有效并写入日常密码；已激活拒绝。
-func (s *Store) ActivatePerson(ctx context.Context, personID uuid.UUID, passwordHash string) error {
-	// 只把待启用改成有效；已激活或停用不走这条。
-	res := s.db.WithContext(ctx).Model(&Person{}).
-		Where("id = ? AND status = ?", personID, StatusPending).
-		Updates(map[string]any{
-			"password_hash":         passwordHash,
-			"activation_token_hash": nil,
-			"status":                StatusActive,
-		})
-	// 更新失败则交回库错误，不能当成已经改完。
-	if res.Error != nil {
-		return res.Error
-	}
-	// 没有改到行就当目标不存在。
-	if res.RowsAffected == 0 {
-		return domain.ErrAlreadyActivated
-	}
-	return nil
-}
-
-// SetActivationHash 写入一次性激活码哈希，不存原文。
-func (s *Store) SetActivationHash(ctx context.Context, personID uuid.UUID, hash string) error {
-	// 只改点名的列，避免把别的字段写成零值。
-	res := s.db.WithContext(ctx).Model(&Person{}).Where("id = ?", personID).Update("activation_token_hash", hash)
-	// 更新失败则交回库错误，不能当成已经改完。
-	if res.Error != nil {
-		return res.Error
-	}
-	// 没有改到行就当目标不存在。
-	if res.RowsAffected == 0 {
-		return domain.ErrNotFound
-	}
-	return nil
-}
-
 // ReplacePasswordKeepSession 同一事务换口令哈希，并作废此人除当前令牌外的会话。
 func (s *Store) ReplacePasswordKeepSession(ctx context.Context, personID uuid.UUID, passwordHash, keepTokenHash string) error {
 	// 放进同一事务，换了口令却没清别的会话就整单回滚。
@@ -418,12 +414,11 @@ func (s *Store) ReplacePasswordDropSessions(ctx context.Context, personID uuid.U
 	})
 }
 
-// ApplyPersonPassword 写入日常密码哈希并清激活码；status 空则不改状态。
+// ApplyPersonPassword 写入日常密码哈希；status 空则不改状态。
 func (s *Store) ApplyPersonPassword(ctx context.Context, personID uuid.UUID, passwordHash, status string) error {
 	// 只收集这次要改的列，避免整行覆盖。
 	updates := map[string]any{
-		"password_hash":         passwordHash,
-		"activation_token_hash": nil,
+		"password_hash": passwordHash,
 	}
 	// 给了新状态才改状态，空着就保持原样。
 	if status != "" {
@@ -435,11 +430,11 @@ func (s *Store) ApplyPersonPassword(ctx context.Context, personID uuid.UUID, pas
 	// 要改状态时连状态列一起写，避免零值覆盖。
 	if status != "" {
 		// 补上筛选或限定列，避免动到不该动的字段。
-		q = q.Select("password_hash", "activation_token_hash", "status")
-		// 不改状态时只更新密码和激活码。
+		q = q.Select("password_hash", "status")
+		// 不改状态时只更新密码。
 	} else {
 		// 补上筛选或限定列，避免动到不该动的字段。
-		q = q.Select("password_hash", "activation_token_hash")
+		q = q.Select("password_hash")
 	}
 	// 只改点名的列，避免把别的字段写成零值。
 	res := q.Updates(updates)

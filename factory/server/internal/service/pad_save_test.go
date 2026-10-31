@@ -23,25 +23,25 @@ func TestPadSaveLandsAvailable(t *testing.T) {
 	// 拉起隔离厂库，起不来说明测试库还没就绪。
 	h := New(t)
 	// 建厂并签发超管激活码，失败则没有厂可测。
-	seed, fac, err := h.Provision(ctx, "sa-a", "超管A")
+	_, fac, err := h.Provision(ctx, "sa-a", "超管A")
 	// 建厂失败就停，否则后面没有可靠结果。
 	if err != nil {
 		// 把建厂的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
 	// 开通失败就停，否则后面没有可靠结果。
-	if err := fac.Activate(ctx, "sa-a", seed.ActivationToken, "sa-pass"); err != nil {
+	if err := seedPass(ctx, fac, "sa-a", "sa-pass"); err != nil {
 		// 把开通的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
 	// 登录并取出令牌，失败说明账号没有开通成功。
 	sa := mustLogin(t, ctx, fac, "sa-a", "sa-pass")
+	// 建管理员，厂级工程由它起草发布。
+	pe := mustCreateRole(t, ctx, fac, sa, "pe-a", "pe-pass", factory.RoleOrgAdmin)
 	// 建人并授好角色，失败说明后面没有账号可用。
-	pe := mustCreateRole(t, ctx, fac, sa, "pe-a", "pe-pass", factory.RoleOperator, factory.ScopeFactory, nil)
-	// 建人并授好角色，失败说明后面没有账号可用。
-	op := mustCreateRole(t, ctx, fac, sa, "op-a", "op-pass", factory.RoleOperator, factory.ScopeFactory, nil)
-	// 标明直接作业上下文，后面新建资产都挂在这里。
-	direct := factory.WorkContext{Direct: true}
+	op := mustCreateRole(t, ctx, fac, sa, "op-a", "op-pass", factory.RoleOperator)
+	// 不指定文件夹，后面新建资产都挂在对应树根。
+	direct := factory.WorkContext{}
 	// 准备这段正文字节，读回对不上说明没写进去。
 	body := []byte(`{"name":"mine","current":170}`)
 
@@ -132,15 +132,15 @@ func TestPadSaveLandsAvailable(t *testing.T) {
 	}
 	// 装上这条依赖，修订或摘要错了工程会对不上。
 	dep := factory.AssetDep{ID: got.ID, Revision: got.Revision, Digest: got.Digest}
-	// 改写工程依赖，失败说明工艺还不齐。
-	pinned, err := fac.SetProjectDeps(ctx, op.tok, proj.ID, proj.Revision, []factory.AssetDep{dep})
+	// 超管改写厂级工程依赖钉上操作员的个人工艺，失败说明工艺还不齐。
+	pinned, err := fac.SetProjectDeps(ctx, sa, proj.ID, proj.Revision, []factory.AssetDep{dep})
 	// 改依赖失败就停，否则后面没有可靠结果。
 	if err != nil {
 		// 把改依赖的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
 	// 改写资产正文，失败说明修订冲突或越权。
-	updated, err := fac.UpdateAssetContent(ctx, op.tok, pinned.ID, pinned.Revision, projBody)
+	updated, err := fac.UpdateAssetContent(ctx, sa, pinned.ID, pinned.Revision, projBody)
 	// 改正文失败就停，否则后面没有可靠结果。
 	if err != nil {
 		// 把改正文的错误打出来并停住，避免继续往下验。
@@ -177,16 +177,16 @@ func TestPadCreateProjectDepsByLevel(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 开通失败就停，否则后面没有可靠结果。
-	if err := fac.Activate(ctx, "sa-d", seed.ActivationToken, "sa-pass"); err != nil {
+	if err := seedPass(ctx, fac, "sa-d", "sa-pass"); err != nil {
 		// 把开通的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
 	// 登录并取出超管令牌，建厂级工程要用管理员。
 	sa := mustLogin(t, ctx, fac, "sa-d", "sa-pass")
 	// 建工艺的同事，他的个人工艺给别人的工程去钉。
-	op := mustCreateRole(t, ctx, fac, sa, "op-d", "op-pass", factory.RoleOperator, factory.ScopeFactory, nil)
+	op := mustCreateRole(t, ctx, fac, sa, "op-d", "op-pass", factory.RoleOperator)
 	// 另一名操作员，用来试个人级工程钉别人的工艺。
-	pe := mustCreateRole(t, ctx, fac, sa, "pe-d", "pe-pass", factory.RoleOperator, factory.ScopeFactory, nil)
+	pe := mustCreateRole(t, ctx, fac, sa, "pe-d", "pe-pass", factory.RoleOperator)
 	// 留出本厂身份，收平台下发时要指明目标厂。
 	fid := seed.ID
 
@@ -275,23 +275,23 @@ func TestPadCreateFolderFallsBackToRoot(t *testing.T) {
 	// 拉起隔离厂库，起不来说明测试库还没就绪。
 	h := New(t)
 	// 建厂并签发超管激活码，失败则没有厂可测。
-	seed, fac, err := h.Provision(ctx, "sa-f", "超管F")
+	_, fac, err := h.Provision(ctx, "sa-f", "超管F")
 	// 建厂失败就停，否则后面没有可靠结果。
 	if err != nil {
 		// 把建厂的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
 	// 开通失败就停，否则后面没有可靠结果。
-	if err := fac.Activate(ctx, "sa-f", seed.ActivationToken, "sa-pass"); err != nil {
+	if err := seedPass(ctx, fac, "sa-f", "sa-pass"); err != nil {
 		// 把开通的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
 	// 登录取超管会话，后面拿它试管理员建到同事夹。
 	sa := mustLogin(t, ctx, fac, "sa-f", "sa-pass")
 	// 示教器上的操作员，在自己的个人树里建。
-	op := mustCreateRole(t, ctx, fac, sa, "op-f", "op-pass", factory.RoleOperator, factory.ScopeFactory, nil)
+	op := mustCreateRole(t, ctx, fac, sa, "op-f", "op-pass", factory.RoleOperator)
 	// 同事，他的个人夹给管理员当目标。
-	mate := mustCreateRole(t, ctx, fac, sa, "mate-f", "mate-pass", factory.RoleOperator, factory.ScopeFactory, nil)
+	mate := mustCreateRole(t, ctx, fac, sa, "mate-f", "mate-pass", factory.RoleOperator)
 	// 准备这段正文字节，示教器每条都用它。
 	body := []byte(`{"name":"pad","current":170}`)
 	// 取操作员的个人根，夹都建在它下面。

@@ -8,7 +8,7 @@ import (
 	"wmesh/factory/internal/service"
 )
 
-// 名册、组织、人员、角色、分配。
+// 名册、组织、人员、角色。
 func (h *Handler) mountOrg(mux *http.ServeMux) {
 	// 超管看全厂名册，其他人只能看自己。
 	mux.HandleFunc("GET /v1/factories/{id}/catalog", h.catalog)
@@ -18,8 +18,12 @@ func (h *Handler) mountOrg(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/factories/{id}/org-units/{unitId}/disable", h.disableOrgUnit)
 	// 重新启用已经停用的组织节点。
 	mux.HandleFunc("POST /v1/factories/{id}/org-units/{unitId}/enable", h.enableOrgUnit)
-	// 删除没有被引用的组织节点。
+	// 删除没有下级、也没有人归在这里的组织节点。
 	mux.HandleFunc("DELETE /v1/factories/{id}/org-units/{unitId}", h.deleteOrgUnit)
+	// 改组织节点的显示名。
+	mux.HandleFunc("POST /v1/factories/{id}/org-units/{unitId}/rename", h.renameOrgUnit)
+	// 把组织节点改挂到另一个上级，空表示直挂工厂。
+	mux.HandleFunc("POST /v1/factories/{id}/org-units/{unitId}/move", h.moveOrgUnit)
 	// 超管新建账号，默认口令直接有效。
 	mux.HandleFunc("POST /v1/factories/{id}/people", h.createPerson)
 	// 超管查看示教器现场，不含口令和令牌。
@@ -32,14 +36,14 @@ func (h *Handler) mountOrg(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/factories/{id}/people/{personId}/reset-password", h.resetPersonPassword)
 	// 设置这个人退出后是否保留本机库。
 	mux.HandleFunc("POST /v1/factories/{id}/people/{personId}/keep-pouch", h.setKeepPouch)
-	// 在作用域内授予固定角色。
+	// 设置这个人的所属组织，空表示厂直属。
+	mux.HandleFunc("POST /v1/factories/{id}/people/{personId}/org", h.setPersonOrg)
+	// 超管改别人的显示名。
+	mux.HandleFunc("POST /v1/factories/{id}/people/{personId}/display-name", h.setPersonDisplayName)
+	// 授予固定角色，都覆盖整厂。
 	mux.HandleFunc("POST /v1/factories/{id}/grants", h.grantRole)
 	// 收回角色，最后一名厂级超管不能收。
 	mux.HandleFunc("POST /v1/factories/{id}/grants/{grantId}/revoke", h.revokeRole)
-	// 把人员放到恰好一个有效节点。
-	mux.HandleFunc("POST /v1/factories/{id}/assignments", h.assign)
-	// 取消当前分配，历史事实保持不动。
-	mux.HandleFunc("POST /v1/factories/{id}/assignments/end", h.unassign)
 }
 
 // 新组织的名称，上级可以不填。
@@ -64,18 +68,25 @@ type createdPersonResp struct {
 	Account service.Account `json:"account"` // 新建/重置后的账号视图，不含密码
 }
 
-// 要授予的角色、范围和是哪一个人。
+// 要授予的角色和是哪一个人。
 type grantReq struct {
-	PersonID  string  `json:"personId"`  // 被授权人员
-	Role      string  `json:"role"`      // 六种固定角色之一
-	ScopeKind string  `json:"scopeKind"` // factory 或 org_unit
-	OrgUnitID *string `json:"orgUnitId"` // Factory 作用域必须为空
+	PersonID string `json:"personId"` // 被授权人员
+	Role     string `json:"role"`     // 三种固定角色之一
 }
 
-// 把哪个人放到哪一个有效节点。
-type assignReq struct {
-	PersonID  string `json:"personId"`  // 被分配人员
-	OrgUnitID string `json:"orgUnitId"` // 本厂有效节点
+// 人员的所属组织，空表示厂直属。
+type personOrgReq struct {
+	OrgUnitID *string `json:"orgUnitId"` // 本厂有效节点；空表示厂直属
+}
+
+// 组织节点的新名字。
+type renameUnitReq struct {
+	Name string `json:"name"` // 新显示名
+}
+
+// 组织节点的新上级。
+type moveUnitReq struct {
+	ParentID *string `json:"parentId"` // 空表示直挂工厂
 }
 
 // 超管看全厂名册，其他人只看自己。
@@ -353,9 +364,9 @@ func (h *Handler) resetPersonPassword(w http.ResponseWriter, r *http.Request) {
 
 // 在作用域内授固定角色。
 func (h *Handler) grantRole(w http.ResponseWriter, r *http.Request) {
-	// 在作用域内授固定角色。
+	// 授固定角色。
 	h.withFactory(w, r, func(svc *service.Service) {
-		// 承接角色、作用域和人员。
+		// 承接角色和人员。
 		var req grantReq
 		// 正文无法解析则拒绝，不进入业务。
 		if err := decodeJSON(r, &req); err != nil {
@@ -371,16 +382,8 @@ func (h *Handler) grantRole(w http.ResponseWriter, r *http.Request) {
 			writeBadRequest(w, errInvalidID)
 			return
 		}
-		// 解析可选上级，空着就表示挂在工厂下。
-		orgID, err := parseOptUUID(req.OrgUnitID)
-		// 解析失败则拒绝，不用这个残缺的值继续。
-		if err != nil {
-			// 请求不合法，回非法请求并不进入业务。
-			writeBadRequest(w, err)
-			return
-		}
-		// 在作用域内授予固定角色，重复则拒绝。
-		row, err := svc.Org.GrantRole(r.Context(), bearer(r), personID, req.Role, req.ScopeKind, orgID)
+		// 授予固定角色，重复则拒绝。
+		row, err := svc.Org.GrantRole(r.Context(), bearer(r), personID, req.Role)
 		// 上一步没通过则停止，不把失败写成成功。
 		if err != nil {
 			// 把失败译成状态回给调用方，不写成功。
@@ -415,36 +418,102 @@ func (h *Handler) revokeRole(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// 把人员放到恰好一个有效节点。
-func (h *Handler) assign(w http.ResponseWriter, r *http.Request) {
-	// 把人员放到恰好一个有效节点。
+// 设置人员的所属组织。
+func (h *Handler) setPersonOrg(w http.ResponseWriter, r *http.Request) {
+	// 超管设置人员的所属组织。
 	h.withFactory(w, r, func(svc *service.Service) {
-		// 承接人员和要去的组织节点。
-		var req assignReq
+		// 人员编号必须合法，否则拒绝这次办理。
+		personID, err := uuid.Parse(r.PathValue("personId"))
+		// 解析失败则拒绝，不用这个残缺的值继续。
+		if err != nil {
+			// 编号不合法，回非法请求并不进入业务。
+			writeBadRequest(w, errInvalidID)
+			return
+		}
+		// 承接所属组织。
+		var req personOrgReq
 		// 正文无法解析则拒绝，不进入业务。
 		if err := decodeJSON(r, &req); err != nil {
 			// 请求不合法，回非法请求并不进入业务。
 			writeBadRequest(w, err)
 			return
 		}
-		// 编号必须合法，否则拒绝以免办错对象。
-		personID, err := uuid.Parse(req.PersonID)
+		// 解析可选节点，空着就表示厂直属。
+		unitID, err := parseOptUUID(req.OrgUnitID)
+		// 解析失败则拒绝，不用这个残缺的值继续。
+		if err != nil {
+			// 请求不合法，回非法请求并不进入业务。
+			writeBadRequest(w, err)
+			return
+		}
+		// 改所属组织。
+		acc, err := svc.Org.SetPersonOrg(r.Context(), bearer(r), personID, unitID)
+		// 上一步没通过则停止，不把失败写成成功。
+		if err != nil {
+			// 把失败译成状态回给调用方，不写成功。
+			writeErr(w, err)
+			return
+		}
+		// 通过之后把结果回给调用方。
+		writeJSON(w, http.StatusOK, createdPersonResp{Account: acc})
+	})
+}
+
+// 超管改别人的显示名。
+func (h *Handler) setPersonDisplayName(w http.ResponseWriter, r *http.Request) {
+	// 超管改别人的显示名。
+	h.withFactory(w, r, func(svc *service.Service) {
+		// 人员编号必须合法，否则拒绝这次办理。
+		personID, err := uuid.Parse(r.PathValue("personId"))
 		// 解析失败则拒绝，不用这个残缺的值继续。
 		if err != nil {
 			// 编号不合法，回非法请求并不进入业务。
 			writeBadRequest(w, errInvalidID)
 			return
 		}
-		// 组织编号必须合法，否则整批拒绝。
-		unitID, err := uuid.Parse(req.OrgUnitID)
+		// 承接新的显示名。
+		var req displayNameReq
+		// 正文无法解析则拒绝，不进入业务。
+		if err := decodeJSON(r, &req); err != nil {
+			// 请求不合法，回非法请求并不进入业务。
+			writeBadRequest(w, err)
+			return
+		}
+		// 改显示名。
+		acc, err := svc.Org.SetPersonDisplayName(r.Context(), bearer(r), personID, req.DisplayName)
+		// 上一步没通过则停止，不把失败写成成功。
+		if err != nil {
+			// 把失败译成状态回给调用方，不写成功。
+			writeErr(w, err)
+			return
+		}
+		// 通过之后把结果回给调用方。
+		writeJSON(w, http.StatusOK, createdPersonResp{Account: acc})
+	})
+}
+
+// 改组织节点显示名。
+func (h *Handler) renameOrgUnit(w http.ResponseWriter, r *http.Request) {
+	// 改组织节点显示名。
+	h.withFactory(w, r, func(svc *service.Service) {
+		// 组织编号必须合法，否则拒绝这次办理。
+		unitID, err := uuid.Parse(r.PathValue("unitId"))
 		// 解析失败则拒绝，不用这个残缺的值继续。
 		if err != nil {
 			// 编号不合法，回非法请求并不进入业务。
 			writeBadRequest(w, errInvalidID)
+			return
+		}
+		// 承接新名字。
+		var req renameUnitReq
+		// 正文无法解析则拒绝，不进入业务。
+		if err := decodeJSON(r, &req); err != nil {
+			// 请求不合法，回非法请求并不进入业务。
+			writeBadRequest(w, err)
 			return
 		}
 		// 被拒绝则停止，不继续写成功响应。
-		if err := svc.Org.Assign(r.Context(), bearer(r), personID, unitID); err != nil {
+		if err := svc.Org.RenameOrgUnit(r.Context(), bearer(r), unitID, req.Name); err != nil {
 			// 把失败译成状态回给调用方，不写成功。
 			writeErr(w, err)
 			return
@@ -454,36 +523,36 @@ func (h *Handler) assign(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// 取消当前分配，不改历史事实。
-func (h *Handler) unassign(w http.ResponseWriter, r *http.Request) {
-	// 取消当前分配，不改历史事实。
+// 把组织节点改挂到另一个上级。
+func (h *Handler) moveOrgUnit(w http.ResponseWriter, r *http.Request) {
+	// 把组织节点改挂到另一个上级。
 	h.withFactory(w, r, func(svc *service.Service) {
-		// 承接人员和要去的组织节点。
-		var req assignReq
+		// 组织编号必须合法，否则拒绝这次办理。
+		unitID, err := uuid.Parse(r.PathValue("unitId"))
+		// 解析失败则拒绝，不用这个残缺的值继续。
+		if err != nil {
+			// 编号不合法，回非法请求并不进入业务。
+			writeBadRequest(w, errInvalidID)
+			return
+		}
+		// 承接新上级。
+		var req moveUnitReq
 		// 正文无法解析则拒绝，不进入业务。
 		if err := decodeJSON(r, &req); err != nil {
 			// 请求不合法，回非法请求并不进入业务。
 			writeBadRequest(w, err)
 			return
 		}
-		// 编号必须合法，否则拒绝以免办错对象。
-		personID, err := uuid.Parse(req.PersonID)
+		// 解析可选上级，空着就表示挂在工厂下。
+		parentID, err := parseOptUUID(req.ParentID)
 		// 解析失败则拒绝，不用这个残缺的值继续。
 		if err != nil {
-			// 编号不合法，回非法请求并不进入业务。
-			writeBadRequest(w, errInvalidID)
-			return
-		}
-		// 组织编号必须合法，否则整批拒绝。
-		unitID, err := uuid.Parse(req.OrgUnitID)
-		// 解析失败则拒绝，不用这个残缺的值继续。
-		if err != nil {
-			// 编号不合法，回非法请求并不进入业务。
-			writeBadRequest(w, errInvalidID)
+			// 请求不合法，回非法请求并不进入业务。
+			writeBadRequest(w, err)
 			return
 		}
 		// 被拒绝则停止，不继续写成功响应。
-		if err := svc.Org.Unassign(r.Context(), bearer(r), personID, unitID); err != nil {
+		if err := svc.Org.ReparentOrgUnit(r.Context(), bearer(r), unitID, parentID); err != nil {
 			// 把失败译成状态回给调用方，不写成功。
 			writeErr(w, err)
 			return

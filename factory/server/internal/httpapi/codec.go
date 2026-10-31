@@ -152,7 +152,7 @@ func statusOf(err error) int {
 	switch {
 	// 未登录或凭证无效时回未授权。
 	case errors.Is(err, domain.ErrUnauthorized), errors.Is(err, domain.ErrInvalidCredentials),
-		errors.Is(err, domain.ErrAccountPending), errors.Is(err, domain.ErrAccountDisabled),
+		errors.Is(err, domain.ErrAccountDisabled),
 		errors.Is(err, domain.ErrInvalidActivation), errors.Is(err, domain.ErrSessionExpired),
 		errors.Is(err, domain.ErrInvalidEnrollment):
 		return http.StatusUnauthorized
@@ -172,7 +172,6 @@ func statusOf(err error) int {
 		return http.StatusNotFound
 	// 重名、重复或仍被引用时回冲突。
 	case errors.Is(err, domain.ErrWANAdminExists), errors.Is(err, domain.ErrLoginNameTaken),
-		errors.Is(err, domain.ErrAlreadyActivated), errors.Is(err, domain.ErrDuplicateAssignment),
 		errors.Is(err, domain.ErrDuplicateRoleGrant), errors.Is(err, domain.ErrDuplicateSession),
 		errors.Is(err, domain.ErrReferenced), errors.Is(err, domain.ErrRevisionConflict),
 		errors.Is(err, domain.ErrSigningKeyExists), errors.Is(err, domain.ErrSoftwareInstallFailed),
@@ -198,7 +197,7 @@ func isDomain(err error) bool {
 	// 逐项对照校验错误，命中就不当内部故障。
 	for _, t := range []error{
 		// 这些都属于参数或依赖不合法，应按非法请求。
-		domain.ErrCycle, domain.ErrWorkContext, domain.ErrMultiParent, domain.ErrInvalidRoleScope,
+		domain.ErrCycle, domain.ErrWorkContext, domain.ErrInvalidRoleScope,
 		domain.ErrDisabledOrgUnit, domain.ErrHasActiveChildren,
 		domain.ErrIntegrity, domain.ErrAssetNotAvailable, domain.ErrAssetNotCopyable, domain.ErrAssetDependency,
 		domain.ErrInvalidWeldKind, domain.ErrWeldKindMismatch, domain.ErrCornerSlotMismatch,

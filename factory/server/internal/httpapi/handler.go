@@ -15,14 +15,12 @@ import (
 	"wmesh/factory/internal/hub"
 	"wmesh/factory/internal/platform/domain"
 	"wmesh/factory/internal/platform/release"
-	"wmesh/factory/internal/platform/secret"
 	"wmesh/factory/internal/service"
 )
 
 // Handler 按 URL 里的工厂身份选库，并把会话头交给应用服务。
 type Handler struct {
 	Hub            *hub.Hub                    // 厂库枢纽，按工厂身份打开库
-	BootstrapToken string                      // 建厂引导共享密码，只用于 /internal/bootstrap
 	WANURL         string                      // WAN 根地址，厂出站认领用；空则不能认领
 	Version        string                      // 构建串，随探活 build 返回
 	VersionCode    int64                       // 本进程版本号，来自 release 常量
@@ -57,8 +55,8 @@ func (h *Handler) clientMQTTURL(r *http.Request) string {
 }
 
 // New 组装厂内 HTTP 适配器。
-func New(h *hub.Hub, bootstrapToken, wanURL string) *Handler {
-	return &Handler{Hub: h, BootstrapToken: bootstrapToken, WANURL: wanURL, Version: "dev", VersionCode: release.Code, VersionName: release.Name}
+func New(h *hub.Hub, wanURL string) *Handler {
+	return &Handler{Hub: h, WANURL: wanURL, Version: "dev", VersionCode: release.Code, VersionName: release.Name}
 }
 
 // Router 只装配探活、建厂引导和各域路由；未知 API 路径统一回 JSON 404。
@@ -71,8 +69,6 @@ func (h *Handler) Router() http.Handler {
 	mux.HandleFunc("/v1/", func(w http.ResponseWriter, _ *http.Request) { writeErr(w, domain.ErrNotFound) })
 	// 内部路径没有登记则按找不到拒绝。
 	mux.HandleFunc("/internal/", func(w http.ResponseWriter, _ *http.Request) { writeErr(w, domain.ErrNotFound) })
-	// 把建厂引导挂到内部路径，只认共享密码。
-	mux.HandleFunc("POST /internal/bootstrap", h.bootstrap)
 	// 挂上认领、名录和局域网探活。
 	h.mountSite(mux)
 	// 挂上登录、激活和会话。
@@ -100,19 +96,6 @@ func (h *Handler) Router() http.Handler {
 	// 挂上到 WAN 通道现状，管理页断线横幅用。
 	h.mountWANStatus(mux)
 	return mux
-}
-
-// 建厂引导要写入的工厂和初始超管。
-type bootReq struct {
-	FactoryID string `json:"factoryId"` // 工厂稳定身份
-	SALogin   string `json:"saLogin"`   // 初始超管登录名
-	SADisplay string `json:"saDisplay"` // 初始超管显示名
-}
-
-// 建厂结果，激活码只回给交付方。
-type bootResp struct {
-	PersonID        string `json:"personId"`        // 厂库账号身份
-	ActivationToken string `json:"activationToken"` // 一次性 8 位激活码，禁止写入审计
 }
 
 // 探活结果，库和对象存储分开标记。
@@ -159,42 +142,6 @@ func (h *Handler) healthz(w http.ResponseWriter, r *http.Request) {
 	resp.Schema = h.Hub.SchemaStatus(ctx)
 	// 通过之后把结果回给调用方。
 	writeJSON(w, code, resp)
-}
-
-// 用共享密码在目标厂库写入待启用初始超管；激活码只回调用方。
-func (h *Handler) bootstrap(w http.ResponseWriter, r *http.Request) {
-	// 共享密码恒定时间比对；没配密码时一律拒绝，不给空密码放行。
-	if h.BootstrapToken == "" || !secret.Equal(bearer(r), h.BootstrapToken) {
-		// 没有凭证或对不上则拒绝，不继续办理。
-		writeErr(w, domain.ErrUnauthorized)
-		return
-	}
-	// 承接建厂参数，未知字段会拒绝。
-	var req bootReq
-	// 正文无法解析则拒绝，不进入业务。
-	if err := decodeJSON(r, &req); err != nil {
-		// 请求不合法，回非法请求并不进入业务。
-		writeBadRequest(w, err)
-		return
-	}
-	// 编号必须合法，否则拒绝以免办错对象。
-	fid, err := uuid.Parse(req.FactoryID)
-	// 解析失败则拒绝，不用这个残缺的值继续。
-	if err != nil {
-		// 编号不合法，回非法请求并不进入业务。
-		writeBadRequest(w, errInvalidID)
-		return
-	}
-	// 建厂库并写入待启用初始超管。
-	personID, token, err := h.Hub.Bootstrap(r.Context(), fid, req.SALogin, req.SADisplay)
-	// 上一步没通过则停止，不把失败写成成功。
-	if err != nil {
-		// 把失败译成状态回给调用方，不写成功。
-		writeErr(w, err)
-		return
-	}
-	// 创建成功，把新记录回给调用方。
-	writeJSON(w, http.StatusCreated, bootResp{PersonID: personID.String(), ActivationToken: token})
 }
 
 // 按 URL 工厂身份打开已有厂库；库不在就当未初始化。

@@ -156,21 +156,19 @@ func (h *Hub) Ping(ctx context.Context) error {
 	return admin.WithContext(ctx).Exec("SELECT 1").Error
 }
 
-// Bootstrap 为目标厂建库并写入待启用初始超管；激活码只返回给调用方。
-func (h *Hub) Bootstrap(ctx context.Context, factoryID uuid.UUID, saLogin, saDisplay string) (uuid.UUID, string, error) {
+// Enroll 为目标厂建库并按约定身份写入初始超管和自设密码；认领和测试夹具都走这里。
+func (h *Hub) Enroll(ctx context.Context, factoryID, personID uuid.UUID, saLogin, saDisplay, password string) (*service.Service, error) {
 	// 没有厂库就建并组装，失败则不能写初始超管。
 	svc, err := h.ensure(factoryID)
 	// 厂库打不开就交回，不写入初始超管。
 	if err != nil {
-		return uuid.Nil, "", err
+		return nil, err
 	}
-	// 写入待启用初始超管，激活码只交回调用方。
-	acc, token, err := svc.BootstrapInitial(ctx, saLogin, saDisplay)
-	// 初始超管写不进去就交回，不把空账号当成功。
-	if err != nil {
-		return uuid.Nil, "", err
+	// 把初始超管落库，当场有效。
+	if _, err := svc.Auth.AcceptEnrollment(ctx, personID, saLogin, saDisplay, password); err != nil {
+		return nil, err
 	}
-	return acc.ID, token, nil
+	return svc, nil
 }
 
 // Service 打开已存在的厂库；库还不在就当作工厂未初始化。
@@ -526,14 +524,10 @@ func (h *Hub) Claim(ctx context.Context, wanURL, enrollmentCode, password string
 		return SiteFactory{}, err
 	}
 
-	// 按换到的身份建厂库，失败则先不落超管。
-	svc, err := h.ensure(offer.FactoryID)
-	// 厂库建不开就交回，不继续落超管。
+	// 按换到的身份建厂库并落初始超管，失败则认领未完成。
+	svc, err := h.Enroll(ctx, offer.FactoryID, offer.SAPersonID, offer.SALogin, offer.SADisplay, password)
+	// 厂库建不开或超管落不下就交回。
 	if err != nil {
-		return SiteFactory{}, err
-	}
-	// 把初始超管落库并激活，失败则认领未完成。
-	if _, err := svc.Auth.AcceptEnrollment(ctx, offer.SAPersonID, offer.SALogin, offer.SADisplay, password); err != nil {
 		return SiteFactory{}, err
 	}
 	// 平台给了短码才落库，方便认厂。
