@@ -379,6 +379,10 @@ func TestHoldReportsPresence(t *testing.T) {
 		t.Fatal(tok.Error())
 	}
 
+	// 通道连上、断开的通知，按先后收。
+	status := make(chan bool, 4)
+	// 保活要带上的一台最近登录。
+	login := ClientLoginUp{ClientID: uuid.NewString(), At: time.Now().UTC().Format(time.RFC3339Nano), AppVersion: 7, AppVersionName: "1.0.7"}
 	// 给这一轮限时，避免通道挂死拖住测试。
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	// 离开时取消超时，避免计时器一直留着。
@@ -388,7 +392,14 @@ func TestHoldReportsPresence(t *testing.T) {
 	// 后台跑通道，主流程才能等结果或停机。
 	go func() {
 		// 把通道结果送回，超时和失败才能被看见。
-		errCh <- Hold(ctx, "tcp://"+mqttAddr, httpSrv.URL, fid, priv, Trust{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+		errCh <- Hold(ctx, "tcp://"+mqttAddr, httpSrv.URL, fid, priv, Trust{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+			WithStatus(func(connected bool) { // 连上、断开按先后记下。
+				// 记下这次状态，测试末尾核对先后。
+				status <- connected
+			}), WithClientLogins(func() []ClientLoginUp { // 保活时带一台最近登录。
+				// 交一台固定的最近登录，核对它跟着在场报上去。
+				return []ClientLoginUp{login}
+			}))
 	}()
 	// 结果、通道失败或超时谁先到就走谁。
 	select {
@@ -398,6 +409,11 @@ func TestHoldReportsPresence(t *testing.T) {
 		if cmd.Typ != CmdPresence || cmd.WebVersion < 1 || cmd.ServiceVersion < 1 || cmd.WebVersionName == "" || cmd.ServiceVersionName == "" {
 			// 上报的版本不齐就停测。
 			t.Fatalf("presence %+v", cmd)
+		}
+		// 没带上最近登录就停测，WAN 设备名录看不到。
+		if len(cmd.ClientLogins) != 1 || cmd.ClientLogins[0] != login {
+			// 带的登录不对就停测。
+			t.Fatalf("presence logins %+v", cmd.ClientLogins)
 		}
 	// 通道先退出就带上原因停测。
 	case err := <-errCh:
@@ -412,6 +428,11 @@ func TestHoldReportsPresence(t *testing.T) {
 	cancel()
 	// 等通道真正退出，避免测试提前拆掉代理。
 	<-errCh
+	// 连上时先报在线，离开时再报断开，先后不能乱。
+	if first, last := <-status, <-status; !first || last {
+		// 状态通知不对就停测，横幅会显示错。
+		t.Fatalf("status %v then %v", first, last)
+	}
 }
 
 // 租约落地失败不应拆连接，索引仍要拉到。

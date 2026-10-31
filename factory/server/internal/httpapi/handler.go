@@ -97,6 +97,8 @@ func (h *Handler) Router() http.Handler {
 	h.mountChannel(mux)
 	// 挂上焊事实汇入和厂端报表。
 	h.mountStats(mux)
+	// 挂上到 WAN 通道现状，管理页断线横幅用。
+	h.mountWANStatus(mux)
 	return mux
 }
 

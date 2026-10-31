@@ -239,7 +239,7 @@ func (h *Hub) keepLease(ctx context.Context, factoryID uuid.UUID) {
 	// 按点续租，失败退避，注销或取消才返回。
 	err := wanchannel.KeepLease(ctx, wanURL, factoryID, priv, func(l wanchannel.Lease) error { // 领到的钥放进内存，解开本厂正文。
 		// 和 MQTT 那路首轮补拉同一口径：先标在线再落地。
-		return applyHTTPSLease(ctx, svc, l)
+		return h.applyHTTPSLease(ctx, factoryID, svc, l)
 	})
 	// 不是注销就到此为止，取消时通道已在停。
 	if !errors.Is(err, domain.ErrFactoryRetired) {
@@ -256,7 +256,7 @@ func (h *Hub) keepLease(ctx context.Context, factoryID uuid.UUID) {
 }
 
 // applyHTTPSLease 经 HTTPS 领到的租约先标在线再落地；续租循环和 MQTT 那路首轮、整轮补拉共用。
-func applyHTTPSLease(ctx context.Context, svc *service.Service, l wanchannel.Lease) error {
+func (h *Hub) applyHTTPSLease(ctx context.Context, factoryID uuid.UUID, svc *service.Service, l wanchannel.Lease) error {
 	// 通道已在停就不再标在线，免得停后又被标回去。
 	if err := ctx.Err(); err != nil {
 		return err
@@ -264,7 +264,12 @@ func applyHTTPSLease(ctx context.Context, svc *service.Service, l wanchannel.Lea
 	// 经 HTTPS 领到租约即算在线，厂钟快了也收下这把。
 	svc.Store().SetContentChannelOnline(true)
 	// 把解包钥放进内存，解开本厂 MK。
-	return svc.ApplyContentLease(ctx, l.Key, l.NotAfter)
+	if err := svc.ApplyContentLease(ctx, l.Key, l.NotAfter); err != nil {
+		return err
+	}
+	// 落上了才记到期，横幅断线时按它提示。
+	h.noteWANLease(factoryID, l.NotAfter)
+	return nil
 }
 
 // retryCloseFromWAN 把注销落到本厂库，落不上按退避重试；落上交回 true，取消交回 false。
@@ -526,7 +531,7 @@ func (h *Hub) dialHold(ctx context.Context, factoryID uuid.UUID) error {
 		return svc.Assets.ApplyPlatformFSLayout(ctx, layout)
 	}, func(lease wanchannel.Lease) error { // 首轮和整轮补拉经 HTTPS 领到的钥，先标在线再放进内存。
 		// 和续租循环同一口径：续租还没成过一次，厂钟偏快也收下这把。
-		return applyHTTPSLease(ctx, svc, lease)
+		return h.applyHTTPSLease(ctx, factoryID, svc, lease)
 	}, func(typ, _, kind, assetID string) (json.RawMessage, json.RawMessage, error) { // 升档问询交给本厂回答，失败不断开去重试。
 		// 按问询类型回清单或快照，失败则这问失败。
 		return h.answerAsset(ctx, svc, typ, kind, assetID)
@@ -545,7 +550,10 @@ func (h *Hub) dialHold(ctx context.Context, factoryID uuid.UUID) error {
 		default:
 			return false, nil
 		}
-	}, out)
+	}, out, wanchannel.WithStatus(func(connected bool) { // 连上、断开都记下，管理页横幅要看。
+		// 记下这一厂通道当前是否连着。
+		h.noteWANConnected(factoryID, connected)
+	}), wanchannel.WithClientLogins(clientLoginsFor(ctx, factoryID, svc)))
 	// 注销若发生在租约之前，也要落到本厂库。
 	if errors.Is(err, domain.ErrFactoryRetired) {
 		// 注销指令在租约之前到达时，也要落到本厂库。

@@ -84,6 +84,7 @@ type Hub struct {
 	clientMu    sync.Mutex                                // 护着本厂 Client Broker
 	clientBus   clientBroker                              // 厂→Client MQTT；未起则为空
 	demoData    atomic.Bool                               // 只开发版打开：放开写入演示焊次；默认关
+	wan         wanStates                                 // 各厂到 WAN 通道的现状，给管理页横幅看
 }
 
 // New 连维护库（用来建厂库），不预先打开任何厂库。

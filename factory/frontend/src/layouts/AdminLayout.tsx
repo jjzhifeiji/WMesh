@@ -8,6 +8,7 @@ import { useLogout } from "@/features/auth/api";
 import { useCatalog, useIsSuperAdmin } from "@/features/catalog/api";
 import { ApplyOverlay } from "@/features/updates/ApplyOverlay";
 import { FactoryUpdatePrompt } from "@/features/updates/FactoryUpdatePrompt";
+import { WANStatusBanner } from "@/features/wan-status/WANStatusBanner";
 import { useSession } from "@/shared/auth/session";
 import { IdText } from "@/shared/ui/IdText";
 
@@ -56,6 +57,7 @@ export function AdminLayout() {
           </Space>
         </Layout.Header>
         <Layout.Content className="admin-content">
+          <WANStatusBanner />
           <Outlet />
           {pathname === paths.dashboard ? <FactoryUpdatePrompt enabled={isSA} /> : null}
           <ApplyOverlay />

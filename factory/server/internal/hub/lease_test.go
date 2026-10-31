@@ -178,7 +178,7 @@ func TestHoldLeaseMarksOnline(t *testing.T) {
 	// 先取消，模拟通道正在停。
 	cancel()
 	// 取消后交回取消原因，不落钥。
-	if err := applyHTTPSLease(gone, svc, wanchannel.Lease{Key: key, NotAfter: past}); !errors.Is(err, context.Canceled) {
+	if err := h.applyHTTPSLease(gone, fid, svc, wanchannel.Lease{Key: key, NotAfter: past}); !errors.Is(err, context.Canceled) {
 		// 取消了还往下落就停测。
 		t.Fatalf("cancelled apply: %v", err)
 	}
@@ -188,7 +188,7 @@ func TestHoldLeaseMarksOnline(t *testing.T) {
 		t.Fatalf("online after cancelled apply: %v", err)
 	}
 	// 走 Hold 回调用的同一函数，过期租约应被收下。
-	if err := applyHTTPSLease(context.Background(), svc, wanchannel.Lease{Key: key, NotAfter: past}); err != nil {
+	if err := h.applyHTTPSLease(context.Background(), fid, svc, wanchannel.Lease{Key: key, NotAfter: past}); err != nil {
 		// 首轮补拉的钥被拒，厂钟偏快时要等续租先成一次。
 		t.Fatalf("hold apply: %v", err)
 	}

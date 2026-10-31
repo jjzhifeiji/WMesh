@@ -42,7 +42,15 @@ const retryMaxFails = 8 // 同一份脏标记连续补拉失败到这个次数�
 type ClientSyncHandler func(keep []uuid.UUID) error
 
 // Hold 用厂钥连 WAN MQTT，订下行、拉索引和正文，并回答升档问询；https 且已钉钥时下行逐条验签；补拉在后台协程里跑。
-func Hold(ctx context.Context, mqttURL, wanHTTP string, factoryID uuid.UUID, privateKey []byte, trust Trust, apply func(State) error, applyClient func(ClientIntent) error, syncClients ClientSyncHandler, applyClosure ClosureHandler, applyTemplate ClosureHandler, applySoftware SoftwareHandler, applyRetract RetractHandler, applyFS ClosureHandler, applyLease LeaseHandler, onRequest RequestHandler, have HaveHandler, outbound <-chan SyncRequest) error {
+// extra 可挂在线状态和最近登录回调，不传照旧。
+func Hold(ctx context.Context, mqttURL, wanHTTP string, factoryID uuid.UUID, privateKey []byte, trust Trust, apply func(State) error, applyClient func(ClientIntent) error, syncClients ClientSyncHandler, applyClosure ClosureHandler, applyTemplate ClosureHandler, applySoftware SoftwareHandler, applyRetract RetractHandler, applyFS ClosureHandler, applyLease LeaseHandler, onRequest RequestHandler, have HaveHandler, outbound <-chan SyncRequest, extra ...HoldOption) error {
+	// 收齐可选回调，没传的保持空。
+	var o holdOpts
+	// 逐个套上调用方给的选项。
+	for _, fn := range extra {
+		// 把这一项写进回调集合。
+		fn(&o)
+	}
 	// 没有签发钥就拒绝连接，避免匿名拨上平台。
 	if len(privateKey) == 0 {
 		return domain.ErrNotFound
@@ -147,8 +155,15 @@ func Hold(ctx context.Context, mqttURL, wanHTTP string, factoryID uuid.UUID, pri
 		return domain.ErrWANUnreachable
 	}
 	// 连上后把本进程前端/服务版本报给 WAN，名录只在在线时展示。
-	if err := publishUp(cli, up, presenceCmd()); err != nil {
+	if err := publishUp(cli, up, o.presence()); err != nil {
 		return err
+	}
+	// 连上并报过在场才算在线，告诉外层；离开时再报断开。
+	if o.status != nil {
+		// 通知外层通道已连上。
+		o.status(true)
+		// 不论怎么离开都报断开，外层横幅才不会一直显示在线。
+		defer o.status(false)
 	}
 
 	// 用厂钥签后面的拉取，没有签名会被拒绝。
@@ -264,7 +279,7 @@ func Hold(ctx context.Context, mqttURL, wanHTTP string, factoryID uuid.UUID, pri
 				return domain.ErrWANUnreachable
 			}
 			// 半开 TCP 上探活会失败，立刻退回外层重拨。
-			if err := publishUp(cli, up, presenceCmd()); err != nil {
+			if err := publishUp(cli, up, o.presence()); err != nil {
 				return err
 			}
 		// 取出一条下行再落地。

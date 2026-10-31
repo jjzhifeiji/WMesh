@@ -44,6 +44,7 @@ type Cmd struct {
 	DeviceSerial       string          `json:"deviceSerial,omitempty"`       // 机械臂识别号；未填为空
 	PublicKey          []byte          `json:"publicKey,omitempty"`          // 设备公钥，可空
 	BindingRevision    int64           `json:"bindingRevision,omitempty"`    // 绑定修订
+	ClientLogins       []ClientLoginUp `json:"clientLogins,omitempty"`       // 保活带上的各台最近登录
 	Lease              []byte          `json:"lease,omitempty"`              // 租约钥 L
 	NotAfter           string          `json:"notAfter,omitempty"`           // 租约到期 RFC3339
 	Assets             json.RawMessage `json:"assets,omitempty"`             // 升档清单 JSON
