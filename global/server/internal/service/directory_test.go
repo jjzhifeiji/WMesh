@@ -342,34 +342,6 @@ func TestCreateFactoryNormalizesSALogin(t *testing.T) {
 		// 不符即停：登记工厂「厂A」失败。
 		t.Fatal(err)
 	}
-	// 再读名录，核对落库的超管登录名。
-	dir, err = h.WAN.Directory(ctx, tok)
-	// 读工厂名录失败就停，名录读不到就无法对厂。
-	if err != nil {
-		// 不符即停：读工厂名录失败。
-		t.Fatal(err)
-	}
-	// 先当没找到，循环里命中再改成真。
-	found := false
-	// 逐条初始超管找到厂A那一条。
-	for _, sa := range dir.Initials {
-		// 不是厂A的就跳过，看下一条。
-		if sa.FactoryID != a.Factory.ID {
-			continue
-		}
-		// 标成已命中，最后仍为假说明名录里没有。
-		found = true
-		// 名录里的登录名还带空白就停，厂端拿到的名字会对不上。
-		if sa.LoginName != "boss" {
-			// 不符即停：登录名没有去空白。
-			t.Fatalf("stored login %q", sa.LoginName)
-		}
-	}
-	// 名录里找不到厂A的初始超管就停。
-	if !found {
-		// 不符即停：厂A的初始超管没落库。
-		t.Fatal("initial super admin missing")
-	}
 	// 用建厂码认领，厂端拿到的超管名也应是规范后的。
 	offer, err := h.WAN.OfferEnroll(ctx, a.EnrollmentToken)
 	// 认领失败或名字仍带空白就停，厂端会按错的名字建档。

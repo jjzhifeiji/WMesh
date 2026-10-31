@@ -171,34 +171,6 @@ func TestWANHTTP(t *testing.T) {
 		t.Fatalf("list clients %d %s", code, body)
 	}
 	// 发出请求并记下状态，对不上就停测。
-	code, body = do(t, srv, "GET", "/v1/factories/"+fid+"/offline-grants", tok, "")
-	// 不该放行的操作没被拦住，就停测。
-	if code != http.StatusForbidden {
-		// 列表结果不对，带上现场停测。
-		t.Fatalf("list offline grants %d %s", code, body)
-	}
-	// 发出请求并记下状态，对不上就停测。
-	code, body = do(t, srv, "POST", "/v1/invite-wan-admin", tok, `{"loginName":"other"}`)
-	// 不该放行的操作没被拦住，就停测。
-	if code != http.StatusForbidden {
-		// 结果和预期不一致，带上现场停测。
-		t.Fatalf("invite %d %s", code, body)
-	}
-	// 发出请求并记下状态，对不上就停测。
-	code, body = do(t, srv, "POST", "/v1/factories/"+fid+"/people", tok, `{"loginName":"p1"}`)
-	// 不该放行的操作没被拦住，就停测。
-	if code != http.StatusForbidden {
-		// 带了人员字段却没被拒绝，就停测。
-		t.Fatalf("proxy person %d %s", code, body)
-	}
-	// 发出请求并记下状态，对不上就停测。
-	code, body = do(t, srv, "GET", "/v1/factories/"+fid+"/people", tok, "")
-	// 不该放行的操作没被拦住，就停测。
-	if code != http.StatusForbidden {
-		// 列表结果不对，带上现场停测。
-		t.Fatalf("list people %d %s", code, body)
-	}
-	// 发出请求并记下状态，对不上就停测。
 	code, body = do(t, srv, "POST", "/v1/assets", tok, `{"kind":"process","name":"平台焊","content":"wan-body"}`)
 	// 没建成就停测，避免把失败当成新记录。
 	if code != http.StatusCreated || !strings.Contains(body, `"copyable":false`) {

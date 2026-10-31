@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 
 	"wmesh/global/internal/platform/audit"
 	"wmesh/global/internal/platform/domain"
 	"wmesh/global/internal/platform/secret"
+	"wmesh/global/internal/store"
 )
 
 // Channel 管厂出站认领、MQTT 在线和 HTTPS 拉正文。不判厂内业务对错。
@@ -180,6 +182,50 @@ func (s *Channel) ReportFactoryRelease(ctx context.Context, factoryID uuid.UUID,
 	}
 	// 把厂端自报版本写入名录，离线展示时再清掉。
 	return s.store.PutFactoryRelease(ctx, factoryID, webCode, strings.TrimSpace(webName), svcCode, strings.TrimSpace(svcName))
+}
+
+// maxClientLogins 一次保活最多收这么多台的最近登录，多出的丢掉。
+const maxClientLogins = 1000
+
+// ReportClientLogins 记下厂端上报的各台最近登录；坏条目跳过，只认属于该厂的设备，心跳不上审计。
+func (s *Channel) ReportClientLogins(ctx context.Context, factoryID uuid.UUID, ups []ClientLoginUp) error {
+	// 没带就不用碰库。
+	if len(ups) == 0 {
+		return nil
+	}
+	// 条数超过上限就截掉，避免一条保活撑满库写。
+	if len(ups) > maxClientLogins {
+		// 只留前面这些，下一轮还会再报。
+		ups = ups[:maxClientLogins]
+	}
+	// 按需要预留位置，避免后面反复扩容。
+	logins := make([]store.ClientLogin, 0, len(ups))
+	// 逐条解析，坏的跳过不拖累别的。
+	for _, u := range ups {
+		// 设备身份解不开就跳过。
+		cid, err := uuid.Parse(u.ClientID)
+		// 身份不合法或为空就跳过这一条。
+		if err != nil || cid == uuid.Nil {
+			continue
+		}
+		// 登录时间解不开就跳过。
+		at, err := time.Parse(time.RFC3339Nano, u.At)
+		// 时间不合法就跳过这一条。
+		if err != nil {
+			continue
+		}
+		// 版本名去空白后按字数裁到上限，和库约束一致。
+		name := []rune(strings.TrimSpace(u.AppVersionName))
+		// 超长就裁掉多出的字。
+		if len(name) > 80 {
+			// 只留前八十个字。
+			name = name[:80]
+		}
+		// 收下这一条，时间统一成 UTC。
+		logins = append(logins, store.ClientLogin{ClientID: cid, At: at.UTC(), AppVersion: max(u.AppVersion, 0), AppVersionName: string(name)})
+	}
+	// 只改属于该厂且更新的行，别厂设备由库条件挡住。
+	return s.store.NoteClientLogins(ctx, factoryID, logins)
 }
 
 // IssueContentLease 给该厂签发或续期内容租约；同一把 L，窗口最多 24 小时。

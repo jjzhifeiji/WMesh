@@ -1,10 +1,10 @@
 import { PlusOutlined } from "@ant-design/icons";
-import { App, Button, Card, Form, Input, Modal, Select, Space, Table, type TableColumnsType } from "antd";
-import { useMemo, useState } from "react";
+import { App, Button, Card, Form, Input, Modal, Popconfirm, Select, Space, Table, Tooltip, type TableColumnsType } from "antd";
+import { useState } from "react";
 import { useDirectory } from "@/features/factories/api";
 import { errorMessage } from "@/shared/api/client";
 import { formatTime } from "@/shared/format";
-import { IdText } from "@/shared/ui/IdText";
+import { CodeText } from "@/shared/ui/CodeText";
 import { PageHeader } from "@/shared/ui/PageHeader";
 import {
   useAssignClient,
@@ -12,6 +12,7 @@ import {
   useRebindClient,
   useRegisterClient,
   useRenameClient,
+  useUnassignClient,
   type Client,
   type RegisterClientInput,
 } from "./api";
@@ -24,6 +25,7 @@ export function ClientsPage() {
   const rename = useRenameClient();
   const assign = useAssignClient();
   const rebind = useRebindClient();
+  const unassign = useUnassignClient();
   const { message } = App.useApp();
   const [open, setOpen] = useState(false);
   const [renameFor, setRenameFor] = useState<Client | null>(null);
@@ -33,31 +35,58 @@ export function ClientsPage() {
   const [moveForm] = Form.useForm<{ factoryId: string }>();
 
   const factories = dir.data?.factories ?? [];
-  const factoryName = useMemo(() => {
-    const m = new Map(factories.map((f) => [f.id, f.name]));
-    return (id: string | null) => (id ? (m.get(id) ?? id) : "未分配");
-  }, [factories]);
+  const factoryById = new Map(factories.map((f) => [f.id, f]));
+  const factoryLabel = (id: string | null) => {
+    if (!id) return "未分配";
+    const f = factoryById.get(id);
+    if (!f) return <CodeText id={id} />;
+    return (
+      <Tooltip title={id}>
+        <span>
+          <code>{f.shortCode}</code> {f.name}
+        </span>
+      </Tooltip>
+    );
+  };
 
   const columns: TableColumnsType<Client> = [
+    { title: "短码", dataIndex: "shortCode", width: 90, render: (_, row) => <CodeText code={row.shortCode} id={row.id} /> },
     { title: "名称", dataIndex: "name" },
     { title: "识别号", dataIndex: "deviceSerial", width: 180, render: (v: string | undefined) => v || "—" },
-    { title: "身份", dataIndex: "id", width: 280, render: (id: string) => <IdText id={id} /> },
-    { title: "所属工厂", dataIndex: "factoryId", render: (id: string | null) => factoryName(id) },
+    { title: "所属工厂", dataIndex: "factoryId", render: (id: string | null) => factoryLabel(id) },
+    { title: "最近登录时间", dataIndex: "lastLoginAt", width: 170, render: (v: string | null | undefined) => formatTime(v) },
+    { title: "App 版本", key: "appVersion", width: 120, render: (_, row) => row.appVersionName || (row.appVersion ? String(row.appVersion) : "—") },
     { title: "创建时间", dataIndex: "createdAt", width: 170, render: (v: string) => formatTime(v) },
     { title: "分配时间", dataIndex: "boundAt", width: 170, render: (v: string | null) => formatTime(v) },
     {
       title: "操作",
       key: "actions",
-      width: 180,
+      width: 220,
       render: (_, row) => (
         <Space size={4}>
           <Button size="small" onClick={() => { setRenameFor(row); renameForm.setFieldsValue({ name: row.name }); }}>
             改名
           </Button>
           {row.factoryId ? (
-            <Button size="small" onClick={() => { setMoveFor(row); moveForm.resetFields(); }}>
-              改分
-            </Button>
+            <>
+              <Button size="small" onClick={() => { setMoveFor(row); moveForm.resetFields(); }}>
+                改分
+              </Button>
+              <Popconfirm
+                title={`收回「${row.name}」？`}
+                description="收回后回到未分配，原厂随即作废这台设备。"
+                onConfirm={() =>
+                  unassign.mutate(row.id, {
+                    onSuccess: () => message.success("已收回"),
+                    onError: (e) => message.error(errorMessage(e)),
+                  })
+                }
+              >
+                <Button size="small" danger loading={unassign.isPending && unassign.variables === row.id}>
+                  收回
+                </Button>
+              </Popconfirm>
+            </>
           ) : (
             <Button size="small" onClick={() => { setMoveFor(row); moveForm.resetFields(); }}>
               分配

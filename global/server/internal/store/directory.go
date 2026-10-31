@@ -258,12 +258,3 @@ func (s *Store) InitialSuperAdmin(ctx context.Context, factoryID uuid.UUID) (Ini
 	}
 	return row, nil
 }
-
-// ListInitialSuperAdmins 一次取全部工厂的初始超管对账行，不含密码。
-func (s *Store) ListInitialSuperAdmins(ctx context.Context) ([]InitialSuperAdmin, error) {
-	// 先给空表，没有对账行也不交空指针。
-	rows := []InitialSuperAdmin{}
-	// 按创建时间读出全部初始超管对账，不含密码。
-	err := s.db.WithContext(ctx).Order("created_at DESC").Find(&rows).Error
-	return rows, err
-}

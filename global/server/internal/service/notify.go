@@ -81,6 +81,8 @@ func (s *Channel) HandleFactoryUp(ctx context.Context, factoryID uuid.UUID, payl
 		_ = s.TouchChannel(ctx, factoryID)
 		// 做完这一步再继续。
 		_ = s.ReportFactoryRelease(ctx, factoryID, cmd.WebVersion, cmd.WebVersionName, cmd.ServiceVersion, cmd.ServiceVersionName)
+		// 顺带记下各台设备最近登录，失败只等下一轮保活。
+		_ = s.ReportClientLogins(ctx, factoryID, cmd.ClientLogins)
 	}
 }
 

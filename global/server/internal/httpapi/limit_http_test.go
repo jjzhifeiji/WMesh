@@ -56,20 +56,22 @@ func limitServer(t *testing.T, svc *service.Service) *httptest.Server {
 	return srv
 }
 
-// 造一份带超长登录名的 JSON，长度正好是 size 字节。
-func loginOfSize(size int) string {
-	// 先算出外壳占的字节，余下全部填进登录名。
-	head, tail := `{"loginName":"`, `"}`
-	// 登录名填满剩下的字节，整份正好 size。
+// 造一份带超长名字的 JSON，长度正好是 size 字节。
+func nameOfSize(size int) string {
+	// 先算出外壳占的字节，余下全部填进名字。
+	head, tail := `{"name":"`, `"}`
+	// 名字填满剩下的字节，整份正好 size。
 	return head + strings.Repeat("a", size-len(head)-len(tail)) + tail
 }
 
-// 超大正文回 413 且不写审计；超长登录名截断后入审计；匿名大正文先回 401。
+// 超大正文回 413 且不写审计；超长名字与登录名截断后入审计；匿名大正文先回 401。
 func TestBodyLimitHTTP(t *testing.T) {
 	// 起库和服务，拿到管理员会话。
 	svc, tok := limitService(t)
 	// 起临时云端。
 	srv := limitServer(t, svc)
+	// 拒绝入口随手编一个厂身份，不看厂在不在。
+	denyPath := "/v1/factories/" + uuid.NewString() + "/assets"
 	// 先数一下审计行，超限请求不该多出来。
 	before, err := svc.ListAudit(context.Background())
 	// 这一步失败就不能继续，以免误判通过。
@@ -77,12 +79,12 @@ func TestBodyLimitHTTP(t *testing.T) {
 		// 这一步失败就不能继续，以免误判通过。
 		t.Fatal(err)
 	}
-	// 两兆登录名塞给拒绝入口，应直接回 413。
-	code, body := do(t, srv, "POST", "/v1/invite-wan-admin", "", loginOfSize(2<<20))
+	// 两兆名字塞给拒绝入口，应直接回 413。
+	code, body := do(t, srv, "POST", denyPath, "", nameOfSize(2<<20))
 	// 状态或错误句不对就停测。
 	if code != http.StatusRequestEntityTooLarge || gjson(t, body, "error") != "request body too large" {
 		// 超大正文没被拦成 413，就停测。
-		t.Fatalf("2MiB invite %d %.200s", code, body)
+		t.Fatalf("2MiB deny %d %.200s", code, body)
 	}
 	// 再数一次审计行。
 	after, err := svc.ListAudit(context.Background())
@@ -96,14 +98,21 @@ func TestBodyLimitHTTP(t *testing.T) {
 		// 审计多出行，带上条数停测。
 		t.Fatalf("audit grew %d -> %d", len(before), len(after))
 	}
-	// 一千字登录名，不超正文上限，应照常拒绝。
+	// 一千字，不超正文上限，应照常拒绝。
 	long := strings.Repeat("x", 1000)
 	// 发出请求并记下状态，对不上就停测。
-	code, body = do(t, srv, "POST", "/v1/invite-wan-admin", "", `{"loginName":"`+long+`"}`)
+	code, body = do(t, srv, "POST", denyPath, "", `{"name":"`+long+`"}`)
 	// 不该放行的操作没被拦住，就停测。
 	if code != http.StatusForbidden {
 		// 拒绝入口回包不对，带上现场停测。
-		t.Fatalf("long invite %d %s", code, body)
+		t.Fatalf("long deny %d %s", code, body)
+	}
+	// 一千字登录名去登录，口令不对应照常拒绝。
+	code, body = do(t, srv, "POST", "/v1/login", "", `{"loginName":"`+long+`","password":"bad"}`)
+	// 不该放行的登录没被拦住，就停测。
+	if code != http.StatusUnauthorized {
+		// 登录回包不对，带上现场停测。
+		t.Fatalf("long login %d %s", code, body)
 	}
 	// 读审计，核对超长字符串已截断。
 	rows, err := svc.ListAudit(context.Background())
@@ -112,26 +121,35 @@ func TestBodyLimitHTTP(t *testing.T) {
 		// 这一步失败就不能继续，以免误判通过。
 		t.Fatal(err)
 	}
-	// 记下是否找到这次的拒绝审计。
-	found := false
-	// 逐行找邀请拒绝，看截断结果。
+	// 记下两条拒绝审计是否都找到。
+	foundTarget, foundLogin := false, false
+	// 逐行找这两次拒绝，看截断结果。
 	for _, row := range rows {
-		// 只看邀请拒绝且带被声明登录名的行。
-		if row.Action != "invite_wan_admin" || row.ClaimedLogin == nil {
-			continue
+		// 代建原件拒绝：对象超过 512 字加省略号就停测。
+		if row.Action == "create_factory_asset" {
+			// 记下找到了代建拒绝。
+			foundTarget = true
+			// 对象没截断就停测。
+			if utf8.RuneCountInString(row.Target) > 513 {
+				// 审计没截断，带上长度停测。
+				t.Fatalf("target not clipped: %d", utf8.RuneCountInString(row.Target))
+			}
 		}
-		// 记下找到了这次的审计。
-		found = true
-		// 登录名超过 128 字加省略号、对象超过 512 字加省略号就停测。
-		if utf8.RuneCountInString(*row.ClaimedLogin) > 129 || utf8.RuneCountInString(row.Target) > 513 {
-			// 审计没截断，带上长度停测。
-			t.Fatalf("audit not clipped: %d %d", utf8.RuneCountInString(*row.ClaimedLogin), utf8.RuneCountInString(row.Target))
+		// 登录拒绝：登录名超过 128 字加省略号就停测。
+		if row.Action == "login" && row.ClaimedLogin != nil {
+			// 记下找到了登录拒绝。
+			foundLogin = true
+			// 登录名没截断就停测。
+			if utf8.RuneCountInString(*row.ClaimedLogin) > 129 {
+				// 审计没截断，带上长度停测。
+				t.Fatalf("login not clipped: %d", utf8.RuneCountInString(*row.ClaimedLogin))
+			}
 		}
 	}
-	// 没找到拒绝审计就停测，认证失败要留痕。
-	if !found {
+	// 没找到拒绝审计就停测，被拒要留痕。
+	if !foundTarget || !foundLogin {
 		// 拒绝没落审计，就停测。
-		t.Fatal("invite deny audit missing")
+		t.Fatalf("deny audit missing target=%v login=%v", foundTarget, foundLogin)
 	}
 	// 匿名发两兆软件包，应先回 401，不读包。
 	code, body = do(t, srv, "POST", "/v1/software", "", `{"content":"`+strings.Repeat("A", 2<<20)+`"}`)
@@ -186,45 +204,26 @@ func TestRateLimitHTTP(t *testing.T) {
 		// 来源限速没生效，带上现场停测。
 		t.Fatalf("11th login %d %s", code, body)
 	}
-	// 拒绝入口另起一个云端。
+	// 代管拒绝入口另起一个云端单测。
 	anonSrv := limitServer(t, svc)
+	// 随手编一个厂身份，拒绝入口不看厂在不在。
+	denyPath := "/v1/factories/" + uuid.NewString() + "/assets"
 	// 前十次都应照常拒绝。
 	for i := range 10 {
 		// 发出请求并记下状态，对不上就停测。
-		code, body := do(t, anonSrv, "POST", "/v1/invite-wan-admin", "", fmt.Sprintf(`{"loginName":"n%d"}`, i))
+		code, body := do(t, anonSrv, "POST", denyPath, "", fmt.Sprintf(`{"name":"n%d"}`, i))
 		// 突发以内应照常回禁止。
 		if code != http.StatusForbidden {
 			// 突发以内就被挡，带上次数停测。
-			t.Fatalf("invite %d: %d %s", i+1, code, body)
+			t.Fatalf("deny %d: %d %s", i+1, code, body)
 		}
 	}
 	// 第十一次应被来源闸挡下。
-	code, body = do(t, anonSrv, "POST", "/v1/invite-wan-admin", "", `{"loginName":"n10"}`)
+	code, body = do(t, anonSrv, "POST", denyPath, "", `{"name":"n10"}`)
 	// 状态或错误句不对就停测。
 	if code != http.StatusTooManyRequests || gjson(t, body, "error") != "too many requests" {
 		// 匿名入口限速没生效，带上现场停测。
-		t.Fatalf("11th invite %d %s", code, body)
-	}
-	// 离线授权查询也是代管拒绝入口，另起一个云端单测。
-	grantSrv := limitServer(t, svc)
-	// 随手编一个厂身份，拒绝入口不看厂在不在。
-	grantPath := "/v1/factories/" + uuid.NewString() + "/offline-grants"
-	// 前十次都应照常拒绝。
-	for i := range 10 {
-		// 发出请求并记下状态，对不上就停测。
-		code, body := do(t, grantSrv, "GET", grantPath, "", "")
-		// 突发以内应照常回禁止。
-		if code != http.StatusForbidden {
-			// 突发以内就被挡，带上次数停测。
-			t.Fatalf("offline-grants %d: %d %s", i+1, code, body)
-		}
-	}
-	// 第十一次应被来源闸挡下。
-	code, body = do(t, grantSrv, "GET", grantPath, "", "")
-	// 状态或错误句不对就停测。
-	if code != http.StatusTooManyRequests || gjson(t, body, "error") != "too many requests" {
-		// 离线授权入口限速没生效，带上现场停测。
-		t.Fatalf("11th offline-grants %d %s", code, body)
+		t.Fatalf("11th deny %d %s", code, body)
 	}
 }
 

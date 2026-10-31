@@ -44,6 +44,7 @@ type Cmd struct {
 	DeviceSerial       string          `json:"deviceSerial,omitempty"`       // 机械臂识别号；未填为空
 	PublicKey          []byte          `json:"publicKey,omitempty"`          // 设备公钥，可空
 	BindingRevision    int64           `json:"bindingRevision,omitempty"`    // 绑定修订
+	ClientLogins       []ClientLoginUp `json:"clientLogins,omitempty"`       // 厂端保活带上的各台最近登录
 	Lease              []byte          `json:"lease,omitempty"`              // 租约钥 L
 	NotAfter           string          `json:"notAfter,omitempty"`           // 租约到期 RFC3339
 	Assets             json.RawMessage `json:"assets,omitempty"`             // 升档清单 JSON
@@ -51,4 +52,12 @@ type Cmd struct {
 	Error              string          `json:"error,omitempty"`              // 英文业务错误
 	Signed             []byte          `json:"signed,omitempty"`             // 签名覆盖的指令 JSON 原文
 	Sig                []byte          `json:"sig,omitempty"`                // WAN 对目标厂和原文的签名
+}
+
+// ClientLoginUp 是厂端随保活上报的某台设备最近一次示教器登录。
+type ClientLoginUp struct {
+	ClientID       string `json:"clientId"`                 // 设备稳定身份
+	At             string `json:"at"`                       // 登录时间 RFC3339
+	AppVersion     int64  `json:"appVersion,omitempty"`     // 示教器版本号；没报为 0
+	AppVersionName string `json:"appVersionName,omitempty"` // 示教器版本名
 }

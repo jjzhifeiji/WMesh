@@ -5,11 +5,10 @@ import (
 
 	"github.com/google/uuid"
 
-	"wmesh/global/internal/platform/domain"
 	"wmesh/global/internal/platform/id"
 )
 
-// 挂现场设备名录与分配；离线授权查询一律拒绝。
+// 挂现场设备名录与分配。
 func (h *Handler) mountClient(mux *http.ServeMux) {
 	// 列出已经登记的现场设备。
 	mux.HandleFunc("GET /v1/clients", h.listClients)
@@ -21,8 +20,8 @@ func (h *Handler) mountClient(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/clients/{id}/assign", h.assignClient)
 	// 改分先通知旧厂作废，再绑新厂。
 	mux.HandleFunc("POST /v1/clients/{id}/rebind", h.rebindClient)
-	// 查厂内人员离线授权，一律拒绝。
-	mux.HandleFunc("GET /v1/factories/{id}/offline-grants", h.listFactoryOfflineGrants)
+	// 收回到未分配，原厂随即作废。
+	mux.HandleFunc("POST /v1/clients/{id}/unassign", h.unassignClient)
 }
 
 // 登记现场设备，机械臂识别号必填。
@@ -228,22 +227,24 @@ func (h *Handler) rebindClient(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, row)
 }
 
-// 从 WAN 查厂内人员离线授权，一律拒绝。
-func (h *Handler) listFactoryOfflineGrants(w http.ResponseWriter, r *http.Request) {
-	// 匿名也能调且每次写审计，同一来源超频先挡。
-	if !h.anonGate.allow(r) {
-		// 回请求过多，不读正文也不写审计。
-		writeErr(w, domain.ErrTooManyRequests)
-		return
-	}
-	// 从路径取出身份，不合法就拒绝这次操作。
-	fid, err := parsePathID(r)
+// 收回到未分配后通知原厂作废。
+func (h *Handler) unassignClient(w http.ResponseWriter, r *http.Request) {
+	// 解析稳定身份，格式不对就拒绝。
+	cid, err := uuid.Parse(r.PathValue("id"))
 	// 参数不合法就按坏请求拒绝。
 	if err != nil {
 		// 把不合法的原因回给调用方。
-		writeBadRequest(w, err)
+		writeBadRequest(w, errInvalidID)
 		return
 	}
-	// 代管厂内数据一律拒绝，不把结果写成成功。
-	writeErr(w, h.svc.Clients.ListPersonOfflineGrants(r.Context(), bearer(r), fid))
+	// 收回并通知原厂作废，未分配则拒绝。
+	row, err := h.svc.Clients.UnassignClient(r.Context(), bearer(r), cid)
+	// 没成功就按业务错误回写，不假装完成。
+	if err != nil {
+		// 按业务错误回写，内部细节不出网。
+		writeErr(w, err)
+		return
+	}
+	// 把结果交回调用方。
+	writeJSON(w, http.StatusOK, row)
 }

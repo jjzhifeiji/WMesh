@@ -333,6 +333,33 @@ func (s *Clients) RebindClient(ctx context.Context, token string, clientID, fact
 	return bound, nil
 }
 
+// UnassignClient 把已分配节点收回到未分配，绑定修订升高；原厂随即作废这份绑定。
+func (s *Clients) UnassignClient(ctx context.Context, token string, clientID uuid.UUID) (Client, error) {
+	// 只有 WAN 管理员能收回。失败一律记拒绝。
+	admin, err := s.RequireAdmin(ctx, token)
+	// 无效就不能继续，不当已经登录。
+	if err != nil {
+		// 收回被拒就留审计。
+		_ = s.audit(ctx, nil, nil, nil, "unbind_client", clientID.String(), audit.Deny)
+		return Client{}, err
+	}
+	// 已绑定才能收回，修订升高；原厂取行锁下读到的，并发改绑不作废错厂。
+	row, from, err := s.store.UnbindClient(ctx, clientID)
+	// 原来没有绑定或没有这台就拒绝。
+	if err != nil {
+		// 收回被拒就留审计。
+		_ = s.audit(ctx, &admin.ID, nil, nil, "unbind_client", clientID.String(), audit.Deny)
+		return Client{}, err
+	}
+	// 审计没记下则中止，不当这次已经成功。
+	if err := s.audit(ctx, &admin.ID, nil, &from, "unbind_client", clientID.String()+" "+from.String(), audit.Allow); err != nil {
+		return Client{}, err
+	}
+	// 叫锁内读到的原厂作废，未分配不再通知别的厂。
+	s.notifyClient(row, &from)
+	return row, nil
+}
+
 // ClientByID 按稳定身份取名录行，不含私钥。
 func (s *Clients) ClientByID(ctx context.Context, clientID uuid.UUID) (Client, error) {
 	// 按现场设备处理。
@@ -355,10 +382,4 @@ func (s *Clients) ListClients(ctx context.Context, token string) ([]Client, erro
 	}
 	// 设备列表是前端每 5 秒的轮询读，成功不记允许，免得撑大审计表。
 	return rows, nil
-}
-
-// ListPersonOfflineGrants 从 WAN 查厂内人员，一律拒绝。
-func (s *Clients) ListPersonOfflineGrants(ctx context.Context, token string, factoryID uuid.UUID) error {
-	// 拒绝代管厂内人员、组织和角色。
-	return s.denyFactoryManage(ctx, token, factoryID, "list_person_offline_grants", factoryID.String())
 }

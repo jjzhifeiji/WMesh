@@ -23,8 +23,7 @@ type CreatedFactory struct {
 
 // Directory 是名录只读视图，不含厂内人员和密码。
 type Directory struct {
-	Factories []Factory           `json:"factories"` // WAN 工厂名录
-	Initials  []InitialSuperAdmin `json:"initials"`  // 各厂初始超管身份，不含密码
+	Factories []Factory `json:"factories"` // WAN 工厂名录
 }
 
 // normalizeLoginName 去掉首尾空白后须 1～64 字，和厂端认领口径一致。
@@ -98,38 +97,6 @@ func (s *Factories) IssueInitialSuperAdmin(ctx context.Context, token string, fa
 	return domain.ErrInitialSAExists
 }
 
-// InviteWANAdmin 拒绝任何第二 WAN 用户或授权。
-func (s *Factories) InviteWANAdmin(ctx context.Context, token, targetLogin string) error {
-	// 任何第二 WAN 用户都拒绝；能认出操作者则记上。
-	var actor *uuid.UUID
-	// 会话有效才做这一步，无效就当没登录。
-	if admin, err := s.RequireAdmin(ctx, token); err == nil {
-		// 会话有效才记下操作者，拒绝时可以是空。
-		actor = &admin.ID
-	}
-	// 不能再邀请第二个管理员。
-	_ = s.audit(ctx, actor, &targetLogin, nil, "invite_wan_admin", targetLogin, audit.Deny)
-	return domain.ErrForbidden
-}
-
-// CreateFactoryPerson 拒绝 WAN 代建厂内人员。
-func (s *Factories) CreateFactoryPerson(ctx context.Context, token string, factoryID uuid.UUID, loginName string) error {
-	// 拒绝代管厂内人员、组织和角色。
-	return s.denyFactoryManage(ctx, token, factoryID, "create_factory_person", loginName)
-}
-
-// CreateFactoryOrg 拒绝 WAN 代建厂内组织。
-func (s *Factories) CreateFactoryOrg(ctx context.Context, token string, factoryID uuid.UUID, name string) error {
-	// 拒绝代管厂内人员、组织和角色。
-	return s.denyFactoryManage(ctx, token, factoryID, "create_factory_org", name)
-}
-
-// GrantFactoryRole 拒绝 WAN 代授厂内角色。
-func (s *Factories) GrantFactoryRole(ctx context.Context, token string, factoryID uuid.UUID, target string) error {
-	// 拒绝代管厂内人员、组织和角色。
-	return s.denyFactoryManage(ctx, token, factoryID, "grant_factory_role", target)
-}
-
 // denyFactoryManage 厂内人员、组织、角色 WAN 一律拒绝，并记审计。
 func (s *kernel) denyFactoryManage(ctx context.Context, token string, factoryID uuid.UUID, action, target string) error {
 	// 先没有操作者，管理员核对通过再填。
@@ -144,7 +111,7 @@ func (s *kernel) denyFactoryManage(ctx context.Context, token string, factoryID 
 	return domain.ErrForbidden
 }
 
-// Directory 只返回工厂名录和初始超管身份，不含厂内扩展明细。
+// Directory 只返回工厂名录，不含厂内扩展明细。
 func (s *Factories) Directory(ctx context.Context, token string) (Directory, error) {
 	// 只有 WAN 管理员能读名录，只读轮询用不到管理员身份。
 	_, err := s.RequireAdmin(ctx, token)
@@ -154,20 +121,14 @@ func (s *Factories) Directory(ctx context.Context, token string) (Directory, err
 		_ = s.audit(ctx, nil, nil, nil, "read_directory", "wan", audit.Deny)
 		return Directory{}, err
 	}
-	// 只取工厂名录和初始超管身份，不含密码。
+	// 只取工厂名录，不含密码。
 	facs, err := s.store.ListFactories(ctx)
 	// 列出失败就拒绝，避免交出不完整结果。
 	if err != nil {
 		return Directory{}, err
 	}
-	// 列出这一批供后面筛选。
-	initials, err := s.store.ListInitialSuperAdmins(ctx)
-	// 列出失败就拒绝，避免交出不完整结果。
-	if err != nil {
-		return Directory{}, err
-	}
 	// 名录是前端每 5 秒的轮询读，成功不记允许，免得撑大审计表。
-	return Directory{Factories: facs, Initials: initials}, nil
+	return Directory{Factories: facs}, nil
 }
 
 // DisableFactory 停用工厂；厂端在线则立刻拒绝新登录，离线则回连后收敛。
@@ -285,12 +246,6 @@ func (s *Factories) setStatus(ctx context.Context, token string, factoryID uuid.
 		s.dropFactory(factoryID)
 	}
 	return out, nil
-}
-
-// ListFactoryPeople 从 WAN 查厂内人员，一律拒绝。
-func (s *Factories) ListFactoryPeople(ctx context.Context, token string, factoryID uuid.UUID) error {
-	// 拒绝代管厂内人员、组织和角色。
-	return s.denyFactoryManage(ctx, token, factoryID, "list_factory_people", factoryID.String())
 }
 
 // ReadAuthSecret 从 WAN 读任何认证秘密，一律拒绝。

@@ -28,22 +28,12 @@ func TestAuthCircle(t *testing.T) {
 		// 不符即停：立云端超管应被拒为已有管理员。
 		t.Fatalf("1.1 second wan: %v", err)
 	}
-	// 邀请云端管理员应被拒为越权，放行或错类都算没拦住。
-	if err := h.WAN.InviteWANAdmin(ctx, "", "anyone"); !errors.Is(err, domain.ErrForbidden) {
-		// 不符即停：邀请云端管理员应被拒为越权。
-		t.Fatalf("1.2 invite: %v", err)
-	}
 	// 登录拿会话，没有票后面接口都进不去。
 	wanTok, err := h.WAN.Login(ctx, wanLogin, wanPass)
 	// 登录拿会话失败就停，没有票后面接口都进不去。
 	if err != nil {
 		// 不符即停：登录拿会话失败。
 		t.Fatalf("1.3 login: %v", err)
-	}
-	// 邀请云端管理员应被拒为越权，放行或错类都算没拦住。
-	if err := h.WAN.InviteWANAdmin(ctx, wanTok, "sa-a"); !errors.Is(err, domain.ErrForbidden) {
-		// 不符即停：邀请云端管理员应被拒为越权。
-		t.Fatalf("1.2 grant: %v", err)
 	}
 	// 登记工厂「厂A」，建不成后面没有厂可授权。
 	created, err := h.WAN.CreateFactory(ctx, wanTok, "厂A", "sa-a", "初始超管")
@@ -62,21 +52,6 @@ func TestAuthCircle(t *testing.T) {
 		// 不符即停：登记工厂「厂B」失败。
 		t.Fatalf("create B: %v", err)
 	}
-	// 代建厂内人员应被拒为越权，放行或错类都算没拦住。
-	if err := h.WAN.CreateFactoryPerson(ctx, wanTok, created.Factory.ID, "p1"); !errors.Is(err, domain.ErrForbidden) {
-		// 不符即停：代建厂内人员应被拒为越权。
-		t.Fatalf("3.1: %v", err)
-	}
-	// 代建厂内组织应被拒为越权，放行或错类都算没拦住。
-	if err := h.WAN.CreateFactoryOrg(ctx, wanTok, created.Factory.ID, "车间"); !errors.Is(err, domain.ErrForbidden) {
-		// 不符即停：代建厂内组织应被拒为越权。
-		t.Fatalf("3.2: %v", err)
-	}
-	// 代授厂内角色应被拒为越权，放行或错类都算没拦住。
-	if err := h.WAN.GrantFactoryRole(ctx, wanTok, created.Factory.ID, "p1"); !errors.Is(err, domain.ErrForbidden) {
-		// 不符即停：代授厂内角色应被拒为越权。
-		t.Fatalf("3.3: %v", err)
-	}
 	// 登录拿会话应被拒为口令不对，放行或错类都算没拦住。
 	if _, err := h.WAN.Login(ctx, wanLogin, "bad"); !errors.Is(err, domain.ErrInvalidCredentials) {
 		// 不符即停：登录拿会话应被拒为口令不对。
@@ -90,14 +65,9 @@ func TestAuthCircle(t *testing.T) {
 		t.Fatalf("18.3 directory: %v", err)
 	}
 	// 名录条数不是2就停，这一步不能算通过。
-	if len(dir.Factories) != 2 || len(dir.Initials) != 2 {
+	if len(dir.Factories) != 2 {
 		// 不符即停：名录条数不是2。
-		t.Fatalf("18.3 got fac=%d init=%d", len(dir.Factories), len(dir.Initials))
-	}
-	// 列厂内人员应被拒为越权，放行或错类都算没拦住。
-	if err := h.WAN.ListFactoryPeople(ctx, wanTok, created.Factory.ID); !errors.Is(err, domain.ErrForbidden) {
-		// 不符即停：列厂内人员应被拒为越权。
-		t.Fatalf("18.1: %v", err)
+		t.Fatalf("18.3 got fac=%d", len(dir.Factories))
 	}
 	// 读厂内口令应被拒为越权，放行或错类都算没拦住。
 	if err := h.WAN.ReadAuthSecret(ctx, wanTok, created.Factory.ID); !errors.Is(err, domain.ErrForbidden) {
@@ -162,11 +132,6 @@ func TestAuthCircle(t *testing.T) {
 	if !audit.HasResult(wanAudit, "bootstrap_wan_admin", audit.Deny) {
 		// 不符即停：审计必须记下这一笔。
 		t.Fatalf("1.1 no deny audit")
-	}
-	// 审计必须记下这一笔，缺了就没法对账。
-	if !audit.HasResult(wanAudit, "invite_wan_admin", audit.Deny) {
-		// 不符即停：审计必须记下这一笔。
-		t.Fatalf("1.2 no deny audit")
 	}
 	// 审计必须记下这一笔，缺了就没法对账。
 	if !audit.HasResult(wanAudit, "login", audit.Allow) || !audit.HasResult(wanAudit, "login", audit.Deny) {

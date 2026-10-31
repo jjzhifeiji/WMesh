@@ -36,6 +36,9 @@ type Client struct {
 	BoundAt         *time.Time `json:"boundAt"`                         // 当前这次分配生效时间；未分配为空
 	ShortCode       string     `gorm:"not null" json:"shortCode"`       // Client 短码 C0001…C9999，登记后不改
 	DeviceSerial    string     `json:"deviceSerial,omitempty"`          // 机械臂识别号；未填为空，不当身份
+	LastLoginAt     *time.Time `json:"lastLoginAt"`                     // 厂端上报的最近一次示教器登录；没报过为空
+	AppVersion      int64      `gorm:"not null" json:"appVersion"`      // 最近登录时的示教器版本号；没报过为 0
+	AppVersionName  string     `gorm:"not null" json:"appVersionName"`  // 最近登录时的示教器版本名
 	CreatedAt       time.Time  `gorm:"not null" json:"createdAt"`       // 身份登记时间
 }
 
@@ -297,13 +300,13 @@ func lockAssignableFactory(tx *gorm.DB, factoryID uuid.UUID) error {
 	return nil
 }
 
-// BindClient 把未绑定 Client 绑到一厂，绑定修订从 0 升到 1。
+// BindClient 把未绑定 Client 绑到一厂，绑定修订在原值上升一；收回过的设备也只向前。
 func (s *Store) BindClient(ctx context.Context, clientID, factoryID uuid.UUID) (Client, error) {
 	// 记下当前时刻，这一笔里的时间都用它。
 	now := time.Now().UTC()
 	// 准备接住事务里写好的结果，失败则不用它。
 	var out Client
-	// 确认尚未绑定再改归属，修订从零升到一。
+	// 确认尚未绑定再改归属，修订在原值上升一。
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// 准备接住库里的那一行，没有再另作处理。
 		var row Client
@@ -323,10 +326,12 @@ func (s *Store) BindClient(ctx context.Context, clientID, factoryID uuid.UUID) (
 		if err := lockAssignableFactory(tx, factoryID); err != nil {
 			return err
 		}
-		// 只改尚未分配且修订仍是刚读到的行，修订从 0 升到 1。
+		// 收回过的设备修订不是 0，接着往上升，厂端才不当迟到帧。
+		next := row.BindingRevision + 1
+		// 只改尚未分配且修订仍是刚读到的行。
 		res := tx.Model(&Client{}).Where("id = ? AND factory_id IS NULL AND binding_revision = ?", clientID, row.BindingRevision).Updates(map[string]any{
 			"factory_id":       factoryID,
-			"binding_revision": int64(1),
+			"binding_revision": next,
 			"bound_at":         now,
 		})
 		// 写库报错就停，不能当成已经改成。
@@ -344,7 +349,7 @@ func (s *Store) BindClient(ctx context.Context, clientID, factoryID uuid.UUID) (
 		// 内存里的归属改到目标厂，和库保持一致。
 		row.FactoryID = &factoryID
 		// 内存里的修订一起升高，交出去才是新值。
-		row.BindingRevision = 1
+		row.BindingRevision = next
 		// 记下这次分配生效的时刻。
 		row.BoundAt = &now
 		// 事务成功时才把这一行交出去。
@@ -418,6 +423,90 @@ func (s *Store) RebindClient(ctx context.Context, clientID, factoryID uuid.UUID)
 		return nil
 	})
 	return out, prev, err
+}
+
+// UnbindClient 把已分配 Client 收回到未分配，绑定修订升高；另交回行锁下读到的原厂。
+func (s *Store) UnbindClient(ctx context.Context, clientID uuid.UUID) (Client, uuid.UUID, error) {
+	// 准备接住事务里写好的结果，失败则不用它。
+	var out Client
+	// 行锁下读到的原厂，作废通知只能发给它。
+	var prev uuid.UUID
+	// 确认已绑定，再清掉归属并升高修订。
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// 准备接住库里的那一行，没有再另作处理。
+		var row Client
+		// 行锁读出当前行，并发改绑排队，修订不会重号。
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&row, "id = ?", clientID).Error; err != nil {
+			// 没有这一行就按不存在交回，不当成库故障。
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return domain.ErrNotFound
+			}
+			return err
+		}
+		// 未分配不能收回。
+		if row.FactoryID == nil {
+			return domain.ErrUnbound
+		}
+		// 先记下锁内的原厂，下面改行前内存里还是它。
+		from := *row.FactoryID
+		// 收回也升高修订，旧厂只认更高修订的作废。
+		next := row.BindingRevision + 1
+		// 只改仍属原厂且修订仍是刚读到的行。
+		res := tx.Model(&Client{}).Where("id = ? AND factory_id = ? AND binding_revision = ?", clientID, from, row.BindingRevision).
+			Updates(map[string]any{
+				"factory_id":       nil,
+				"binding_revision": next,
+				"bound_at":         nil,
+			})
+		// 写库报错就停，不能当成已经改成。
+		if res.Error != nil {
+			return res.Error
+		}
+		// 修订已被别人升过，不能拿旧值覆盖。
+		if res.RowsAffected == 0 {
+			return domain.ErrStaleRevision
+		}
+		// 内存里的归属清掉，和库保持一致。
+		row.FactoryID = nil
+		// 内存里的修订一起升高，交出去才是新值。
+		row.BindingRevision = next
+		// 未分配没有生效时间。
+		row.BoundAt = nil
+		// 记下锁内读到的原厂，并发改绑时才不会作废错厂。
+		prev = from
+		// 事务成功时才把这一行交出去。
+		out = row
+		return nil
+	})
+	return out, prev, err
+}
+
+// ClientLogin 是厂端上报的某台设备最近一次示教器登录。
+type ClientLogin struct {
+	ClientID       uuid.UUID // 设备稳定身份
+	At             time.Time // 登录时间，按厂端记下的
+	AppVersion     int64     // 示教器版本号
+	AppVersionName string    // 示教器版本名
+}
+
+// NoteClientLogins 记下厂端上报的最近登录；只改仍属该厂且更新的行，别厂的设备不认。
+func (s *Store) NoteClientLogins(ctx context.Context, factoryID uuid.UUID, logins []ClientLogin) error {
+	// 逐台写，一台失败就停，下一轮保活会再报。
+	for _, l := range logins {
+		// 只认属于上报厂的设备，且只往新的时间改，迟到的旧报不回退。
+		err := s.db.WithContext(ctx).Model(&Client{}).
+			Where("id = ? AND factory_id = ? AND (last_login_at IS NULL OR last_login_at < ?)", l.ClientID, factoryID, l.At).
+			Updates(map[string]any{
+				"last_login_at":    l.At,
+				"app_version":      l.AppVersion,
+				"app_version_name": l.AppVersionName,
+			}).Error
+		// 写库报错就停，交回调用方只记日志。
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // HasColumn 看某表是否已有该列，给迁移夹具用。

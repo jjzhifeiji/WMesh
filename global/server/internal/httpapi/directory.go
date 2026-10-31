@@ -2,11 +2,9 @@ package httpapi
 
 import (
 	"net/http"
-
-	"wmesh/global/internal/platform/domain"
 )
 
-// 挂名录、建厂和明确拒绝的代管入口。
+// 挂名录、建厂和工厂治理入口。
 func (h *Handler) mountDirectory(mux *http.ServeMux) {
 	// 名录入口，不包含厂内人员。
 	mux.HandleFunc("GET /v1/directory", h.directory)
@@ -18,16 +16,6 @@ func (h *Handler) mountDirectory(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/factories/{id}/enable", h.enableFactory)
 	// 未认领则从名录拿掉，已认领只注销。
 	mux.HandleFunc("DELETE /v1/factories/{id}", h.deleteFactory)
-	// 邀请第二名管理员，此入口一律拒绝。
-	mux.HandleFunc("POST /v1/invite-wan-admin", h.inviteWANAdmin)
-	// 代建厂内人员，一律拒绝。
-	mux.HandleFunc("POST /v1/factories/{id}/people", h.createFactoryPerson)
-	// 代建厂内组织，一律拒绝。
-	mux.HandleFunc("POST /v1/factories/{id}/orgs", h.createFactoryOrg)
-	// 代授厂内角色，一律拒绝。
-	mux.HandleFunc("POST /v1/factories/{id}/roles", h.grantFactoryRole)
-	// 从云端查厂内人员，一律拒绝。
-	mux.HandleFunc("GET /v1/factories/{id}/people", h.listFactoryPeople)
 }
 
 // 建厂时的厂名和初始超管，不反打厂网。
@@ -35,26 +23,6 @@ type createFactoryReq struct {
 	Name      string `json:"name"`      // 工厂显示名
 	SALogin   string `json:"saLogin"`   // 初始超管登录名
 	SADisplay string `json:"saDisplay"` // 初始超管显示名
-}
-
-// 邀请第二名管理员，此接口一律拒绝。
-type inviteReq struct {
-	LoginName string `json:"loginName"` // 被邀请登录名；此接口一律拒绝
-}
-
-// 代建厂内人员，云端一律拒绝。
-type factoryPersonReq struct {
-	LoginName string `json:"loginName"` // 厂内登录名；WAN 不得代建
-}
-
-// 代建厂内组织，云端一律拒绝。
-type factoryOrgReq struct {
-	Name string `json:"name"` // 组织名；WAN 不得代建
-}
-
-// 代授厂内角色，云端一律拒绝。
-type factoryRoleReq struct {
-	Target string `json:"target"` // 授权目标；WAN 不得代授
 }
 
 // 返回工厂名录和初始超管身份，不含厂内人员。
@@ -163,128 +131,4 @@ func (h *Handler) deleteFactory(w http.ResponseWriter, r *http.Request) {
 	}
 	// 把结果交回调用方。
 	writeJSON(w, http.StatusOK, out)
-}
-
-// 邀请第二 WAN 管理员，一律拒绝。
-func (h *Handler) inviteWANAdmin(w http.ResponseWriter, r *http.Request) {
-	// 匿名也能调且每次写审计，同一来源超频先挡。
-	if !h.anonGate.allow(r) {
-		// 回请求过多，不读正文也不写审计。
-		writeErr(w, domain.ErrTooManyRequests)
-		return
-	}
-	// 接住请求体，解析失败再拒绝。
-	var req inviteReq
-	// 未知字段或坏 JSON 按坏请求拒绝。
-	if err := decodeJSON(r, &req); err != nil {
-		// 把不合法的原因回给调用方。
-		writeBadRequest(w, err)
-		return
-	}
-	// 代管厂内数据一律拒绝，不把结果写成成功。
-	writeErr(w, h.svc.Factories.InviteWANAdmin(r.Context(), bearer(r), req.LoginName))
-}
-
-// 代建厂内人员，一律拒绝。
-func (h *Handler) createFactoryPerson(w http.ResponseWriter, r *http.Request) {
-	// 匿名也能调且每次写审计，同一来源超频先挡。
-	if !h.anonGate.allow(r) {
-		// 回请求过多，不读正文也不写审计。
-		writeErr(w, domain.ErrTooManyRequests)
-		return
-	}
-	// 从路径取出身份，不合法就拒绝这次操作。
-	id, err := parsePathID(r)
-	// 参数不合法就按坏请求拒绝。
-	if err != nil {
-		// 把不合法的原因回给调用方。
-		writeBadRequest(w, err)
-		return
-	}
-	// 接住请求体，解析失败再拒绝。
-	var req factoryPersonReq
-	// 未知字段或坏 JSON 按坏请求拒绝。
-	if err := decodeJSON(r, &req); err != nil {
-		// 把不合法的原因回给调用方。
-		writeBadRequest(w, err)
-		return
-	}
-	// 代管厂内数据一律拒绝，不把结果写成成功。
-	writeErr(w, h.svc.Factories.CreateFactoryPerson(r.Context(), bearer(r), id, req.LoginName))
-}
-
-// 代建厂内组织，一律拒绝。
-func (h *Handler) createFactoryOrg(w http.ResponseWriter, r *http.Request) {
-	// 匿名也能调且每次写审计，同一来源超频先挡。
-	if !h.anonGate.allow(r) {
-		// 回请求过多，不读正文也不写审计。
-		writeErr(w, domain.ErrTooManyRequests)
-		return
-	}
-	// 从路径取出身份，不合法就拒绝这次操作。
-	id, err := parsePathID(r)
-	// 参数不合法就按坏请求拒绝。
-	if err != nil {
-		// 把不合法的原因回给调用方。
-		writeBadRequest(w, err)
-		return
-	}
-	// 接住请求体，解析失败再拒绝。
-	var req factoryOrgReq
-	// 未知字段或坏 JSON 按坏请求拒绝。
-	if err := decodeJSON(r, &req); err != nil {
-		// 把不合法的原因回给调用方。
-		writeBadRequest(w, err)
-		return
-	}
-	// 代管厂内数据一律拒绝，不把结果写成成功。
-	writeErr(w, h.svc.Factories.CreateFactoryOrg(r.Context(), bearer(r), id, req.Name))
-}
-
-// 代授厂内角色，一律拒绝。
-func (h *Handler) grantFactoryRole(w http.ResponseWriter, r *http.Request) {
-	// 匿名也能调且每次写审计，同一来源超频先挡。
-	if !h.anonGate.allow(r) {
-		// 回请求过多，不读正文也不写审计。
-		writeErr(w, domain.ErrTooManyRequests)
-		return
-	}
-	// 从路径取出身份，不合法就拒绝这次操作。
-	id, err := parsePathID(r)
-	// 参数不合法就按坏请求拒绝。
-	if err != nil {
-		// 把不合法的原因回给调用方。
-		writeBadRequest(w, err)
-		return
-	}
-	// 接住请求体，解析失败再拒绝。
-	var req factoryRoleReq
-	// 未知字段或坏 JSON 按坏请求拒绝。
-	if err := decodeJSON(r, &req); err != nil {
-		// 把不合法的原因回给调用方。
-		writeBadRequest(w, err)
-		return
-	}
-	// 代管厂内数据一律拒绝，不把结果写成成功。
-	writeErr(w, h.svc.Factories.GrantFactoryRole(r.Context(), bearer(r), id, req.Target))
-}
-
-// 从 WAN 查厂内人员，一律拒绝。
-func (h *Handler) listFactoryPeople(w http.ResponseWriter, r *http.Request) {
-	// 匿名也能调且每次写审计，同一来源超频先挡。
-	if !h.anonGate.allow(r) {
-		// 回请求过多，不读正文也不写审计。
-		writeErr(w, domain.ErrTooManyRequests)
-		return
-	}
-	// 从路径取出身份，不合法就拒绝这次操作。
-	id, err := parsePathID(r)
-	// 参数不合法就按坏请求拒绝。
-	if err != nil {
-		// 把不合法的原因回给调用方。
-		writeBadRequest(w, err)
-		return
-	}
-	// 代管厂内数据一律拒绝，不把结果写成成功。
-	writeErr(w, h.svc.Factories.ListFactoryPeople(r.Context(), bearer(r), id))
 }

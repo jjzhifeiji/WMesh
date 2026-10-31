@@ -1,9 +1,9 @@
 import { PlusOutlined, ReloadOutlined } from "@ant-design/icons";
 import { Alert, App, Button, Card, Popconfirm, Space, Table, Tag, type TableColumnsType } from "antd";
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { errorMessage } from "@/shared/api/client";
 import { formatDateTime, formatRelease, formatTime } from "@/shared/format";
-import { IdText } from "@/shared/ui/IdText";
+import { CodeText } from "@/shared/ui/CodeText";
 import { PageHeader } from "@/shared/ui/PageHeader";
 import { CreateFactoryModal } from "./CreateFactoryModal";
 import {
@@ -12,12 +12,9 @@ import {
   useDisableFactory,
   useEnableFactory,
   type Factory,
-  type InitialSuperAdmin,
 } from "./api";
 
-type Row = Factory & { initial?: InitialSuperAdmin };
-
-function channelStatus(f: Row) {
+function channelStatus(f: Factory) {
   if (f.status === "retired") return <Tag>已注销</Tag>;
   if (f.status === "disabled") return <Tag color="orange">已停用</Tag>;
   if (!f.enrolledAt) return <Tag>未认领</Tag>;
@@ -34,14 +31,11 @@ export function FactoriesPage() {
   const { message } = App.useApp();
   const [creating, setCreating] = useState(false);
 
-  const rows = useMemo<Row[]>(() => {
-    const byFactory = new Map(dir.data?.initials.map((i) => [i.factoryId, i]) ?? []);
-    return (dir.data?.factories ?? []).map((f) => ({ ...f, initial: byFactory.get(f.id) }));
-  }, [dir.data]);
 
   const onErr = (err: unknown) => message.error(errorMessage(err));
 
-  const columns: TableColumnsType<Row> = [
+  const columns: TableColumnsType<Factory> = [
+    { title: "短码", dataIndex: "shortCode", width: 90, render: (_, row) => <CodeText code={row.shortCode} id={row.id} /> },
     { title: "工厂名称", dataIndex: "name", width: 180 },
     { title: "状态", width: 100, render: (_, row) => channelStatus(row) },
     { title: "前端版本", width: 140, render: (_, row) => formatRelease(row.channelOnline, row.webVersion, row.webVersionName) },
@@ -49,8 +43,6 @@ export function FactoriesPage() {
     { title: "上线时间", dataIndex: "channelConnectedAt", width: 180, render: (v?: string) => formatDateTime(v) },
     { title: "离线时间", dataIndex: "channelDisconnectedAt", width: 180, render: (v?: string) => formatDateTime(v) },
     { title: "最近心跳", dataIndex: "channelLastSeenAt", width: 180, render: (v?: string) => formatDateTime(v) },
-    { title: "工厂 ID", dataIndex: "id", width: 280, render: (id: string) => <IdText id={id} /> },
-    { title: "初始超管登录名", dataIndex: ["initial", "loginName"], width: 160, render: (v?: string) => v ?? "—" },
     { title: "创建时间", dataIndex: "createdAt", width: 170, render: (v: string) => formatTime(v) },
     {
       title: "操作",
@@ -121,13 +113,13 @@ export function FactoriesPage() {
       />
       {dir.isError ? <Alert type="error" showIcon message={errorMessage(dir.error)} style={{ marginBottom: 16 }} /> : null}
       <Card>
-        <Table<Row>
+        <Table<Factory>
           rowKey="id"
           columns={columns}
-          dataSource={rows}
+          dataSource={dir.data?.factories ?? []}
           loading={dir.isLoading}
           pagination={{ pageSize: 20, hideOnSinglePage: true }}
-          scroll={{ x: 1600 }}
+          scroll={{ x: 1250 }}
         />
       </Card>
       <CreateFactoryModal open={creating} onClose={() => setCreating(false)} />

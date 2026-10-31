@@ -17,18 +17,11 @@ export type Factory = {
   webVersionName: string; // 厂端前端版本名
   serviceVersion: number; // 厂端服务版本号；离线为 0
   serviceVersionName: string; // 厂端服务版本名
-};
-
-export type InitialSuperAdmin = {
-  factoryId: string; // 一厂只能绑一名初始超管
-  personId: string; // 落在厂库里的账号身份
-  loginName: string; // 交付时的登录名，不是秘密
-  createdAt: string; // 对账记录写入时间
+  shortCode: string; // 本厂短码 F01…F99，创建后不改
 };
 
 export type Directory = {
   factories: Factory[]; // WAN 工厂名录
-  initials: InitialSuperAdmin[]; // 各厂初始超管身份，不含密码
 };
 
 export type CreateFactoryInput = {
