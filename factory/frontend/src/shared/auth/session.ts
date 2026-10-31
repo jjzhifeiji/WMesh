@@ -1,5 +1,5 @@
 // 会话的唯一存放处：工厂 ID 记在 localStorage（不是秘密，下次免填），令牌只放 sessionStorage。
-// 只管「有没有会话」，登录/激活/退出的请求在 features/auth 里。
+// 只管「有没有会话」，登录/认领/退出的请求在 features/auth 里。
 import { useSyncExternalStore } from "react";
 
 const TOKEN_KEY = "wmesh.factory.token";

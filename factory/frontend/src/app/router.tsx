@@ -1,8 +1,6 @@
 import { Navigate, createBrowserRouter } from "react-router";
 import { AssetsPage } from "@/features/assets/AssetsPage";
 import { AccountPage } from "@/features/account/AccountPage";
-import { AssignmentsPage } from "@/features/assignments/AssignmentsPage";
-import { ActivatePage } from "@/features/auth/ActivatePage";
 import { ClaimPage } from "@/features/auth/ClaimPage";
 import { LoginPage } from "@/features/auth/LoginPage";
 import { ClientPolicyPage } from "@/features/client-policy/ClientPolicyPage";
@@ -23,13 +21,12 @@ import { paths } from "./routes";
 
 const sa = (page: React.ReactNode) => <RequireSuperAdmin>{page}</RequireSuperAdmin>;
 
-// 两棵路由树：公开的登录/激活区，和需要会话的后台区；管理页再套一层超管守卫。
+// 两棵路由树：公开的登录/认领区，和需要会话的后台区；管理页再套一层超管守卫。
 export const router = createBrowserRouter([
   {
     element: <AuthLayout />,
     children: [
       { path: paths.login, element: <LoginPage /> },
-      { path: paths.activate, element: <ActivatePage /> },
       { path: paths.claim, element: <ClaimPage /> },
     ],
   },
@@ -44,7 +41,6 @@ export const router = createBrowserRouter([
       { path: paths.updates, element: <Navigate to={paths.dashboard} replace /> },
       { path: paths.orgUnits, element: sa(<OrgUnitsPage />) },
       { path: paths.people, element: sa(<PeoplePage />) },
-      { path: paths.assignments, element: sa(<AssignmentsPage />) },
       { path: paths.clients, element: sa(<ClientsPage />) },
       { path: paths.clientPolicy, element: sa(<ClientPolicyPage />) },
       { path: paths.processes, element: <AssetsPage key="process" kind="process" /> },

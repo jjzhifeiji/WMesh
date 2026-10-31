@@ -1,17 +1,22 @@
 import { InboxOutlined } from "@ant-design/icons";
-import { App, Button, Card, Table, Typography, type TableColumnsType } from "antd";
+import { App, Button, Card, Radio, Table, Typography, type TableColumnsType } from "antd";
 import { useMemo, useRef, useState } from "react";
 import { useAssets } from "@/features/assets/api";
+import { isAssetAdmin, useCatalog } from "@/features/catalog/api";
 import { weldKindLabel } from "@/features/templates/projectKinds";
 import { errorMessage } from "@/shared/api/client";
 import { PageHeader } from "@/shared/ui/PageHeader";
-import { useImportLegacy, type LegacyFile, type LegacyImportResult, type LegacyReject } from "./api";
+import { useImportLegacy, type LegacyFile, type LegacyImportResult, type LegacyLevel, type LegacyReject } from "./api";
 
 type Picked = { processes: LegacyFile[]; projects: LegacyFile[]; skipped: number };
 
 // 选示教器旧目录：工艺先入库，工程把路径换成身份；缺文件的那份工程拒绝。
 export function LegacyImportPage() {
   const imp = useImportLegacy();
+  const catalog = useCatalog();
+  const canFactory = isAssetAdmin(catalog.data);
+  const meId = catalog.data?.me.id;
+  const [level, setLevel] = useState<LegacyLevel>("personal");
   const procs = useAssets("process");
   const projs = useAssets("project");
   const { message, modal } = App.useApp();
@@ -22,11 +27,12 @@ export function LegacyImportPage() {
   const existing = useMemo(() => {
     const set = new Set<string>();
     for (const a of [...(procs.data ?? []), ...(projs.data ?? [])]) {
-      if (a.level !== "factory" || a.status === "disabled") continue;
+      if (a.level !== level || a.status === "disabled") continue;
+      if (level === "personal" && a.creatorId !== meId) continue;
       set.add(`${a.kind}:${a.name}`);
     }
     return set;
-  }, [procs.data, projs.data]);
+  }, [procs.data, projs.data, level, meId]);
 
   const onFiles = async (list: FileList | null) => {
     if (!list || list.length === 0) return;
@@ -47,7 +53,7 @@ export function LegacyImportPage() {
       rename = choice === "rename";
     }
     imp.mutate(
-      { processes: picked.processes, projects: picked.projects, overwrite, rename },
+      { level, processes: picked.processes, projects: picked.projects, overwrite, rename },
       {
         onSuccess: (data) => {
           const next = normalizeResult(data);
@@ -72,7 +78,7 @@ export function LegacyImportPage() {
       return;
     }
     setActing({ key: rowKey(row), mode });
-    imp.mutate(payload, {
+    imp.mutate({ ...payload, level }, {
       onSettled: () => setActing(null),
       onSuccess: (data) => {
         const merged = mergeRetry(result, row, normalizeResult(data));
@@ -89,7 +95,7 @@ export function LegacyImportPage() {
     <>
       <PageHeader
         title="旧文件导入"
-        description="选示教器上的 processes / projects 目录（或整份 ShiJiaoQi）。工厂超管或整厂管理员可导入；缺路径的工程整份拒绝，已入工艺保留。同名会问覆盖、按路径重命名还是跳过。"
+        description="选示教器上的 processes / projects 目录（或整份 ShiJiaoQi）。默认导进自己的个人文件夹；超管或管理员可选导进厂级。缺路径的工程整份拒绝，已入工艺保留。同名会问覆盖、按路径重命名还是跳过。"
       />
       <Card style={{ maxWidth: 880 }}>
         <input
@@ -99,6 +105,18 @@ export function LegacyImportPage() {
           style={{ display: "none" }}
           onChange={(e) => void onFiles(e.target.files)}
         />
+        <div style={{ marginBottom: 12 }}>
+          <Typography.Text style={{ marginRight: 8 }}>导入到</Typography.Text>
+          <Radio.Group
+            optionType="button"
+            value={level}
+            onChange={(e) => setLevel(e.target.value as LegacyLevel)}
+            options={[
+              { value: "personal", label: "我的个人文件夹" },
+              { value: "factory", label: "厂级", disabled: !canFactory },
+            ]}
+          />
+        </div>
         <Button icon={<InboxOutlined />} onClick={() => bindDirectory(inputRef.current)}>
           选择文件夹
         </Button>

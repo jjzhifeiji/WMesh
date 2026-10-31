@@ -35,7 +35,7 @@ function closedMessage(status: string | undefined, action: string) {
   return "";
 }
 
-// 停用/注销要写在登录、激活页最上面，不能只藏在下拉里。
+// 停用/注销要写在登录、认领页最上面，不能只藏在下拉里。
 export function FactoryClosedNotice({
   factories,
   factoryId,

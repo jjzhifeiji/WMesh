@@ -6,7 +6,6 @@ import { http } from "@/shared/api/client";
 import { fpath, session } from "@/shared/auth/session";
 
 export type LoginInput = { factoryId: string; loginName: string; password: string };
-export type ActivateInput = { factoryId: string; loginName: string; activationToken: string; password: string };
 export type SiteFactory = { id: string; name?: string; shortCode?: string; saLogin: string; status?: string };
 export type Site = { wanConfigured: boolean; factories: SiteFactory[] };
 export type ClaimInput = { enrollmentCode: string; password: string };
@@ -38,16 +37,6 @@ export function useClaim() {
     onSuccess: (out) => {
       session.setFactoryId(out.factoryId);
       void qc.invalidateQueries({ queryKey: ["site"] });
-    },
-  });
-}
-
-// 激活：持有者用 8 位激活码自设日常密码，账号转为有效；WAN 不参与。
-export function useActivate() {
-  return useMutation({
-    mutationFn: ({ factoryId, ...body }: ActivateInput) => {
-      session.setFactoryId(factoryId);
-      return http.post<void>(fpath("/activate"), body);
     },
   });
 }

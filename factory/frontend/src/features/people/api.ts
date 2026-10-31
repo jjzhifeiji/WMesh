@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useCatalogMutation, type Account, type RoleGrant } from "@/features/catalog/api";
 import { http } from "@/shared/api/client";
 import { fpath } from "@/shared/auth/session";
-import type { Role, ScopeKind } from "@/shared/labels";
+import type { Role } from "@/shared/labels";
 
 export type CreatePersonInput = { loginName: string; displayName: string };
 
@@ -12,9 +12,7 @@ export type CreatedPerson = {
 
 export type GrantRoleInput = {
   personId: string;
-  role: Role;
-  scopeKind: ScopeKind;
-  orgUnitId: string | null; // 整厂作用域必须为空
+  role: Role; // 三种固定角色，都覆盖整厂
 };
 
 // 建完即可登录；默认密码为登录名+123456，不回传原文。
@@ -44,7 +42,21 @@ export function useResetPersonPassword() {
   return useCatalogMutation((personId: string) => http.post<CreatedPerson>(fpath(`/people/${personId}/reset-password`)));
 }
 
-// 授角色必须带作用域；分配组织不会自动产生角色。
+// 超管改人员的所属组织；空表示厂直属。只用于按组织统计，不给权限。
+export function useSetPersonOrg() {
+  return useCatalogMutation((input: { personId: string; orgUnitId: string | null }) =>
+    http.post<CreatedPerson>(fpath(`/people/${input.personId}/org`), { orgUnitId: input.orgUnitId }),
+  );
+}
+
+// 超管改别人的显示名；登录名不变。
+export function useSetPersonDisplayName() {
+  return useCatalogMutation((input: { personId: string; displayName: string }) =>
+    http.post<CreatedPerson>(fpath(`/people/${input.personId}/display-name`), { displayName: input.displayName }),
+  );
+}
+
+// 授角色，都覆盖整厂；所属组织不给权限。
 export function useGrantRole() {
   return useCatalogMutation((input: GrantRoleInput) => http.post<RoleGrant>(fpath("/grants"), input));
 }

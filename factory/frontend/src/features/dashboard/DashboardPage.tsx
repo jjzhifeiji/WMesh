@@ -1,6 +1,5 @@
-import { Card, Col, Descriptions, Row, Space, Statistic, Tag } from "antd";
-import { useCatalog, useIsSuperAdmin, unitName } from "@/features/catalog/api";
-import { roleLabel, scopeLabel } from "@/shared/labels";
+import { Card, Col, Descriptions, Row, Statistic, Tag } from "antd";
+import { useCatalog, useIsSuperAdmin } from "@/features/catalog/api";
 import { UpdatesPanel } from "@/features/updates/UpdatesPage";
 import { PageHeader } from "@/shared/ui/PageHeader";
 import { VERSION_CODE, VERSION_NAME } from "@/shared/version";
@@ -13,7 +12,7 @@ function healthTag(v?: string) {
   return <Tag color="red">异常</Tag>;
 }
 
-// 概览：超管看全厂规模，其他角色看自己的角色；服务健康人人可见。
+// 概览：超管看全厂规模；服务健康人人可见。自己的角色在「我的账号」。
 export function DashboardPage() {
   const catalog = useCatalog();
   const isSA = useIsSuperAdmin();
@@ -29,43 +28,25 @@ export function DashboardPage() {
       />
       {isSA ? (
         <Row gutter={[16, 16]}>
-          <Col xs={24} sm={12} lg={6}>
+          <Col xs={24} sm={8}>
             <Card>
-              <Statistic title="有效人员" value={count("active")} suffix={`/ 待启用 ${count("pending")} · 停用 ${count("disabled")}`} loading={catalog.isLoading} />
+              <Statistic title="有效人员" value={count("active")} suffix={`/ 停用 ${count("disabled")}`} loading={catalog.isLoading} />
             </Card>
           </Col>
-          <Col xs={24} sm={12} lg={6}>
+          <Col xs={24} sm={8}>
             <Card>
               <Statistic title="有效组织节点" value={c?.orgUnits.filter((u) => u.status === "active").length ?? 0} loading={catalog.isLoading} />
             </Card>
           </Col>
-          <Col xs={24} sm={12} lg={6}>
+          <Col xs={24} sm={8}>
             <Card>
               <Statistic title="有效角色" value={c?.roleGrants.length ?? 0} loading={catalog.isLoading} />
-            </Card>
-          </Col>
-          <Col xs={24} sm={12} lg={6}>
-            <Card>
-              <Statistic title="当前分配" value={c?.assignments.length ?? 0} loading={catalog.isLoading} />
             </Card>
           </Col>
         </Row>
       ) : null}
       <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
-        <Col xs={24} lg={12}>
-          <Card title="我的角色" loading={catalog.isLoading}>
-            <Space wrap>
-              {c?.myGrants.map((g) => (
-                <Tag key={g.id} color="blue">
-                  {roleLabel(g.role)} · {scopeLabel(g.scopeKind)}
-                  {g.orgUnitId ? `：${unitName(c, g.orgUnitId)}` : ""}
-                </Tag>
-              ))}
-              {c && c.myGrants.length === 0 ? <Tag>还没有任何角色</Tag> : null}
-            </Space>
-          </Card>
-        </Col>
-        <Col xs={24} lg={12}>
+        <Col xs={24}>
           <Card title="服务状态" loading={health.isLoading}>
             <Descriptions
               column={1}

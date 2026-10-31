@@ -139,7 +139,7 @@ export function ReportsPage() {
     <>
       <PageHeader
         title="报表"
-        description="按当时工程、登录人和组织路径归集；可下钻每次起停。换人、调动、改工程名不改历史。"
+        description="焊次只绑人：按当时工程和焊工归集，组织按焊工现在的所属组织算（调了组织，旧焊次跟着走）。可下钻每次起停。"
         extra={
           <>
             <Select

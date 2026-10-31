@@ -7,7 +7,7 @@ import { useClaim, type ClaimInput } from "./api";
 
 type FormValues = ClaimInput & { confirm: string };
 
-// 认领工厂：一张建厂码 + 自设密码，不再抄工厂 UUID 和激活码。
+// 认领工厂：一张建厂码 + 自设密码，不用抄工厂 UUID。
 export function ClaimPage() {
   const claim = useClaim();
   const navigate = useNavigate();
@@ -19,7 +19,7 @@ export function ClaimPage() {
         认领工厂
       </Typography.Title>
       <Typography.Paragraph type="secondary">
-        把云端给的建厂码贴在这里并自设日常密码。WAN 看不到这密码。本厂其他账号仍走「激活」。
+        把云端给的建厂码贴在这里并自设日常密码。WAN 看不到这密码。本厂其他账号由超管在人员页新建，默认密码是登录名+123456。
       </Typography.Paragraph>
       <Form<FormValues>
         layout="vertical"
@@ -27,7 +27,7 @@ export function ClaimPage() {
         onFinish={({ confirm: _confirm, ...values }) =>
           claim.mutate(values, {
             onSuccess: (out) => {
-              message.success("已认领并激活，请用刚设的密码登录");
+              message.success("已认领，请用刚设的密码登录");
               navigate(paths.login, { replace: true, state: { loginName: out.saLogin } });
             },
           })
@@ -61,7 +61,7 @@ export function ClaimPage() {
         </Form.Item>
         {claim.isError ? <Alert type="error" showIcon message={errorMessage(claim.error)} style={{ marginBottom: 16 }} /> : null}
         <Button type="primary" htmlType="submit" block loading={claim.isPending}>
-          认领并激活
+          认领
         </Button>
       </Form>
       <Typography.Paragraph style={{ marginTop: 16, marginBottom: 0, textAlign: "center" }}>

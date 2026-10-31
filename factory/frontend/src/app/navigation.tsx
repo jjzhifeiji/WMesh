@@ -52,7 +52,6 @@ export const navTree: NavEntry[] = [
     superAdminOnly: true,
     children: [
       { key: paths.people, label: "人员" },
-      { key: paths.assignments, label: "组织分配" },
     ],
   },
   {
@@ -82,7 +81,7 @@ export const navTree: NavEntry[] = [
     icon: <AuditOutlined />,
     children: [
       { key: paths.auditEvents, label: "操作审计", placeholder: true, description: "本厂操作留痕查询，不含认证秘密。" },
-      { key: paths.auditStats, label: "统计", placeholder: true, description: "按事实发生时的组织路径归集，历史不随调动改写。" },
+      { key: paths.auditStats, label: "统计", placeholder: true, description: "焊次只绑人，按人现在的所属组织归集。" },
     ],
   },
   { key: paths.reports, label: "报表", icon: <BarChartOutlined />, description: "本厂焊长与时长，按工程、人、组织、日查看，可下钻每次。" },

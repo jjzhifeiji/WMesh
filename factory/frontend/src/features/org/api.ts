@@ -8,7 +8,7 @@ export function useCreateOrgUnit() {
   return useCatalogMutation((input: CreateOrgUnitInput) => http.post<OrgUnit>(fpath("/org-units"), input));
 }
 
-// 停用节点：其下不能还有有效子节点；已落库的路径快照不受影响。
+// 停用节点：其下不能还有有效子节点；已归在这里的人不动，但不能再往里收人。
 export function useDisableOrgUnit() {
   return useCatalogMutation((unitId: string) => http.post<void>(fpath(`/org-units/${unitId}/disable`)));
 }
@@ -18,9 +18,21 @@ export function useEnableOrgUnit() {
   return useCatalogMutation((unitId: string) => http.post<void>(fpath(`/org-units/${unitId}/enable`)));
 }
 
-// 零引用才物理删除；有下级、分配或角色记录（含已结束、已收回）或历史事实会被拒绝，只能停用。
+// 没有下级节点、也没有人归在这里才能删。
 export function useDeleteOrgUnit() {
   return useCatalogMutation((unitId: string) => http.del<void>(fpath(`/org-units/${unitId}`)));
+}
+
+// 改节点名。
+export function useRenameOrgUnit() {
+  return useCatalogMutation((input: { unitId: string; name: string }) => http.post<void>(fpath(`/org-units/${input.unitId}/rename`), { name: input.name }));
+}
+
+// 改挂上级；空表示直挂工厂，成环会被拒绝。
+export function useMoveOrgUnit() {
+  return useCatalogMutation((input: { unitId: string; parentId: string | null }) =>
+    http.post<void>(fpath(`/org-units/${input.unitId}/move`), { parentId: input.parentId }),
+  );
 }
 
 export type UnitTreeNode = OrgUnit & { children?: UnitTreeNode[] };

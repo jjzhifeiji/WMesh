@@ -1,40 +1,21 @@
 // 固定枚举的中文展示名与颜色；枚举值以服务端为准。
-// 授予页可出这四种；组织负责人服务端仍认历史授予，不再新授。
+// 三种固定角色，都覆盖整厂；超管拥有全部权限。
 export const ROLES = [
-  { value: "factory_super_admin", label: "工厂超管", scopes: ["factory"] },
-  { value: "org_admin", label: "管理员", scopes: ["factory", "org_unit"] },
-  { value: "operator", label: "操作员", scopes: ["factory", "org_unit"] },
-  { value: "auditor", label: "审计员", scopes: ["factory", "org_unit"] },
+  { value: "factory_super_admin", label: "工厂超管", hint: "全部权限" },
+  { value: "org_admin", label: "管理员", hint: "厂级工艺工程、报表与审计" },
+  { value: "operator", label: "操作员", hint: "示教器作业" },
 ] as const;
 
-const ROLE_LABELS: Record<string, string> = {
-  factory_super_admin: "工厂超管",
-  org_admin: "管理员",
-  org_lead: "组织负责人",
-  operator: "操作员",
-  auditor: "审计员",
-};
+const ROLE_LABELS: Record<string, string> = Object.fromEntries(ROLES.map((r) => [r.value, r.label]));
 
 export type Role = (typeof ROLES)[number]["value"];
-export type ScopeKind = "factory" | "org_unit";
 
 export function roleLabel(role: string) {
   return ROLE_LABELS[role] ?? role;
 }
 
-// 该角色允许挂的作用域；服务端也会再校验一次。
-export function roleScopes(role: string): readonly ScopeKind[] {
-  return ROLES.find((r) => r.value === role)?.scopes ?? [];
-}
-
-export function scopeLabel(scopeKind: string) {
-  return scopeKind === "factory" ? "整厂" : "组织节点";
-}
-
 export function statusLabel(status: string) {
   switch (status) {
-    case "pending":
-      return "待启用";
     case "active":
       return "有效";
     case "disabled":
@@ -54,8 +35,6 @@ export function statusLabel(status: string) {
 
 export function statusColor(status: string) {
   switch (status) {
-    case "pending":
-      return "gold";
     case "active":
       return "green";
     case "disabled":

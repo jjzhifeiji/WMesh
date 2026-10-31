@@ -82,8 +82,6 @@ export function LoginPage() {
             <br />
           </>
         ) : null}
-        初始超管激活码？<Link to={paths.activate}>去激活</Link>
-        <br />
         忘了日常密码？找本厂超管在人员页重置，密码改回登录名+123456。
       </Typography.Paragraph>
     </Card>

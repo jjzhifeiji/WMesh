@@ -14,7 +14,7 @@ export type WeldReportRow = {
   loginName?: string; // 登录名
   displayName?: string; // 显示名
   orgUnitId?: string | null; // 发生节点
-  orgPath?: PathNode[]; // 发生时路径
+  orgPath?: PathNode[]; // 焊工现在所属组织的路径
   day?: string; // 按浏览器时区切的日期
   projectId?: string | null; // 工程身份
   projectName?: string; // 工程名
@@ -29,7 +29,7 @@ export type WeldRunRow = {
   loginName: string; // 登录名
   displayName: string; // 显示名
   orgUnitId: string | null; // 发生节点
-  orgPath: PathNode[]; // 发生时路径
+  orgPath: PathNode[]; // 焊工现在所属组织的路径
   projectId: string | null; // 工程身份
   projectName: string; // 工程名快照
   weldKind: string; // 焊接模式

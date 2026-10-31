@@ -1,28 +1,32 @@
 import { PlusOutlined } from "@ant-design/icons";
-import { App, Button, Card, Form, Input, Modal, Popconfirm, Space, Table, TreeSelect, type TableColumnsType } from "antd";
+import { App, Button, Card, Form, Input, Modal, Popconfirm, Space, Table, TreeSelect, Typography, type TableColumnsType } from "antd";
 import { useMemo, useState } from "react";
 import { useCatalog } from "@/features/catalog/api";
 import { errorMessage } from "@/shared/api/client";
 import { formatTime } from "@/shared/format";
 import { PageHeader } from "@/shared/ui/PageHeader";
 import { StatusTag } from "@/shared/ui/StatusTag";
-import { buildUnitTree, useCreateOrgUnit, useDeleteOrgUnit, useDisableOrgUnit, useEnableOrgUnit, type CreateOrgUnitInput, type UnitTreeNode } from "./api";
+import { buildUnitTree, useCreateOrgUnit, useDeleteOrgUnit, useDisableOrgUnit, useEnableOrgUnit, useMoveOrgUnit, useRenameOrgUnit, type CreateOrgUnitInput, type UnitTreeNode } from "./api";
 
 type TreeOption = { value: string; title: string; children?: TreeOption[] };
 
-function toTreeOptions(nodes: UnitTreeNode[]): TreeOption[] {
+function toTreeOptions(nodes: UnitTreeNode[], skipId?: string): TreeOption[] {
   return nodes
-    .filter((n) => n.status === "active")
-    .map((n) => ({ value: n.id, title: n.name, children: n.children ? toTreeOptions(n.children) : undefined }));
+    .filter((n) => n.status === "active" && n.id !== skipId)
+    .map((n) => ({ value: n.id, title: n.name, children: n.children ? toTreeOptions(n.children, skipId) : undefined }));
 }
 
-// 工厂下一棵树：不选上级就直挂工厂；停用不删，历史路径不受影响。
+// 工厂下一棵树：不选上级就直挂工厂；节点可改名、改挂、停用，没有下级也没人归属时可删。
 export function OrgUnitsPage() {
   const catalog = useCatalog();
   const create = useCreateOrgUnit();
   const disable = useDisableOrgUnit();
   const enable = useEnableOrgUnit();
   const remove = useDeleteOrgUnit();
+  const rename = useRenameOrgUnit();
+  const move = useMoveOrgUnit();
+  const [moving, setMoving] = useState<UnitTreeNode | null>(null);
+  const [moveTo, setMoveTo] = useState<string | null>(null);
   const { message } = App.useApp();
   const [open, setOpen] = useState(false);
   const [form] = Form.useForm<CreateOrgUnitInput>();
@@ -31,11 +35,11 @@ export function OrgUnitsPage() {
   const tree = useMemo(() => buildUnitTree(c?.orgUnits ?? []), [c?.orgUnits]);
   const peopleCount = useMemo(() => {
     const m = new Map<string, number>();
-    for (const a of c?.assignments ?? []) {
-      m.set(a.orgUnitId, (m.get(a.orgUnitId) ?? 0) + 1);
+    for (const p of c?.people ?? []) {
+      if (p.orgUnitId) m.set(p.orgUnitId, (m.get(p.orgUnitId) ?? 0) + 1);
     }
     return m;
-  }, [c?.assignments]);
+  }, [c?.people]);
   const [collapsedIds, setCollapsedIds] = useState<ReadonlySet<string>>(new Set());
   const expandedRowKeys = useMemo(() => {
     const units = c?.orgUnits ?? [];
@@ -43,7 +47,24 @@ export function OrgUnitsPage() {
   }, [c?.orgUnits, collapsedIds]);
 
   const columns: TableColumnsType<UnitTreeNode> = [
-    { title: "名称", dataIndex: "name" },
+    {
+      title: "名称",
+      dataIndex: "name",
+      render: (name: string, u) => (
+        <Typography.Text
+          editable={{
+            tooltip: "改名",
+            onChange: (v) => {
+              const next = v.trim();
+              if (!next || next === name) return;
+              rename.mutate({ unitId: u.id, name: next }, { onSuccess: () => message.success("已改名"), onError: (e) => message.error(errorMessage(e)) });
+            },
+          }}
+        >
+          {name}
+        </Typography.Text>
+      ),
+    },
     {
       title: "人数",
       width: 80,
@@ -54,9 +75,18 @@ export function OrgUnitsPage() {
     {
       title: "操作",
       key: "actions",
-      width: 180,
+      width: 240,
       render: (_, u) => (
         <Space>
+          <Button
+            size="small"
+            onClick={() => {
+              setMoving(u);
+              setMoveTo(u.parentId);
+            }}
+          >
+            改挂
+          </Button>
           {u.status === "active" ? (
             <Popconfirm
               title="停用该节点？"
@@ -85,7 +115,7 @@ export function OrgUnitsPage() {
           )}
           <Popconfirm
             title={`删除「${u.name}」？`}
-            description="有下级、分配或角色记录（含已结束、已收回）或历史事实时会拒绝，只能停用。删除后不能恢复。"
+            description="还有下级节点或有人归在这里时会拒绝。删除后不能恢复。"
             onConfirm={() =>
               remove.mutate(u.id, {
                 onSuccess: () => message.success("已删除"),
@@ -133,6 +163,37 @@ export function OrgUnitsPage() {
           locale={{ emptyText: "还没有组织节点" }}
         />
       </Card>
+      <Modal
+        title={moving ? `把「${moving.name}」改挂到` : "改挂"}
+        open={Boolean(moving)}
+        onCancel={() => setMoving(null)}
+        okText="改挂"
+        confirmLoading={move.isPending}
+        destroyOnHidden
+        onOk={() =>
+          moving &&
+          move.mutate(
+            { unitId: moving.id, parentId: moveTo },
+            {
+              onSuccess: () => {
+                message.success("已改挂");
+                setMoving(null);
+              },
+              onError: (e) => message.error(errorMessage(e)),
+            },
+          )
+        }
+      >
+        <TreeSelect
+          style={{ width: "100%" }}
+          allowClear
+          treeDefaultExpandAll
+          value={moveTo ?? undefined}
+          onChange={(v?: string) => setMoveTo(v ?? null)}
+          treeData={toTreeOptions(tree, moving?.id)}
+          placeholder="直挂工厂"
+        />
+      </Modal>
       <Modal
         title="新建组织节点"
         open={open}

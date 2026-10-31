@@ -1,11 +1,11 @@
 import { PlusOutlined } from "@ant-design/icons";
-import { App, Button, Card, Form, Input, Modal, Popconfirm, Radio, Select, Space, Switch, Table, Tag, TreeSelect, type TableColumnsType } from "antd";
+import { App, Button, Card, Form, Input, Modal, Popconfirm, Select, Space, Switch, Table, Tag, TreeSelect, Typography, type TableColumnsType } from "antd";
 import { useMemo, useState } from "react";
-import { unitName, useCatalog, type Account } from "@/features/catalog/api";
+import { useCatalog, type Account } from "@/features/catalog/api";
 import { buildUnitTree, type UnitTreeNode } from "@/features/org/api";
 import { errorMessage } from "@/shared/api/client";
 import { formatAppRelease, formatDateTime, formatTime } from "@/shared/format";
-import { ROLES, roleLabel, roleScopes, scopeLabel, type Role, type ScopeKind } from "@/shared/labels";
+import { ROLES, roleLabel } from "@/shared/labels";
 import { IdText } from "@/shared/ui/IdText";
 import { PageHeader } from "@/shared/ui/PageHeader";
 import { StatusTag } from "@/shared/ui/StatusTag";
@@ -18,6 +18,8 @@ import {
   useResetPersonPassword,
   useRevokeRole,
   useSetKeepPouch,
+  useSetPersonDisplayName,
+  useSetPersonOrg,
   type CreatePersonInput,
   type GrantRoleInput,
   type PersonLoginLog,
@@ -55,7 +57,7 @@ function toTreeOptions(nodes: UnitTreeNode[]): TreeOption[] {
     .map((n) => ({ value: n.id, title: n.name, children: n.children ? toTreeOptions(n.children) : undefined }));
 }
 
-// 人员账号固定归本厂；停用不删。角色在本页授予或收回，不另开一页。
+// 人员账号固定归本厂；停用不删。角色、所属组织、显示名都在本页改。
 export function PeoplePage() {
   const catalog = useCatalog();
   const create = useCreatePerson();
@@ -65,6 +67,8 @@ export function PeoplePage() {
   const setKeep = useSetKeepPouch();
   const grant = useGrantRole();
   const revoke = useRevokeRole();
+  const setOrg = useSetPersonOrg();
+  const rename = useSetPersonDisplayName();
   const { message } = App.useApp();
   const [open, setOpen] = useState(false);
   const [grantOpen, setGrantOpen] = useState(false);
@@ -73,12 +77,9 @@ export function PeoplePage() {
   const [grantForm] = Form.useForm<GrantRoleInput>();
   const [logPerson, setLogPerson] = useState<Account | null>(null);
   const logins = usePersonLogins(logPerson?.id ?? null);
-  const role = Form.useWatch("role", grantForm) as Role | undefined;
-  const scopeKind = Form.useWatch("scopeKind", grantForm) as ScopeKind | undefined;
 
   const c = catalog.data;
   const tree = useMemo(() => buildUnitTree(c?.orgUnits ?? []), [c?.orgUnits]);
-  const allowedScopes = role ? roleScopes(role) : [];
   const people = (c?.people ?? []).filter((p) => p.status !== "disabled");
   const grantPeople = useMemo(() => {
     if (!grantTarget || people.some((p) => p.id === grantTarget.id)) return people;
@@ -88,14 +89,57 @@ export function PeoplePage() {
 
   // 表单实例是页面级的，旧值会盖过 initialValues；每次打开都显式填回当前人员和默认角色，免得授给上一个人。
   const openGrant = (person?: Account) => {
-    grantForm.setFieldsValue({ personId: person?.id, role: "operator", scopeKind: "factory", orgUnitId: null });
+    grantForm.setFieldsValue({ personId: person?.id, role: "operator" });
     setGrantTarget(person ?? null);
     setGrantOpen(true);
   };
 
   const columns: TableColumnsType<Account> = [
     { title: "登录名", dataIndex: "loginName", width: 140 },
-    { title: "显示名", dataIndex: "displayName", width: 140 },
+    {
+      title: "显示名",
+      dataIndex: "displayName",
+      width: 160,
+      render: (name: string, p) => (
+        <Typography.Text
+          editable={{
+            tooltip: "改显示名",
+            onChange: (v) => {
+              const next = v.trim();
+              if (!next || next === name) return;
+              rename.mutate(
+                { personId: p.id, displayName: next },
+                { onSuccess: () => message.success("显示名已更新"), onError: (e) => message.error(errorMessage(e)) },
+              );
+            },
+          }}
+        >
+          {name}
+        </Typography.Text>
+      ),
+    },
+    {
+      title: "所属组织",
+      key: "org",
+      width: 180,
+      render: (_, p) => (
+        <TreeSelect
+          size="small"
+          style={{ width: "100%" }}
+          allowClear
+          treeDefaultExpandAll
+          value={p.orgUnitId ?? undefined}
+          placeholder="厂直属"
+          treeData={toTreeOptions(tree)}
+          onChange={(v?: string) =>
+            setOrg.mutate(
+              { personId: p.id, orgUnitId: v ?? null },
+              { onSuccess: () => message.success("所属组织已更新"), onError: (e) => message.error(errorMessage(e)) },
+            )
+          }
+        />
+      ),
+    },
     { title: "状态", dataIndex: "status", width: 90, render: (s: string) => <StatusTag status={s} /> },
     {
       title: "APP",
@@ -135,7 +179,6 @@ export function PeoplePage() {
             >
               <Tag color="blue" style={{ cursor: "pointer" }}>
                 {roleLabel(g.role)}
-                {g.scopeKind === "org_unit" ? ` · ${unitName(c, g.orgUnitId)}` : " · 整厂"}
               </Tag>
             </Popconfirm>
           ))}
@@ -236,7 +279,7 @@ export function PeoplePage() {
     <>
       <PageHeader
         title="人员"
-        description="停用不删账号。退出留库默认留着这个人在示教器上的库文件。点角色标签可收回。"
+        description="停用不删账号。角色都覆盖整厂；所属组织只用于按组织统计焊次，不给权限。退出留库默认留着这个人在示教器上的库文件。点角色标签可收回。"
         extra={
           <Space>
             <Button type="primary" icon={<PlusOutlined />} onClick={() => setOpen(true)}>
@@ -246,7 +289,7 @@ export function PeoplePage() {
         }
       />
       <Card>
-        <Table<Account> rowKey="id" columns={columns} dataSource={c?.people ?? []} loading={catalog.isLoading} pagination={{ pageSize: 20, hideOnSinglePage: true }} />
+        <Table<Account> rowKey="id" columns={columns} dataSource={c?.people ?? []} loading={catalog.isLoading} pagination={{ pageSize: 20, hideOnSinglePage: true }} scroll={{ x: "max-content" }} />
       </Card>
       <Modal
         title="新建账号"
@@ -305,27 +348,10 @@ export function PeoplePage() {
           initialValues={{
             personId: grantTarget?.id,
             role: "operator",
-            scopeKind: "factory",
-            orgUnitId: null,
-          }}
-          onValuesChange={(changed) => {
-            if (changed.role) {
-              const scopes = roleScopes(changed.role as Role);
-              const current = grantForm.getFieldValue("scopeKind") as ScopeKind | undefined;
-              if (!current || !scopes.includes(current)) grantForm.setFieldValue("scopeKind", scopes[0]);
-            }
-            // 整厂不带节点；切过去必须清掉，否则会按「角色+作用域+节点」校验失败。
-            const kind = (changed.scopeKind ?? grantForm.getFieldValue("scopeKind")) as ScopeKind | undefined;
-            if (kind === "factory") grantForm.setFieldValue("orgUnitId", null);
           }}
           onFinish={(values) =>
             grant.mutate(
-              {
-                personId: values.personId,
-                role: values.role,
-                scopeKind: values.scopeKind,
-                orgUnitId: values.scopeKind === "factory" ? null : values.orgUnitId,
-              },
+              { personId: values.personId, role: values.role },
               {
                 onSuccess: () => {
                   message.success("已授予");
@@ -348,31 +374,8 @@ export function PeoplePage() {
             />
           </Form.Item>
           <Form.Item name="role" label="角色" rules={[{ required: true }]}>
-            <Select options={ROLES.map((r) => ({ value: r.value, label: r.label }))} getPopupContainer={(n) => n.parentElement ?? document.body} />
-          </Form.Item>
-          <Form.Item name="scopeKind" label="作用域" rules={[{ required: true }]}>
-            <Radio.Group
-              optionType="button"
-              options={allowedScopes.map((s) => ({ value: s, label: scopeLabel(s) }))}
-            />
-          </Form.Item>
-          <Form.Item
-            name="orgUnitId"
-            label="节点"
-            hidden={scopeKind !== "org_unit"}
-            rules={[
-              {
-                validator: async (_, v) => {
-                  if (grantForm.getFieldValue("scopeKind") !== "org_unit") return;
-                  if (!v) throw new Error("请选择节点");
-                },
-              },
-            ]}
-          >
-            <TreeSelect
-              treeDefaultExpandAll
-              treeData={toTreeOptions(tree)}
-              placeholder="选择组织节点"
+            <Select
+              options={ROLES.map((r) => ({ value: r.value, label: `${r.label}（${r.hint}）` }))}
               getPopupContainer={(n) => n.parentElement ?? document.body}
             />
           </Form.Item>

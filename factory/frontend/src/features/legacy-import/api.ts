@@ -27,10 +27,13 @@ export type LegacyImportResult = {
   skipped: LegacyReject[]; // 同名跳过
 };
 
+// 导进哪一级：个人级进自己的个人文件夹；厂级要超管或管理员。
+export type LegacyLevel = "personal" | "factory";
+
 export function useImportLegacy() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (input: { processes: LegacyFile[]; projects: LegacyFile[]; overwrite: boolean; rename: boolean }) =>
+    mutationFn: (input: { level: LegacyLevel; processes: LegacyFile[]; projects: LegacyFile[]; overwrite: boolean; rename: boolean }) =>
       http.post<LegacyImportResult>(fpath("/legacy-import"), input),
     onSuccess: async () => {
       await qc.invalidateQueries({ queryKey: assetKeys.all });

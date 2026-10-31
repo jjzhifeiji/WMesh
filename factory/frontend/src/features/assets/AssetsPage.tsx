@@ -1,8 +1,8 @@
 import { FolderOutlined, PlusOutlined } from "@ant-design/icons";
-import { App, Button, Card, Descriptions, Empty, Form, Input, Modal, Radio, Select, Space, Switch, Tag, Tooltip, Typography } from "antd";
+import { App, Button, Card, Descriptions, Empty, Form, Input, Modal, Select, Space, Tag, Tooltip, Typography } from "antd";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { personName, useCatalog, coversOrg, type Catalog } from "@/features/catalog/api";
+import { isAssetAdmin, isSuperAdmin, personName, useCatalog, type Catalog } from "@/features/catalog/api";
 import { errorMessage, ApiError } from "@/shared/api/client";
 import { formatTime } from "@/shared/format";
 import { statusColor, statusLabel } from "@/shared/labels";
@@ -26,7 +26,6 @@ import {
   useRenameAsset,
   useCreateFSFolder,
   useFS,
-  useSetAssetCopyable,
   useSetAssetWeldKind,
   useSetAssetDeps,
   useUpdateAssetContent,
@@ -35,7 +34,6 @@ import {
   type Asset,
   type AssetDep,
   type AssetKind,
-  type AssetLevel,
   type CreateAssetInput,
   type FSNode,
 } from "./api";
@@ -43,11 +41,9 @@ import { fsFolderOptions, ProcessExplorer } from "./ProcessExplorer";
 import { emptyWeld, ProjectWeldEditor, type ProcessOption } from "./ProjectWeldEditor";
 
 type CreateForm = {
-  level: AssetLevel;
   name: string;
   content: string;
   weldKind: string;
-  copyable: boolean;
   parentId?: string;
 };
 type MkdirForm = { parentId: string; name: string };
@@ -121,35 +117,12 @@ function creatorText(row: Asset, catalog: Catalog | undefined) {
   return personName(catalog, row.creatorId);
 }
 
-// canPromote 未停用的个人级可升厂级；工艺还须可复制。
+// canPromote 未停用的个人级可复制一份到厂级。
 function canPromote(row: Asset) {
-	return row.level === "personal" && row.status !== "disabled" && (row.kind !== "process" || row.copyable);
+  return row.level === "personal" && row.status !== "disabled";
 }
 
-function CopyableSwitch({
-  checked,
-  disabled,
-  loading,
-  onToggle,
-}: {
-  checked: boolean;
-  disabled?: boolean;
-  loading?: boolean;
-  onToggle: (next: boolean) => void;
-}) {
-  return (
-    <Switch
-      checked={checked}
-      disabled={disabled}
-      loading={loading}
-      checkedChildren="可复制"
-      unCheckedChildren="不可复制"
-      onChange={onToggle}
-    />
-  );
-}
-
-// 本厂工艺或工程：本厂有效账号都能制作；个人级正文只创建人能打开。
+// 本厂工艺或工程：厂级归超管和管理员，个人级人人可建；别人的个人级只有超管看得到。
 export function AssetsPage({ kind }: { kind: AssetKind }) {
   return <AssetsBody key={kind} kind={kind} />;
 }
@@ -169,7 +142,6 @@ function AssetsBody({ kind }: { kind: AssetKind }) {
   const copy = useCopyAsset();
   const rename = useRenameAsset();
   const updateContent = useUpdateAssetContent();
-  const setCopyable = useSetAssetCopyable();
   const setWeldKind = useSetAssetWeldKind();
   const setAssetDeps = useSetAssetDeps();
   const publish = usePublishAsset();
@@ -184,6 +156,8 @@ function AssetsBody({ kind }: { kind: AssetKind }) {
   const [fsWeld, setFsWeld] = useState("all");
   const [open, setOpen] = useState(false);
   const [copyFor, setCopyFor] = useState<Asset | null>(null);
+  const [promoteFor, setPromoteFor] = useState<Asset | null>(null);
+  const [promoteFolder, setPromoteFolder] = useState<string | undefined>(undefined);
   const [detailFor, setDetailFor] = useState<Asset | null>(null);
   const [editFor, setEditFor] = useState<Asset | null>(null);
   const [editBase, setEditBase] = useState<EditBase | null>(null);
@@ -214,37 +188,33 @@ function AssetsBody({ kind }: { kind: AssetKind }) {
     if (copyFor) copyForm.setFieldsValue({ name: `${copyFor.name}-副本` });
   }, [copyFor, copyForm]);
 
+  const isSA = isSuperAdmin(catalog.data);
+  const isAdmin = isAssetAdmin(catalog.data);
   const covers = (row: Asset) => {
     if (row.level === "platform") return false;
-    if (row.level === "personal") return row.creatorId === meId || coversOrg(catalog.data, row.orgUnitId);
-    return true;
+    if (row.level === "personal") return row.creatorId === meId || isSA;
+    return isAdmin;
   };
   const canMutate = (row: Asset) => covers(row) && row.status !== "disabled";
   // 不可复制的平台级工艺是保密件，厂端不打开正文；工程不保密。
   const canRead = (row: Asset) => {
     if (row.kind === "process" && row.level === "platform" && !row.copyable) return false;
-    if (row.level === "personal") return row.creatorId === meId || coversOrg(catalog.data, row.orgUnitId);
+    if (row.level === "personal") return row.creatorId === meId || isSA;
     return true;
   };
   const canCopy = (row: Asset) => isProcess && row.copyable && row.status !== "disabled" && canRead(row);
-  const isFactoryAdmin = coversOrg(catalog.data, null);
-  const folderOpts = useMemo(
-    () =>
-      fsFolderOptions(fs.data ?? [], (n) => {
-        if (n.treeLevel === "platform") return false;
-        if (n.treeLevel === "factory") return true;
-        return n.ownerId === meId || isFactoryAdmin;
-      }),
-    [fs.data, meId, isFactoryAdmin],
-  );
+  const isFactoryAdmin = isSA;
+  const folderOpts = fsFolderOptions(fs.data ?? [], (n) => {
+    if (n.treeLevel === "platform") return false;
+    if (n.treeLevel === "factory") return isAdmin;
+    return n.ownerId === meId || isSA;
+  });
+  const factoryFolderOpts = fsFolderOptions(fs.data ?? [], (n) => n.treeLevel === "factory");
   const openCreate = (parent?: FSNode) => {
     const folder = parent ?? (fs.data ?? []).find((n) => n.id === folderOpts[0]?.value);
-    const level: AssetLevel = folder?.treeLevel === "personal" ? "personal" : "factory";
     form.setFieldsValue({
       content: isProcess && schema ? JSON.stringify(defaultValue(schema)) : "[]",
       weldKind: WELD_SINGLE,
-      level,
-      copyable: true,
       parentId: folder?.id,
     });
     setOpen(true);
@@ -279,44 +249,13 @@ function AssetsBody({ kind }: { kind: AssetKind }) {
     if (isRevisionConflict(e)) void qc.invalidateQueries({ queryKey: assetKeys.all });
     message.error(editFailText(done, step, e));
   };
-  // 只在编辑弹窗里切；用基准修订号提交，成功后推进基准。
-  const toggleCopyable = (row: Asset, copyable: boolean) => {
-    if (row.copyable === copyable) return;
-    const expected = editBase?.id === row.id ? editBase.revision : row.revision;
-    setCopyable.mutate(
-      { id: row.id, expected, copyable },
-      {
-        onSuccess: (next) => {
-          advanceBase(next);
-          message.success(copyable ? "已设为可复制" : "已设为不可复制");
-        },
-        onError: (e) => editFail(e),
-      },
-    );
-  };
-  const promotedOf = (row: Asset) => (assets.data ?? []).find((a) => a.sourceId === row.id);
-  const promoteLabel = (row: Asset) => {
-    const dst = promotedOf(row);
-    if (!dst) return "升档为厂级";
-    return dst.digest === row.digest ? "已升档" : "覆盖厂级";
-  };
+  // 升档先选厂级文件夹；每次都另复制一份厂级草稿，改好再发布。
   const askPromote = (row: Asset) => {
-    const dst = promotedOf(row);
-    const same = Boolean(dst && dst.digest === row.digest);
-    modal.confirm({
-      title: same ? "正文未变" : dst ? "覆盖已升档的厂级？" : "升档为厂级？",
-      content: same
-        ? "正文没变，不会另开一条。"
-        : dst
-          ? "会覆盖已升档的厂级，个人原件不动。"
-          : "复制出新厂级，个人原件不动。",
-      onOk: () =>
-        promote.mutate(row.id, {
-          onSuccess: () => message.success(same ? "正文未变，未重复升档" : dst ? "已覆盖厂级" : "已升档为厂级"),
-          onError: onErr,
-        }),
-    });
+    setPromoteFolder(factoryFolderOpts[0]?.value);
+    setPromoteFor(row);
   };
+  const promotedCount = (row: Asset) => (assets.data ?? []).filter((a) => a.sourceId === row.id).length;
+  const promoteLabel = (row: Asset) => (promotedCount(row) ? `再升一份厂级（已升 ${promotedCount(row)} 份）` : "升档为厂级");
   const detailing = detailFor ? (assets.data?.find((a) => a.id === detailFor.id) ?? detailFor) : null;
   const editing = editFor ? (assets.data?.find((a) => a.id === editFor.id) ?? editFor) : null;
   const editSchema = useMemo(() => {
@@ -412,7 +351,7 @@ function AssetsBody({ kind }: { kind: AssetKind }) {
                         编辑
                       </Button>
                     ) : null}
-                    {canPromote(detailing) && covers(detailing) ? (
+                    {canPromote(detailing) && covers(detailing) && isAdmin ? (
                       <Button size="small" loading={promote.isPending} onClick={() => askPromote(detailing)}>
                         {promoteLabel(detailing)}
                       </Button>
@@ -525,7 +464,7 @@ function AssetsBody({ kind }: { kind: AssetKind }) {
                         编辑
                       </Button>
                     ) : null}
-                    {canPromote(detailing) && covers(detailing) ? (
+                    {canPromote(detailing) && covers(detailing) && isAdmin ? (
                       <Button size="small" loading={promote.isPending} onClick={() => askPromote(detailing)}>
                         {promoteLabel(detailing)}
                       </Button>
@@ -620,23 +559,15 @@ function AssetsBody({ kind }: { kind: AssetKind }) {
           layout="vertical"
           size="small"
           requiredMark={false}
-          initialValues={{ level: "factory", content: "", weldKind: WELD_SINGLE, copyable: true }}
-          onValuesChange={(changed) => {
-            if ("parentId" in changed) {
-              const folder = (fs.data ?? []).find((n) => n.id === changed.parentId);
-              if (folder) form.setFieldValue("level", folder.treeLevel === "personal" ? "personal" : "factory");
-            }
-          }}
+          initialValues={{ content: "", weldKind: WELD_SINGLE }}
           onFinish={(values) => {
             const weld = values.weldKind || WELD_SINGLE;
             const content = isProcess ? values.content : JSON.stringify([emptyWeld(weld, projectTpls.data ?? [], 0)]);
             const input: CreateAssetInput = {
               kind,
-              level: values.level,
               name: values.name,
               content,
               weldKind: weld,
-              copyable: isProcess ? values.copyable : undefined,
               parentId: values.parentId,
             };
             create.mutate(input, {
@@ -651,20 +582,14 @@ function AssetsBody({ kind }: { kind: AssetKind }) {
           }}
         >
           {isProcess ? (
-            <Form.Item name="parentId" label="文件夹" extra="工艺会放到这个目录下，级别随文件夹。" rules={[{ required: true, message: "请选择文件夹" }]}>
+            <Form.Item name="parentId" label="文件夹" extra="放进厂级文件夹就是厂级，放进个人文件夹就是个人级。" rules={[{ required: true, message: "请选择文件夹" }]}>
               <Select showSearch optionFilterProp="label" options={folderOpts} placeholder="选择文件夹" />
             </Form.Item>
           ) : (
-            <Form.Item name="parentId" label="文件夹" extra="工程会放到这个目录下，级别随文件夹。" rules={[{ required: true, message: "请选择文件夹" }]}>
+            <Form.Item name="parentId" label="文件夹" extra="放进厂级文件夹就是厂级，放进个人文件夹就是个人级。" rules={[{ required: true, message: "请选择文件夹" }]}>
               <Select showSearch optionFilterProp="label" options={folderOpts} placeholder="选择文件夹" />
             </Form.Item>
           )}
-          <Form.Item name="level" label="级别" extra="随所选文件夹。">
-            <Radio.Group disabled>
-              <Radio value="factory">厂级</Radio>
-              <Radio value="personal">个人级</Radio>
-            </Radio.Group>
-          </Form.Item>
           <div className="project-edit-meta">
             <Form.Item
               name="name"
@@ -676,11 +601,6 @@ function AssetsBody({ kind }: { kind: AssetKind }) {
             <Form.Item name="weldKind" label={<Tooltip title="App 同类型工作流才能打开。">类型</Tooltip>} rules={[{ required: true, message: "请选择类型" }]}>
               <Select options={WELD_KINDS.map((k) => ({ value: k.value, label: k.label }))} />
             </Form.Item>
-            {isProcess ? (
-              <Form.Item name="copyable" label="可复制" extra="否就不能升档。" valuePropName="checked">
-                <Switch size="default" checkedChildren="可复制" unCheckedChildren="不可复制" />
-              </Form.Item>
-            ) : null}
           </div>
           {isProcess ? (
             <Form.Item name="content" label="参数" rules={[jsonRule(createSchema, "")]}>
@@ -690,6 +610,30 @@ function AssetsBody({ kind }: { kind: AssetKind }) {
             <Typography.Text type="secondary">创建后按 App 那样加焊道、选工艺。点列到平板上采集。</Typography.Text>
           )}
         </Form>
+      </Modal>
+      <Modal
+        title={promoteFor ? `把「${promoteFor.name}」升档为厂级` : "升档为厂级"}
+        open={Boolean(promoteFor)}
+        onCancel={() => setPromoteFor(null)}
+        okText="升档"
+        confirmLoading={promote.isPending}
+        destroyOnHidden
+        onOk={() =>
+          promoteFor &&
+          promote.mutate(
+            { id: promoteFor.id, folderId: promoteFolder },
+            {
+              onSuccess: () => {
+                message.success("已复制一份厂级草稿，改好后发布即可使用");
+                setPromoteFor(null);
+              },
+              onError: onErr,
+            },
+          )
+        }
+      >
+        <Typography.Paragraph type="secondary">复制一份到所选厂级文件夹，落成草稿；个人原件不动。每升一次都另起一份。</Typography.Paragraph>
+        <Select style={{ width: "100%" }} showSearch optionFilterProp="label" options={factoryFolderOpts} value={promoteFolder} onChange={setPromoteFolder} placeholder="厂级文件夹" />
       </Modal>
       <Modal
         title="新建文件夹"
@@ -803,15 +747,7 @@ function AssetsBody({ kind }: { kind: AssetKind }) {
         extra={
           editing?.kind === "process" ? (
             <Space wrap>
-              {covers(editing) ? (
-                <CopyableSwitch
-                  checked={editing.copyable}
-                  disabled={!canMutate(editing)}
-                  loading={setCopyable.isPending && setCopyable.variables?.id === editing.id}
-                  onToggle={(next) => toggleCopyable(editing, next)}
-                />
-              ) : null}
-              {canPromote(editing) && covers(editing) ? (
+              {canPromote(editing) && covers(editing) && isAdmin ? (
                 <Button loading={promote.isPending} onClick={() => askPromote(editing)}>
                   {promoteLabel(editing)}
                 </Button>

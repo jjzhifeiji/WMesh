@@ -19,7 +19,7 @@ export type Asset = {
   name: string; // 显示名，不当身份
   code: string; // 只读编号，创建后不改
   status: AssetStatus; // draft / available / disabled
-  copyable: boolean; // 工艺可否升档；工程恒为是
+  copyable: boolean; // 平台级工艺是否可看可复制；厂端建的恒为是
   weldKind: string; // 作业类型：single / multilayer / tbar
   corner?: boolean; // 包角工艺：正文顶层 kind 为 cornerGeometry；工程恒为否
   revision: number; // 当前修订
@@ -28,8 +28,6 @@ export type Asset = {
   creatorLogin?: string; // 创建人登录名
   creatorDisplay?: string; // 创建人显示名
   factoryId: string; // 所属本厂
-  orgUnitId: string | null; // 创建时节点；直属为空
-  orgPath: { id: string; name: string }[]; // 创建时路径
   sourceId: string | null; // 升档源身份
   sourceRevision: number | null; // 升档源修订
   deps: AssetDep[]; // 工艺必须空
@@ -39,13 +37,11 @@ export type Asset = {
 
 export type CreateAssetInput = {
   kind: AssetKind;
-  level: AssetLevel;
   name: string;
   content: string;
   weldKind: string; // 作业类型
-  copyable?: boolean; // 工艺可复制；空则默认可复制
   deps?: AssetDep[];
-  parentId?: string; // 目录父文件夹；空则挂对应树的根
+  parentId?: string; // 目录文件夹；级别随它所在的树
 };
 
 export type FSNode = {
@@ -166,12 +162,6 @@ export function useUpdateAssetContent() {
   );
 }
 
-export function useSetAssetCopyable() {
-  return useAssetMutation((input: { id: string; expected: number; copyable: boolean }) =>
-    http.post<Asset>(fpath(`/assets/${input.id}/copyable`), { expected: input.expected, copyable: input.copyable }),
-  );
-}
-
 export function useSetAssetWeldKind() {
   return useAssetMutation((input: { id: string; expected: number; weldKind: string }) =>
     http.post<Asset>(fpath(`/assets/${input.id}/weld-kind`), { expected: input.expected, weldKind: input.weldKind }),
@@ -200,8 +190,9 @@ export function useDeleteAsset() {
   return useAssetMutation((id: string) => http.post(fpath(`/assets/${id}/delete`)));
 }
 
+// 升档：复制一份到所选厂级文件夹，落成草稿；每次都另起一份。
 export function usePromoteAsset() {
-  return useAssetMutation((id: string) => http.post<Asset>(fpath(`/assets/${id}/promote`)));
+  return useAssetMutation((input: { id: string; folderId?: string }) => http.post<Asset>(fpath(`/assets/${input.id}/promote`), { folderId: input.folderId ?? "" }));
 }
 
 // useAssetContent 读正文。fresh 给编辑弹窗：单独缓存、不当新鲜，每次打开都重取，不沿用详情面板正在取的那次。
