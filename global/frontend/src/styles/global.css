@@ -45,8 +45,10 @@ body,
 
 .fs-explorer {
   display: grid;
-  grid-template-columns: minmax(140px, 15%) minmax(180px, 22%) minmax(0, 1fr);
-  min-height: calc(100vh - 200px);
+  grid-template-columns: minmax(200px, 20%) minmax(180px, 22%) minmax(0, 1fr);
+  /* 定高让三栏各自滚动；目录多了不把整页撑长。 */
+  height: calc(100vh - 200px);
+  min-height: 480px;
   border: 1px solid #f0f0f0;
   border-radius: 8px;
   overflow: hidden;
@@ -146,6 +148,11 @@ body,
 
 .fs-crumb:hover {
   background: #f5f7f6;
+}
+
+/* 层级深时少吃宽度，名字多露几个字。 */
+.fs-tree .ant-tree-indent-unit {
+  width: 16px;
 }
 
 .fs-tree .ant-tree-treenode {
@@ -499,21 +506,25 @@ body,
 
 
 
+/* 窄屏时操作按钮整行换到标题下，标题不被挤成一字一行。 */
 .page-header {
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 16px;
+  gap: 12px 16px;
   margin-bottom: 16px;
 }
 
 .page-header > :first-child {
   min-width: 0;
-  flex: 1;
+  flex: 1 1 280px;
 }
 
 .page-header > .ant-space {
   flex: none;
+  flex-wrap: wrap;
+  max-width: 100%;
 }
 
 .auth-layout {

@@ -3,7 +3,8 @@ import { useQueryClient } from "@tanstack/react-query";
 import { App, Button, Card, Progress, Space, Table, Tag, Typography, type TableColumnsType } from "antd";
 import { useEffect, useRef, useState } from "react";
 import { ApiError, errorMessage } from "@/shared/api/client";
-import { formatBytes, formatSpeed, shortHash } from "@/shared/format";
+import { formatBytes, formatSpeed } from "@/shared/format";
+import { HashText } from "@/shared/ui/HashText";
 import { publishSoftware, softwareKindLabel, softwareKeys, type SoftwareKind, type SoftwareRelease } from "./api";
 import { planDistPublish, sha256Hex, type DistAction, type DistRow } from "./pack";
 
@@ -259,7 +260,7 @@ export function DeployPanel({ published }: { published: SoftwareRelease[] }) {
     },
     { title: "文件", dataIndex: "fileName", ellipsis: true },
     { title: "大小", dataIndex: "bytes", width: 90, render: (n: number) => formatBytes(n) },
-    { title: "摘要", dataIndex: "sha256", width: 140, render: (v: string) => shortHash(v) },
+    { title: "摘要", dataIndex: "sha256", width: 160, render: (v: string) => <HashText value={v} /> },
     { title: "处理", width: 90, render: (_, r) => (phase === "empty" || phase === "preview" ? actionTag(r.action) : jobTag(jobs[r.key]) ?? actionTag(r.action)) },
     {
       title: "进度 / 说明",

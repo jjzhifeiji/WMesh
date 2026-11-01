@@ -134,7 +134,9 @@ function TreeTitle({
       onDrop={onDrop}
     >
       <FolderOutlined />
-      <span className="fs-tree-name">{fsNodeTitle(n)}</span>
+      <span className="fs-tree-name" title={fsNodeTitle(n)}>
+        {fsNodeTitle(n)}
+      </span>
       <span className="fs-tree-count">{count}</span>
     </span>
   );
@@ -606,7 +608,8 @@ export function ProcessExplorer({
                   if (n?.nodeKind !== "folder") return;
                   setPickedId(id);
                   clearFile();
-                  setExpandedKeys((keys) => (keys.includes(id) ? keys.filter((k) => k !== id) : [...keys, id]));
+                  // 点名字只展开不收起，看已展开文件夹的内容不会把下级收掉；收起点箭头。
+                  setExpandedKeys((keys) => (keys.includes(id) ? keys : [...keys, id]));
                 }}
               />
             )}

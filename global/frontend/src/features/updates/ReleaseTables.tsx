@@ -1,6 +1,7 @@
 import { App, Button, Card, Modal, Popconfirm, Progress, Space, Table, Tag, type TableColumnsType } from "antd";
 import { useState } from "react";
-import { formatBytes, formatTime, shortHash } from "@/shared/format";
+import { formatBytes, formatTime } from "@/shared/format";
+import { HashText } from "@/shared/ui/HashText";
 import { errorMessage } from "@/shared/api/client";
 import {
   softwareKindLabel,
@@ -131,7 +132,7 @@ export function ReleaseTables({ rows, loading }: { rows: SoftwareRelease[]; load
   const detailCols: TableColumnsType<SoftwareRelease> = [
     { title: "版本号", dataIndex: "version", width: 90 },
     { title: "版本名", dataIndex: "versionName" },
-    { title: "摘要", dataIndex: "digest", width: 140, render: (v: string) => shortHash(v) },
+    { title: "摘要", dataIndex: "digest", width: 160, render: (v: string) => <HashText value={v} /> },
     { title: "发布时间", dataIndex: "createdAt", width: 170, render: (v: string) => formatTime(v) },
     { title: "状态", dataIndex: "keep", width: 110, render: (v: string) => keepTag(v) },
     {
@@ -147,6 +148,7 @@ export function ReleaseTables({ rows, loading }: { rows: SoftwareRelease[]; load
             onConfirm={async () => {
               try {
                 await del.mutateAsync({ kind: row.kind, version: row.version });
+                message.success(`已删除 ${row.versionName || `v${row.version}`}`);
               } catch (e) {
                 message.error(errorMessage(e));
               }

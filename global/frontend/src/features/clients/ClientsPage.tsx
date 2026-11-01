@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useDirectory } from "@/features/factories/api";
 import { errorMessage } from "@/shared/api/client";
 import { formatTime } from "@/shared/format";
+import { AgoText } from "@/shared/ui/AgoText";
 import { CodeText } from "@/shared/ui/CodeText";
 import { PageHeader } from "@/shared/ui/PageHeader";
 import {
@@ -54,7 +55,7 @@ export function ClientsPage() {
     { title: "名称", dataIndex: "name" },
     { title: "识别号", dataIndex: "deviceSerial", width: 180, render: (v: string | undefined) => v || "—" },
     { title: "所属工厂", dataIndex: "factoryId", render: (id: string | null) => factoryLabel(id) },
-    { title: "最近登录时间", dataIndex: "lastLoginAt", width: 170, render: (v: string | null | undefined) => formatTime(v) },
+    { title: "最近登录", dataIndex: "lastLoginAt", width: 110, render: (v: string | null | undefined) => <AgoText value={v} /> },
     { title: "App 版本", key: "appVersion", width: 120, render: (_, row) => row.appVersionName || (row.appVersion ? String(row.appVersion) : "—") },
     { title: "创建时间", dataIndex: "createdAt", width: 170, render: (v: string) => formatTime(v) },
     { title: "分配时间", dataIndex: "boundAt", width: 170, render: (v: string | null) => formatTime(v) },

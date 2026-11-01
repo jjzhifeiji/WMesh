@@ -49,12 +49,16 @@ function deviceLabel(name?: string | null, serial?: string | null) {
   return n || s || "—";
 }
 
-type TreeOption = { value: string; title: string; children?: TreeOption[] };
+type TreeOption = { value: string; title: string; disabled?: boolean; children?: TreeOption[] };
 
+// 停用节点留在树里但不可选：还挂在上面的人能看到组织名，而不是一串 ID。
 function toTreeOptions(nodes: UnitTreeNode[]): TreeOption[] {
-  return nodes
-    .filter((n) => n.status === "active")
-    .map((n) => ({ value: n.id, title: n.name, children: n.children ? toTreeOptions(n.children) : undefined }));
+  return nodes.map((n) => ({
+    value: n.id,
+    title: n.status === "active" ? n.name : `${n.name}（已停用）`,
+    disabled: n.status !== "active",
+    children: n.children ? toTreeOptions(n.children) : undefined,
+  }));
 }
 
 // 人员账号固定归本厂；停用不删。角色、所属组织、显示名都在本页改。

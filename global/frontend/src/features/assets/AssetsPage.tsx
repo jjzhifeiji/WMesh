@@ -5,6 +5,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { ApiError, errorMessage } from "@/shared/api/client";
 import { formatTime } from "@/shared/format";
 import { IdText } from "@/shared/ui/IdText";
+import { useConfirmDiscard } from "@/shared/ui/confirmDiscard";
 import { PageHeader } from "@/shared/ui/PageHeader";
 import { useDirectory } from "@/features/factories/api";
 import { ContentEditor } from "@/features/templates/ContentFields";
@@ -38,7 +39,7 @@ import {
 } from "./api";
 import { fsFolderOptions, ProcessExplorer } from "./ProcessExplorer";
 import { PromotePicker } from "./PromotePicker";
-import { emptyWeld, ProjectWeldEditor, type ProcessOption } from "./ProjectWeldEditor";
+import { badGapBands, emptyWeld, ProjectWeldEditor, type ProcessOption } from "./ProjectWeldEditor";
 
 type CreateForm = { name: string; content: string; weldKind: string; copyable: boolean; parentId?: string };
 type MkdirForm = { parentId: string; name: string };
@@ -167,6 +168,7 @@ function AssetsBody({ kind }: { kind: AssetKind }) {
   const directory = useDirectory();
   const qc = useQueryClient();
   const { message, modal } = App.useApp();
+  const confirmDiscard = useConfirmDiscard();
   const [open, setOpen] = useState(false);
   const [copyFor, setCopyFor] = useState<Asset | null>(null);
   const [promoteOpen, setPromoteOpen] = useState(false);
@@ -583,7 +585,7 @@ function AssetsBody({ kind }: { kind: AssetKind }) {
           />
         </Card>
       )}
-      <Modal title={`新建${isProcess ? "工艺" : "工程"}`} open={open} onCancel={() => setOpen(false)} okText="创建" confirmLoading={create.isPending} destroyOnHidden width={isProcess ? 1100 : 560} styles={{ body: { maxHeight: isProcess ? "82vh" : "50vh", overflow: "auto" } }} onOk={() => form.submit()}>
+      <Modal title={`新建${isProcess ? "工艺" : "工程"}`} open={open} onCancel={() => confirmDiscard(form.isFieldsTouched(), () => setOpen(false))} mask={{ closable: false }} okText="创建" confirmLoading={create.isPending} destroyOnHidden width={isProcess ? 1100 : 560} styles={{ body: { maxHeight: isProcess ? "82vh" : "50vh", overflow: "auto" } }} onOk={() => form.submit()}>
         <Form<CreateForm>
           className={isProcess ? "project-edit-form" : undefined}
           form={form}
@@ -1084,6 +1086,7 @@ function EditModal({
   onSave: (name: string, content: string | null, weldKind: string) => Promise<void>;
 }) {
   const { q, form, ready, failed } = useEditBody(row, base, onBaseContent);
+  const confirmDiscard = useConfirmDiscard();
   const locked = row?.status === "disabled";
   const editWeld = Form.useWatch("weldKind", form) ?? base?.weldKind ?? WELD_SINGLE;
   const pending = row !== null && !ready;
@@ -1091,7 +1094,8 @@ function EditModal({
     <Modal
       title="编辑"
       open={row !== null}
-      onCancel={onClose}
+      onCancel={() => confirmDiscard(form.isFieldsTouched(), onClose)}
+      mask={{ closable: false }}
       okText="保存"
       okButtonProps={{ disabled: locked || (pending && !failed) }}
       confirmLoading={saving}
@@ -1149,6 +1153,28 @@ function EditModal({
   );
 }
 
+// 工程换类型会把焊道换成一条空焊道，先确认再换。
+function WeldKindSwitch({ value, onChange, disabled }: { value?: string; onChange?: (v: string) => void; disabled?: boolean }) {
+  const { modal } = App.useApp();
+  return (
+    <Select
+      value={value}
+      disabled={disabled}
+      options={WELD_KINDS.map((k) => ({ value: k.value, label: k.label }))}
+      onChange={(next: string) => {
+        if (next === value) return;
+        modal.confirm({
+          title: `改成「${weldKindLabel(next)}」？`,
+          content: "现有焊道、点位和工艺绑定会全部清空，换成一条空焊道；不保存就不生效。",
+          okText: "清空并改类型",
+          okButtonProps: { danger: true },
+          onOk: () => onChange?.(next),
+        });
+      }}
+    />
+  );
+}
+
 function ProjectEditModal({
   row,
   base,
@@ -1169,6 +1195,8 @@ function ProjectEditModal({
   onSave: (name: string, content: string | null, weldKind: string) => Promise<void>;
 }) {
   const { q, form, ready, failed } = useEditBody(row, base, onBaseContent);
+  const confirmDiscard = useConfirmDiscard();
+  const { message } = App.useApp();
   const locked = row?.status === "disabled";
   const editWeld = Form.useWatch("weldKind", form) ?? base?.weldKind ?? WELD_SINGLE;
   const pending = row !== null && !ready;
@@ -1176,7 +1204,8 @@ function ProjectEditModal({
     <Modal
       title="编辑工程"
       open={row !== null}
-      onCancel={onClose}
+      onCancel={() => confirmDiscard(form.isFieldsTouched(), onClose)}
+      mask={{ closable: false }}
       okText="保存"
       okButtonProps={{ disabled: locked || (pending && !failed) }}
       confirmLoading={saving}
@@ -1198,6 +1227,12 @@ function ProjectEditModal({
           // 基准没建好也没确认读失败时不提交，挡住回车。
           if (!base || (!ready && !failed)) return;
           const weld = values.weldKind || base.weldKind;
+          // 间隙带填反在保存时拦下；不挂成表单规则，免得整块焊道编辑器的输入框都标红。
+          const bad = ready ? badGapBands(values.content) : null;
+          if (bad) {
+            message.error(bad);
+            return;
+          }
           onSave(values.name, ready ? (values.content ?? "") : null, weld).catch(() => undefined);
         }}
       >
@@ -1214,7 +1249,7 @@ function ProjectEditModal({
             label={<Tooltip title="焊道换成该类型空焊道。">类型</Tooltip>}
             rules={[{ required: true, message: "请选择类型" }]}
           >
-            <Select disabled={locked || !ready} options={WELD_KINDS.map((k) => ({ value: k.value, label: k.label }))} />
+            <WeldKindSwitch disabled={locked || !ready} />
           </Form.Item>
         </div>
         {pending ? (

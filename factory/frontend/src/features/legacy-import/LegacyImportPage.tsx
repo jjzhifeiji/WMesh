@@ -5,6 +5,7 @@ import { useAssets } from "@/features/assets/api";
 import { isAssetAdmin, useCatalog } from "@/features/catalog/api";
 import { weldKindLabel } from "@/features/templates/projectKinds";
 import { errorMessage } from "@/shared/api/client";
+import { translateError } from "@/shared/api/errors";
 import { PageHeader } from "@/shared/ui/PageHeader";
 import { useImportLegacy, type LegacyFile, type LegacyImportResult, type LegacyLevel, type LegacyReject } from "./api";
 
@@ -22,6 +23,7 @@ export function LegacyImportPage() {
   const { message, modal } = App.useApp();
   const inputRef = useRef<HTMLInputElement>(null);
   const [picked, setPicked] = useState<Picked | null>(null);
+  const [reading, setReading] = useState(false);
   const [result, setResult] = useState<LegacyImportResult | null>(null);
   const [acting, setActing] = useState<{ key: string; mode: "overwrite" | "rename" } | null>(null);
   const existing = useMemo(() => {
@@ -36,9 +38,19 @@ export function LegacyImportPage() {
 
   const onFiles = async (list: FileList | null) => {
     if (!list || list.length === 0) return;
-    const next = await readLegacyTree(list);
-    setPicked(next);
-    setResult(null);
+    // FileList 跟着 input.value 走，先拷出来再清空；不清空的话改完文件再选同一目录不触发 onChange。
+    const files = Array.from(list);
+    if (inputRef.current) inputRef.current.value = "";
+    setReading(true);
+    try {
+      const next = await readLegacyTree(files);
+      setPicked(next);
+      setResult(null);
+    } catch (e) {
+      message.error(errorMessage(e));
+    } finally {
+      setReading(false);
+    }
   };
 
   const start = async () => {
@@ -117,8 +129,8 @@ export function LegacyImportPage() {
             ]}
           />
         </div>
-        <Button icon={<InboxOutlined />} onClick={() => bindDirectory(inputRef.current)}>
-          选择文件夹
+        <Button icon={<InboxOutlined />} loading={reading} disabled={imp.isPending} onClick={() => bindDirectory(inputRef.current)}>
+          {reading ? "读取中…" : "选择文件夹"}
         </Button>
         {picked ? (
           <Typography.Paragraph type="secondary" style={{ marginTop: 12 }}>
@@ -129,7 +141,7 @@ export function LegacyImportPage() {
         <Button
           type="primary"
           style={{ marginTop: 8 }}
-          disabled={!picked || (picked.processes.length === 0 && picked.projects.length === 0)}
+          disabled={reading || !picked || (picked.processes.length === 0 && picked.projects.length === 0)}
           loading={imp.isPending}
           onClick={() => void start()}
         >
@@ -172,6 +184,19 @@ function uniqueRows(rows: LegacyReject[]) {
   return [...new Map(rows.map((r) => [rowKey(r), r])).values()];
 }
 
+// 服务端只给英文原因，导入自己的几条先翻，其余走通用错误表。
+const reasonZh: Record<string, string> = {
+  "same content": "内容相同，沿用已有",
+  "name exists": "已有同名",
+  "invalid path": "路径不对",
+  "invalid process json": "工艺文件读不出来（不是有效 JSON）",
+  "tbar gap bands missing: import gap folder processes together with the project": "T排缺间隙带：请把缝隙目录的工艺和工程一起导入",
+};
+
+function reasonText(reason: string) {
+  return reasonZh[reason] ?? translateError(reason);
+}
+
 function ResultTables({
   result,
   acting,
@@ -192,7 +217,7 @@ function ResultTables({
   };
   const rejectCols: TableColumnsType<LegacyReject> = [
     pathCol,
-    { title: "原因", dataIndex: "reason", width: 120 },
+    { title: "原因", dataIndex: "reason", width: 160, render: (r: string) => reasonText(r) },
     {
       title: "操作",
       key: "act",
@@ -223,33 +248,42 @@ function ResultTables({
   ];
   const rejectOnlyCols: TableColumnsType<LegacyReject> = [
     pathCol,
-    { title: "原因", dataIndex: "reason" },
+    { title: "原因", dataIndex: "reason", render: (r: string) => reasonText(r) },
   ];
   return (
     <div style={{ marginTop: 24 }}>
       <Typography.Text>
         已入工艺 {result.processes.length}，工程 {result.projects.length}
         {result.skipped.length ? `，跳过 ${result.skipped.length}` : ""}
+        {result.rejected.length ? `，拒绝 ${result.rejected.length}` : ""}
       </Typography.Text>
       {result.skipped.length > 0 ? (
-        <Table
-          style={{ marginTop: 12 }}
-          size="small"
-          rowKey={rowKey}
-          pagination={false}
-          columns={rejectCols}
-          dataSource={result.skipped}
-        />
+        <>
+          <Typography.Title level={5} style={{ marginTop: 16 }}>
+            跳过（可逐条覆盖或重命名后再导）
+          </Typography.Title>
+          <Table
+            size="small"
+            rowKey={rowKey}
+            pagination={false}
+            columns={rejectCols}
+            dataSource={result.skipped}
+          />
+        </>
       ) : null}
       {result.rejected.length > 0 ? (
-        <Table
-          style={{ marginTop: 12 }}
-          size="small"
-          rowKey={rowKey}
-          pagination={false}
-          columns={rejectOnlyCols}
-          dataSource={result.rejected}
-        />
+        <>
+          <Typography.Title level={5} type="danger" style={{ marginTop: 16 }}>
+            拒绝（先改好文件，再重新选择文件夹导入）
+          </Typography.Title>
+          <Table
+            size="small"
+            rowKey={rowKey}
+            pagination={false}
+            columns={rejectOnlyCols}
+            dataSource={result.rejected}
+          />
+        </>
       ) : null}
     </div>
   );
@@ -261,11 +295,11 @@ function bindDirectory(el: HTMLInputElement | null) {
   el.click();
 }
 
-async function readLegacyTree(list: FileList): Promise<Picked> {
+async function readLegacyTree(list: File[]): Promise<Picked> {
   const processes: LegacyFile[] = [];
   const projects: LegacyFile[] = [];
   let skipped = 0;
-  for (const file of Array.from(list)) {
+  for (const file of list) {
     const rel = (file.webkitRelativePath || file.name).replaceAll("\\", "/");
     const base = rel.split("/").pop() ?? file.name;
     if (!base.toLowerCase().endsWith(".json") || base === "app_settings.json") {
@@ -406,11 +440,12 @@ function askSameName(
           ))}
         </>
       ),
-      okText: "覆盖",
+      okText: "跳过同名",
       cancelText: "取消",
+      // 回车走跳过同名，不改已有正文；覆盖要单独点。
       onOk: () => {
         decided = true;
-        resolve("overwrite");
+        resolve("skip");
       },
       onCancel: () => {
         if (!decided) resolve("cancel");
@@ -419,13 +454,14 @@ function askSameName(
         <>
           <CancelBtn />
           <Button
+            danger
             onClick={() => {
               decided = true;
               inst.destroy();
-              resolve("skip");
+              resolve("overwrite");
             }}
           >
-            跳过同名
+            覆盖
           </Button>
           <Button
             onClick={() => {
