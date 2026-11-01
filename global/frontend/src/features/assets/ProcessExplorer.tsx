@@ -1,6 +1,6 @@
 import { FolderOutlined, FileOutlined } from "@ant-design/icons";
 import { App, Button, Dropdown, Empty, Input, Space, Tree, Typography, type MenuProps, type TreeDataNode } from "antd";
-import { useEffect, useMemo, useRef, useState, type DragEvent, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type DragEvent, type CSSProperties, type KeyboardEvent, type MouseEvent, type PointerEvent, type ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { errorMessage } from "@/shared/api/client";
 import { weldKindLabel, WELD_SINGLE } from "@/features/templates/projectKinds";
@@ -111,6 +111,29 @@ function canCopyInto(src: FSNode, dest: FSNode, byId: Map<string, FSNode>) {
   return src.nodeKind !== "folder" || !isAncestor(src.id, dest.id, byId);
 }
 
+const TREE_W_KEY = "wmesh.fs.treeWidth";
+const TREE_W_MIN = 200;
+const TREE_W_MAX = 600;
+
+// 树栏宽度拖过就记在本浏览器里；没拖过或读不到用样式默认宽度。
+function readTreeWidth() {
+  try {
+    const w = Number(localStorage.getItem(TREE_W_KEY));
+    return w >= TREE_W_MIN && w <= TREE_W_MAX ? w : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveTreeWidth(w: number | null) {
+  try {
+    if (w === null) localStorage.removeItem(TREE_W_KEY);
+    else localStorage.setItem(TREE_W_KEY, String(w));
+  } catch {
+    // 存不下就只管这一次。
+  }
+}
+
 function TreeTitle({
   n,
   count,
@@ -140,9 +163,7 @@ function TreeTitle({
       onDrop={onDrop}
     >
       <FolderOutlined />
-      <span className="fs-tree-name" title={fsNodeTitle(n)}>
-        {fsNodeTitle(n)}
-      </span>
+      <span className="fs-tree-name">{fsNodeTitle(n)}</span>
       <span className="fs-tree-count">{count}</span>
     </span>
   );
@@ -196,6 +217,9 @@ export function ProcessExplorer({
   const [clipId, setClipId] = useState<string | null>(null);
   const [expandedKeys, setExpandedKeys] = useState<string[]>([]);
   const expandInited = useRef(false);
+  const treeColRef = useRef<HTMLDivElement>(null);
+  const [treeW, setTreeW] = useState<number | null>(readTreeWidth);
+  const [resizing, setResizing] = useState(false);
   const [listMenu, setListMenu] = useState<MenuProps["items"]>([]);
   const [treeMenu, setTreeMenu] = useState<MenuProps["items"]>([]);
   const [dragId, setDragId] = useState<string | null>(null);
@@ -592,10 +616,37 @@ export function ProcessExplorer({
 
   const listDropClass = current && overId === current.id && !children.some((n) => n.id === overId && n.nodeKind === "folder") ? " is-drop" : "";
 
+  // 拖树栏右边线调宽；松手才落盘。
+  const startResize = (e: PointerEvent<HTMLDivElement>) => {
+    const col = treeColRef.current;
+    if (!col || e.button !== 0) return;
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = col.getBoundingClientRect().width;
+    // 右边两栏至少留 400px，窄屏上拖不掉文件列表和详情。
+    const max = Math.max(TREE_W_MIN, Math.min(TREE_W_MAX, (col.parentElement?.clientWidth ?? 0) - 400));
+    let w = startW;
+    setResizing(true);
+    const onMove = (ev: globalThis.PointerEvent) => {
+      w = Math.round(Math.min(max, Math.max(TREE_W_MIN, startW + ev.clientX - startX)));
+      setTreeW(w);
+    };
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      setResizing(false);
+      saveTreeWidth(w);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  };
+
+  const explorerStyle = treeW ? ({ "--fs-tree-w": `${treeW}px` } as CSSProperties) : undefined;
+
   return (
-    <div className="fs-explorer" tabIndex={0} onKeyDown={onExplorerKey} onDragEnd={endDrag}>
+    <div className="fs-explorer" style={explorerStyle} tabIndex={0} onKeyDown={onExplorerKey} onDragEnd={endDrag}>
       <Dropdown menu={{ items: treeMenu }} trigger={["contextMenu"]}>
-        <div className="fs-col fs-tree" onContextMenu={openTreeMenu}>
+        <div ref={treeColRef} className="fs-col fs-tree" onContextMenu={openTreeMenu}>
           <div className="fs-col-head">
             <Typography.Text strong>文件树</Typography.Text>
           </div>
@@ -628,6 +679,15 @@ export function ProcessExplorer({
               />
             )}
           </div>
+          <div
+            className={`fs-tree-resize${resizing ? " is-active" : ""}`}
+            title="拖动调整宽度，双击恢复默认"
+            onPointerDown={startResize}
+            onDoubleClick={() => {
+              setTreeW(null);
+              saveTreeWidth(null);
+            }}
+          />
         </div>
       </Dropdown>
       <div className="fs-col fs-list">
