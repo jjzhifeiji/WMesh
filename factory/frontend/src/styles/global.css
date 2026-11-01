@@ -201,6 +201,14 @@ body,
   padding: 8px;
 }
 
+/* 细淡滚动条：Windows 默认的又粗又灰，会吃掉窄栏一截。 */
+.fs-tree-body,
+.fs-list-body,
+.fs-detail-body {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0, 0, 0, 0.22) transparent;
+}
+
 .fs-list-body {
   min-height: 400px;
 }
