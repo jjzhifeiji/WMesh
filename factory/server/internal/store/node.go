@@ -35,39 +35,22 @@ func (SigningKey) TableName() string { return "signing_keys" }
 
 // Client 是本厂已接受的一台现场设备绑定。
 type Client struct {
-	ID              uuid.UUID  `gorm:"type:uuid;primaryKey" json:"id"`        // 固定识别号，与 WAN 相同的全局身份
-	Name            string     `gorm:"not null" json:"name"`                  // WAN 下发的设备名，厂端只读，不当身份
-	Nickname        string     `gorm:"not null" json:"nickname"`              // 厂端起的昵称；空表示没起
-	PublicKey       []byte     `gorm:"type:bytea" json:"publicKey"`           // 本机公钥；未上线为空，无私钥
-	BindingRevision int64      `gorm:"not null" json:"bindingRevision"`       // 已接受的绑定修订，只向前
-	Status          string     `gorm:"not null" json:"status"`                // bound / void
-	BoundAt         time.Time  `gorm:"not null" json:"boundAt"`               // 最近一次接受为 bound 的时间
-	VoidedAt        *time.Time `json:"voidedAt"`                              // 作废时间；bound 必须为空
-	OperatorID      *uuid.UUID `gorm:"type:uuid" json:"operatorId,omitempty"` // 当前在本机登录的本厂账号；无人则为空
-	ShortCode       string     `json:"shortCode,omitempty"`                   // Client 短码，随绑定补齐
-	DeviceSerial    string     `json:"deviceSerial,omitempty"`                // 从设备读到的机械臂识别号；未登记为空
-	UnwrapKey       []byte     `json:"-"`                                     // 历史列，焊机不持钥
-	WANName         *string    `gorm:"column:wan_name" json:"-"`              // 上次收到的 WAN 设备名；旧行为空，只用来判断 WAN 是否改名
+	ID              uuid.UUID  `gorm:"type:uuid;primaryKey" json:"id"`  // 固定识别号，与 WAN 相同的全局身份
+	Name            string     `gorm:"not null" json:"name"`            // WAN 下发的设备名，厂端只读，不当身份
+	Nickname        string     `gorm:"not null" json:"nickname"`        // 厂端起的昵称；空表示没起
+	PublicKey       []byte     `gorm:"type:bytea" json:"publicKey"`     // 本机公钥；未上线为空，无私钥
+	BindingRevision int64      `gorm:"not null" json:"bindingRevision"` // 已接受的绑定修订，只向前
+	Status          string     `gorm:"not null" json:"status"`          // bound / void
+	BoundAt         time.Time  `gorm:"not null" json:"boundAt"`         // 最近一次接受为 bound 的时间
+	VoidedAt        *time.Time `json:"voidedAt"`                        // 作废时间；bound 必须为空
+	ShortCode       string     `json:"shortCode,omitempty"`             // Client 短码，随绑定补齐
+	DeviceSerial    string     `json:"deviceSerial,omitempty"`          // 从设备读到的机械臂识别号；未登记为空
+	UnwrapKey       []byte     `json:"-"`                               // 历史列，焊机不持钥
+	WANName         *string    `gorm:"column:wan_name" json:"-"`        // 上次收到的 WAN 设备名；旧行为空，只用来判断 WAN 是否改名
 }
 
 // 指定落库表名，避免查询时按类型名去猜。
 func (Client) TableName() string { return "clients" }
-
-// RuntimeGrant 是签给某 Client 的一版节点运行凭证。
-type RuntimeGrant struct {
-	ID        uuid.UUID `gorm:"type:uuid;primaryKey" json:"id"`       // 节点运行凭证稳定身份
-	ClientID  uuid.UUID `gorm:"type:uuid;not null" json:"clientId"`   // 签给本厂这台 Client
-	Revision  int64     `gorm:"not null" json:"revision"`             // 该 Client 的节点授权修订，只向前
-	CanRun    bool      `gorm:"not null" json:"canRun"`               // 本修订是否允许运行
-	NotBefore time.Time `gorm:"not null" json:"notBefore"`            // 生效时间
-	NotAfter  time.Time `gorm:"not null" json:"notAfter"`             // 失效时间
-	Payload   []byte    `gorm:"type:bytea;not null" json:"payload"`   // 被签名的声明原文
-	Signature []byte    `gorm:"type:bytea;not null" json:"signature"` // Ed25519 签名 64 字节
-	CreatedAt time.Time `gorm:"not null" json:"createdAt"`            // 写入时间
-}
-
-// 指定落库表名，避免查询时按类型名去猜。
-func (RuntimeGrant) TableName() string { return "client_runtime_grants" }
 
 // PutSigningKey 写入本厂唯一签发密钥；已有则拒绝。
 func (s *Store) PutSigningKey(ctx context.Context, publicKey, privateKey []byte) (SigningKey, error) {
@@ -307,7 +290,7 @@ func (s *Store) VoidBinding(ctx context.Context, clientID uuid.UUID) error {
 	// 执行这次写入，行数和错误分开看。
 	res := s.db.WithContext(ctx).Model(&Client{}).
 		Where("id = ? AND status = ?", clientID, ClientStatusBound).
-		Updates(map[string]any{"status": ClientStatusVoid, "voided_at": now, "operator_id": gorm.Expr("NULL")})
+		Updates(map[string]any{"status": ClientStatusVoid, "voided_at": now})
 	// 更新失败则交回库错误，不能当成已经改完。
 	if res.Error != nil {
 		return res.Error
@@ -337,7 +320,7 @@ func (s *Store) VoidBindingByRevision(ctx context.Context, clientID uuid.UUID, r
 	// 修订条件写进同一条更新，迟到的旧作废并发也作废不了新绑定。
 	res := s.db.WithContext(ctx).Model(&Client{}).
 		Where("id = ? AND status = ? AND binding_revision < ?", clientID, ClientStatusBound, revision).
-		Updates(map[string]any{"status": ClientStatusVoid, "voided_at": now, "operator_id": gorm.Expr("NULL")})
+		Updates(map[string]any{"status": ClientStatusVoid, "voided_at": now})
 	// 更新失败则交回库错误，不能当成已经作废。
 	if res.Error != nil {
 		return res.Error
@@ -373,31 +356,6 @@ func (s *Store) ClientByID(ctx context.Context, clientID uuid.UUID) (Client, err
 		return Client{}, err
 	}
 	return row, nil
-}
-
-// SetClientOperator 记下谁在这台已绑定设备上登录；设备未落库则忽略。
-func (s *Store) SetClientOperator(ctx context.Context, clientID, personID uuid.UUID) error {
-	// 执行这次写入，行数和错误分开看。
-	res := s.db.WithContext(ctx).Model(&Client{}).
-		Where("id = ? AND status = ?", clientID, ClientStatusBound).
-		Update("operator_id", personID)
-	// 更新失败则交回库错误，不能当成已经改完。
-	if res.Error != nil {
-		// 外键对不上就当被指的对象不存在。
-		if domain.IsForeignKeyViolation(res.Error) {
-			return domain.ErrNotFound
-		}
-		return res.Error
-	}
-	return nil
-}
-
-// ClearOperatorForPersonExcept 同一人只留这一台设备的登录标记。
-func (s *Store) ClearOperatorForPersonExcept(ctx context.Context, personID, keepClient uuid.UUID) error {
-	// 做完接上要操作的表后把结果交回。
-	return s.db.WithContext(ctx).Model(&Client{}).
-		Where("operator_id = ? AND id <> ?", personID, keepClient).
-		Update("operator_id", nil).Error
 }
 
 // PinDeviceSerial 把机械臂号钉到已绑定 Client；本厂未作废号不得重复。
@@ -528,48 +486,6 @@ func (s *Store) ListClients(ctx context.Context) ([]Client, error) {
 	return rows, nil
 }
 
-// ListRuntimeGrants 列出节点运行凭证，按 Client、修订从新到旧。
-func (s *Store) ListRuntimeGrants(ctx context.Context) ([]RuntimeGrant, error) {
-	// 准备承接查到的多条运行凭证。
-	var rows []RuntimeGrant
-	// 按条件取多行失败就停，避免带着错误继续。
-	if err := s.db.WithContext(ctx).Order("client_id, revision DESC").Find(&rows).Error; err != nil {
-		return nil, err
-	}
-	// 没有行也交回空列表，避免调用方拿到空指针。
-	if rows == nil {
-		// 没有就交回空列表，避免调用方拿到空指针。
-		rows = []RuntimeGrant{}
-	}
-	return rows, nil
-}
-
-// assertClientBound 作废后不得再签发。
-func (s *Store) assertClientBound(ctx context.Context, tx *gorm.DB, clientID uuid.UUID) error {
-	// 准备承接查到的现场设备。
-	var row Client
-	// 先带上请求上下文查库，结果留给紧跟着的判断。
-	db := s.db.WithContext(ctx)
-	// 调用方给了事务就沿用，避免另起一单。
-	if tx != nil {
-		// 沿用调用方给的事务，避免另起一单。
-		db = tx
-	}
-	// 按条件取一行失败就停，避免带着错误继续。
-	if err := db.First(&row, "id = ?", clientID).Error; err != nil {
-		// 没有这一行就当成不存在。
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return domain.ErrNotFound
-		}
-		return err
-	}
-	// 不是有效绑定就不能继续签发或改登录人。
-	if row.Status != ClientStatusBound {
-		return domain.ErrBindingVoid
-	}
-	return nil
-}
-
 // maxRevision 该对象当前最大修订；没有则为 0。
 func maxRevision(tx *gorm.DB, model any, query string, args ...any) (int64, error) {
 	// 准备承接计数，用来判断有没有匹配行。
@@ -583,68 +499,4 @@ func maxRevision(tx *gorm.DB, model any, query string, args ...any) (int64, erro
 		return 0, nil
 	}
 	return n.Int64, nil
-}
-
-// InsertRuntimeGrant 写入一版节点运行凭证；Client 必须有效绑定，修订必须严格更大。
-func (s *Store) InsertRuntimeGrant(ctx context.Context, g RuntimeGrant) (RuntimeGrant, error) {
-	// 放进同一事务，中途失败就整单回滚。
-	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// 带上请求上下文查库失败就停，避免带着错误继续。
-		if err := s.assertClientBound(ctx, tx, g.ClientID); err != nil {
-			return err
-		}
-		// 先取已有最大修订，结果留给紧跟着的判断。
-		max, err := maxRevision(tx, &RuntimeGrant{}, "client_id = ?", g.ClientID)
-		// 取已有最大修订失败就停，避免带着错误继续。
-		if err != nil {
-			return err
-		}
-		// 修订必须严格更大。
-		if g.Revision <= max {
-			return domain.ErrStaleRevision
-		}
-		// 还没有凭证行就新建，不把空身份写入。
-		if g.ID == uuid.Nil {
-			// 现发一个新身份，不沿用空值。
-			g.ID = id.New()
-		}
-		// 还没有更新时间就补上现在，避免零时间。
-		if g.CreatedAt.IsZero() {
-			// 取当前时刻，时间列和租约用同一个时钟。
-			g.CreatedAt = time.Now().UTC()
-		}
-		// 写入一行失败就停，避免带着错误继续。
-		if err := tx.Select("ID", "ClientID", "Revision", "CanRun", "NotBefore", "NotAfter", "Payload", "Signature", "CreatedAt").Create(&g).Error; err != nil {
-			// 唯一约束撞了就改成业务冲突，不抛库原文。
-			if domain.IsUniqueViolation(err) {
-				return domain.ErrStaleRevision
-			}
-			// 检查约束不通过就改成业务拒绝。
-			if domain.IsCheckViolation(err) {
-				return domain.ErrInvalidKey
-			}
-			// 外键对不上就当被指的对象不存在。
-			if domain.IsForeignKeyViolation(err) {
-				return domain.ErrNotFound
-			}
-			return err
-		}
-		return nil
-	})
-	return g, err
-}
-
-// LatestRuntimeGrant 取该 Client 最新一版运行凭证。
-func (s *Store) LatestRuntimeGrant(ctx context.Context, clientID uuid.UUID) (RuntimeGrant, error) {
-	// 准备承接查到的运行凭证。
-	var row RuntimeGrant
-	// 按条件取一行失败就停，避免带着错误继续。
-	if err := s.db.WithContext(ctx).Where("client_id = ?", clientID).Order("revision DESC").First(&row).Error; err != nil {
-		// 没有这一行就当成不存在。
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return RuntimeGrant{}, domain.ErrNotFound
-		}
-		return RuntimeGrant{}, err
-	}
-	return row, nil
 }

@@ -500,37 +500,6 @@ func (s *Closure) fanoutPolicy(ctx context.Context, pol ClientPolicy) {
 	}
 }
 
-// publishClosureReady 只推身份、修订和摘要，不推成员正文。
-func (s *Closure) publishClosureReady(ctx context.Context, clientID uuid.UUID, snap ClosureSnapshot) {
-	// 没有上送或下行通道则只在厂内记账
-	if s.clientDown == nil {
-		return
-	}
-	// 没有签发钥就生成一对，私钥不外送
-	key, err := s.ensureSigningKey(ctx)
-	// 签发钥备不齐，不能发运行凭证
-	if err != nil {
-		return
-	}
-	// 只放身份、修订和摘要，正文不进消息
-	in := clientmqtt.Intent{
-		Typ:      clientmqtt.TypClosure,
-		Revision: snap.Revision,
-		AssetID:  snap.AssetID.String(),
-		Digest:   snap.Digest,
-	}
-	// 取出本厂稳定身份，封包和审计都要用
-	fid := s.store.FactoryID()
-	// 用本厂私钥给运行声明签名
-	raw, err := clientmqtt.Sign(key.PrivateKey, fid, clientID, in)
-	// 签名失败则这张凭证不能发出
-	if err != nil || clientmqtt.HasBody(raw) {
-		return
-	}
-	// 向这台本机投控制面信封
-	s.clientDown.PublishDown(fid, clientID, raw)
-}
-
 // OpenTransit 用登录人解封钥解开过站 DEK，再解成员；boundID 须与封包时相同。
 func OpenTransit(factoryID, boundID uuid.UUID, unwrap []byte, t TransitClosure) (ClosureSnapshot, error) {
 	// 绑上过站钥的附加数据

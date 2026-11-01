@@ -30,9 +30,6 @@ const (
 	AssetAvailable     = store.AssetAvailable     // 可用
 	AssetDisabled      = store.AssetDisabled      // 停用后不得改内容或升档
 
-	UploadPointCloud = store.UploadPointCloud // 点云上传
-	UploadImage      = store.UploadImage      // 图片上传
-
 	LoginKindPad    = store.LoginKindPad    // 厂网示教器登录
 	LoginKindClient = store.LoginKindClient // 已钉设备号的本机登录
 	LoginKindMQTT   = store.LoginKindMQTT   // 本厂 MQTT 回连补现场快照
@@ -51,11 +48,9 @@ type (
 
 	PathNode    = store.PathNode    // 事实发生时路径上的一节
 	WorkContext = store.WorkContext // 这次操作选定的工作上下文
-	FactStub    = store.FactStub    // 运行事实桩，带冻结的路径
 
 	Client         = store.Client         // 已分配到本厂的设备
 	SigningKey     = store.SigningKey     // 本厂签发运行凭证的钥
-	RuntimeGrant   = store.RuntimeGrant   // 允许或撤销设备运行的凭证
 	LoginSnap      = store.LoginSnap      // 一次登录的现场快照
 	PersonLoginLog = store.PersonLoginLog // 人员登录历史，供名册回看
 
@@ -74,9 +69,8 @@ type (
 	ClosureSnapshot = store.ClosureSnapshot // 一次组包钉死的闭包快照
 	ClientPolicy    = store.ClientPolicy    // 对本厂全部本机生效的策略
 
-	UploadRecord = store.UploadRecord // 点云或图片的上传记录
-	WeldFact     = store.WeldFact     // 一次焊接起停的事实
-	WeldTotals   = store.WeldTotals   // 焊长和时长的合计
+	WeldFact   = store.WeldFact   // 一次焊接起停的事实
+	WeldTotals = store.WeldTotals // 焊长和时长的合计
 
 	SoftwareReplica = store.SoftwareReplica // 厂端收到的软件包副本
 	WANTrust        = store.WANTrust        // 本厂信任广域侧的材料

@@ -100,22 +100,6 @@ func TestPadLoginListsDevicesWithoutSerial(t *testing.T) {
 		t.Fatal("missing ARM-B")
 	}
 
-	// 列出焊机，失败则本步验收不能继续
-	listed, err := fac.ListClients(ctx, saTok)
-	// 列出焊机失败就停，避免带着错误继续验
-	if err != nil {
-		// 列出焊机失败就把原因打出并停掉本例
-		t.Fatal(err)
-	}
-	// 逐台看焊机，不该还占着旧操作员
-	for _, c := range listed {
-		// 焊机上的操作员归属不对就失败
-		if c.OperatorID != nil {
-			// 登录日志内容不对就失败
-			t.Fatalf("pad login occupied operator %+v", c)
-		}
-	}
-
 	// 读平板收件箱失败就停，避免带着错误继续验
 	if _, err := fac.PadClientInbox(ctx, sess.Token); err != nil {
 		// 平板信箱读失败，登录后应当能看

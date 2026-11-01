@@ -30,26 +30,6 @@ func (s *kernel) personOrgSnap(ctx context.Context, personID uuid.UUID) (*uuid.U
 	return p.OrgUnitID, path, nil
 }
 
-// resolveWorkContext 产生事实前核操作权，组织取这个人现在的所属组织。
-func (s *kernel) resolveWorkContext(ctx context.Context, acc Account) (*uuid.UUID, []PathNode, error) {
-	// 没有操作权就不能产生事实
-	if err := s.can(ctx, acc, permOperate); err != nil {
-		return nil, []PathNode{}, err
-	}
-	// 组织跟人走，取此人现在的所属组织
-	return s.personOrgSnap(ctx, acc.ID)
-}
-
-// canReadMeta 创建人或有报表只读权的人才能看元数据。
-func (s *kernel) canReadMeta(ctx context.Context, acc Account, creatorID uuid.UUID) error {
-	// 创建人可以看自己的
-	if acc.ID == creatorID {
-		return nil
-	}
-	// 其余看只读权
-	return s.can(ctx, acc, permView)
-}
-
 // 用服务器时间记下允许或拒绝。
 func (s *kernel) auditAt(ctx context.Context, actor *uuid.UUID, action, target, result string) error {
 	// 改用服务器钟，把允许或拒绝记下

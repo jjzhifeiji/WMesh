@@ -832,66 +832,6 @@ func (s *Updates) finishApply(ctx context.Context, actor *uuid.UUID, kind string
 	}
 }
 
-// ConfirmClientUpdate 当前登录者确认后才记下本机已装版本；焊接中拒绝。
-func (s *Updates) ConfirmClientUpdate(ctx context.Context, bag *Bag, clocks Clocks, version int64) error {
-	// 拼种类和版本，审计能对上是哪一个包。
-	target := softwareTarget(SoftwareClientAPK, version)
-	// 在线记服务器时间，离线记本机时间。
-	src := bagTimeSource(*bag)
-	// 没有登录者则拒绝确认客户端更新。
-	if bag.OperatorID == nil {
-		// 确认被拒时补记审计，写失败仍不切换。
-		_ = s.auditTimed(ctx, nil, nil, "confirm_software", target, audit.Deny, src)
-		return domain.ErrForbidden
-	}
-	// 正在焊接则拒绝换客户端，避免作业中断。
-	if bag.Welding {
-		// 确认被拒时补记审计，写失败仍不切换。
-		_ = s.auditTimed(ctx, personActor(bag), nil, "confirm_software", target, audit.Deny, src)
-		return domain.ErrForbidden
-	}
-	// 按本机时钟和状态看现在允不允许操作。
-	node := EvaluateRuntime(*bag, clocks, NodeOpen)
-	// 运行状态不允许时拒绝确认。
-	if node.Decision != NodeAllow {
-		// 确认被拒时补记审计，写失败仍不切换。
-		_ = s.auditTimed(ctx, personActor(bag), nil, "confirm_software", target, audit.Deny, node.TimeSource)
-		return domain.ErrForbidden
-	}
-	// 对不上本厂账号则拒绝，并补记审计。
-	if _, err := s.operatorAccount(ctx, *bag); err != nil {
-		// 确认被拒时补记审计，写失败仍不切换。
-		_ = s.auditTimed(ctx, personActor(bag), nil, "confirm_software", target, audit.Deny, src)
-		return err
-	}
-	// 不比本机已装更新则拒绝，避免装回旧版。
-	if version <= bag.SoftwareVersion {
-		// 确认被拒时补记审计，写失败仍不切换。
-		_ = s.auditTimed(ctx, personActor(bag), nil, "confirm_software", target, audit.Deny, src)
-		return domain.ErrStaleRevision
-	}
-	// 找高于已装、且本厂已收完整的最高包。
-	pending, ok, err := s.pendingReplica(ctx, SoftwareClientAPK, bag.SoftwareVersion)
-	// 待装包查失败则不能确认或展示。
-	if err != nil {
-		return err
-	}
-	// 没有这份或版本对不上则拒绝确认。
-	if !ok || pending.Version != version {
-		// 确认被拒时补记审计，写失败仍不切换。
-		_ = s.auditTimed(ctx, personActor(bag), nil, "confirm_software", target, audit.Deny, src)
-		// 没有这份客户端包则按找不到拒绝。
-		if !ok {
-			return domain.ErrNotFound
-		}
-		return domain.ErrStaleRevision
-	}
-	// 确认之后本机记下已装的客户端版本。
-	bag.SoftwareVersion = version
-	// 记下成功；审计没写上则这次不算完成。
-	return s.auditTimed(ctx, personActor(bag), nil, "confirm_software", target, audit.Allow, src)
-}
-
 // PadClientSoftware 登录者看本厂已收最高客户端包元数据，不含字节。
 func (s *Updates) PadClientSoftware(ctx context.Context, token string) (*SoftwareReplica, error) {
 	// 登录已失效则拒绝，避免未登录的人继续。

@@ -467,25 +467,6 @@ func TestClientBindingAndGrants(t *testing.T) {
 		// 读回的绑定和写入不一致就停测。
 		t.Fatalf("client: %+v", c)
 	}
-	// 先建账号，结果留给紧跟着的判断。
-	who, err := s.CreatePerson(ctx, "op-a", "操作员A", "", false)
-	// 建账号失败就停测，避免后面没有前提。
-	if err != nil {
-		// 建账号失败就停测。
-		t.Fatalf("person: %v", err)
-	}
-	// 出错就停测，避免在坏状态上继续。
-	if err := s.SetClientOperator(ctx, cid, who.ID); err != nil {
-		// 记下当前登录人失败就停测。
-		t.Fatalf("set operator: %v", err)
-	}
-	// 先列出现场设备，结果留给紧跟着的判断。
-	listed, err := s.ListClients(ctx)
-	// 列出现场设备失败就停测，避免后面没有前提。
-	if err != nil || len(listed) != 1 || listed[0].OperatorID == nil || *listed[0].OperatorID != who.ID {
-		// 名单里的登录人和写入不一致就停测。
-		t.Fatalf("list operator: %+v %v", listed, err)
-	}
 	// 先改厂端昵称，结果留给紧跟着的判断。
 	ren, err := s.RenameClient(ctx, cid, "一线焊机")
 	// 改昵称失败或设备名被改都算错。
@@ -506,57 +487,10 @@ func TestClientBindingAndGrants(t *testing.T) {
 		t.Fatalf("key mismatch: %v", err)
 	}
 
-	// 取当前时刻，时间列和租约用同一个时钟。
-	now := time.Now().UTC()
-	// 先取当前时刻，结果留给紧跟着的判断。
-	later := now.Add(24 * time.Hour)
-	// 按需要预留位置，避免后面反复扩容。
-	sig := make([]byte, 64)
-	// 先写入运行凭证，结果留给紧跟着的判断。
-	g, err := s.InsertRuntimeGrant(ctx, store.RuntimeGrant{
-		ClientID: cid, Revision: 1, CanRun: true,
-		NotBefore: now, NotAfter: later, Payload: []byte("run-1"), Signature: sig,
-	})
-	// 出错就停测，避免在坏状态上继续。
-	if err != nil {
-		// 写入运行凭证失败就停测。
-		t.Fatalf("runtime grant: %v", err)
-	}
-	// 写入运行凭证这一支不成立就换路。
-	if _, err := s.InsertRuntimeGrant(ctx, store.RuntimeGrant{
-		// 先写入运行凭证，结果留给紧跟着的判断。
-		ClientID: cid, Revision: 1, CanRun: false,
-		NotBefore: now, NotAfter: later, Payload: []byte("run-1b"), Signature: sig,
-	}); err != domain.ErrStaleRevision {
-		t.Fatalf("stale runtime: %v", err)
-	}
-	// 先取最新运行凭证，结果留给紧跟着的判断。
-	got, err := s.LatestRuntimeGrant(ctx, cid)
-	// 改名或更新不能把稳定身份换掉。
-	if err != nil || got.ID != g.ID || !got.CanRun {
-		// 最新运行凭证和写入不一致就停测。
-		t.Fatalf("latest runtime: %+v %v", got, err)
-	}
-
 	// 出错就停测，避免在坏状态上继续。
 	if err := s.VoidBinding(ctx, cid); err != nil {
 		// 失败就停测，避免后面的断言误判通过。
 		t.Fatal(err)
-	}
-	// 先按身份读设备，结果留给紧跟着的判断。
-	voided, err := s.ClientByID(ctx, cid)
-	// 按身份读设备失败就停测，避免后面没有前提。
-	if err != nil || voided.OperatorID != nil {
-		// 作废后必须清掉当前登录人。
-		t.Fatalf("void clears operator: %+v %v", voided, err)
-	}
-	// 写入运行凭证这一支不成立就换路。
-	if _, err := s.InsertRuntimeGrant(ctx, store.RuntimeGrant{
-		// 先写入运行凭证，结果留给紧跟着的判断。
-		ClientID: cid, Revision: 2, CanRun: false,
-		NotBefore: now, NotAfter: later, Payload: []byte("run-2"), Signature: sig,
-	}); err != domain.ErrBindingVoid {
-		t.Fatalf("void runtime: %v", err)
 	}
 	// 先接受绑定，结果留给紧跟着的判断。
 	reb, err := s.AcceptBinding(ctx, cid, "焊机-1", cPub, 3)
