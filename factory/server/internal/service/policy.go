@@ -59,6 +59,11 @@ func (s *Closure) SetClientPolicy(ctx context.Context, token string, in ClientPo
 		// 这次没带扩展就沿用旧值，避免把扩展清空
 		in.Extra = old.Extra
 	}
+	// 这次没带包角口令就沿用旧的，避免改别的项时清空
+	if in.CornerPassword == "" {
+		// 沿用旧口令，示教器照旧按它核对
+		in.CornerPassword = old.CornerPassword
+	}
 	// 非法范围、上限或时效一律拒绝，不升高修订。
 	got, err := s.store.SetClientPolicy(ctx, in)
 	// 策略写不进去，修订不升高
@@ -95,9 +100,18 @@ func (s *Closure) SetCacheLimit(ctx context.Context, token string, n int) error 
 func policyAuditTarget(old, neu ClientPolicy) string {
 	// 拼审计用的短句，不含钥和扩展值，再交回调用方
 	return fmt.Sprintf(
-		"revision %d→%d max=%d scope=%s persist=%t ttl=%d encrypt=%t extra=%s",
-		old.Revision, neu.Revision, neu.MaxCachedProjects, neu.CacheScope, neu.PersistUnwrapKey, neu.KeyTTLSeconds, neu.EncryptPouch, extraKeyList(neu.Extra),
+		"revision %d→%d max=%d scope=%s persist=%t ttl=%d encrypt=%t corner=%s extra=%s",
+		old.Revision, neu.Revision, neu.MaxCachedProjects, neu.CacheScope, neu.PersistUnwrapKey, neu.KeyTTLSeconds, neu.EncryptPouch, cornerChange(old, neu), extraKeyList(neu.Extra),
 	)
+}
+
+// 包角口令只记改没改，原文不进审计。
+func cornerChange(old, neu ClientPolicy) string {
+	// 新旧一样就记未改
+	if old.CornerPassword == neu.CornerPassword {
+		return "kept"
+	}
+	return "changed"
 }
 
 // 扩展键只列名字，值不进审计。

@@ -42,6 +42,8 @@ type kernel struct {
 	blobMu      sync.Mutex           // 护着已核摘要表，收包、查包和下载会并发改
 	blobChecked map[string]blobCheck // 对象键到已核摘要和长度，每个对象只整包核一次
 	blobFly     singleflight.Group   // 同一对象首次核摘要只跑一路，别的等它
+
+	logins loginLimiter // 登录失败限速，网页和示教器登录共用
 }
 
 // softwareWait 等同版本那一次拉完，避免并发各下一份。

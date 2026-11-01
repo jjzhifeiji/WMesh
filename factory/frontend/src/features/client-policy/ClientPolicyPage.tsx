@@ -1,4 +1,4 @@
-import { App, Button, Card, Form, InputNumber, Space, Switch, Typography } from "antd";
+import { App, Button, Card, Form, Input, InputNumber, Space, Switch, Typography } from "antd";
 import { useEffect } from "react";
 import { errorMessage } from "@/shared/api/client";
 import { PageHeader } from "@/shared/ui/PageHeader";
@@ -8,6 +8,7 @@ type FormValues = {
   persistUnwrapKey: boolean;
   keyTtlSeconds: number;
   encryptPouch: boolean;
+  cornerPassword: string;
 };
 
 // ttlText 把秒折成天、小时、分钟给人看，免得自己算 86400。
@@ -35,6 +36,7 @@ export function ClientPolicyPage() {
     if (!data) return;
     form.setFieldsValue({ persistUnwrapKey: data.persistUnwrapKey, encryptPouch: data.encryptPouch });
     if (!form.isFieldTouched("keyTtlSeconds")) form.setFieldsValue({ keyTtlSeconds: data.keyTtlSeconds });
+    if (!form.isFieldTouched("cornerPassword")) form.setFieldsValue({ cornerPassword: data.cornerPassword });
   }, [data, form]);
 
   // 只提交 patch 里的项，其余取服务端当前值：开关不能顺带把时效框里未校验的输入（如清空）存成 0。
@@ -47,11 +49,13 @@ export function ClientPolicyPage() {
         persistUnwrapKey: patch.persistUnwrapKey ?? data.persistUnwrapKey,
         keyTtlSeconds: patch.keyTtlSeconds ?? data.keyTtlSeconds,
         encryptPouch: patch.encryptPouch ?? data.encryptPouch,
+        cornerPassword: patch.cornerPassword ?? data.cornerPassword,
         extra: data.extra ?? {},
       } satisfies ClientPolicyInput,
       {
         onSuccess: () => {
           if (patch.keyTtlSeconds !== undefined) form.setFields([{ name: "keyTtlSeconds", touched: false }]);
+          if (patch.cornerPassword !== undefined) form.setFields([{ name: "cornerPassword", touched: false }]);
           message.success("策略已保存");
         },
         onError: (e) => {
@@ -60,6 +64,7 @@ export function ClientPolicyPage() {
           if (patch.persistUnwrapKey !== undefined) back.persistUnwrapKey = data.persistUnwrapKey;
           if (patch.encryptPouch !== undefined) back.encryptPouch = data.encryptPouch;
           if (patch.keyTtlSeconds !== undefined) back.keyTtlSeconds = data.keyTtlSeconds;
+          if (patch.cornerPassword !== undefined) back.cornerPassword = data.cornerPassword;
           form.setFieldsValue(back);
           message.error(errorMessage(e));
         },
@@ -117,6 +122,17 @@ export function ClientPolicyPage() {
             rules={[{ required: true, message: "请填写时效" }]}
           >
             <InputNumber min={0} precision={0} style={{ width: "100%" }} />
+          </Form.Item>
+          <Form.Item
+            name="cornerPassword"
+            label="包角确认口令"
+            extra="示教器打开包角参数和 T 排对接前要输这个口令。随策略下发，离线也按设备上最后收到的这份核对。"
+            rules={[
+              { required: true, whitespace: true, message: "请填写口令" },
+              { max: 64, message: "最多 64 个字" },
+            ]}
+          >
+            <Input.Password autoComplete="new-password" />
           </Form.Item>
           <Button type="primary" htmlType="submit" loading={save.isPending}>
             保存

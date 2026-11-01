@@ -11,6 +11,7 @@ export type ClientPolicy = {
   persistUnwrapKey: boolean; // 解封钥可否落盘；退出或登录到期必清
   keyTtlSeconds: number; // 登录时效秒；0 表示直到退出
   encryptPouch: boolean; // 本机袋是否 SQLCipher 整库加密
+  cornerPassword: string; // 包角二次确认口令，示教器离线也按这份核对
   extra: Record<string, unknown>; // 本厂扩展键；Client 忽略未知
 };
 

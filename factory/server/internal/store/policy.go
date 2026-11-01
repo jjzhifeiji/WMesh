@@ -4,11 +4,16 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"strings"
+	"unicode/utf8"
 
 	"gorm.io/gorm"
 
 	"wmesh/factory/internal/platform/domain"
 )
+
+// 包角口令最长字数，挡住误贴的大段文本。
+const maxCornerPassword = 64
 
 const (
 	CacheScopeAll     = "all"     // 该人获准的全部工程（仍受上限）
@@ -23,6 +28,7 @@ type ClientPolicy struct {
 	PersistUnwrapKey  bool            `json:"persistUnwrapKey"`  // 解封钥可否落盘；退出或登录到期必清
 	KeyTTLSeconds     int64           `json:"keyTtlSeconds"`     // 登录时效秒；0 表示直到退出，进程内不踢
 	EncryptPouch      bool            `json:"encryptPouch"`      // 本机袋是否 SQLCipher；关则明文 SQLite
+	CornerPassword    string          `json:"cornerPassword"`    // 包角二次确认口令，示教器离线也按这份核对
 	Extra             json.RawMessage `json:"extra"`             // 本厂扩展键；Client 忽略未知
 }
 
@@ -35,6 +41,7 @@ type factorySettingsRow struct {
 	PersistUnwrapKey  bool            `gorm:"column:persist_unwrap_key;not null"`  // 解封钥可否落盘
 	KeyTTLSeconds     int64           `gorm:"column:key_ttl_seconds;not null"`     // 登录时效秒
 	EncryptPouch      bool            `gorm:"column:encrypt_pouch;not null"`       // 本机袋是否加密
+	CornerPassword    string          `gorm:"column:corner_password;not null"`     // 包角二次确认口令
 	Extra             json.RawMessage `gorm:"column:extra;type:jsonb;not null"`    // 扩展键
 }
 
@@ -72,6 +79,7 @@ func (s *Store) SetClientPolicy(ctx context.Context, in ClientPolicy) (ClientPol
 		"persist_unwrap_key":  in.PersistUnwrapKey,
 		"key_ttl_seconds":     in.KeyTTLSeconds,
 		"encrypt_pouch":       in.EncryptPouch,
+		"corner_password":     in.CornerPassword,
 		"extra":               []byte(extra),
 		"revision":            gorm.Expr("revision + 1"),
 	})
@@ -128,6 +136,7 @@ func policyFromRow(row factorySettingsRow) (ClientPolicy, error) {
 		PersistUnwrapKey:  row.PersistUnwrapKey,
 		KeyTTLSeconds:     row.KeyTTLSeconds,
 		EncryptPouch:      row.EncryptPouch,
+		CornerPassword:    row.CornerPassword,
 		Extra:             extra,
 	}, nil
 }
@@ -144,6 +153,10 @@ func assertClientPolicy(in ClientPolicy) error {
 	}
 	// 登录时效不能为负，否则拒绝。
 	if in.KeyTTLSeconds < 0 {
+		return domain.ErrForbidden
+	}
+	// 包角口令不能为空，也不能超过 64 字。
+	if n := utf8.RuneCountInString(in.CornerPassword); strings.TrimSpace(in.CornerPassword) == "" || n > maxCornerPassword {
 		return domain.ErrForbidden
 	}
 	return nil

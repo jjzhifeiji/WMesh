@@ -38,6 +38,14 @@ type PadSession struct {
 func (s *Node) LoginPad(ctx context.Context, loginName, password string) (PadSession, error) {
 	// 去掉首尾空白后再做判断
 	loginName = strings.TrimSpace(loginName)
+	// 按登录名加来源记失败次数，和网页登录共用一份
+	key := loginKey(ctx, loginName)
+	// 连续失败已锁住就直接拒绝，口令都不核
+	if s.logins.locked(key) {
+		// 记下厂网登录被拒绝，写失败不改变结果
+		_ = s.audit(ctx, nil, &loginName, "pad_login", s.store.FactoryID().String(), audit.Deny)
+		return PadSession{}, domain.ErrTooManyAttempts
+	}
 	// 厂已停用、注销或租约到期，拒绝本次
 	if err := s.requireFactoryOpen(ctx); err != nil {
 		// 厂已停用、注销或租约到期，记下厂网登录被拒绝，写失败不改变结果
@@ -48,6 +56,8 @@ func (s *Node) LoginPad(ctx context.Context, loginName, password string) (PadSes
 	p, err := s.store.PersonByLogin(ctx, loginName)
 	// 登录名对不上人，按拒绝停住
 	if err != nil {
+		// 登录名对不上也记一次失败，挡住逐个试名字
+		s.logins.fail(key)
 		// 记下厂网登录被拒绝，写失败不改变结果
 		_ = s.audit(ctx, nil, &loginName, "pad_login", s.store.FactoryID().String(), audit.Deny)
 		return PadSession{}, domain.ErrInvalidCredentials
@@ -60,10 +70,14 @@ func (s *Node) LoginPad(ctx context.Context, loginName, password string) (PadSes
 	}
 	// 还没有口令或口令不对，拒绝登录
 	if p.PasswordHash == nil || !secret.VerifyPassword(*p.PasswordHash, password) {
+		// 口令不对记一次失败，到上限就锁
+		s.logins.fail(key)
 		// 口令不对，记下厂网登录被拒绝，写失败不改变结果
 		_ = s.audit(ctx, &p.ID, &loginName, "pad_login", s.store.FactoryID().String(), audit.Deny)
 		return PadSession{}, domain.ErrInvalidCredentials
 	}
+	// 口令对了就清掉前面的失败记账
+	s.logins.ok(key)
 	// 解封钥跟人走，焊机不持钥。
 	who, err := s.store.EnsurePersonUnwrapKey(ctx, p.ID)
 	// 解封钥读不到或长度不对，拒绝继续

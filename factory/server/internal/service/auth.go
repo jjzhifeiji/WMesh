@@ -111,6 +111,14 @@ func (s *Auth) AcceptEnrollment(ctx context.Context, personID uuid.UUID, loginNa
 func (s *Auth) Login(ctx context.Context, loginName, password string) (string, error) {
 	// 去掉登录名首尾空白，和示教器登录一样认人
 	loginName = strings.TrimSpace(loginName)
+	// 按登录名加来源记失败次数
+	key := loginKey(ctx, loginName)
+	// 连续失败已锁住就直接拒绝，口令都不核
+	if s.logins.locked(key) {
+		// 记下登录被拒绝，写失败不改变结果
+		_ = s.audit(ctx, nil, &loginName, "login", s.store.FactoryID().String(), audit.Deny)
+		return "", domain.ErrTooManyAttempts
+	}
 	// 只接受本厂有效账号；失败一律记拒绝，不记密码。
 	if err := s.requireFactoryOpen(ctx); err != nil {
 		// 厂已停用、注销或租约到期，记下登录被拒绝，写失败不改变结果
@@ -121,6 +129,8 @@ func (s *Auth) Login(ctx context.Context, loginName, password string) (string, e
 	p, err := s.store.PersonByLogin(ctx, loginName)
 	// 登录名对不上人，按拒绝停住
 	if err != nil {
+		// 登录名对不上也记一次失败，挡住逐个试名字
+		s.logins.fail(key)
 		// 记下登录被拒绝，写失败不改变结果
 		_ = s.audit(ctx, nil, &loginName, "login", s.store.FactoryID().String(), audit.Deny)
 		return "", domain.ErrInvalidCredentials
@@ -133,10 +143,14 @@ func (s *Auth) Login(ctx context.Context, loginName, password string) (string, e
 	}
 	// 还没有口令或口令不对，拒绝登录
 	if p.PasswordHash == nil || !secret.VerifyPassword(*p.PasswordHash, password) {
+		// 口令不对记一次失败，到上限就锁
+		s.logins.fail(key)
 		// 口令不对，记下登录被拒绝，写失败不改变结果
 		_ = s.audit(ctx, &p.ID, &loginName, "login", s.store.FactoryID().String(), audit.Deny)
 		return "", domain.ErrInvalidCredentials
 	}
+	// 口令对了就清掉前面的失败记账
+	s.logins.ok(key)
 	// 发会话令牌，库只存哈希。
 	token, err := secret.RandomToken()
 	// 激活码生成失败，不写半截超管
