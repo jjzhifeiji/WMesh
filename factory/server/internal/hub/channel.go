@@ -553,7 +553,10 @@ func (h *Hub) dialHold(ctx context.Context, factoryID uuid.UUID) error {
 	}, out, wanchannel.WithStatus(func(connected bool) { // 连上、断开都记下，管理页横幅要看。
 		// 记下这一厂通道当前是否连着。
 		h.noteWANConnected(factoryID, connected)
-	}), wanchannel.WithClientLogins(clientLoginsFor(ctx, factoryID, svc)))
+	}), wanchannel.WithClientLogins(clientLoginsFor(ctx, factoryID, svc)), wanchannel.WithTemplateSet(func(kind string, full bool, keep []uuid.UUID) error { // 按模版全集撤下 WAN 已删的工程模版。
+		// 不在名单里的工程模版撤下，列表和新建不再出现。
+		return svc.Closure.SyncTemplateSet(ctx, kind, full, keep)
+	}))
 	// 注销若发生在租约之前，也要落到本厂库。
 	if errors.Is(err, domain.ErrFactoryRetired) {
 		// 注销指令在租约之前到达时，也要落到本厂库。

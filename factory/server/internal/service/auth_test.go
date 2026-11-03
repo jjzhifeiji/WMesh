@@ -505,6 +505,16 @@ func TestChangePasswordChecksCurrent(t *testing.T) {
 		// 放行说明网页会话能跳过旧密码。
 		t.Fatalf("web without current: %v", err)
 	}
+	// 旧密码对但新密码不足 8 位，应按弱口令拒绝。
+	if err := fac.ChangePassword(ctx, cur, "cp-pass-1", "abc"); !errors.Is(err, domain.ErrWeakPassword) {
+		// 放行说明绕过网页就能设弱口令。
+		t.Fatalf("weak password: %v", err)
+	}
+	// 弱口令被拒后不该生效，登录应按凭证不对拒绝。
+	if _, err := fac.Login(ctx, "sa-cp", "abc"); !errors.Is(err, domain.ErrInvalidCredentials) {
+		// 能登上说明被拒的弱口令仍落了库。
+		t.Fatalf("weak hash stored: %v", err)
+	}
 	// 被拒后新口令不该生效，登录应按凭证不对拒绝。
 	if _, err := fac.Login(ctx, "sa-cp", "cp-pass-2"); !errors.Is(err, domain.ErrInvalidCredentials) {
 		// 能登上说明被拒的请求仍改了哈希。
@@ -554,8 +564,8 @@ func TestChangePasswordChecksCurrent(t *testing.T) {
 			denies++
 		}
 	}
-	// 错旧密码和没带各一次，应有两条拒绝。
-	if denies != 2 {
+	// 错旧密码、没带、新密码太短各一次，应有三条拒绝。
+	if denies != 3 {
 		// 条数不对说明被拒的改密没留审计。
 		t.Fatalf("change_password deny rows %d", denies)
 	}

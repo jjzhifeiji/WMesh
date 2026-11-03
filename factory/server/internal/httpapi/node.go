@@ -81,8 +81,16 @@ func (h *Handler) loginPad(w http.ResponseWriter, r *http.Request) {
 			writeBadRequest(w, err)
 			return
 		}
-		// 厂网登录，不核对当时是否连着机械臂。
-		sess, err := svc.Node.LoginPad(r.Context(), req.LoginName, req.Password)
+		// 承接登录结果，限速放行且口令对才有。
+		var sess service.PadSession
+		// 锁着就直接拒绝；口令错计数，连错太多次锁五分钟，示教器提示 5 分钟后再试。
+		err := h.guardLogin(r, req.LoginName, func() error {
+			// 厂网登录，不核对当时是否连着机械臂。
+			got, err := svc.Node.LoginPad(r.Context(), req.LoginName, req.Password)
+			// 记下登录结果，成功时交回。
+			sess = got
+			return err
+		})
 		// 上一步没通过则停止，不把失败写成成功。
 		if err != nil {
 			// 把失败译成状态回给调用方，不写成功。

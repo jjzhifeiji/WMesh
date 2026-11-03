@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 
@@ -15,6 +16,17 @@ import (
 )
 
 const sessionTTL = 12 * time.Hour // 网页会话有效期；示教器另按登录时效
+
+const MinPasswordLen = 8 // 自设密码最少位数，与网页认领页、账号页同一口径
+
+// CheckPassword 自设密码至少 8 位（按字符数），太短按弱口令拒绝。
+func CheckPassword(password string) error {
+	// 不足最少位数就拒绝，绕过网页也设不了弱口令
+	if utf8.RuneCountInString(password) < MinPasswordLen {
+		return domain.ErrWeakPassword
+	}
+	return nil
+}
 
 // appTokenExpiry 示教器令牌跟登录时效走；0 表示直到退出，不按时钟作废。
 func appTokenExpiry(pol ClientPolicy, now time.Time) time.Time {
@@ -241,6 +253,12 @@ func (s *Auth) ChangePassword(ctx context.Context, token, currentPassword, newPa
 			_ = s.audit(ctx, &acc.ID, &acc.LoginName, "change_password", acc.ID.String(), audit.Deny)
 			return domain.ErrWrongCurrentPassword
 		}
+	}
+	// 新密码太短就拒绝，会话和旧口令都不动
+	if err := CheckPassword(newPassword); err != nil {
+		// 记下改密被拒绝，写失败不改变结果
+		_ = s.audit(ctx, &acc.ID, &acc.LoginName, "change_password", acc.ID.String(), audit.Deny)
+		return err
 	}
 	// 日常密码只存哈希，不写原文。
 	hash, err := secret.HashPassword(newPassword)

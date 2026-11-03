@@ -86,8 +86,26 @@ func seedPass(ctx context.Context, fac *service.Service, login, pass string) err
 	if pass == personPass(login) {
 		return nil
 	}
-	// 改成测试口令，失败交回给用例。
-	return fac.ChangePassword(ctx, tok, personPass(login), pass)
+	// 改成测试口令，失败交回给用例；测试口令可能短于 8 位，绕过长度口径直接落哈希。
+	return setTestPass(ctx, fac, tok, pass)
+}
+
+// setTestPass 把本次会话的人改成测试口令；夹具口令不受 8 位口径约束，只在测试里用。
+func setTestPass(ctx context.Context, fac *service.Service, tok, pass string) error {
+	// 按会话认出是谁，会话失效就交回。
+	acc, err := fac.RequireActive(ctx, tok)
+	// 会话认不出就交回，后面没法改口令。
+	if err != nil {
+		return err
+	}
+	// 测试口令只存哈希，和正式改密一样。
+	hash, err := secret.HashPassword(pass)
+	// 摘要失败就交回给用例。
+	if err != nil {
+		return err
+	}
+	// 换口令并保住本次会话，其它会话作废。
+	return fac.Store().ReplacePasswordKeepSession(ctx, acc.ID, hash, secret.TokenHash(tok))
 }
 
 // 按编号取回已建的厂服务，没有则说明没建过。
@@ -123,8 +141,8 @@ func mustAdoptPassword(t *testing.T, ctx context.Context, fac *service.Service, 
 	if pass == personPass(login) {
 		return tok
 	}
-	// 改口令失败就停，否则后面没有可靠结果。
-	if err := fac.ChangePassword(ctx, tok, personPass(login), pass); err != nil {
+	// 改口令失败就停，否则后面没有可靠结果；测试口令绕过 8 位口径。
+	if err := setTestPass(ctx, fac, tok, pass); err != nil {
 		// 断言没通过就停，结果和这条用例的预期不一致。
 		t.Fatalf("set pass %s: %v", login, err)
 	}

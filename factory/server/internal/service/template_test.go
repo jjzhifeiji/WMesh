@@ -8,6 +8,8 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/google/uuid"
+
 	"wmesh/factory/internal/platform/audit"
 	"wmesh/factory/internal/platform/contenttpl"
 	"wmesh/factory/internal/platform/digest"
@@ -368,5 +370,95 @@ func TestTemplateReadAndRedeliveryAudit(t *testing.T) {
 	if got := softwareAudit(t, ctx, fac, "get_template", audit.Deny); len(got) != 1 {
 		// 拒绝条数不对就停，把实际条数打出来。
 		t.Fatalf("get_template deny rows %d want 1", len(got))
+	}
+}
+
+// WAN 删掉的工程模版按全集撤下：列表里不再有，名单里再出现就恢复；不完整名单不撤，完整空名单全撤。
+func TestSyncTemplateSetRetires(t *testing.T) {
+	// 准备无取消的上下文，后面每次调用都挂在上面。
+	ctx := context.Background()
+	// 拉起隔离厂库，起不来说明测试库还没就绪。
+	h := New(t)
+	// 建厂并写下超管，失败则没有厂可测。
+	seed, fac, err := h.Provision(ctx, "sa", "超管")
+	// 建厂失败就停，否则后面没有可靠结果。
+	if err != nil {
+		// 把建厂的错误打出来并停住，避免继续往下验。
+		t.Fatal(err)
+	}
+	// 登录并取出令牌，列模版要用。
+	sa := mustLogin(t, ctx, fac, "sa", personPass("sa"))
+	// 取第一份种子工程项当模版字段表。
+	item := contenttpl.SeedProjectItems()[0]
+	// 编成字段表文本，编不出就没法下发。
+	raw, err := contenttpl.Marshal(contenttpl.ObjectSchema(item.Fields))
+	// 编不出就停，后面没有模版可收。
+	if err != nil {
+		// 把编码错误打出来并停住。
+		t.Fatal(err)
+	}
+	// 留下工厂编号，下发要指明接收厂。
+	fid := seed.ID
+	// 两份工程模版的身份，一份留着、一份会被 WAN 删掉。
+	keepID, goneID := id.New(), id.New()
+	// 逐份收下两份工程模版。
+	for _, tid := range []factory.TemplateSnapshot{
+		// 这份 WAN 一直留着。
+		{ID: keepID, Kind: factory.KindProject, Name: "留着", Revision: 1, Schema: raw, Digest: digest.Sum(raw), TargetFactoryID: &fid},
+		// 这份之后会被 WAN 删掉。
+		{ID: goneID, Kind: factory.KindProject, Name: "删掉", Revision: 2, Schema: raw, Digest: digest.Sum(raw), TargetFactoryID: &fid},
+	} {
+		// 收不下就停，后面没法验撤下。
+		if err := fac.AcceptTemplateDelivery(ctx, tid); err != nil {
+			// 把收模版的错误打出来并停住。
+			t.Fatal(err)
+		}
+	}
+	// 名单不完整时一份都不该撤。
+	if err := fac.SyncTemplateSet(ctx, factory.KindProject, false, nil); err != nil {
+		// 不完整名单报错说明保护分支没走到。
+		t.Fatal(err)
+	}
+	// 列出工程模版，不完整名单后应仍是两份。
+	if rows, err := fac.ListProjectTemplates(ctx, sa); err != nil || len(rows) != 2 {
+		// 不完整名单撤掉了模版，说明保护没生效。
+		t.Fatalf("partial keep %+v %v", rows, err)
+	}
+	// 名单只剩一份，另一份应撤下。
+	if err := fac.SyncTemplateSet(ctx, factory.KindProject, true, []uuid.UUID{keepID}); err != nil {
+		// 对齐失败就停。
+		t.Fatal(err)
+	}
+	// 列出工程模版，只该剩名单里那份。
+	rows, err := fac.ListProjectTemplates(ctx, sa)
+	// 列表还有被删的那份就停。
+	if err != nil || len(rows) != 1 || rows[0].ID != keepID {
+		// WAN 删掉的模版仍在厂端，D-04 没修好。
+		t.Fatalf("retired %+v %v", rows, err)
+	}
+	// 撤下后同修订仍算已收，通道不必为它再拉。
+	if ok, err := fac.HasTemplateDelivery(ctx, goneID, 2); err != nil || !ok {
+		// 撤下变成物理删除会让通道反复去拉。
+		t.Fatalf("have retired %v %v", ok, err)
+	}
+	// 名单里又出现它就恢复。
+	if err := fac.SyncTemplateSet(ctx, factory.KindProject, true, []uuid.UUID{keepID, goneID}); err != nil {
+		// 对齐失败就停。
+		t.Fatal(err)
+	}
+	// 列出工程模版，恢复后应是两份。
+	if rows, err := fac.ListProjectTemplates(ctx, sa); err != nil || len(rows) != 2 {
+		// 名单里有却没恢复，说明对齐只会撤不会回。
+		t.Fatalf("restored %+v %v", rows, err)
+	}
+	// 完整的空名单表示 WAN 已没有工程模版，应全部撤下。
+	if err := fac.SyncTemplateSet(ctx, factory.KindProject, true, nil); err != nil {
+		// 对齐失败就停。
+		t.Fatal(err)
+	}
+	// 列出工程模版，应一份不剩。
+	if rows, err := fac.ListProjectTemplates(ctx, sa); err != nil || len(rows) != 0 {
+		// WAN 全删了厂端还留着。
+		t.Fatalf("all retired %+v %v", rows, err)
 	}
 }

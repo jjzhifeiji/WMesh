@@ -29,7 +29,7 @@ func TestClaimReplyLostStillHoldsChannel(t *testing.T) {
 	// 建只认本测平台地址的枢纽，测完自己回收。
 	h := claimHub(t, srv.URL, fid)
 	// 用建厂码认领，确认这步应当拿不到回包。
-	_, err := h.Claim(context.Background(), srv.URL, "code", "secret")
+	_, err := h.Claim(context.Background(), srv.URL, "code", "secret-123")
 	// 回包丢了应收成平台不可达，页面才会提示重试。
 	if !errors.Is(err, domain.ErrWANUnreachable) {
 		// 错误不对就停测，后面断言没有意义。
@@ -67,7 +67,7 @@ func TestClaimConfirmedHoldsChannel(t *testing.T) {
 	// 建只认本测平台地址的枢纽，测完自己回收。
 	h := claimHub(t, srv.URL, fid)
 	// 用建厂码认领，这次应当整次成功。
-	got, err := h.Claim(context.Background(), srv.URL, "code", "secret")
+	got, err := h.Claim(context.Background(), srv.URL, "code", "secret-123")
 	// 认领失败就停测，后面断言没有意义。
 	if err != nil {
 		// 与预期不符就停测，避免后面连环误判。

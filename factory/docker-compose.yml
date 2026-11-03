@@ -27,6 +27,7 @@ services:
       # 确认只落盘；本机 updater 换 app。库和 OSS 卷不动。
       WMESH_DOCKER_UPDATE_DIR: /var/lib/wmesh/update
       WMESH_LOG_LEVEL: ${WMESH_LOG_LEVEL:-info}
+      WMESH_FACTORY_TZ: ${WMESH_FACTORY_TZ:-Asia/Shanghai}
       # 开发联调才设 1，开放「写入演示焊次」；默认空即关，生产别开
       WMESH_DEMO_DATA: ${WMESH_DEMO_DATA:-}
     volumes:

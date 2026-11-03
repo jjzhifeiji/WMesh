@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"unicode/utf8"
 
 	"gorm.io/gorm"
 
@@ -23,6 +24,7 @@ type ClientPolicy struct {
 	PersistUnwrapKey  bool            `json:"persistUnwrapKey"`  // 解封钥可否落盘；退出或登录到期必清
 	KeyTTLSeconds     int64           `json:"keyTtlSeconds"`     // 登录时效秒；0 表示直到退出，进程内不踢
 	EncryptPouch      bool            `json:"encryptPouch"`      // 本机袋是否 SQLCipher；关则明文 SQLite
+	CornerPassword    string          `json:"cornerPassword"`    // T 排/包角口令；空表示未设，示教器从顶层读
 	Extra             json.RawMessage `json:"extra"`             // 本厂扩展键；Client 忽略未知
 }
 
@@ -35,6 +37,7 @@ type factorySettingsRow struct {
 	PersistUnwrapKey  bool            `gorm:"column:persist_unwrap_key;not null"`  // 解封钥可否落盘
 	KeyTTLSeconds     int64           `gorm:"column:key_ttl_seconds;not null"`     // 登录时效秒
 	EncryptPouch      bool            `gorm:"column:encrypt_pouch;not null"`       // 本机袋是否加密
+	CornerPassword    string          `gorm:"column:corner_password;not null"`     // T 排/包角口令
 	Extra             json.RawMessage `gorm:"column:extra;type:jsonb;not null"`    // 扩展键
 }
 
@@ -72,6 +75,7 @@ func (s *Store) SetClientPolicy(ctx context.Context, in ClientPolicy) (ClientPol
 		"persist_unwrap_key":  in.PersistUnwrapKey,
 		"key_ttl_seconds":     in.KeyTTLSeconds,
 		"encrypt_pouch":       in.EncryptPouch,
+		"corner_password":     in.CornerPassword,
 		"extra":               []byte(extra),
 		"revision":            gorm.Expr("revision + 1"),
 	})
@@ -128,11 +132,14 @@ func policyFromRow(row factorySettingsRow) (ClientPolicy, error) {
 		PersistUnwrapKey:  row.PersistUnwrapKey,
 		KeyTTLSeconds:     row.KeyTTLSeconds,
 		EncryptPouch:      row.EncryptPouch,
+		CornerPassword:    row.CornerPassword,
 		Extra:             extra,
 	}, nil
 }
 
-// 上限、范围和时效不合法则拒绝写入。
+const maxCornerPassword = 64 // T 排/包角口令最多字数
+
+// 上限、范围、时效和口令长度不合法则拒绝写入。
 func assertClientPolicy(in ClientPolicy) error {
 	// 缓存上限至少为一，否则拒绝写入。
 	if in.MaxCachedProjects < 1 {
@@ -145,6 +152,10 @@ func assertClientPolicy(in ClientPolicy) error {
 	// 登录时效不能为负，否则拒绝。
 	if in.KeyTTLSeconds < 0 {
 		return domain.ErrForbidden
+	}
+	// 口令最多 64 个字，太长按名字不合法拒绝。
+	if utf8.RuneCountInString(in.CornerPassword) > maxCornerPassword {
+		return domain.ErrInvalidName
 	}
 	return nil
 }

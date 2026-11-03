@@ -2,6 +2,7 @@
 const zh: Record<string, string> = {
   "invalid credentials": "登录名或密码不对",
   "wrong current password": "当前密码不对",
+  "password too short": "密码至少 8 位",
   unauthorized: "会话已失效，请重新登录",
   forbidden: "没有这项许可",
   "account disabled": "账号已停用",

@@ -27,6 +27,7 @@ type ClosureRef struct {
 type ClientInbox struct {
 	Policy           ClientPolicy `json:"policy"`           // 本厂现行策略
 	Closures         []ClosureRef `json:"closures"`         // 可见资产；操作员 current 时为空
+	Devices          []PadDevice  `json:"devices"`          // 本厂未作废设备，和登录回包同一结构；同步时刷新名录
 	SigningPublicKey []byte       `json:"signingPublicKey"` // 验下行 Intent
 }
 
@@ -91,8 +92,14 @@ func (s *Closure) PadClientInbox(ctx context.Context, token string) (ClientInbox
 	if err != nil {
 		return ClientInbox{}, err
 	}
-	// 先装上策略和签发公钥，闭包清单随后再填
-	out := ClientInbox{Policy: pol, Closures: refs, SigningPublicKey: key.PublicKey}
+	// 读本厂设备，新登记的臂同步一次就能匹配上
+	rows, err := s.store.ListClients(ctx)
+	// 名录读不出则厂网对账中止
+	if err != nil {
+		return ClientInbox{}, err
+	}
+	// 装上策略、签发公钥、闭包清单和设备名录
+	out := ClientInbox{Policy: pol, Closures: refs, Devices: padDevices(rows), SigningPublicKey: key.PublicKey}
 	// 厂网对账成功后记审计，再把结果交回
 	return out, s.audit(ctx, &acc.ID, nil, "pad_inbox", acc.ID.String(), audit.Allow)
 }

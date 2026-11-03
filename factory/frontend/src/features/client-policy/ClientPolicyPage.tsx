@@ -1,4 +1,4 @@
-import { App, Button, Card, Form, InputNumber, Space, Switch, Typography } from "antd";
+import { App, Button, Card, Form, Input, InputNumber, Space, Switch, Typography } from "antd";
 import { useEffect } from "react";
 import { errorMessage } from "@/shared/api/client";
 import { PageHeader } from "@/shared/ui/PageHeader";
@@ -8,6 +8,7 @@ type FormValues = {
   persistUnwrapKey: boolean;
   keyTtlSeconds: number;
   encryptPouch: boolean;
+  cornerPassword: string;
 };
 
 // 本厂全部 Client 共用这一份策略；超管可改，现场设备只收更高修订。
@@ -24,6 +25,7 @@ export function ClientPolicyPage() {
       persistUnwrapKey: data.persistUnwrapKey,
       keyTtlSeconds: data.keyTtlSeconds,
       encryptPouch: data.encryptPouch,
+      cornerPassword: data.cornerPassword ?? "",
     });
   }, [data, form]);
 
@@ -37,6 +39,7 @@ export function ClientPolicyPage() {
         persistUnwrapKey: patch.persistUnwrapKey ?? data.persistUnwrapKey,
         keyTtlSeconds: patch.keyTtlSeconds ?? data.keyTtlSeconds,
         encryptPouch: patch.encryptPouch ?? data.encryptPouch,
+        cornerPassword: (patch.cornerPassword ?? data.cornerPassword ?? "").trim(),
         extra: data.extra ?? {},
       } satisfies ClientPolicyInput,
       {
@@ -46,6 +49,7 @@ export function ClientPolicyPage() {
             persistUnwrapKey: data.persistUnwrapKey,
             keyTtlSeconds: data.keyTtlSeconds,
             encryptPouch: data.encryptPouch,
+            cornerPassword: data.cornerPassword ?? "",
           });
           message.error(errorMessage(e));
         },
@@ -98,6 +102,13 @@ export function ClientPolicyPage() {
             rules={[{ required: true, message: "请填写时效" }]}
           >
             <InputNumber min={0} precision={0} style={{ width: "100%" }} />
+          </Form.Item>
+          <Form.Item
+            name="cornerPassword"
+            label="T 排 / 包角口令"
+            extra="示教器进 T 排、解开包角几何时要输的口令，随登录和同步下发。留空表示未设，示教器一律不放行。"
+          >
+            <Input maxLength={64} allowClear autoComplete="off" placeholder="未设" />
           </Form.Item>
           <Button type="primary" htmlType="submit" loading={save.isPending}>
             保存

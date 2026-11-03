@@ -1203,10 +1203,17 @@ func TestWeldReportDayTZ(t *testing.T) {
 		// 与预期不符就停测，避免后面连环误判。
 		t.Fatalf("utc day rows: %+v %v", utc, err)
 	}
-	// 不给时区时退回 UTC，结果应和按 UTC 一样分两行。
-	if got, err := s.ListWeldReport(ctx, store.WeldFactFilter{}, store.WeldGroupDay, nil); err != nil || len(got) != 2 {
+	// 不给时区时按本厂时区（默认东八区）切日，结果应和按东八区一样并成一行。
+	if got, err := s.ListWeldReport(ctx, store.WeldFactFilter{}, store.WeldGroupDay, nil); err != nil || len(got) != 1 || got[0].Day.Format("2006-01-02") != "2026-10-18" {
 		// 与预期不符就停测，避免后面连环误判。
 		t.Fatalf("nil tz rows: %+v %v", got, err)
+	}
+	// 上送 WAN 的日期键也按本厂时区切，两条并在 10-18。
+	wan, err := s.ListWeldWANSummaries(ctx)
+	// 不是 10-18 一行两次就失败，WAN 会和厂端差一天。
+	if err != nil || len(wan) != 1 || wan[0].Day != "2026-10-18" || wan[0].RunCount != 2 {
+		// 与预期不符就停测，避免后面连环误判。
+		t.Fatalf("wan day rows: %+v %v", wan, err)
 	}
 }
 

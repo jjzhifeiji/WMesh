@@ -1,4 +1,4 @@
-// 通道升档：列出本厂全部级别，不分状态。
+// 通道升档：只列、只外送本厂厂级可用件。
 package service_test
 
 import (
@@ -16,7 +16,7 @@ import (
 	"wmesh/factory/internal/store"
 )
 
-// 升档名单要含本厂全部级别，漏级别说明没列全。
+// 升档名单只含厂级可用件，个人件、草稿、平台副本混进来即失败。
 func TestPromotableForChannel(t *testing.T) {
 	// 准备无取消的上下文，后面每次调用都挂在上面。
 	ctx := context.Background()
@@ -105,26 +105,21 @@ func TestPromotableForChannel(t *testing.T) {
 		// 记下这条的级别，升错档会在这里对不上。
 		levels[r.Name] = r.Level
 	}
-	// 结果应和这一步的预期一致，偏离说明行为写偏了。
-	if seen["草稿"] != factory.AssetDraft || seen["可升"] != factory.AssetAvailable || seen["个人"] != factory.AssetAvailable || seen["平台副本"] != factory.AssetAvailable {
+	// 名单只该有那份厂级可用件，别的混进来说明没筛。
+	if len(rows) != 1 || seen["可升"] != factory.AssetAvailable || levels["可升"] != factory.AssetLevelFactory {
 		// 断言没通过就停，结果和这条用例的预期不一致。
 		t.Fatalf("%+v", rows)
 	}
-	// 级别应是预期那一档，升错或没升都算失败。
-	if levels["草稿"] != factory.AssetLevelFactory || levels["个人"] != factory.AssetLevelPersonal || levels["平台副本"] != factory.AssetLevelPlatform {
-		// 断言没通过就停，结果和这条用例的预期不一致。
-		t.Fatalf("levels %+v", levels)
-	}
 
-	// 做快照失败或状态不对就停，说明没达预期。
-	if snap, err := fac.SnapshotForChannel(ctx, draft.ID); err != nil || snap.Status != factory.AssetDraft || !contentcrypt.IsEnvelope(snap.Content) {
-		// 状态还停在草稿，说明保存没有落成可用。
-		t.Fatalf("draft: %+v %v", snap, err)
+	// 草稿做快照应按不可用拒绝，放行说明状态没拦住。
+	if _, err := fac.SnapshotForChannel(ctx, draft.ID); !errors.Is(err, domain.ErrAssetNotAvailable) {
+		// 草稿被外送，说明通道没看状态。
+		t.Fatalf("draft: %v", err)
 	}
-	// 做快照失败或结果不符就停，说明没达预期。
-	if snap, err := fac.SnapshotForChannel(ctx, personal.ID); err != nil || snap.SourceID != personal.ID || !contentcrypt.IsEnvelope(snap.Content) {
-		// 个人稿串到了别人名下，说明归属没保住。
-		t.Fatalf("personal: %+v %v", snap, err)
+	// 个人件做快照应按越权拒绝，放行说明级别没拦住。
+	if _, err := fac.SnapshotForChannel(ctx, personal.ID); !errors.Is(err, domain.ErrForbidden) {
+		// 个人件被外送，说明属主之外的人能读到正文。
+		t.Fatalf("personal: %v", err)
 	}
 	// 做快照应因越权被拒绝，放行说明没拦住。
 	if _, err := fac.SnapshotForChannel(ctx, plat.ID); !errors.Is(err, domain.ErrForbidden) {
@@ -140,7 +135,7 @@ func TestPromotableForChannel(t *testing.T) {
 	}
 }
 
-// 升档名单不分状态，把草稿或停用漏掉即失败。
+// 升档名单只收可用工程，草稿、停用、个人工程都拒绝外送。
 func TestPromotableProjectsAllStatuses(t *testing.T) {
 	// 准备无取消的上下文，后面每次调用都挂在上面。
 	ctx := context.Background()
@@ -231,26 +226,31 @@ func TestPromotableProjectsAllStatuses(t *testing.T) {
 		// 记下这条的状态，和预期不一致就说明名单偏了。
 		seen[r.Name] = r.Status
 	}
-	// 结果应和这一步的预期一致，偏离说明行为写偏了。
-	if seen["草稿工程"] != factory.AssetDraft || seen["可用工程"] != factory.AssetAvailable || seen["停用工程"] != factory.AssetDisabled || seen["个人工程"] != factory.AssetDraft {
+	// 名单只该有可用工程，草稿、停用和个人工程混进来说明没筛。
+	if len(rows) != 1 || seen["可用工程"] != factory.AssetAvailable {
 		// 断言没通过就停，结果和这条用例的预期不一致。
 		t.Fatalf("%+v", rows)
 	}
 
-	// 做快照失败或结果不符就停，说明没达预期。
-	if snap, err := fac.SnapshotForChannel(ctx, personal.ID); err != nil || snap.SourceID != personal.ID {
-		// 个人稿串到了别人名下，说明归属没保住。
-		t.Fatalf("personal: %+v %v", snap, err)
+	// 个人工程做快照应按越权拒绝，放行说明级别没拦住。
+	if _, err := fac.SnapshotForChannel(ctx, personal.ID); !errors.Is(err, domain.ErrForbidden) {
+		// 个人工程被外送，说明属主之外的人能读到正文。
+		t.Fatalf("personal: %v", err)
 	}
-	// 做快照失败或状态不对就停，说明没达预期。
-	if snap, err := fac.SnapshotForChannel(ctx, draft.ID); err != nil || snap.Status != factory.AssetDraft || !contentcrypt.IsEnvelope(snap.Content) {
-		// 状态还停在草稿，说明保存没有落成可用。
-		t.Fatalf("draft snap %+v %v", snap, err)
+	// 草稿工程做快照应按不可用拒绝。
+	if _, err := fac.SnapshotForChannel(ctx, draft.ID); !errors.Is(err, domain.ErrAssetNotAvailable) {
+		// 草稿被外送，说明通道没看状态。
+		t.Fatalf("draft snap %v", err)
 	}
-	// 做快照失败或状态不对就停，说明没达预期。
-	if snap, err := fac.SnapshotForChannel(ctx, off.ID); err != nil || snap.Status != factory.AssetDisabled {
-		// 停用之后仍能操作，说明停用没有生效。
-		t.Fatalf("disabled snap %+v %v", snap, err)
+	// 停用工程做快照应按不可用拒绝。
+	if _, err := fac.SnapshotForChannel(ctx, off.ID); !errors.Is(err, domain.ErrAssetNotAvailable) {
+		// 停用件被外送，说明停用对通道没生效。
+		t.Fatalf("disabled snap %v", err)
+	}
+	// 可用工程做快照应成功，拒绝说明筛过头了。
+	if snap, err := fac.SnapshotForChannel(ctx, avail.ID); err != nil || snap.SourceID != avail.ID || !contentcrypt.IsEnvelope(snap.Content) {
+		// 可用工程外送不出，说明正常升档也被拦了。
+		t.Fatalf("avail snap %+v %v", snap, err)
 	}
 }
 

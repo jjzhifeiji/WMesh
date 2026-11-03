@@ -86,3 +86,44 @@ func TestPinDeviceSerialOverwrite(t *testing.T) {
 		t.Fatalf("void: %v", err)
 	}
 }
+
+// 臂号大小写不同算同一台：钉号存大写，小写来查、来抢都按同号处理。
+func TestDeviceSerialCaseInsensitive(t *testing.T) {
+	// 测试没有取消信号，用空白上下文即可。
+	ctx := context.Background()
+	// 单独起一套厂库，免得用例互相踩到。
+	facDB, facID := testpg.Fresh(t)
+	// 按这家厂的稳定身份打开库。
+	s := store.Open(facDB, facID)
+	// 生成两台的公钥，绑定要用。
+	pubA, _ := mustEd25519(t)
+	// 生成 B 台公钥。
+	pubB, _ := mustEd25519(t)
+	// 现发两台身份。
+	cidA, cidB := id.New(), id.New()
+	// 接受 A 台绑定失败就停测。
+	if _, err := s.AcceptBinding(ctx, cidA, "焊机A", pubA, 1); err != nil {
+		// 接受绑定失败就停测。
+		t.Fatalf("accept a: %v", err)
+	}
+	// 接受 B 台绑定失败就停测。
+	if _, err := s.AcceptBinding(ctx, cidB, "焊机B", pubB, 1); err != nil {
+		// 接受绑定失败就停测。
+		t.Fatalf("accept b: %v", err)
+	}
+	// 小写钉号应存成大写。
+	if row, err := s.PinDeviceSerial(ctx, cidA, "fa:ke:00:00:00:01", false); err != nil || row.DeviceSerial != "FA:KE:00:00:00:01" {
+		// 没转大写，和 WAN 存法对不上。
+		t.Fatalf("pin lower %+v %v", row, err)
+	}
+	// B 台用大写同号来抢应被拒。
+	if _, err := s.PinDeviceSerial(ctx, cidB, "FA:KE:00:00:00:01", false); !errors.Is(err, domain.ErrDeviceSerialTaken) {
+		// 大小写不同就重复登记了。
+		t.Fatalf("taken: %v", err)
+	}
+	// 用混写来查应找到 A 台。
+	if row, err := s.BoundClientByDeviceSerial(ctx, "Fa:Ke:00:00:00:01"); err != nil || row.ID != cidA {
+		// 示教器报原文大小写时认不出这台。
+		t.Fatalf("lookup %+v %v", row, err)
+	}
+}

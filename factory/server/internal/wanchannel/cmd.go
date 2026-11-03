@@ -5,6 +5,7 @@ import "encoding/json"
 const (
 	CmdClosure       = "closure"           // 组包下发，正文另走拉取
 	CmdTemplate      = "template"          // 内容模版下发，正文另走拉取
+	CmdTemplateSet   = "template_set"      // 某类模版在 WAN 的全集，本厂撤下不在里面的
 	CmdRetract       = "retract"           // 平台删除撤回，只带资产身份
 	CmdClientBind    = "client_bind"       // 把设备分配或改分到本厂
 	CmdClientVoid    = "client_void"       // 作废已经分配到本厂的设备
@@ -27,6 +28,8 @@ type Cmd struct {
 	ReqID              string          `json:"reqId,omitempty"`              // 问询与回执配对
 	AssetID            string          `json:"assetId,omitempty"`            // 平台级或撤回身份
 	TemplateID         string          `json:"templateId,omitempty"`         // 内容模版身份
+	TemplateIDs        []string        `json:"templateIds,omitempty"`        // 模版全集：该类在 WAN 仍有的身份
+	Full               bool            `json:"full,omitempty"`               // 模版全集是否完整；不完整不撤任何一份
 	Revision           int64           `json:"revision,omitempty"`           // 资产/治理修订
 	Kind               string          `json:"kind,omitempty"`               // process / project / 软件种类
 	Version            int64           `json:"version,omitempty"`            // 软件单调整数

@@ -50,3 +50,43 @@ func TestClaimWANTooManyRequests(t *testing.T) {
 		t.Fatalf("claim error %q", got)
 	}
 }
+
+// 认领口令不足 8 位按弱口令 400 拒绝，且不去平台换身份，建厂码不白耗。
+func TestClaimWeakPassword(t *testing.T) {
+	// 记下假平台有没有被敲过门。
+	called := false
+	// 假平台一被调用就记下，按理不该走到这里。
+	wan := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		// 走到这里说明弱口令没在本地拦下。
+		called = true
+		// 随便回个失败，不影响断言。
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	// 测完关掉假平台，避免端口一直占住。
+	t.Cleanup(wan.Close)
+	// 连上测试库并建枢纽，连不上就停测。
+	h, err := hub.New(testpg.AdminDSN())
+	// 测试库连不上则停测。
+	if err != nil {
+		// 与预期不符就停测，避免后面连环误判。
+		t.Fatalf("hub: %v", err)
+	}
+	// 测完关掉枢纽，释放测试占用的连接。
+	t.Cleanup(h.Close)
+	// 拉起指向假平台的厂端服务，测完由清理关掉。
+	srv := httptest.NewServer(httpapi.New(h, wan.URL).Router())
+	// 测完关闭临时服务，把端口让出来。
+	t.Cleanup(srv.Close)
+	// 用 5 位口令认领，应当场拒绝。
+	code, body := do(t, srv, "POST", "/v1/site/claim", "", `{"enrollmentCode":"code","password":"short"}`)
+	// 不是 400 或原因不对就停测。
+	if code != http.StatusBadRequest || gjson(t, body, "error") != "password too short" {
+		// 带上状态和正文便于定位。
+		t.Fatalf("claim %d %s", code, body)
+	}
+	// 平台被敲了门说明建厂码可能已被耗掉。
+	if called {
+		// 弱口令应在本地拦下，不该去平台。
+		t.Fatal("weak password reached wan")
+	}
+}

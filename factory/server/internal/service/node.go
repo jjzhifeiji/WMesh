@@ -15,6 +15,7 @@ import (
 	"wmesh/factory/internal/platform/audit"
 	"wmesh/factory/internal/platform/domain"
 	"wmesh/factory/internal/platform/nodekey"
+	"wmesh/factory/internal/store"
 )
 
 // normalizeClientName 去掉首尾空白后须 1～64 字。
@@ -84,8 +85,8 @@ func (s *Node) ApplyWANBinding(ctx context.Context, in WANBinding) error {
 			}
 		}
 	}
-	// 去掉首尾空白再看 WAN 有没有登记臂号。
-	serial := strings.TrimSpace(in.DeviceSerial)
+	// 去掉首尾空白并转大写再看 WAN 有没有登记臂号，和本机存法一致。
+	serial := store.NormalizeDeviceSerial(in.DeviceSerial)
 	// WAN 没登记臂号就到此为止，本机号不动。
 	if serial == "" {
 		return nil
@@ -98,7 +99,7 @@ func (s *Node) ApplyWANBinding(ctx context.Context, in WANBinding) error {
 		return skipWANBindingConflict(in.ClientID, "fill device serial", err)
 	}
 	// 有效绑定却留着别的号，说明本机号与 WAN 不同，保留本机的并记下。
-	if row.Status == ClientStatusBound && row.DeviceSerial != serial {
+	if row.Status == ClientStatusBound && store.NormalizeDeviceSerial(row.DeviceSerial) != serial {
 		// 记下两边的号，便于 WAN 侧核对改号。
 		slog.Warn("wan device serial differs, keep local", "client", in.ClientID, "local", row.DeviceSerial, "wan", serial)
 	}

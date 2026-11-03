@@ -525,6 +525,21 @@ func TestWeldFlushRejectsOutOfRange(t *testing.T) {
 		// 断言没通过就停，结果和这条用例的预期不一致。
 		t.Fatalf("long stored: %v", err)
 	}
+	// 焊完时间远在未来的一条，应当按钟错拒收。
+	future := mk(1, 1, "工程A")
+	// 改成 2099 年，模拟示教器钟错。
+	future.OccurredAt = time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC)
+	// 只超前几分钟的一条，在容差内应收下。
+	nearly := mk(1, 1, "工程A")
+	// 比现在超前五分钟，小于十分钟容差。
+	nearly.OccurredAt = time.Now().Add(5 * time.Minute)
+	// 一批送上去，看未来那条有没有被拦。
+	out, err = fac.FlushWeldFacts(ctx, saTok, []factory.WeldFact{future, nearly})
+	// 收下的不是容差内那条，或未来那条没被拒，就停。
+	if err != nil || len(out.Accepted) != 1 || out.Accepted[0] != nearly.ID || len(out.Rejected) != 1 || out.Rejected[0].ID != future.ID {
+		// 未来时间混进报表，日期会被污染。
+		t.Fatalf("future flush: %+v %v", out, err)
+	}
 }
 
 // 库里已有超界值和脏工程名时，个人统计不报错且封顶，上送 WAN 的行不撞键。

@@ -135,17 +135,8 @@ func (s *Node) LoginPad(ctx context.Context, loginName, password string) (PadSes
 		// 把这一条收进结果，漏了清单就不齐
 		roles = append(roles, g.Role)
 	}
-	// 按条数决定是空、超限还是继续
-	devices := make([]PadDevice, 0, len(rows))
-	// 逐行按调用方作用域裁，看不到的丢掉
-	for _, row := range rows {
-		// 这一条不符合就跳过，其它条继续
-		if row.Status != ClientStatusBound {
-			continue
-		}
-		// 把这一条收进结果，漏了清单就不齐
-		devices = append(devices, PadDevice{ID: row.ID, Name: clientLabel(row), DeviceSerial: row.DeviceSerial, ShortCode: row.ShortCode})
-	}
+	// 只收未作废设备，登录和对账清单同一份名录
+	devices := padDevices(rows)
 	// 用当前有效分配钉路径，没有则厂直属
 	work, err := s.personWorkSnap(ctx, p.ID)
 	// 路径钉不住则这条焊次拒绝
@@ -170,6 +161,22 @@ func (s *Node) LoginPad(ctx context.Context, loginName, password string) (PadSes
 		Token: token, UnwrapKey: append([]byte(nil), who.UnwrapKey...), Account: accountOf(p), Policy: pol,
 		SigningPublicKey: pub, Roles: roles, Devices: devices, Work: work,
 	}, nil
+}
+
+// padDevices 从本厂设备行收出示教器名录：只留未作废的，不带解封钥。
+func padDevices(rows []Client) []PadDevice {
+	// 按条数预留，空名录也回空数组
+	devices := make([]PadDevice, 0, len(rows))
+	// 逐行看，作废的丢掉
+	for _, row := range rows {
+		// 这一条不符合就跳过，其它条继续
+		if row.Status != ClientStatusBound {
+			continue
+		}
+		// 把这一条收进结果，漏了清单就不齐
+		devices = append(devices, PadDevice{ID: row.ID, Name: clientLabel(row), DeviceSerial: row.DeviceSerial, ShortCode: row.ShortCode})
+	}
+	return devices
 }
 
 // clientLabel 给人看的设备叫法：厂端起了昵称就用昵称，否则用 WAN 设备名。

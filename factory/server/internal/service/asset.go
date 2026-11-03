@@ -421,6 +421,12 @@ func (s *Assets) CreatePadIn(ctx context.Context, token, level, kind, name strin
 			_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny)
 			return Asset{}, err
 		}
+		// 工艺槽（含包角组）不挂包角工艺，和网页新建同一口径。
+		if err := s.assertCornerSlots(ctx, content); err != nil {
+			// 创建被拒时补记审计，写失败仍维持拒绝。
+			_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny)
+			return Asset{}, err
+		}
 	}
 	// 写入本厂原件并挂目录，事务里挂不上也退回树根。
 	return s.putGoverned(ctx, acc, assetPlace{ParentID: parentID, OrRoot: true}, Asset{
@@ -1017,6 +1023,12 @@ func (s *Assets) applyAppOnce(ctx context.Context, acc Account, assetID uuid.UUI
 		}
 		// 有引用对不上依赖则拒绝，并补记审计。
 		if err := s.assertProjectProcessIDs(ctx, content, deps); err != nil {
+			// 盖写被拒时补记审计，写失败仍维持拒绝。
+			_ = s.audit(ctx, &acc.ID, nil, "apply_app", assetTarget(cur.ID, cur.Revision), audit.Deny)
+			return Asset{}, cur.Revision, err
+		}
+		// 工艺槽挂了包角工艺则拒绝盖写，和网页改正文同一口径。
+		if err := s.assertCornerSlots(ctx, content); err != nil {
 			// 盖写被拒时补记审计，写失败仍维持拒绝。
 			_ = s.audit(ctx, &acc.ID, nil, "apply_app", assetTarget(cur.ID, cur.Revision), audit.Deny)
 			return Asset{}, cur.Revision, err
@@ -1730,13 +1742,13 @@ func toPromotable(a Asset) PromotableAsset {
 	}
 }
 
-// ListPromotable 列给 WAN 升档看的本厂全部工艺/工程：厂级、个人级、已下发平台级，不分状态，不含正文。
+// ListPromotable 列给 WAN 升档看的本厂厂级可用工艺/工程，不含正文；个人件、草稿、停用件和平台副本都不出厂。
 func (s *Assets) ListPromotable(ctx context.Context, kind string) ([]PromotableAsset, error) {
 	// 只列工艺或工程，别的种类拒绝。
 	if kind != "" && kind != KindProcess && kind != KindProject {
 		return nil, domain.ErrNotFound
 	}
-	// 本厂原件和已下发平台级一并列出，不含正文。
+	// 读本厂原件，再按级别和状态筛，不含正文。
 	rows, err := s.store.ListGovernedAssets(ctx)
 	// 列表读不出来则整份失败，不回半截。
 	if err != nil {
@@ -1744,49 +1756,18 @@ func (s *Assets) ListPromotable(ctx context.Context, kind string) ([]PromotableA
 	}
 	// 升档列表只攒元数据，不含正文。
 	out := []PromotableAsset{}
-	// 记下已列出的身份，副本不要重复。
-	seen := map[uuid.UUID]struct{}{}
-	// 逐条收本厂原件元数据，不分状态。
+	// 逐条收本厂原件元数据，只认厂级可用。
 	for _, a := range rows {
 		// 种类对不上就跳过。
 		if kind != "" && a.Kind != kind {
 			continue
 		}
+		// 个人件只有属主可见，草稿和停用件不能升档，都不列给 WAN。
+		if !promotableByChannel(a) {
+			continue
+		}
 		// 只收元数据放进升档列表，正文不带走。
 		out = append(out, toPromotable(a))
-		// 这个身份的原件已经收进列表。
-		seen[a.ID] = struct{}{}
-	}
-	// 读出已收副本，准备按身份取最新。
-	replicas, err := s.store.ListReplicas(ctx)
-	// 副本列表读失败则整份不返回。
-	if err != nil {
-		return nil, err
-	}
-	// 同一身份只留最高修订。
-	latest := map[uuid.UUID]AssetReplica{}
-	// 再看已下发副本，同身份只留最高修订。
-	for _, r := range replicas {
-		// 种类对不上就跳过。
-		if kind != "" && r.Kind != kind {
-			continue
-		}
-		// 看这个身份是否已有一份副本。
-		prev, ok := latest[r.ID]
-		// 同一身份只留更高修订。
-		if !ok || r.Revision > prev.Revision {
-			// 留下更高修订给升档列表。
-			latest[r.ID] = r
-		}
-	}
-	// 本厂没有的副本再补进升档列表。
-	for _, r := range latest {
-		// 原件已列出的身份不再用副本重复。
-		if _, ok := seen[r.ID]; ok {
-			continue
-		}
-		// 只收元数据放进升档列表，正文不带走。
-		out = append(out, toPromotable(replicaAsAsset(r)))
 	}
 	// 成功必须记上审计，没记上则本次不算做成。
 	if err := s.audit(ctx, nil, nil, "list_promotable", kind, audit.Allow); err != nil {
@@ -1795,7 +1776,13 @@ func (s *Assets) ListPromotable(ctx context.Context, kind string) ([]PromotableA
 	return out, nil
 }
 
-// SnapshotForChannel 通道升档用：本厂厂级和个人级可出快照；工艺须可复制，工程不看可复制。
+// promotableByChannel 通道升档只认本厂厂级可用件。
+func promotableByChannel(a Asset) bool {
+	// 级别是厂级、状态是可用才算可升档。
+	return a.Level == AssetLevelFactory && a.Status == AssetAvailable
+}
+
+// SnapshotForChannel 通道升档用：只有本厂厂级可用件可出快照；工艺须可复制，工程不看可复制。
 func (s *Assets) SnapshotForChannel(ctx context.Context, assetID uuid.UUID) (AssetSnapshot, error) {
 	// 读本厂原件并核对摘要，不符就当坏的。
 	src, err := s.loadChecked(ctx, assetID)
@@ -1813,6 +1800,18 @@ func (s *Assets) SnapshotForChannel(ctx context.Context, assetID uuid.UUID) (Ass
 		// 外送被拒时补记审计，写失败仍不外送。
 		_ = s.audit(ctx, nil, nil, "export_asset", assetID.String(), audit.Deny)
 		return AssetSnapshot{}, err
+	}
+	// 个人件只有属主可见，通道不外送。
+	if src.Level != AssetLevelFactory {
+		// 外送被拒时补记审计，写失败仍不外送。
+		_ = s.audit(ctx, nil, nil, "export_asset", assetTarget(src.ID, src.Revision), audit.Deny)
+		return AssetSnapshot{}, domain.ErrForbidden
+	}
+	// 草稿和停用件不是可用件，通道不外送。
+	if src.Status != AssetAvailable {
+		// 外送被拒时补记审计，写失败仍不外送。
+		_ = s.audit(ctx, nil, nil, "export_asset", assetTarget(src.ID, src.Revision), audit.Deny)
+		return AssetSnapshot{}, domain.ErrAssetNotAvailable
 	}
 	// 不可复制的工艺拒绝经通道外送。
 	if src.Kind == KindProcess && !src.Copyable {

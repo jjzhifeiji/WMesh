@@ -517,6 +517,10 @@ func (h *Hub) Claim(ctx context.Context, wanURL, enrollmentCode, password string
 	if wanURL == "" {
 		return SiteFactory{}, domain.ErrWANUnreachable
 	}
+	// 超管口令太短先拒绝，不去平台换身份，建厂码也不白耗。
+	if err := service.CheckPassword(password); err != nil {
+		return SiteFactory{}, err
+	}
 	// 用建厂码换身份，换不到就不要建库。
 	offer, err := wanchannel.Enroll(ctx, wanURL, enrollmentCode)
 	// 建厂码无效或平台拒绝就交回，不建厂库。

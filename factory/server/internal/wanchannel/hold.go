@@ -198,7 +198,7 @@ func Hold(ctx context.Context, mqttURL, wanHTTP string, factoryID uuid.UUID, pri
 		// 离开时放开，下一条才能落库。
 		defer mu.Unlock()
 		// 按类型落库，正文类失败只标脏，别的失败交回调用方。
-		err := applyCmd(cli, up, cmd, body, dirty.failed, apply, applyClient, applyClosure, applyTemplate, jobs, applyRetract, applyFS, onRequest)
+		err := applyCmd(cli, up, cmd, body, dirty.failed, apply, applyClient, applyClosure, applyTemplate, o.templates, jobs, applyRetract, applyFS, onRequest)
 		// 绑定落上了就记一笔，后台对账不能把它作废。
 		if err == nil && cmd.Typ == CmdClientBind {
 			// 记下刚落地的设备，整轮对账会并上它。
@@ -628,8 +628,8 @@ func pullKind(ctx context.Context, pull *puller, guard *cmdGuard, kind string, h
 	}
 	// 逐条挑出这一类的正文指令落地。
 	for _, cmd := range cmds {
-		// 只认这一类的闭包、目录和模版，绑定和治理状态不碰。
-		if cmd.Kind != kind || (cmd.Typ != CmdClosure && cmd.Typ != CmdFSApply && cmd.Typ != CmdTemplate) {
+		// 只认这一类的闭包、目录、模版和模版全集，绑定和治理状态不碰。
+		if cmd.Kind != kind || (cmd.Typ != CmdClosure && cmd.Typ != CmdFSApply && cmd.Typ != CmdTemplate && cmd.Typ != CmdTemplateSet) {
 			continue
 		}
 		// 落不上就交回；正文类失败已在里面标脏。
@@ -978,7 +978,7 @@ func alreadyHave(have HaveHandler, typ, rawID string, revision int64) bool {
 }
 
 // 按指令类型落库或回答升档问询；正文已在锁外拉好，正文类失败交给 failed 标脏，不断通道。
-func applyCmd(cli mqtt.Client, up string, cmd Cmd, body json.RawMessage, failed func(kind, what string, err error), apply func(State) error, applyClient func(ClientIntent) error, applyClosure ClosureHandler, applyTemplate ClosureHandler, jobs *softwareJobs, applyRetract RetractHandler, applyFS ClosureHandler, onRequest RequestHandler) error {
+func applyCmd(cli mqtt.Client, up string, cmd Cmd, body json.RawMessage, failed func(kind, what string, err error), apply func(State) error, applyClient func(ClientIntent) error, applyClosure ClosureHandler, applyTemplate ClosureHandler, applyTemplateSet TemplateSetHandler, jobs *softwareJobs, applyRetract RetractHandler, applyFS ClosureHandler, onRequest RequestHandler) error {
 	// 按指令类型落库或回答问询。
 	switch cmd.Typ {
 	// 租约只走 HTTPS 领取，MQTT 或索引里带来的一律丢弃，伪造的钥落不进来。
@@ -1032,6 +1032,26 @@ func applyCmd(cli mqtt.Client, up string, cmd Cmd, body json.RawMessage, failed 
 		if err := applyTemplate(body); err != nil {
 			// 记下模版没落上并标脏，连接继续留着。
 			failed(cmd.Kind, "apply template", err)
+		}
+		return nil
+	// 模版全集交给本厂撤下 WAN 已删的；名单有坏编号整条丢掉，不按残缺名单撤。
+	case CmdTemplateSet:
+		// 没人接收就跳过，不断开。
+		if applyTemplateSet == nil {
+			return nil
+		}
+		// 收成身份名单，坏编号整条不认。
+		keep, err := parseTemplateIDs(cmd.TemplateIDs)
+		// 名单不合法只记日志，不按残缺名单撤。
+		if err != nil {
+			// 记下坏的模版全集，连接继续留着。
+			slog.Warn("template set ids", "kind", cmd.Kind, "err", err)
+			return nil
+		}
+		// 本厂对齐不上就标脏，按种类稍后补拉。
+		if err := applyTemplateSet(cmd.Kind, cmd.Full, keep); err != nil {
+			// 记下没对齐并标脏，连接继续留着。
+			failed(cmd.Kind, "apply template set", err)
 		}
 		return nil
 	// 身份合法才撤回，坏编号直接忽略。
@@ -1235,4 +1255,22 @@ func mapMQTTConnect(err error) error {
 func mapMQTTDisconnect(err error) error {
 	// 断线同样收成未授权或不可达，促使外层重拨。
 	return mapMQTTConnect(err)
+}
+
+// parseTemplateIDs 把模版全集里的身份收成 UUID；有一个不合法就整份不认。
+func parseTemplateIDs(raw []string) ([]uuid.UUID, error) {
+	// 按条数预留，空名单交回空切片。
+	out := make([]uuid.UUID, 0, len(raw))
+	// 逐个解析身份。
+	for _, r := range raw {
+		// 解析这一个身份。
+		id, err := uuid.Parse(r)
+		// 坏编号整份不认。
+		if err != nil {
+			return nil, err
+		}
+		// 收下这个身份。
+		out = append(out, id)
+	}
+	return out, nil
 }

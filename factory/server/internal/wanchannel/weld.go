@@ -12,7 +12,7 @@ const weldSkipsLogged = 5 // 告警里最多带几条跳过原因
 
 // WeldSummaryRow 是上送 WAN 的一粒焊汇总，不含人员组织。
 type WeldSummaryRow struct {
-	Day         string `json:"day"`         // UTC 日期 YYYY-MM-DD
+	Day         string `json:"day"`         // 本厂时区日期 YYYY-MM-DD，WAN 照收不再切日
 	ProjectName string `json:"projectName"` // 工程名快照或未关联
 	WeldKind    string `json:"weldKind"`    // 焊接模式
 	RunCount    int64  `json:"runCount"`    // 该粒次数

@@ -62,6 +62,7 @@ var (
 	ErrTooManyRequests       = errors.New("too many requests")                      // WAN 按来源限频，稍后再试
 	ErrWANSignatureRejected  = errors.New("wan rejected factory signature")         // WAN 不认本厂签名：钟偏出时间窗或厂钥没登记
 	ErrWrongCurrentPassword  = errors.New("wrong current password")                 // 改密时当前密码没带或不对，会话仍有效
+	ErrWeakPassword          = errors.New("password too short")                     // 自设密码不足 8 位，和网页校验同一口径
 )
 
 // known 列出本包全部业务哨兵，Known 只认这些；新增哨兵须一并补进来，测试会核对。
@@ -78,7 +79,7 @@ var known = []error{
 	ErrClientCacheFull, ErrSyncRetry, ErrInvalidEnrollment, ErrWANUnreachable, ErrFactoryDisabled,
 	ErrFactoryRetired, ErrTemplateInvalid, ErrAssetCodeMissing, ErrAssetCodeConflict,
 	ErrOriginCodeExhausted, ErrSoftwareInstallFailed, ErrSoftwareApplying, ErrTooManyAttempts, ErrTooManyRequests,
-	ErrWANSignatureRejected, ErrWrongCurrentPassword,
+	ErrWANSignatureRejected, ErrWrongCurrentPassword, ErrWeakPassword,
 }
 
 // Known 交回 err 包着的业务哨兵，不是业务错误就交回 nil。

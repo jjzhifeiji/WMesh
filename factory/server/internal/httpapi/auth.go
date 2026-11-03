@@ -79,8 +79,16 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 			writeBadRequest(w, err)
 			return
 		}
-		// 校验口令并开会话，失败不把口令记下。
-		token, err := svc.Auth.Login(r.Context(), req.LoginName, req.Password)
+		// 承接会话令牌，限速放行且口令对才有。
+		var token string
+		// 锁着就直接拒绝；口令错计数，连错太多次锁五分钟。
+		err := h.guardLogin(r, req.LoginName, func() error {
+			// 校验口令并开会话，失败不把口令记下。
+			t, err := svc.Auth.Login(r.Context(), req.LoginName, req.Password)
+			// 记下令牌，成功时交回。
+			token = t
+			return err
+		})
 		// 上一步没通过则停止，不把失败写成成功。
 		if err != nil {
 			// 把失败译成状态回给调用方，不写成功。

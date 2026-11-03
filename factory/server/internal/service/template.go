@@ -105,6 +105,10 @@ func (s *kernel) normalizeContent(ctx context.Context, kind string, content []by
 		}
 		return out, nil
 	}
+	// 包角工艺正文是几何参数，不归焊接工艺模版管，原样保留。
+	if kind == KindProcess && contenttpl.IsCornerProcess(content) {
+		return content, nil
+	}
 	// 尚未收到模版副本则原样返回。
 	tpl, err := s.store.LatestTemplateByKind(ctx, kind)
 	// 还没收到这份模版，不把没有记录当成故障
@@ -289,4 +293,32 @@ func (s *Closure) AcceptTemplateDelivery(ctx context.Context, snap TemplateSnaps
 	}
 	// 收下模版成功后记审计，再把结果交回
 	return s.audit(ctx, nil, nil, "accept_template", templateTarget(snap.Kind, snap.Revision), audit.Allow)
+}
+
+// SyncTemplateSet 按 WAN 的 template_set 全集对齐工程模版：名单里没有的撤下，列表和新建不再用。
+// 只对齐工程模版；工艺模版只有一份，不在这里撤。full 为假说明名单不完整，一份都不撤；
+// full 为真且名单为空表示 WAN 已没有工程模版，全部撤下。
+func (s *Closure) SyncTemplateSet(ctx context.Context, kind string, full bool, keep []uuid.UUID) error {
+	// 工艺模版只有一份，不按名单撤
+	if kind != KindProject {
+		return nil
+	}
+	// 名单不完整就不撤，免得把 WAN 仍有的当成删了
+	if !full {
+		return nil
+	}
+	// 不在名单里的整份撤下，名单里曾撤下的恢复
+	n, err := s.store.SyncTemplateReplicas(ctx, kind, keep)
+	// 对齐失败交回，下一轮补拉再对
+	if err != nil {
+		// 记下对齐模版被拒绝，写失败不改变结果
+		_ = s.audit(ctx, nil, nil, "retire_template", kind, audit.Deny)
+		return err
+	}
+	// 没有新撤下的就不记审计，免得每轮补拉撑大审计表
+	if n == 0 {
+		return nil
+	}
+	// 撤下成功后记审计，再把结果交回
+	return s.audit(ctx, nil, nil, "retire_template", kind, audit.Allow)
 }

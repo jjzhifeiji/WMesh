@@ -117,9 +117,16 @@ func TestPadLoginListsDevicesWithoutSerial(t *testing.T) {
 	}
 
 	// 读平板收件箱失败就停，避免带着错误继续验
-	if _, err := fac.PadClientInbox(ctx, sess.Token); err != nil {
-		// 平板信箱读失败，登录后应当能看
+	box, err := fac.PadClientInbox(ctx, sess.Token)
+	// 平板信箱读失败，登录后应当能看
+	if err != nil {
+		// 平板信箱读失败就停
 		t.Fatalf("pad inbox: %v", err)
+	}
+	// 对账清单的设备名录要和登录回包一样多，同步才能刷新名录
+	if len(box.Devices) != len(sess.Devices) || len(box.Devices) == 0 {
+		// 对账清单没带名录，新登记的臂要重新登录才认得
+		t.Fatalf("inbox devices %+v login %+v", box.Devices, sess.Devices)
 	}
 	// 校验通道身份失败就停，避免带着错误继续验
 	if _, err := fac.AuthClientMQTT(ctx, op.acc.ID, sess.Token); err != nil {

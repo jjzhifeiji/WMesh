@@ -222,7 +222,7 @@ func (s *Store) AcceptBinding(ctx context.Context, clientID uuid.UUID, name stri
 			var taken int64
 			// 数别的有效设备有没有钉这个号，数不出就停。
 			if err := tx.Model(&Client{}).
-				Where("status = ? AND device_serial = ? AND id <> ?", ClientStatusBound, row.DeviceSerial, clientID).
+				Where("status = ? AND upper(device_serial) = ? AND id <> ?", ClientStatusBound, NormalizeDeviceSerial(row.DeviceSerial), clientID).
 				Count(&taken).Error; err != nil {
 				return err
 			}
@@ -404,8 +404,8 @@ func (s *Store) ClearOperatorForPersonExcept(ctx context.Context, personID, keep
 // 已钉别的号时 replace=false 拒绝；replace=true 才覆盖，现只给测试模拟现场换臂。
 // WAN 下发不走这里，改走 FillDeviceSerial，只给还没号的设备补号。
 func (s *Store) PinDeviceSerial(ctx context.Context, clientID uuid.UUID, serial string, replace bool) (Client, error) {
-	// 去掉首尾空白，纯空白不当有效内容。
-	serial = strings.TrimSpace(serial)
+	// 去掉首尾空白并转大写，网卡号大小写不同算同一台，和 WAN 存法一致。
+	serial = NormalizeDeviceSerial(serial)
 	// 去掉空白这一支不成立就换路。
 	if serial == "" {
 		return Client{}, domain.ErrDeviceSerialRequired
@@ -429,14 +429,14 @@ func (s *Store) PinDeviceSerial(ctx context.Context, clientID uuid.UUID, serial 
 			return domain.ErrBindingVoid
 		}
 		// replace=false 时已钉别的号就拒绝，不许悄悄换号；同号重钉算幂等。
-		if !replace && row.DeviceSerial != "" && row.DeviceSerial != serial {
+		if !replace && row.DeviceSerial != "" && NormalizeDeviceSerial(row.DeviceSerial) != serial {
 			return domain.ErrDeviceSerialMismatch
 		}
 		// 准备承接计数或合计。
 		var taken int64
 		// 接上要操作的表失败就停，避免带着错误继续。
 		if err := tx.Model(&Client{}).
-			Where("status = ? AND device_serial = ? AND id <> ?", ClientStatusBound, serial, clientID).
+			Where("status = ? AND upper(device_serial) = ? AND id <> ?", ClientStatusBound, serial, clientID).
 			Count(&taken).Error; err != nil {
 			return err
 		}
@@ -467,8 +467,8 @@ func (s *Store) PinDeviceSerial(ctx context.Context, clientID uuid.UUID, serial 
 // FillDeviceSerial 只给还没钉号的有效绑定补上 WAN 登记的臂号；本机已有号不动。
 // 调用方按读回的行判断补上没有；别的有效设备占着这个号时返回 ErrDeviceSerialTaken。
 func (s *Store) FillDeviceSerial(ctx context.Context, clientID uuid.UUID, serial string) (Client, error) {
-	// 去掉首尾空白，纯空白不当有效内容。
-	serial = strings.TrimSpace(serial)
+	// 去掉首尾空白并转大写，网卡号大小写不同算同一台，和 WAN 存法一致。
+	serial = NormalizeDeviceSerial(serial)
 	// 空号没有可补的，直接拒绝。
 	if serial == "" {
 		return Client{}, domain.ErrDeviceSerialRequired
@@ -491,8 +491,8 @@ func (s *Store) FillDeviceSerial(ctx context.Context, clientID uuid.UUID, serial
 
 // BoundClientByDeviceSerial 按已钉机械臂号找本厂未作废 Client；空号或不存在则没有。
 func (s *Store) BoundClientByDeviceSerial(ctx context.Context, serial string) (Client, error) {
-	// 去掉首尾空白，纯空白不当有效内容。
-	serial = strings.TrimSpace(serial)
+	// 去掉首尾空白并转大写，网卡号大小写不同算同一台，和 WAN 存法一致。
+	serial = NormalizeDeviceSerial(serial)
 	// 去掉空白这一支不成立就换路。
 	if serial == "" {
 		return Client{}, domain.ErrDeviceSerialRequired
@@ -500,7 +500,7 @@ func (s *Store) BoundClientByDeviceSerial(ctx context.Context, serial string) (C
 	// 准备承接查到的现场设备。
 	var row Client
 	// 按条件去读，没有行交给后面的分支。
-	err := s.db.WithContext(ctx).First(&row, "status = ? AND device_serial = ?", ClientStatusBound, serial).Error
+	err := s.db.WithContext(ctx).First(&row, "status = ? AND upper(device_serial) = ?", ClientStatusBound, serial).Error
 	// 按条件取一行失败就停，避免带着错误继续。
 	if err != nil {
 		// 没有这一行就当成不存在。
@@ -647,4 +647,10 @@ func (s *Store) LatestRuntimeGrant(ctx context.Context, clientID uuid.UUID) (Run
 		return RuntimeGrant{}, err
 	}
 	return row, nil
+}
+
+// NormalizeDeviceSerial 臂号去首尾空白并转大写；网卡号大小写不同算同一台。
+func NormalizeDeviceSerial(serial string) string {
+	// 去空白后转大写，比对和落库都用这一份。
+	return strings.ToUpper(strings.TrimSpace(serial))
 }

@@ -1,5 +1,7 @@
 package wanchannel
 
+import "github.com/google/uuid"
+
 // ClientLoginUp 是随保活上报给 WAN 的某台设备最近一次示教器登录。
 type ClientLoginUp struct {
 	ClientID       string `json:"clientId"`                 // 设备稳定身份
@@ -13,8 +15,9 @@ type HoldOption func(*holdOpts)
 
 // holdOpts 是 Hold 的可选回调集合。
 type holdOpts struct {
-	status func(connected bool)   // 通道连上、断开时通知外层；空则不报
-	logins func() []ClientLoginUp // 每次保活前取各台最近登录；空则不带
+	status    func(connected bool)   // 通道连上、断开时通知外层；空则不报
+	logins    func() []ClientLoginUp // 每次保活前取各台最近登录；空则不带
+	templates TemplateSetHandler     // 按模版全集指令对齐某类模版；空则不对齐
 }
 
 // WithStatus 通道连上并报过在场时回调 true，Hold 离开时回调 false。
@@ -32,6 +35,18 @@ func WithClientLogins(fn func() []ClientLoginUp) HoldOption {
 	return func(o *holdOpts) {
 		// 记下取数函数，保活时调它。
 		o.logins = fn
+	}
+}
+
+// TemplateSetHandler 收某类模版在 WAN 的全集名单，full 为真时本厂据此撤下 WAN 已删的。
+type TemplateSetHandler func(kind string, full bool, keep []uuid.UUID) error
+
+// WithTemplateSet 收到 template_set 指令时调 fn，交回该类仍在 WAN 的模版身份；调用时已占住落库。
+func WithTemplateSet(fn TemplateSetHandler) HoldOption {
+	// 交回一个把对齐回调写进集合的选项。
+	return func(o *holdOpts) {
+		// 记下回调，收到模版全集时调它。
+		o.templates = fn
 	}
 }
 

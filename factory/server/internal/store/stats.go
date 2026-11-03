@@ -13,6 +13,7 @@ import (
 	"gorm.io/gorm"
 
 	"wmesh/factory/internal/platform/domain"
+	"wmesh/factory/internal/platform/factorytz"
 )
 
 const (
@@ -71,7 +72,7 @@ type WeldProjectAgg struct {
 
 // WeldWANSummary 是上送 WAN 的一粒：日、工程名、模式和合计，不含人员组织。
 type WeldWANSummary struct {
-	Day         string // UTC 日期 YYYY-MM-DD
+	Day         string // 本厂时区日期 YYYY-MM-DD
 	ProjectName string // 工程名快照或未关联
 	WeldKind    string // single / multilayer / tbar / 空
 	RunCount    int64  // 该粒次数
@@ -108,7 +109,7 @@ type WeldFactFilter struct {
 	NoProject  bool       // 只取未打开工程
 	OrgUnitID  *uuid.UUID // 人现在的所属组织
 	DirectOnly bool       // 只取厂直属的人，即所属组织为空
-	Day        *time.Time // UTC 日历日
+	Day        *time.Time // 本厂时区日历日，只取年月日
 	Scope      *WeldScope // 可见范围；空表示全厂都能看
 	Limit      int        // 条数上限；0 不裁
 	Offset     int        // 跳过前几条，分页用
@@ -383,9 +384,9 @@ func weldFactWhere(q *gorm.DB, f WeldFactFilter) *gorm.DB {
 	// 指定了日历日就只取那一天。
 	if f.Day != nil {
 		// 把焊完时间截到当天，汇总按天并。
-		day := f.Day.UTC().Format("2006-01-02")
-		// 补上筛选或限定列，避免动到不该动的字段。
-		q = q.Where("((f.occurred_at AT TIME ZONE 'UTC')::date) = ?::date", day)
+		day := f.Day.Format("2006-01-02")
+		// 按本厂时区切日，和按日报表、上送 WAN 同一口径。
+		q = q.Where("((f.occurred_at AT TIME ZONE ?)::date) = ?::date", factorytz.Location().String(), day)
 	}
 	// 带了可见范围就只留本人焊的。
 	if f.Scope != nil {
@@ -466,10 +467,10 @@ func (s *Store) ListWeldReport(ctx context.Context, f WeldFactFilter, group stri
 		// 没指定维度就按人、路径和日期来汇总。
 		group = WeldGroupPersonDay
 	}
-	// 没给时区就按 UTC 切日，和旧口径一致。
+	// 没给时区就按本厂时区切日，和上送 WAN 同一口径。
 	if loc == nil {
-		// 空时区退回 UTC，免得解引用空指针。
-		loc = time.UTC
+		// 空时区退回本厂时区，免得解引用空指针。
+		loc = factorytz.Location()
 	}
 	// 子查询先裁窗、换未关联名、算当地日期，外层只管分组。
 	inner := weldFactWhere(s.db.Table(weldFactsWithOrg).
@@ -593,7 +594,7 @@ func weldFactSame(got WeldFact, in WeldFact) bool {
 
 // 上送云端的焊汇总扫描行，不含人员。
 type weldWANScan struct {
-	Day         string `gorm:"column:day"`          // UTC 日期
+	Day         string `gorm:"column:day"`          // 本厂时区日期
 	ProjectName string `gorm:"column:project_name"` // 工程名
 	WeldKind    string `gorm:"column:weld_kind"`    // 焊接模式
 	RunCount    int64  `gorm:"column:run_count"`    // 次数
@@ -601,19 +602,21 @@ type weldWANScan struct {
 	DurationSec int64  `gorm:"column:duration_sec"` // 时长秒
 }
 
-// ListWeldWANSummaries 按日、工程名、模式合计全厂焊事实，不含人员组织。
+// ListWeldWANSummaries 按本厂时区的日、工程名、模式合计全厂焊事实，不含人员组织。
 func (s *Store) ListWeldWANSummaries(ctx context.Context) ([]WeldWANSummary, error) {
 	// 准备承接查到的多条焊汇总。
 	var rows []weldWANScan
+	// 按本厂时区切日，和厂端按日报表同一口径；WAN 照收这个日期键不再切。
+	zone := factorytz.Location().String()
 	// 先带上请求上下文查库，结果留给紧跟着的判断。
 	err := s.db.WithContext(ctx).Table("weld_facts").
-		Select(`to_char(((occurred_at AT TIME ZONE 'UTC')::date), 'YYYY-MM-DD') AS day,
+		Select(`to_char(((occurred_at AT TIME ZONE ?)::date), 'YYYY-MM-DD') AS day,
 			CASE WHEN project_name = '' THEN '未关联工程' ELSE project_name END AS project_name,
 			weld_kind,
 			COUNT(*) AS run_count,
-			` + cappedSum("length_mm") + ` AS length_mm,
-			` + cappedSum("duration_sec") + ` AS duration_sec`).
-		Group(`((occurred_at AT TIME ZONE 'UTC')::date), CASE WHEN project_name = '' THEN '未关联工程' ELSE project_name END, weld_kind`).
+			`+cappedSum("length_mm")+` AS length_mm,
+			`+cappedSum("duration_sec")+` AS duration_sec`, zone).
+		Group(`1, CASE WHEN project_name = '' THEN '未关联工程' ELSE project_name END, weld_kind`).
 		Order("day DESC, project_name, weld_kind").
 		Scan(&rows).Error
 	// 出错就停，避免把失败当成已经完成。

@@ -19,6 +19,8 @@ import (
 
 const padRecentLimit = 100 // 示教器最近焊次条数上限
 
+const weldFutureSkew = 10 * time.Minute // 焊完时间最多比厂端钟超前这么久，再超前当钟错拒收
+
 const (
 	weldRunsDefaultLimit = 200  // 下钻不带条数时每页默认条数
 	weldRunsMaxLimit     = 1000 // 下钻每页最多条数，免得一次拖满库
@@ -59,7 +61,7 @@ func (s *Stats) SetDemoData(on bool) {
 
 // WeldWANSummary 是上送 WAN 的一粒，不含人员组织。
 type WeldWANSummary struct {
-	Day         string `json:"day"`         // UTC 日期 YYYY-MM-DD
+	Day         string `json:"day"`         // 本厂时区日期 YYYY-MM-DD，WAN 照收不再切日
 	ProjectName string `json:"projectName"` // 工程名快照或未关联
 	WeldKind    string `json:"weldKind"`    // 焊接模式
 	RunCount    int64  `json:"runCount"`    // 该粒次数
@@ -162,7 +164,7 @@ type WeldRunQuery struct {
 	NoProject  bool       // 只取未打开工程
 	OrgUnitID  *uuid.UUID // 人现在的所属组织
 	DirectOnly bool       // 只取厂直属
-	Day        *time.Time // UTC 日历日
+	Day        *time.Time // 本厂时区日历日，只取年月日
 	Limit      int        // 每页条数；0 取默认，超上限按上限
 	Offset     int        // 跳过前几条
 }
@@ -217,6 +219,12 @@ func (s *Stats) FlushWeldFacts(ctx context.Context, token string, items []WeldFa
 		if !store.ValidWeldProjectName(item.ProjectName) {
 			// 取出失败原因放进拒绝行，本机留着等改名
 			out.Rejected = append(out.Rejected, WeldReject{ID: item.ID, Error: domain.ErrInvalidName.Error()})
+			continue
+		}
+		// 焊完时间比厂端钟超前太多，当示教器钟错拒收，免得报表冒出未来日期；本机留着等钟对上
+		if item.OccurredAt.After(time.Now().Add(weldFutureSkew)) {
+			// 取出失败原因放进拒绝行，本机留着
+			out.Rejected = append(out.Rejected, WeldReject{ID: item.ID, Error: domain.ErrForbidden.Error()})
 			continue
 		}
 		// 焊长和时长都是零则拒绝，空跑不算一次焊

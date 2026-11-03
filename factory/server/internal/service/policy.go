@@ -93,10 +93,10 @@ func (s *Closure) SetCacheLimit(ctx context.Context, token string, n int) error 
 
 // 审计对象只记键名与新旧修订，不含钥原文或扩展值。
 func policyAuditTarget(old, neu ClientPolicy) string {
-	// 拼审计用的短句，不含钥和扩展值，再交回调用方
+	// 拼审计用的短句，不含钥、口令原文和扩展值，只记口令设没设，再交回调用方
 	return fmt.Sprintf(
-		"revision %d→%d max=%d scope=%s persist=%t ttl=%d encrypt=%t extra=%s",
-		old.Revision, neu.Revision, neu.MaxCachedProjects, neu.CacheScope, neu.PersistUnwrapKey, neu.KeyTTLSeconds, neu.EncryptPouch, extraKeyList(neu.Extra),
+		"revision %d→%d max=%d scope=%s persist=%t ttl=%d encrypt=%t corner=%t extra=%s",
+		old.Revision, neu.Revision, neu.MaxCachedProjects, neu.CacheScope, neu.PersistUnwrapKey, neu.KeyTTLSeconds, neu.EncryptPouch, neu.CornerPassword != "", extraKeyList(neu.Extra),
 	)
 }
 

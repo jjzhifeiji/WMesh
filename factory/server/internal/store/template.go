@@ -44,6 +44,7 @@ type contentTemplateReplicaRow struct {
 	Schema     json.RawMessage `gorm:"type:jsonb;not null"`  // 字段表 JSON
 	Digest     []byte          `gorm:"type:bytea;not null"`  // SHA-256
 	ReceivedAt time.Time       `gorm:"not null"`             // 本厂收到时间
+	RetiredAt  *time.Time      // WAN 已删除、本厂撤下的时刻；空表示仍在用
 }
 
 // 指定落库表名，避免查询时按类型名去猜。
@@ -136,13 +137,13 @@ func (s *Store) LatestTemplateByKind(ctx context.Context, kind string) (ContentT
 	return templateFromRow(row), nil
 }
 
-// LatestProjectTemplates 各工程模版身份取最高修订。
+// LatestProjectTemplates 各工程模版身份取最高修订；WAN 已删除、本厂已撤下的不列。
 func (s *Store) LatestProjectTemplates(ctx context.Context) ([]ContentTemplate, error) {
 	// 准备承接查到的多条模版副本。
 	var rows []contentTemplateReplicaRow
 	// 走手写查询失败就停，避免带着错误继续。
 	if err := s.db.WithContext(ctx).Raw(
-		`SELECT DISTINCT ON (id) * FROM content_template_replicas WHERE kind = ? ORDER BY id, revision DESC`,
+		`SELECT DISTINCT ON (id) * FROM content_template_replicas WHERE kind = ? AND retired_at IS NULL ORDER BY id, revision DESC`,
 		KindProject,
 	).Scan(&rows).Error; err != nil {
 		return nil, err
@@ -179,4 +180,42 @@ func (s *Store) GovernedAssetsByKind(ctx context.Context, kind string) ([]Asset,
 		out = append(out, a)
 	}
 	return out, nil
+}
+
+// SyncTemplateReplicas 按 WAN 全量索引对齐某类模版：不在 keep 里的整份身份标成撤下，
+// 在 keep 里却被撤下过的恢复；副本不物理删除。交回这次新撤下的身份数。
+func (s *Store) SyncTemplateReplicas(ctx context.Context, kind string, keep []uuid.UUID) (int64, error) {
+	// 记下新撤下的行数，事务成功才交回。
+	var retired int64
+	// 撤下与恢复放进同一事务，不留半对齐的状态。
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// 只动这一类仍在用的行，已撤下的不重复改时刻。
+		q := tx.Model(&contentTemplateReplicaRow{}).Where("kind = ? AND retired_at IS NULL", kind)
+		// 有保留名单才排除名单里的身份，空名单表示这一类全部撤下。
+		if len(keep) > 0 {
+			// 名单里的身份仍在 WAN，不撤。
+			q = q.Where("id NOT IN ?", keep)
+		}
+		// 不在名单里的标成撤下，写失败整单回滚。
+		res := q.Update("retired_at", time.Now().UTC())
+		// 撤下写失败就交回，事务随之回滚。
+		if res.Error != nil {
+			return res.Error
+		}
+		// 记下这次新撤下了几行。
+		retired = res.RowsAffected
+		// 名单为空就没有要恢复的。
+		if len(keep) == 0 {
+			return nil
+		}
+		// 名单里曾被撤下的恢复成在用，WAN 仍列着它。
+		return tx.Model(&contentTemplateReplicaRow{}).
+			Where("kind = ? AND retired_at IS NOT NULL AND id IN ?", kind, keep).
+			Update("retired_at", nil).Error
+	})
+	// 事务失败就交回，不报撤下了多少。
+	if err != nil {
+		return 0, err
+	}
+	return retired, nil
 }

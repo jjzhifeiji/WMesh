@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"wmesh/factory/internal/platform/factorytz"
 	"wmesh/factory/internal/service"
 )
 
@@ -387,11 +388,12 @@ func parseCountQuery(raw string) (int, error) {
 	return n, nil
 }
 
-// parseTZQuery 读报表切日时区；空按 UTC，不认的 IANA 名拒绝。
+// parseTZQuery 读报表切日时区；空按本厂时区，和上送 WAN 同一口径；不认的 IANA 名拒绝。
 func parseTZQuery(raw string) (*time.Location, error) {
-	// 没带时区就按 UTC 切日，和旧口径一致。
+	// 没带时区就按本厂时区切日，和 WAN 按日对得上。
 	if raw == "" {
-		return time.UTC, nil
+		// 交回本厂时区，和上送 WAN 的日期键同一口径。
+		return factorytz.Location(), nil
 	}
 	// Local 随服务器配置变，不让前端借它切日。
 	if raw == "Local" {

@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 
 	"wmesh/factory/internal/platform/contenttpl"
+	"wmesh/factory/internal/platform/digest"
 	"wmesh/factory/internal/platform/domain"
 	factory "wmesh/factory/internal/service"
 	"wmesh/factory/internal/store"
@@ -113,5 +114,103 @@ func TestCornerSlotBinding(t *testing.T) {
 	if _, err := fac.UpdateAssetContent(ctx, sa, proj.ID, proj.Revision, body(weld.ID, weld.ID)); err != nil {
 		// 示教器存法的改正文被拒了。
 		t.Fatalf("update right: %v", err)
+	}
+}
+
+// 示教器新建和盖写工程同样拦包角挂槽；收过焊接工艺模版后网页新建包角工艺正文也原样保留。
+func TestCornerPadEntriesAndTemplate(t *testing.T) {
+	// 准备无取消的上下文，后面每次调用都挂在上面。
+	ctx := context.Background()
+	// 拉起隔离厂库，起不来说明测试库还没就绪。
+	h := New(t)
+	// 建厂并签发超管激活码，失败则没有厂可测。
+	seed, fac, err := h.Provision(ctx, "sa-c", "超管C")
+	// 建厂失败就停，否则后面没有可靠结果。
+	if err != nil {
+		// 把建厂的错误打出来并停住，避免继续往下验。
+		t.Fatal(err)
+	}
+	// 登录并取出令牌，建人要用。
+	sa := mustLogin(t, ctx, fac, "sa-c", personPass("sa-c"))
+	// 建管理员，网页和示教器都用他。
+	op := mustCreateRole(t, ctx, fac, sa, "op-c", "op-pass", factory.RoleOrgAdmin)
+	// 编出默认焊接工艺字段表，模拟 WAN 已下发。
+	schema, err := contenttpl.Marshal(contenttpl.Default(contenttpl.KindProcess))
+	// 编不出就停。
+	if err != nil {
+		// 把编码错误打出来并停住。
+		t.Fatal(err)
+	}
+	// 留下工厂编号，下发要指明接收厂。
+	fid := seed.ID
+	// 收下焊接工艺模版，之后新建工艺都会按它套。
+	if err := fac.AcceptTemplateDelivery(ctx, factory.TemplateSnapshot{
+		// 新取一个模版身份，套默认焊接字段表。
+		ID: uuid.New(), Kind: factory.KindProcess, Revision: 1, Schema: schema, Digest: digest.Sum(schema), TargetFactoryID: &fid,
+	}); err != nil {
+		// 收不下模版就停。
+		t.Fatal(err)
+	}
+	// 标明直接作业上下文，后面新建资产都挂在这里。
+	direct := factory.WorkContext{}
+	// 包角正文：顶层 kind 和 layers 不在焊接模版里。
+	cornerBody := []byte(`{"kind":"cornerGeometry","name":"包角","layers":[{"length":5}]}`)
+	// 网页新建包角工艺。
+	corner, err := fac.CreateFactoryProcess(ctx, op.tok, direct, "包角", cornerBody)
+	// 建不成就停。
+	if err != nil {
+		// 把建工艺的错误打出来并停住。
+		t.Fatal(err)
+	}
+	// 读回正文，应与提交的一字不差。
+	got, err := fac.ReadAssetContent(ctx, op.tok, corner.ID)
+	// 正文被模版改写或读不出就停。
+	if err != nil || string(got) != string(cornerBody) {
+		// 包角正文被洗成焊接参数，D-05 没修好。
+		t.Fatalf("corner body %s err %v", got, err)
+	}
+	// 发布包角工艺，工程才钉得上。
+	corner, err = fac.PublishAsset(ctx, op.tok, corner.ID, corner.Revision)
+	// 发布失败或没标成包角就停。
+	if err != nil || !corner.Corner {
+		// 没标成包角，网页选工艺时分不开。
+		t.Fatalf("publish corner %+v %v", corner, err)
+	}
+	// 新建焊接参数工艺。
+	weld, err := fac.CreateFactoryProcess(ctx, op.tok, direct, "焊接", []byte(`{"current":180}`))
+	// 建不成就停。
+	if err != nil {
+		// 把建工艺的错误打出来并停住。
+		t.Fatal(err)
+	}
+	// 发布焊接工艺，工程才钉得上。
+	weld, err = fac.PublishAsset(ctx, op.tok, weld.ID, weld.Revision)
+	// 发布失败就停。
+	if err != nil {
+		// 把发布的错误打出来并停住。
+		t.Fatal(err)
+	}
+	// 按焊道工艺和包角组工艺拼一条单层焊道。
+	body := func(proc, groupProc uuid.UUID) []byte {
+		// 拼出正文。
+		return []byte(`[{"templateId":"` + contenttpl.SeedTplSingle + `","kind":"single","name":"焊道","processId":"` + proc.String() +
+			`","cornerGroupParams":{"groupId":"g","isMaster":true,"processId":"` + groupProc.String() + `"}}]`)
+	}
+	// 示教器新建工程，焊道挂包角应拒。
+	if _, err := fac.CreatePadPersonal(ctx, op.tok, factory.KindProject, "挂错", body(corner.ID, weld.ID), uuid.Nil, "", nil, store.WeldKindSingle); !errors.Is(err, domain.ErrCornerSlotMismatch) {
+		// 示教器入口没拦住挂错。
+		t.Fatalf("pad create corner slot: %v", err)
+	}
+	// 示教器新建工程，挂对的能建。
+	proj, err := fac.CreatePadPersonal(ctx, op.tok, factory.KindProject, "挂对", body(weld.ID, weld.ID), uuid.Nil, "", nil, store.WeldKindSingle)
+	// 建不成就停。
+	if err != nil {
+		// 示教器存法的工程被拒了。
+		t.Fatalf("pad create right: %v", err)
+	}
+	// 示教器盖写成包角组挂包角，应拒。
+	if _, err := fac.ApplyAppContent(ctx, op.tok, proj.ID, body(weld.ID, corner.ID)); !errors.Is(err, domain.ErrCornerSlotMismatch) {
+		// 示教器盖写入口没拦住挂错。
+		t.Fatalf("pad apply corner slot: %v", err)
 	}
 }
