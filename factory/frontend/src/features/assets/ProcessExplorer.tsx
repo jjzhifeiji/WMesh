@@ -1,6 +1,6 @@
 import { FolderOutlined, FileOutlined } from "@ant-design/icons";
 import { App, Button, Dropdown, Empty, Input, Space, Tree, Typography, type MenuProps, type TreeDataNode } from "antd";
-import { useEffect, useMemo, useRef, useState, type DragEvent, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type DragEvent, type CSSProperties, type KeyboardEvent, type MouseEvent, type PointerEvent, type ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { errorMessage } from "@/shared/api/client";
 import { weldKindLabel, WELD_SINGLE } from "@/features/templates/projectKinds";
@@ -105,6 +105,29 @@ function canCopyInto(src: FSNode, dest: FSNode, byId: Map<string, FSNode>) {
   return src.treeLevel === "platform" && dest.treeLevel === "factory";
 }
 
+const TREE_W_KEY = "wmesh.fs.treeWidth";
+const TREE_W_MIN = 200;
+const TREE_W_MAX = 600;
+
+// 树栏宽度拖过就记在本浏览器里；没拖过或读不到用样式默认宽度。
+function readTreeWidth() {
+  try {
+    const w = Number(localStorage.getItem(TREE_W_KEY));
+    return w >= TREE_W_MIN && w <= TREE_W_MAX ? w : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveTreeWidth(w: number | null) {
+  try {
+    if (w === null) localStorage.removeItem(TREE_W_KEY);
+    else localStorage.setItem(TREE_W_KEY, String(w));
+  } catch {
+    // 存不下就只管这一次。
+  }
+}
+
 function TreeTitle({
   n,
   count,
@@ -180,6 +203,10 @@ export function ProcessExplorer({
   const [clipId, setClipId] = useState<string | null>(null);
   const [expandedKeys, setExpandedKeys] = useState<string[]>([]);
   const expandInited = useRef(false);
+  const treeColRef = useRef<HTMLDivElement>(null);
+  const treeBodyRef = useRef<HTMLDivElement>(null);
+  const [treeW, setTreeW] = useState<number | null>(readTreeWidth);
+  const [resizing, setResizing] = useState(false);
   const [listMenu, setListMenu] = useState<MenuProps["items"]>([]);
   const [treeMenu, setTreeMenu] = useState<MenuProps["items"]>([]);
   const [dragId, setDragId] = useState<string | null>(null);
@@ -247,6 +274,37 @@ export function ProcessExplorer({
     return () => window.clearTimeout(t);
   }, [overId, dragSrc, byId]);
 
+  // 当前文件夹一变就把树滚到它：上下取最近，左右露出名字开头；等展开动画走完再量。
+  const currentId = current?.id;
+  useEffect(() => {
+    if (!currentId) return;
+    const t = window.setTimeout(() => {
+      const body = treeBodyRef.current;
+      const el = body?.querySelector<HTMLElement>(`[data-fs-id="${currentId}"]`);
+      if (!body || !el) return;
+      const b = body.getBoundingClientRect();
+      const r = el.getBoundingClientRect();
+      if (r.top < b.top) body.scrollTop += r.top - b.top - 8;
+      else if (r.bottom > b.bottom) body.scrollTop += r.bottom - b.bottom + 8;
+      if (r.left < b.left || r.right > b.right) body.scrollLeft = Math.max(0, body.scrollLeft + r.left - b.left - 48);
+    }, 320);
+    return () => window.clearTimeout(t);
+  }, [currentId]);
+
+  // 树只能横滚时，竖滚轮直接拿来横滚：Windows 普通鼠标没有横向滚轮。
+  useEffect(() => {
+    const body = treeBodyRef.current;
+    if (!body) return;
+    const onWheel = (e: WheelEvent) => {
+      if (e.shiftKey || e.deltaX !== 0 || e.deltaY === 0) return;
+      if (body.scrollHeight > body.clientHeight || body.scrollWidth <= body.clientWidth) return;
+      e.preventDefault();
+      body.scrollLeft += e.deltaY;
+    };
+    body.addEventListener("wheel", onWheel, { passive: false });
+    return () => body.removeEventListener("wheel", onWheel);
+  }, []);
+
   const crumbs = useMemo(() => {
     const parts: FSNode[] = [];
     const seen = new Set<string>();
@@ -285,6 +343,19 @@ export function ProcessExplorer({
   const openHit = (n: FSNode) => {
     pickFile(n);
     setListFocusId(n.id);
+  };
+
+  // 单击列表行和方向键选中走同一套。
+  const focusRow = (n: FSNode) => {
+    if (searching) {
+      openHit(n);
+      return;
+    }
+    setListFocusId(n.id);
+    if (n.nodeKind === "folder") {
+      expandPath(n.id);
+      onSelectFile(null);
+    } else pickFile(n);
   };
 
   useEffect(() => {
@@ -525,7 +596,17 @@ export function ProcessExplorer({
       }
       return;
     }
-    if (e.key === "Backspace" && current?.parentId) {
+    // 方向键在文件列表里移动选中，和资源管理器一样；树自己有方向键，不抢。
+    const step = { ArrowUp: -1, ArrowDown: 1, Home: -Infinity, End: Infinity }[e.key];
+    if (step !== undefined && !e.altKey && !e.ctrlKey && !e.metaKey && !(e.target as HTMLElement).closest(".fs-tree")) {
+      if (!shown.length) return;
+      e.preventDefault();
+      const at = focus ? shown.findIndex((n) => n.id === focus.id) : -1;
+      const next = at < 0 ? (step < 0 ? shown.length - 1 : 0) : Math.min(shown.length - 1, Math.max(0, at + step));
+      focusRow(shown[next]);
+      return;
+    }
+    if (((e.key === "Backspace" && !e.altKey) || (e.altKey && e.key === "ArrowUp")) && current?.parentId) {
       e.preventDefault();
       pickFolder(current.parentId);
       return;
@@ -576,14 +657,41 @@ export function ProcessExplorer({
 
   const listDropClass = current && overId === current.id && !children.some((n) => n.id === overId && n.nodeKind === "folder") ? " is-drop" : "";
 
+  // 拖树栏右边线调宽；松手才落盘。
+  const startResize = (e: PointerEvent<HTMLDivElement>) => {
+    const col = treeColRef.current;
+    if (!col || e.button !== 0) return;
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = col.getBoundingClientRect().width;
+    // 右边两栏至少留 400px，窄屏上拖不掉文件列表和详情。
+    const max = Math.max(TREE_W_MIN, Math.min(TREE_W_MAX, (col.parentElement?.clientWidth ?? 0) - 400));
+    let w = startW;
+    setResizing(true);
+    const onMove = (ev: globalThis.PointerEvent) => {
+      w = Math.round(Math.min(max, Math.max(TREE_W_MIN, startW + ev.clientX - startX)));
+      setTreeW(w);
+    };
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      setResizing(false);
+      saveTreeWidth(w);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  };
+
+  const explorerStyle = treeW ? ({ "--fs-tree-w": `${treeW}px` } as CSSProperties) : undefined;
+
   return (
-    <div className="fs-explorer" tabIndex={0} onKeyDown={onExplorerKey} onDragEnd={endDrag}>
+    <div className="fs-explorer" style={explorerStyle} tabIndex={0} onKeyDown={onExplorerKey} onDragEnd={endDrag}>
       <Dropdown menu={{ items: treeMenu }} trigger={["contextMenu"]}>
-        <div className="fs-col fs-tree" onContextMenu={openTreeMenu}>
+        <div ref={treeColRef} className="fs-col fs-tree" onContextMenu={openTreeMenu}>
           <div className="fs-col-head">
             <Typography.Text strong>文件树</Typography.Text>
           </div>
-          <div className="fs-tree-body">
+          <div className="fs-tree-body" ref={treeBodyRef}>
             {q.isLoading ? (
               <Typography.Text type="secondary">载入目录…</Typography.Text>
             ) : failed ? (
@@ -606,11 +714,21 @@ export function ProcessExplorer({
                   if (n?.nodeKind !== "folder") return;
                   setPickedId(id);
                   clearFile();
-                  setExpandedKeys((keys) => (keys.includes(id) ? keys.filter((k) => k !== id) : [...keys, id]));
+                  // 点名字只展开不收起，看已展开文件夹的内容不会把下级收掉；收起点箭头。
+                  setExpandedKeys((keys) => (keys.includes(id) ? keys : [...keys, id]));
                 }}
               />
             )}
           </div>
+          <div
+            className={`fs-tree-resize${resizing ? " is-active" : ""}`}
+            title="拖动调整宽度，双击恢复默认"
+            onPointerDown={startResize}
+            onDoubleClick={() => {
+              setTreeW(null);
+              saveTreeWidth(null);
+            }}
+          />
         </div>
       </Dropdown>
       <div className="fs-col fs-list">
@@ -675,15 +793,7 @@ export function ProcessExplorer({
                   }}
                   onClick={() => {
                     if (didDrag.current) return;
-                    if (searching) {
-                      openHit(n);
-                      return;
-                    }
-                    setListFocusId(n.id);
-                    if (n.nodeKind === "folder") {
-                      expandPath(n.id);
-                      onSelectFile(null);
-                    } else pickFile(n);
+                    focusRow(n);
                   }}
                   onDoubleClick={() => {
                     if (didDrag.current) return;

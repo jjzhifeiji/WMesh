@@ -3,6 +3,7 @@ import { formatLengthM } from "@/features/reports/api";
 import { errorMessage } from "@/shared/api/client";
 import { formatTime } from "@/shared/format";
 import { statusColor, statusLabel } from "@/shared/labels";
+import { AgoText } from "@/shared/ui/AgoText";
 import { CodeText } from "@/shared/ui/CodeText";
 import { PageHeader } from "@/shared/ui/PageHeader";
 import { useClients, useRenameClient, type Client } from "./api";
@@ -53,7 +54,7 @@ export function ClientsPage() {
       render: (s: string) => (s === "void" ? <Tag>{statusLabel("void")}</Tag> : <Tag color={statusColor("bound")}>{statusLabel("bound")}</Tag>),
     },
     { title: "最近使用人", key: "user", width: 170, render: (_, row) => userLabel(row) },
-    { title: "最近使用", dataIndex: "lastUsedAt", width: 160, render: (v?: string) => formatTime(v) },
+    { title: "最近使用", dataIndex: "lastUsedAt", width: 110, render: (v?: string) => <AgoText value={v} /> },
     { title: "累计焊长", dataIndex: "weldLengthMm", width: 110, render: (v: number) => (v ? formatLengthM(v) : "—") },
     { title: "焊次", dataIndex: "weldRunCount", width: 80, render: (v: number) => v || "—" },
     { title: "分配时间", dataIndex: "boundAt", width: 160, render: (v: string) => formatTime(v) },

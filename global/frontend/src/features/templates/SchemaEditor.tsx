@@ -1,5 +1,5 @@
 import { HolderOutlined } from "@ant-design/icons";
-import { Button, Checkbox, Input, Select, Typography } from "antd";
+import { Button, Checkbox, Input, Popconfirm, Select, Typography } from "antd";
 import { useId, useState, type DragEvent } from "react";
 import { DraftInput } from "./ContentFields";
 import { enumDefault, enumOptions, kindOf, type ContentSchema, type Kind, type TemplateField } from "./schema";
@@ -235,9 +235,11 @@ function FieldEditor({
       </div>
       <div className="sc-del">
         {onRemove ? (
-          <Button size="small" type="text" danger onClick={onRemove}>
-            删
-          </Button>
+          <Popconfirm title={`删除字段「${field.label || field.key || "未命名"}」？`} okText="删除" okButtonProps={{ danger: true }} onConfirm={onRemove}>
+            <Button size="small" type="text" danger>
+              删
+            </Button>
+          </Popconfirm>
         ) : null}
       </div>
       {kind === "enum" ? (

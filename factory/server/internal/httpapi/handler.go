@@ -28,7 +28,6 @@ type Handler struct {
 	OSSProbe       func(context.Context) error // 探对象存储是否在线；空表示本厂未接 OSS
 	ClientMQTTURL  string                      // 回给平板的 MQTT 地址；空则按请求主机拼
 	ClientMQTTPort string                      // 登录回包 MQTT 端口；空则 52184
-	logins         *loginGuard                 // 网页和示教器登录的失败限速
 }
 
 // clientMQTTURL 登录回给平板的 Broker 地址；显式配置优先，否则用本次请求主机。
@@ -57,8 +56,7 @@ func (h *Handler) clientMQTTURL(r *http.Request) string {
 
 // New 组装厂内 HTTP 适配器。
 func New(h *hub.Hub, wanURL string) *Handler {
-	// 组装适配器，登录限速表随它一起起步为空。
-	return &Handler{Hub: h, WANURL: wanURL, Version: "dev", VersionCode: release.Code, VersionName: release.Name, logins: newLoginGuard()}
+	return &Handler{Hub: h, WANURL: wanURL, Version: "dev", VersionCode: release.Code, VersionName: release.Name}
 }
 
 // Router 只装配探活、建厂引导和各域路由；未知 API 路径统一回 JSON 404。

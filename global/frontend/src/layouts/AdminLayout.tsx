@@ -13,12 +13,20 @@ export function AdminLayout() {
   const { pathname } = useLocation();
   const navigate = useNavigate();
   const [collapsed, setCollapsed] = useState(false);
+  // 菜单组展开状态受控：换页时把当前页所在的组并进去，从别处跳进折叠组也能看到当前项。
+  const [openKeys, setOpenKeys] = useState<string[]>(() => openGroupFor(pathname));
+  const [openedFor, setOpenedFor] = useState(pathname);
+  if (openedFor !== pathname) {
+    setOpenedFor(pathname);
+    const group = openGroupFor(pathname);
+    if (group.some((k) => !openKeys.includes(k))) setOpenKeys([...openKeys, ...group]);
+  }
   const me = useMe();
   const logout = useLogout();
 
   return (
     <Layout className="admin-layout">
-      <Layout.Sider collapsible collapsed={collapsed} onCollapse={setCollapsed} width={232}>
+      <Layout.Sider collapsible collapsed={collapsed} onCollapse={setCollapsed} breakpoint="lg" width={232}>
         <div className="admin-brand">{collapsed ? "WM" : "WMesh 云端总控"}</div>
         <Menu
           theme="dark"
@@ -28,7 +36,8 @@ export function AdminLayout() {
           onClick={({ key }) => {
             if (key.startsWith("/")) navigate(key);
           }}
-          defaultOpenKeys={collapsed ? undefined : openGroupFor(pathname)}
+          openKeys={openKeys}
+          onOpenChange={setOpenKeys}
         />
       </Layout.Sider>
       <Layout>

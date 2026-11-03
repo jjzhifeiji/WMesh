@@ -1,5 +1,5 @@
 import { HolderOutlined } from "@ant-design/icons";
-import { Button, Input, InputNumber, Space, Switch, Typography } from "antd";
+import { Button, Input, InputNumber, Popconfirm, Space, Switch, Typography } from "antd";
 import { useRef, useState, type DragEvent } from "react";
 import { defaultItemFromFields, type ContentSchema, type TemplateField } from "@/features/templates/schema";
 import {
@@ -364,9 +364,18 @@ export function ProjectWeldEditor({
                 添加焊道
               </Button>
             )}
-            <Button size="small" danger disabled={!hasWeld} onClick={() => remove(idx)}>
-              {kind === WELD_MULTI ? "删除多层焊道" : "删除焊道"}
-            </Button>
+            <Popconfirm
+              title={`删除「${str(welds[idx]?.name) || `焊道 ${idx + 1}`}」？`}
+              description="点位和工艺绑定一起删掉；不保存就不生效。"
+              okText="删除"
+              okButtonProps={{ danger: true }}
+              disabled={!hasWeld}
+              onConfirm={() => remove(idx)}
+            >
+              <Button size="small" danger disabled={!hasWeld}>
+                {kind === WELD_MULTI ? "删除多层焊道" : "删除焊道"}
+              </Button>
+            </Popconfirm>
           </div>
         )}
         {welds.length === 0 ? (
@@ -848,18 +857,22 @@ function PassSlots({
             />
             <Typography.Text type="secondary">{isOn(row.isEnabled) ? "焊接" : "跳过"}</Typography.Text>
             {disabled ? null : (
-              <Button
-                size="small"
-                type="text"
-                danger
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onChange(rows.filter((_, j) => j !== i));
-                  onSelect?.(-1);
-                }}
-              >
-                删除焊道层
-              </Button>
+              // 确认框按 React 树冒泡，包一层挡住，免得点按钮或确认时顺带选中这一层。
+              <span onClick={(e) => e.stopPropagation()}>
+                <Popconfirm
+                  title={`删除「${str(row.name) || `第 ${i + 1} 道`}」？`}
+                  okText="删除"
+                  okButtonProps={{ danger: true }}
+                  onConfirm={() => {
+                    onChange(rows.filter((_, j) => j !== i));
+                    onSelect?.(-1);
+                  }}
+                >
+                  <Button size="small" type="text" danger>
+                    删除焊道层
+                  </Button>
+                </Popconfirm>
+              </span>
             )}
           </Space>
           <div style={{ marginTop: 4 }}>{processSelect(str(row.processId), processOptions, disabled, (id) => patch(i, { ...row, processId: id }))}</div>
@@ -886,6 +899,26 @@ function PassSlots({
       )}
     </div>
   );
+}
+
+// badGapBands 找出最小间隙大于最大间隙的间隙带，保存前拦下；正文不是焊道数组时不管，交给其他校验。
+export function badGapBands(content: unknown): string | null {
+  if (typeof content !== "string" || !content) return null;
+  let welds: unknown;
+  try {
+    welds = JSON.parse(content);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(welds)) return null;
+  for (const [wi, w] of welds.entries()) {
+    const weld = asObj(w);
+    for (const [bi, b] of asArr(weld.gapBands).entries()) {
+      const band = asObj(b);
+      if (num(band.minGap) > num(band.maxGap)) return `「${str(weld.name) || `焊道 ${wi + 1}`}」第 ${bi + 1} 条间隙带最小值大于最大值`;
+    }
+  }
+  return null;
 }
 
 function BandSlots({
@@ -915,10 +948,13 @@ function BandSlots({
             <InputNumber size="small" style={{ width: 110 }} addonBefore="最大" min={0} step={0.1} value={num(row.maxGap)} disabled={disabled} onChange={(v) => patchNum(i, row, "maxGap", v)} />
             <InputNumber size="small" style={{ width: 90 }} addonBefore="层" min={1} precision={0} value={num(row.layer) || 1} disabled={disabled} onChange={(v) => patchNum(i, row, "layer", v)} />
             {disabled ? null : (
-              <Button size="small" type="text" danger onClick={() => onChange(rows.filter((_, j) => j !== i))}>
-                删
-              </Button>
+              <Popconfirm title="删除这条间隙带？" okText="删除" okButtonProps={{ danger: true }} onConfirm={() => onChange(rows.filter((_, j) => j !== i))}>
+                <Button size="small" type="text" danger>
+                  删
+                </Button>
+              </Popconfirm>
             )}
+            {num(row.minGap) > num(row.maxGap) ? <Typography.Text type="danger">最小大于最大</Typography.Text> : null}
           </Space>
           <div style={{ marginTop: 4 }}>
             <Typography.Text type="secondary">打底</Typography.Text>

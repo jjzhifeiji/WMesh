@@ -16,7 +16,6 @@ import (
 	"wmesh/factory/internal/platform/id"
 	"wmesh/factory/internal/platform/nodekey"
 	factory "wmesh/factory/internal/service"
-	"wmesh/factory/internal/store"
 )
 
 // 假的下行通道，只把推送记下来不真发出去。
@@ -35,20 +34,6 @@ func (r *recDown) PublishDown(factoryID, clientID uuid.UUID, payload []byte) {
 	r.msgs = append(r.msgs, append([]byte(nil), payload...))
 	// 放开记录锁，不放则会把下一次读堵住。
 	r.mu.Unlock()
-}
-
-// 取出最近一封下行，还没有说明通道没收到。
-func (r *recDown) last() []byte {
-	// 先锁住下行记录，避免并发把推送写乱。
-	r.mu.Lock()
-	// 收尾时放开锁，中途返回也不会把记录堵死。
-	defer r.mu.Unlock()
-	// 一条都没有就交回空，表示这一步还没有数据。
-	if len(r.msgs) == 0 {
-		return nil
-	}
-	// 交回最近一封下行，调用方用它核对推送。
-	return r.msgs[len(r.msgs)-1]
 }
 
 // 从新到旧找验得过的下行，没有则推送对不上。
@@ -100,8 +85,8 @@ func TestClientChannelPullAndPolicyFanout(t *testing.T) {
 	sa := mustLogin(t, ctx, fac, "sa", "sa-pass")
 	// 建管理员，厂级工艺工程由它起草发布。
 	pe := mustCreateRole(t, ctx, fac, sa, "pe", "pe-pass", factory.RoleOrgAdmin)
-	// 建操作员，示教器登录、拉包和下发都用它。
-	op := mustCreateRole(t, ctx, fac, sa, "op", "op-pass", factory.RoleOperator)
+	// 建操作员，示教器登录和拉包都用它。
+	mustCreateRole(t, ctx, fac, sa, "op", "op-pass", factory.RoleOperator)
 
 	// 接上只记录的下行通道，用来看有没有真推送。
 	down := &recDown{}
@@ -176,11 +161,6 @@ func TestClientChannelPullAndPolicyFanout(t *testing.T) {
 		// 把发布的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
-	// 授权工程失败就停，否则后面没有可靠结果。
-	if err := fac.GrantClientProject(ctx, sa, proj.ID, cid); err != nil {
-		// 把授权工程的错误打出来并停住，避免继续往下验。
-		t.Fatal(err)
-	}
 
 	// 不存在的资产拉包应交回不存在，放行说明没拦住。
 	if _, err := fac.PadPullClientClosure(ctx, sess.Token, id.New()); !errors.Is(err, domain.ErrNotFound) {
@@ -218,36 +198,20 @@ func TestClientChannelPullAndPolicyFanout(t *testing.T) {
 		// 把拆信封的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
-	// 建立一只空的本地工艺包，失败则无法装包。
-	pouch := factory.NewPouch()
-	// 登录本机袋失败就停，否则后面没有可靠结果。
-	if err := pouch.Login(sess.UnwrapKey, sess.Account.ID, false); err != nil {
-		// 把登录本机袋的错误打出来并停住，避免继续往下验。
-		t.Fatal(err)
-	}
-	// 逐条检查这一批结果，任一条偏离即判失败。
+	// 在解开的成员里找工程本身，找不到说明组包丢了根。
+	var root []byte
+	// 逐条比对身份，命中工程就留下它的明文。
 	for _, m := range opened.Members {
-		// 较新才写入明文，失败说明修订比较被拒。
-		ok, err := pouch.PutPlainIfNewer(m.ID, m.Level, m.Name, m.Revision, m.CreatorID, m.Content)
-		// 写较新明文失败或结果不符就停，说明没达预期。
-		if err != nil || !ok {
-			// 断言没通过就停，结果和这条用例的预期不一致。
-			t.Fatalf("put %v %v", ok, err)
+		// 只认工程这一条。
+		if m.ID == proj.ID {
+			// 记下工程明文，后面核对它点名的工艺。
+			root = m.Content
 		}
 	}
-	// 从本机袋打开这份稿，失败说明没登录或没有这份。
-	root, err := pouch.Open(proj.ID)
-	// 开袋内稿失败或正文不同就停，说明没达预期。
-	if err != nil || !bytes.Contains(root, []byte(proc.ID.String())) {
+	// 工程明文应点名刚造的工艺，否则拆出来的不是这一版。
+	if !bytes.Contains(root, []byte(proc.ID.String())) {
 		// 断言没通过就停，结果和这条用例的预期不一致。
-		t.Fatalf("pouch %s %v", root, err)
-	}
-	// 较新才写入明文，失败说明修订比较被拒。
-	ok, err := pouch.PutPlainIfNewer(proj.ID, store.AssetLevelFactory, "工程", proj.Revision, nil, []byte("old"))
-	// 写较新明文失败或结果不符就停，说明没达预期。
-	if err != nil || ok {
-		// 旧修订盖住了新稿，说明先后比较写反了。
-		t.Fatalf("stale overwrite %v %v", ok, err)
+		t.Fatalf("opened root %s", root)
 	}
 
 	// 读取示教器收件箱，失败说明会话失效。
@@ -287,31 +251,5 @@ func TestClientChannelPullAndPolicyFanout(t *testing.T) {
 		in.MaxCachedProjects != 4 || !in.PersistUnwrapKey || in.KeyTTLSeconds != 60 {
 		// 断言没通过就停，结果和这条用例的预期不一致。
 		t.Fatalf("limit fanout %+v %v %s", in, err, raw)
-	}
-
-	// 签发授权失败就停，否则后面没有可靠结果。
-	if _, err := fac.IssueRuntimeGrant(ctx, sa, cid, 1); err != nil {
-		// 把签发授权的错误打出来并停住，避免继续往下验。
-		t.Fatal(err)
-	}
-	// 装一只在线包，字段错了通道用例会对不上。
-	bag := factory.Bag{ClientID: cid, Connected: true}
-	// 下发到端失败就停，否则后面没有可靠结果。
-	if err := fac.DistributeToClient(ctx, op.tok, proj.ID, cid, &bag, factory.Clocks{}); err != nil {
-		t.Fatal(err)
-	}
-	// 取最近一条下行，空的说明通道还没收到。
-	raw = down.last()
-	// 传输形态应是信封或明文中的预期那种，反了即失败。
-	if clientmqtt.HasBody(raw) {
-		// 断言没通过就停，结果和这条用例的预期不一致。
-		t.Fatalf("closure mqtt %s", raw)
-	}
-	// 核对下行签名，验不过说明信封不是这台的。
-	cin, err := clientmqtt.Verify(sess.SigningPublicKey, fac.Store().FactoryID(), cid, raw)
-	// 验下行签失败或结果不符就停，说明没达预期。
-	if err != nil || cin.Typ != clientmqtt.TypClosure || cin.AssetID != proj.ID.String() {
-		// 断言没通过就停，结果和这条用例的预期不一致。
-		t.Fatalf("closure intent %+v %v", cin, err)
 	}
 }

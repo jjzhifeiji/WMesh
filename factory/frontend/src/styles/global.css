@@ -45,8 +45,11 @@ body,
 
 .fs-explorer {
   display: grid;
-  grid-template-columns: minmax(140px, 15%) minmax(180px, 22%) minmax(0, 1fr);
-  min-height: calc(100vh - 200px);
+  /* 树栏宽度可拖，拖过后由 --fs-tree-w 覆盖默认。 */
+  grid-template-columns: var(--fs-tree-w, minmax(200px, 20%)) minmax(180px, 22%) minmax(0, 1fr);
+  /* 定高让三栏各自滚动；目录多了不把整页撑长。 */
+  height: calc(100vh - 200px);
+  min-height: 480px;
   border: 1px solid #f0f0f0;
   border-radius: 8px;
   overflow: hidden;
@@ -130,6 +133,11 @@ body,
   background: #f5f7f6;
 }
 
+/* 层级深时少吃宽度，名字多露几个字。 */
+.fs-tree .ant-tree-indent-unit {
+  width: 16px;
+}
+
 .fs-tree .ant-tree-treenode {
   align-items: center;
   white-space: nowrap;
@@ -142,26 +150,36 @@ body,
   align-items: center;
 }
 
-.fs-tree .ant-tree-node-content-wrapper,
-.fs-tree .ant-tree-title {
-  min-width: 0;
-  max-width: 100%;
-  overflow: hidden;
+/* 名字不截断；树比栏宽时在栏内横向滚动。 */
+.fs-tree .ant-tree {
+  width: max-content;
+  min-width: 100%;
 }
 
 .fs-tree-title {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  min-width: 0;
-  max-width: 100%;
   white-space: nowrap;
 }
 
-.fs-tree-name {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
+.fs-tree {
+  position: relative;
+}
+
+.fs-tree-resize {
+  position: absolute;
+  top: 0;
+  right: 0;
+  z-index: 2;
+  width: 6px;
+  height: 100%;
+  cursor: col-resize;
+}
+
+.fs-tree-resize:hover,
+.fs-tree-resize.is-active {
+  background: rgba(22, 119, 255, 0.25);
 }
 
 .fs-tree-count {
@@ -181,6 +199,14 @@ body,
 
 .fs-tree-body {
   padding: 8px;
+}
+
+/* 细淡滚动条：Windows 默认的又粗又灰，会吃掉窄栏一截。 */
+.fs-tree-body,
+.fs-list-body,
+.fs-detail-body {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0, 0, 0, 0.22) transparent;
 }
 
 .fs-list-body {
@@ -481,21 +507,25 @@ body,
 
 
 
+/* 窄屏时操作按钮整行换到标题下，标题不被挤成一字一行。 */
 .page-header {
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 16px;
+  gap: 12px 16px;
   margin-bottom: 16px;
 }
 
 .page-header > :first-child {
   min-width: 0;
-  flex: 1;
+  flex: 1 1 280px;
 }
 
 .page-header > .ant-space {
   flex: none;
+  flex-wrap: wrap;
+  max-width: 100%;
 }
 
 .auth-layout {

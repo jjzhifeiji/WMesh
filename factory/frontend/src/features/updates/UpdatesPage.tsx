@@ -1,7 +1,8 @@
 import { App, Button, Card, Modal, Popconfirm, Progress, Space, Table, Tag, type TableColumnsType } from "antd";
 import { useState } from "react";
 import { errorMessage } from "@/shared/api/client";
-import { formatBytes, formatTime, shortHash } from "@/shared/format";
+import { formatBytes, formatTime } from "@/shared/format";
+import { HashText } from "@/shared/ui/HashText";
 import {
   softwareKindLabel,
   useCurrentFactorySoftware,
@@ -137,7 +138,7 @@ export function UpdatesPanel() {
   const detailCols: TableColumnsType<FactorySoftwareRow> = [
     { title: "版本号", dataIndex: "version", width: 90 },
     { title: "版本名", dataIndex: "versionName" },
-    { title: "摘要", dataIndex: "digest", width: 140, render: (v: string) => shortHash(v) },
+    { title: "摘要", dataIndex: "digest", width: 160, render: (v: string) => <HashText value={v} /> },
     { title: "收到时间", dataIndex: "receivedAt", width: 170, render: (v: string) => formatTime(v) },
     { title: "状态", dataIndex: "keep", width: 110, render: (v: string) => keepTag(v) },
     {
@@ -153,6 +154,7 @@ export function UpdatesPanel() {
             onConfirm={async () => {
               try {
                 await del.mutateAsync({ kind: row.kind, version: row.version });
+                message.success(`已删除 ${row.versionName || `v${row.version}`}`);
               } catch (e) {
                 message.error(errorMessage(e));
               }

@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"net"
 	"net/http"
 
 	"wmesh/factory/internal/service"
@@ -79,16 +80,8 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 			writeBadRequest(w, err)
 			return
 		}
-		// 承接会话令牌，限速放行且口令对才有。
-		var token string
-		// 锁着就直接拒绝；口令错计数，连错太多次锁五分钟。
-		err := h.guardLogin(r, req.LoginName, func() error {
-			// 校验口令并开会话，失败不把口令记下。
-			t, err := svc.Auth.Login(r.Context(), req.LoginName, req.Password)
-			// 记下令牌，成功时交回。
-			token = t
-			return err
-		})
+		// 校验口令并开会话，失败不把口令记下。
+		token, err := svc.Auth.Login(service.WithClientIP(r.Context(), remoteIP(r)), req.LoginName, req.Password)
 		// 上一步没通过则停止，不把失败写成成功。
 		if err != nil {
 			// 把失败译成状态回给调用方，不写成功。
@@ -153,4 +146,15 @@ func (h *Handler) changePassword(w http.ResponseWriter, r *http.Request) {
 		// 办理成功，且没有正文需要返回。
 		w.WriteHeader(http.StatusNoContent)
 	})
+}
+
+// 取直连对端地址给登录限速用；不信转发头，免得被伪造来源绕过。
+func remoteIP(r *http.Request) string {
+	// 拆出主机部分，端口不参与计数
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	// 拆不开就原样用，至少不会空
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
 }

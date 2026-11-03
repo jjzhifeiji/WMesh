@@ -4,12 +4,16 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"strings"
 	"unicode/utf8"
 
 	"gorm.io/gorm"
 
 	"wmesh/factory/internal/platform/domain"
 )
+
+// 包角口令最长字数，挡住误贴的大段文本。
+const maxCornerPassword = 64
 
 const (
 	CacheScopeAll     = "all"     // 该人获准的全部工程（仍受上限）
@@ -24,7 +28,7 @@ type ClientPolicy struct {
 	PersistUnwrapKey  bool            `json:"persistUnwrapKey"`  // 解封钥可否落盘；退出或登录到期必清
 	KeyTTLSeconds     int64           `json:"keyTtlSeconds"`     // 登录时效秒；0 表示直到退出，进程内不踢
 	EncryptPouch      bool            `json:"encryptPouch"`      // 本机袋是否 SQLCipher；关则明文 SQLite
-	CornerPassword    string          `json:"cornerPassword"`    // T 排/包角口令；空表示未设，示教器从顶层读
+	CornerPassword    string          `json:"cornerPassword"`    // 包角二次确认口令，示教器离线也按这份核对
 	Extra             json.RawMessage `json:"extra"`             // 本厂扩展键；Client 忽略未知
 }
 
@@ -37,7 +41,7 @@ type factorySettingsRow struct {
 	PersistUnwrapKey  bool            `gorm:"column:persist_unwrap_key;not null"`  // 解封钥可否落盘
 	KeyTTLSeconds     int64           `gorm:"column:key_ttl_seconds;not null"`     // 登录时效秒
 	EncryptPouch      bool            `gorm:"column:encrypt_pouch;not null"`       // 本机袋是否加密
-	CornerPassword    string          `gorm:"column:corner_password;not null"`     // T 排/包角口令
+	CornerPassword    string          `gorm:"column:corner_password;not null"`     // 包角二次确认口令
 	Extra             json.RawMessage `gorm:"column:extra;type:jsonb;not null"`    // 扩展键
 }
 
@@ -137,9 +141,7 @@ func policyFromRow(row factorySettingsRow) (ClientPolicy, error) {
 	}, nil
 }
 
-const maxCornerPassword = 64 // T 排/包角口令最多字数
-
-// 上限、范围、时效和口令长度不合法则拒绝写入。
+// 上限、范围和时效不合法则拒绝写入。
 func assertClientPolicy(in ClientPolicy) error {
 	// 缓存上限至少为一，否则拒绝写入。
 	if in.MaxCachedProjects < 1 {
@@ -153,9 +155,9 @@ func assertClientPolicy(in ClientPolicy) error {
 	if in.KeyTTLSeconds < 0 {
 		return domain.ErrForbidden
 	}
-	// 口令最多 64 个字，太长按名字不合法拒绝。
-	if utf8.RuneCountInString(in.CornerPassword) > maxCornerPassword {
-		return domain.ErrInvalidName
+	// 包角口令不能为空，也不能超过 64 字。
+	if n := utf8.RuneCountInString(in.CornerPassword); strings.TrimSpace(in.CornerPassword) == "" || n > maxCornerPassword {
+		return domain.ErrForbidden
 	}
 	return nil
 }

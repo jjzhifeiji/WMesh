@@ -22,7 +22,7 @@ type clientPolicyPutReq struct {
 	PersistUnwrapKey  bool            `json:"persistUnwrapKey"`  // 解封钥可否落盘
 	KeyTTLSeconds     int64           `json:"keyTtlSeconds"`     // 登录时效秒；0 表示直到退出
 	EncryptPouch      *bool           `json:"encryptPouch"`      // 本机袋是否 SQLCipher；省略则保留
-	CornerPassword    *string         `json:"cornerPassword"`    // T 排/包角口令；省略则保留，空串表示清掉
+	CornerPassword    *string         `json:"cornerPassword"`    // 包角二次确认口令；省略则保留
 	Extra             json.RawMessage `json:"extra"`             // 本厂扩展键；可省略则保留原值
 }
 
@@ -70,11 +70,11 @@ func (h *Handler) putClientPolicy(w http.ResponseWriter, r *http.Request) {
 			// 调用方这次明确改了是否加密库。
 			encrypt = *req.EncryptPouch
 		}
-		// 没带口令就保持原来的，免得改别的项时把口令清掉。
+		// 没带包角口令就保持原来的。
 		corner := cur.CornerPassword
-		// 这次写了口令才覆盖，空串表示清掉。
+		// 这次写了包角口令才覆盖，没写就保留。
 		if req.CornerPassword != nil {
-			// 调用方这次明确改了口令。
+			// 调用方这次明确改了包角口令。
 			corner = *req.CornerPassword
 		}
 		// 超管改策略并升高修订，随后推给设备。

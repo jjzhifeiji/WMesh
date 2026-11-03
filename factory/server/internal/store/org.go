@@ -272,7 +272,6 @@ func (s *Store) DeleteOrgUnit(ctx context.Context, unitID uuid.UUID) error {
 		}{
 			{&OrgUnit{}, "parent_id = ?", []any{unitID}},
 			{&Person{}, "org_unit_id = ?", []any{unitID}},
-			{&factRow{}, "org_unit_id = ?", []any{unitID}},
 		}
 		// 逐条处理，避免漏掉还要读或还要写的行。
 		for _, c := range checks {

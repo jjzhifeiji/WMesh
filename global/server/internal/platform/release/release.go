@@ -2,6 +2,6 @@
 package release
 
 const (
-	Code int64 = 32       // 版本号，只向前比较
-	Name       = "1.0.31" // 给人看的版本名
+	Code int64 = 35       // 版本号，只向前比较
+	Name       = "1.0.34" // 给人看的版本名
 )

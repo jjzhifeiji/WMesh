@@ -1,5 +1,6 @@
 import { App, Button, Form, Input, Modal, Space, Table } from "antd";
 import { useCallback, useEffect, useState, type MutableRefObject } from "react";
+import { useConfirmDiscard } from "@/shared/ui/confirmDiscard";
 import type { ContentTemplate } from "./api";
 import { SchemaEditor } from "./SchemaEditor";
 import type { ContentSchema } from "./schema";
@@ -96,8 +97,9 @@ export function ProjectTemplateEditor({
             setIsNew(false);
           }}
           onOk={async (name, schema) => {
+            // 撞过修订冲突后列表已重取，按最新修订再存，不然一直按打开时的旧修订失败。
             if (isNew) await onCreate(name, schema);
-            else await onSave(editing, name, schema);
+            else await onSave(rows.find((r) => r.id === editing.id) ?? editing, name, schema);
             setEditing(null);
             setIsNew(false);
           }}
@@ -124,12 +126,15 @@ function EditModal({
 }) {
   const [form] = Form.useForm<{ name: string }>();
   const [schema, setSchema] = useState<ContentSchema>({ root: "object", fields: value.schema?.fields ?? [] });
+  const [schemaTouched, setSchemaTouched] = useState(false);
+  const confirmDiscard = useConfirmDiscard();
 
   return (
     <Modal
       title={isNew ? "新建模版" : "编辑模版"}
       open
-      onCancel={onCancel}
+      onCancel={() => confirmDiscard(schemaTouched || form.isFieldsTouched(), onCancel)}
+      mask={{ closable: false }}
       destroyOnHidden
       okText="确定"
       width={920}
@@ -158,7 +163,14 @@ function EditModal({
           <Input />
         </Form.Item>
       </Form>
-      <SchemaEditor value={schema} onChange={setSchema} allowProcess />
+      <SchemaEditor
+        value={schema}
+        onChange={(next) => {
+          setSchema(next);
+          setSchemaTouched(true);
+        }}
+        allowProcess
+      />
     </Modal>
   );
 }

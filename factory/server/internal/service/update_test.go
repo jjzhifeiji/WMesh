@@ -1,4 +1,4 @@
-// 软件更新服务层矩阵：厂自拉、确认、本机袋。
+// 软件更新服务层矩阵：厂自拉与确认。
 package service_test
 
 import (
@@ -8,23 +8,18 @@ import (
 	"strconv"
 	"sync"
 	"testing"
-	"time"
-
-	"github.com/google/uuid"
 
 	"wmesh/factory/internal/platform/audit"
 	"wmesh/factory/internal/platform/blob"
 	"wmesh/factory/internal/platform/digest"
 	"wmesh/factory/internal/platform/domain"
-	"wmesh/factory/internal/platform/id"
-	"wmesh/factory/internal/platform/nodekey"
 	factory "wmesh/factory/internal/service"
 )
 
 // 本文件要跑完的更新编号，漏跑就在收尾报错
 var matrixSoftwareIDs = []string{
-	"U2", "U3", "U4", "U5", "U8", "U9", "U10", "U11", "U12", "U13",
-	"U14", "U16", "U17", "U19", "U20", "U21", "U22", "U23", "U28", "U29", "U30", "U31",
+	"U2", "U3", "U4", "U5", "U8", "U12", "U13",
+	"U14", "U16", "U17", "U19", "U20", "U21", "U28", "U29", "U30", "U31",
 }
 
 // 内存里的软件源，用来代替云端拉取
@@ -129,7 +124,7 @@ func TestMatrixSoftware(t *testing.T) {
 	// 起一套测试库和厂服务，起不来则本例无法开始
 	h := New(t)
 	// 建厂并种初始超管，失败则本步验收不能继续
-	seedA, facA, err := h.Provision(ctx, "sa-a", "超管A")
+	_, facA, err := h.Provision(ctx, "sa-a", "超管A")
 	// 建厂并种初始超管失败就停，避免带着错误继续验
 	if err != nil {
 		// 建厂并种初始超管失败就把原因打出并停掉本例
@@ -151,13 +146,6 @@ func TestMatrixSoftware(t *testing.T) {
 	}
 	// 建人并授角色，失败则夹具缺这个身份
 	op := mustCreateRole(t, ctx, facA, saA, "op-a", "op-pass", factory.RoleOperator)
-	// 建人并授角色，失败则夹具缺这个身份
-	pe := mustCreateRole(t, ctx, facA, saA, "pe-a", "pe-pass", factory.RoleOperator)
-	// 取当前时刻，用来核对令牌或凭证是否过期
-	now := time.Now().UTC()
-	// 服务器和本机同一时刻，避免时钟本身造成拒绝
-	clocks := factory.Clocks{Server: now, Local: now}
-
 	// 用内存源代替云端，没有报价就当没发布
 	src := &memSource{}
 	// 拼一份软件报价，摘要错则拉取会被拒
@@ -200,18 +188,8 @@ func TestMatrixSoftware(t *testing.T) {
 			t.Fatalf("got %v", err)
 		}
 	})
-	// 留出焊接中的袋，确认安装时应当被拒
-	var weldingBag factory.Bag
 	// 验收超管确认后厂服务换成新版本，没换即失败
 	run("U4", func(t *testing.T) {
-		// 装好带凭证的本机袋，失败则不能确认更新
-		cid, bag := boundBag(t, ctx, facA, saA, seedA.ID, op.acc.ID)
-		// 焊机号这里不拿来断言，绑定失败则前面已停
-		_ = cid
-		// 标成正在焊接，这时切换或安装应当被拒
-		bag.Welding = true
-		// 记下这只正在焊接的袋，确认时应当拒绝安装
-		weldingBag = bag
 		// 设定这一步的落地结果，用来验失败是否回滚
 		facA.Updates.SetApplyOutcome(factory.ApplyOK)
 		// 确认厂服务更新失败就停，避免带着错误继续验
@@ -227,21 +205,6 @@ func TestMatrixSoftware(t *testing.T) {
 			t.Fatalf("installed %d %v", got, err)
 		}
 	})
-	// 验收厂服务重启不把正在焊记成停焊，记错即失败
-	run("U22", func(t *testing.T) {
-		// 焊接标记不对就失败，该拒的操作被放行
-		if !weldingBag.Welding {
-			// 焊接标记被清掉就失败，应当继续焊
-			t.Fatal("welding cleared")
-		}
-		// 按时钟判定运行凭证，没成功则本步验收失败
-		ev := factory.EvaluateRuntime(weldingBag, clocks, factory.NodeContinue)
-		// 重启时正在焊必须允许继续，记成停焊即失败
-		if ev.Decision != factory.NodeContinueWeld && ev.Decision != factory.NodeAllow {
-			// 焊接中的判定不对就失败
-			t.Fatalf("weld decision %v", ev.Decision)
-		}
-	})
 	// 验收厂能拉到最高客户端包，存储里没有即失败
 	run("U8", func(t *testing.T) {
 		// 拼一份软件报价，摘要错则拉取会被拒
@@ -250,54 +213,6 @@ func TestMatrixSoftware(t *testing.T) {
 		if _, err := facA.SyncFactorySoftware(ctx, saA, factory.SoftwareClientAPK); err != nil {
 			// 从源拉取厂内软件失败就把原因打出并停掉本例
 			t.Fatal(err)
-		}
-	})
-	// 装好带凭证的本机袋，失败则不能确认更新
-	cid1, bag1 := boundBag(t, ctx, facA, saA, seedA.ID, op.acc.ID)
-	// 装好带凭证的本机袋，失败则不能确认更新
-	_, bag2 := boundBag(t, ctx, facA, saA, seedA.ID, pe.acc.ID)
-	// 焊机号这里不拿来断言，绑定失败则前面已停
-	_ = cid1
-	// 验收空闲且已登录可以确认安装，确认失败即不过
-	run("U9", func(t *testing.T) {
-		// 确认客户端更新失败就停，避免带着错误继续验
-		if err := facA.ConfirmClientUpdate(ctx, &bag1, clocks, 3); err != nil {
-			// 确认客户端更新失败就把原因打出并停掉本例
-			t.Fatal(err)
-		}
-		// 版本必须是期望值，指错包即失败
-		if bag1.SoftwareVersion != 3 {
-			// 版本不对就失败，否则失败
-			t.Fatalf("ver %d", bag1.SoftwareVersion)
-		}
-	})
-	// 验收焊接中确认安装被拒，装上即失败
-	run("U10", func(t *testing.T) {
-		// 标成正在焊接，这时切换或安装应当被拒
-		bag2.Welding = true
-		// 期望确认客户端更新被拒为越权，放行即失败
-		if err := facA.ConfirmClientUpdate(ctx, &bag2, clocks, 3); !errors.Is(err, domain.ErrForbidden) {
-			// 没拒成越权就失败，并打出实际错误
-			t.Fatalf("got %v", err)
-		}
-		// 版本必须是期望值，指错包即失败
-		if bag2.SoftwareVersion != 0 {
-			// 焊接中却装上了更新，应当被拒
-			t.Fatal("installed while welding")
-		}
-		// 标成没在焊接，再验过期或未登录被拒
-		bag2.Welding = false
-	})
-	// 验收未登录不能安装，装上即失败
-	run("U11", func(t *testing.T) {
-		// 拷一份袋再清登录，用来验未登录不能安装
-		loggedOut := bag2
-		// 清掉操作员，用来验未登录不能安装
-		loggedOut.OperatorID = nil
-		// 期望确认客户端更新被拒为越权，放行即失败
-		if err := facA.ConfirmClientUpdate(ctx, &loggedOut, clocks, 3); !errors.Is(err, domain.ErrForbidden) {
-			// 没拒成越权就失败，并打出实际错误
-			t.Fatalf("got %v", err)
 		}
 	})
 	// 验收暂不更新后仍可再提示且未装，装上即失败
@@ -316,19 +231,6 @@ func TestMatrixSoftware(t *testing.T) {
 			// 从源拉取厂内软件失败就把原因打出并停掉本例
 			t.Fatal(err)
 		}
-		// 版本必须是期望值，指错包即失败
-		if bag2.SoftwareVersion != 0 {
-			// 没确认的那台平板版本变了，应当仍旧
-			t.Fatal("unconfirmed tablet changed")
-		}
-	})
-	// 验收只确认一台时另一台仍是旧版，一起变即失败
-	run("U23", func(t *testing.T) {
-		// 版本必须是期望值，指错包即失败
-		if bag1.SoftwareVersion != 3 || bag2.SoftwareVersion != 0 {
-			// 两种结果混在一起就失败
-			t.Fatalf("mixed %d %d", bag1.SoftwareVersion, bag2.SoftwareVersion)
-		}
 	})
 	// 验收待确认时拉到更高版本，提示没改即失败
 	run("U14", func(t *testing.T) {
@@ -338,11 +240,6 @@ func TestMatrixSoftware(t *testing.T) {
 		if _, err := facA.SyncFactorySoftware(ctx, saA, factory.SoftwareClientAPK); err != nil {
 			// 从源拉取厂内软件失败就把原因打出并停掉本例
 			t.Fatal(err)
-		}
-		// 期望确认客户端更新被拒为修订已过时，放行即失败
-		if err := facA.ConfirmClientUpdate(ctx, &bag2, clocks, 4); !errors.Is(err, domain.ErrStaleRevision) {
-			// 没拒成修订已过时就失败，并打出实际错误
-			t.Fatalf("got %v", err)
 		}
 	})
 	// 验收可以删掉不是已装的旧包，删不掉即失败
@@ -615,51 +512,6 @@ func TestMatrixSoftware(t *testing.T) {
 		// 确认没有留下审计就失败
 		t.Fatal("missing confirm audit")
 	}
-}
-
-// 绑定焊机并装上运行袋，失败则不能确认更新
-func boundBag(t *testing.T, ctx context.Context, fac *factory.Service, sa string, factoryID, personID uuid.UUID) (uuid.UUID, factory.Bag) {
-	// 标成辅助函数，失败栈落到调用方
-	t.Helper()
-	// 新开一个身份，避免和别的绑定撞号
-	cid := id.New()
-	// 生成焊机密钥，失败则绑定无法开始
-	pub, priv, err := nodekey.Generate()
-	// 生成焊机密钥失败就停，避免带着错误继续验
-	if err != nil {
-		// 生成焊机密钥失败就把原因打出并停掉本例
-		t.Fatal(err)
-	}
-	// 接受焊机绑定失败就停，避免带着错误继续验
-	if _, err := fac.AcceptBinding(ctx, cid, "焊机", pub, 1); err != nil {
-		// 接受焊机绑定失败就把原因打出并停掉本例
-		t.Fatal(err)
-	}
-	// 取厂签名公钥，失败则本步验收不能继续
-	facPub, err := fac.SigningPublicKey(ctx)
-	// 取厂签名公钥失败就停，避免带着错误继续验
-	if err != nil {
-		// 取厂签名公钥失败就把原因打出并停掉本例
-		t.Fatal(err)
-	}
-	// 签发运行凭证，失败则本步验收不能继续
-	rt, err := fac.IssueRuntimeGrant(ctx, sa, cid, 1)
-	// 签发运行凭证失败就停，避免带着错误继续验
-	if err != nil {
-		// 签发运行凭证失败就把原因打出并停掉本例
-		t.Fatal(err)
-	}
-	// 装好本机袋，缺密钥则签名验证会失败
-	bag := bagOf(factoryID, cid, pub, priv, facPub)
-	// 标成已连厂网，激活时会回源核对状态
-	bag.Connected = true
-	// 把运行凭证装进本机袋，没装则不能激活
-	bag.ApplyRuntime(rt)
-	// 记下当前操作员，供本机袋绑定是谁在用
-	oid := personID
-	// 袋上绑上操作员，人错了激活应当被拒
-	bag.OperatorID = &oid
-	return cid, bag
 }
 
 // 验收平板拉客户端包，无令牌或错版本即失败

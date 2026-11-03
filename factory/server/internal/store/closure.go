@@ -3,7 +3,6 @@ package store
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"time"
 
@@ -11,7 +10,6 @@ import (
 	"gorm.io/gorm"
 
 	"wmesh/factory/internal/platform/domain"
-	"wmesh/factory/internal/platform/id"
 )
 
 // ClosureMember 是闭包里的一条资产快照，含正文。
@@ -66,28 +64,6 @@ type AssetReplica struct {
 	Retracted  bool       `json:"retracted"`  // 云端已删；列表不再展示
 }
 
-// ClientDistributionGrant 是某工程可否下发到某 Client。
-type ClientDistributionGrant struct {
-	ID        uuid.UUID `json:"id"`        // 授权记录身份
-	ProjectID uuid.UUID `json:"projectId"` // 工程身份
-	ClientID  uuid.UUID `json:"clientId"`  // 目标 Client
-	Active    bool      `json:"active"`    // 是否仍有效
-	GrantedBy uuid.UUID `json:"grantedBy"` // 授权超管
-	CreatedAt time.Time `json:"createdAt"` // 授权时间
-	UpdatedAt time.Time `json:"updatedAt"` // 最近变更
-}
-
-// ClientDistributionRecord 是向 Client 下发过的一份工程修订，不含正文。
-type ClientDistributionRecord struct {
-	ID            uuid.UUID  `json:"id"`            // 记录身份
-	ProjectID     uuid.UUID  `json:"projectId"`     // 工程身份
-	Revision      int64      `json:"revision"`      // 下发修订
-	ClientID      uuid.UUID  `json:"clientId"`      // 目标 Client
-	ClosureDigest []byte     `json:"closureDigest"` // 整包摘要
-	Members       []AssetDep `json:"members"`       // 成员身份+修订+摘要
-	CreatedAt     time.Time  `json:"createdAt"`     // 首次下发时间
-}
-
 // 已收平台级副本的落库行。
 type replicaRow struct {
 	ID         uuid.UUID `gorm:"type:uuid;primaryKey"`      // 平台级身份
@@ -109,34 +85,6 @@ type replicaRow struct {
 
 // 指定落库表名，避免查询时按类型名去猜。
 func (replicaRow) TableName() string { return "asset_replicas" }
-
-// 某工程能否下发到某本机的落库行。
-type clientGrantRow struct {
-	ID        uuid.UUID `gorm:"type:uuid;primaryKey"` // 授权身份
-	ProjectID uuid.UUID `gorm:"type:uuid;not null"`   // 工程
-	ClientID  uuid.UUID `gorm:"type:uuid;not null"`   // Client
-	Active    bool      `gorm:"not null"`             // 是否有效
-	GrantedBy uuid.UUID `gorm:"type:uuid;not null"`   // 超管
-	CreatedAt time.Time `gorm:"not null"`             // 授权时间
-	UpdatedAt time.Time `gorm:"not null"`             // 最近变更
-}
-
-// 指定落库表名，避免查询时按类型名去猜。
-func (clientGrantRow) TableName() string { return "client_distribution_grants" }
-
-// 向本机下发过的修订落库行，不含正文。
-type clientRecordRow struct {
-	ID            uuid.UUID `gorm:"type:uuid;primaryKey"` // 记录身份
-	ProjectID     uuid.UUID `gorm:"type:uuid;not null"`   // 工程
-	Revision      int64     `gorm:"not null"`             // 修订
-	ClientID      uuid.UUID `gorm:"type:uuid;not null"`   // Client
-	ClosureDigest []byte    `gorm:"type:bytea;not null"`  // 整包摘要
-	Members       []byte    `gorm:"type:jsonb;not null"`  // 成员 JSON
-	CreatedAt     time.Time `gorm:"not null"`             // 首次下发
-}
-
-// 指定落库表名，避免查询时按类型名去猜。
-func (clientRecordRow) TableName() string { return "client_distribution_records" }
 
 // InsertReplica 写入一条平台级副本；同身份修订且摘要相同则原样返回，不重封。
 func (s *Store) InsertReplica(ctx context.Context, in AssetReplica) (AssetReplica, error) {
@@ -380,162 +328,6 @@ func (s *Store) TamperReplicaContent(ctx context.Context, assetID uuid.UUID, rev
 	return nil
 }
 
-// UpsertClientGrant 授予或重新激活某工程到某 Client。
-func (s *Store) UpsertClientGrant(ctx context.Context, projectID, clientID, grantedBy uuid.UUID) (ClientDistributionGrant, error) {
-	// 取当前时刻，时间列和租约用同一个时钟。
-	now := time.Now().UTC()
-	// 准备承接查到的下发授权。
-	var existing clientGrantRow
-	// 按条件去读，没有行交给后面的分支。
-	err := s.db.WithContext(ctx).First(&existing, "project_id = ? AND client_id = ?", projectID, clientID).Error
-	// 已经查到就按现有结果核对，不再插入。
-	if err == nil {
-		// 已有授权则重新激活，不另开一行。
-		existing.Active = true
-		// 把这一列放进内存行，随后随保存写入。
-		existing.GrantedBy = grantedBy
-		// 把改好的值放进内存行，随后随保存写入。
-		existing.UpdatedAt = now
-		// 保存整行失败就停，避免带着错误继续。
-		if err := s.db.WithContext(ctx).Save(&existing).Error; err != nil {
-			return ClientDistributionGrant{}, err
-		}
-		// 库行收成对外结果再交回。
-		return clientGrantFromRow(existing), nil
-	}
-	// 不是缺行的库错误要原样交回。
-	if !errors.Is(err, gorm.ErrRecordNotFound) {
-		return ClientDistributionGrant{}, err
-	}
-	// 按入参组装要写入的行。
-	row := clientGrantRow{
-		ID: id.New(), ProjectID: projectID, ClientID: clientID,
-		Active: true, GrantedBy: grantedBy, CreatedAt: now, UpdatedAt: now,
-	}
-	// 写入一行失败就停，避免带着错误继续。
-	if err := s.db.WithContext(ctx).Create(&row).Error; err != nil {
-		return ClientDistributionGrant{}, err
-	}
-	// 库行收成对外结果再交回。
-	return clientGrantFromRow(row), nil
-}
-
-// RevokeClientGrant 收回某工程对某 Client 的下发授权。
-func (s *Store) RevokeClientGrant(ctx context.Context, projectID, clientID uuid.UUID) error {
-	// 只改点名的列，避免把别的字段写成零值。
-	res := s.db.WithContext(ctx).Model(&clientGrantRow{}).Where("project_id = ? AND client_id = ?", projectID, clientID).Updates(map[string]any{
-		"active":     false,
-		"updated_at": time.Now().UTC(),
-	})
-	// 更新失败则交回库错误，不能当成已经改完。
-	if res.Error != nil {
-		return res.Error
-	}
-	// 没有改到行就当目标不存在。
-	if res.RowsAffected == 0 {
-		return domain.ErrNotFound
-	}
-	return nil
-}
-
-// ClientGrant 读某工程对某 Client 的授权。
-func (s *Store) ClientGrant(ctx context.Context, projectID, clientID uuid.UUID) (ClientDistributionGrant, error) {
-	// 准备承接查到的下发授权。
-	var row clientGrantRow
-	// 按条件取一行失败就停，避免带着错误继续。
-	if err := s.db.WithContext(ctx).First(&row, "project_id = ? AND client_id = ?", projectID, clientID).Error; err != nil {
-		// 没有这一行就当成不存在。
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return ClientDistributionGrant{}, domain.ErrNotFound
-		}
-		return ClientDistributionGrant{}, err
-	}
-	// 库行收成对外结果再交回。
-	return clientGrantFromRow(row), nil
-}
-
-// InsertClientRecord 写下发记录；同一工程修订对同一 Client 幂等。
-func (s *Store) InsertClientRecord(ctx context.Context, rec ClientDistributionRecord) (ClientDistributionRecord, error) {
-	// 摘要必须是三十二字节，否则拒绝写入。
-	if err := assertAssetDigest(rec.ClosureDigest); err != nil {
-		return ClientDistributionRecord{}, err
-	}
-	// 收成正文再往下用，避免半截结构落库。
-	members, err := json.Marshal(rec.Members)
-	// 收成正文失败就停，避免带着错误继续。
-	if err != nil {
-		return ClientDistributionRecord{}, err
-	}
-	// 按入参组装要写入的行。
-	row := clientRecordRow{
-		ID: id.New(), ProjectID: rec.ProjectID, Revision: rec.Revision, ClientID: rec.ClientID,
-		ClosureDigest: rec.ClosureDigest, Members: members, CreatedAt: time.Now().UTC(),
-	}
-	// 写入一行失败就停，避免带着错误继续。
-	if err := s.db.WithContext(ctx).Create(&row).Error; err != nil {
-		// 同一工程修订对同一 Client 只记一次。
-		if domain.IsUniqueViolation(err) {
-			// 把这一步的结果交回给调用方。
-			return s.ClientRecord(ctx, rec.ProjectID, rec.Revision, rec.ClientID)
-		}
-		return ClientDistributionRecord{}, err
-	}
-	// 库行收成对外结果再交回。
-	return clientRecordFromRow(row), nil
-}
-
-// ClientRecord 读向某 Client 下发过的一份工程修订。
-func (s *Store) ClientRecord(ctx context.Context, projectID uuid.UUID, revision int64, clientID uuid.UUID) (ClientDistributionRecord, error) {
-	// 准备承接查到的下发记录。
-	var row clientRecordRow
-	// 按条件取一行失败就停，避免带着错误继续。
-	if err := s.db.WithContext(ctx).First(&row, "project_id = ? AND revision = ? AND client_id = ?", projectID, revision, clientID).Error; err != nil {
-		// 没有这一行就当成不存在。
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return ClientDistributionRecord{}, domain.ErrNotFound
-		}
-		return ClientDistributionRecord{}, err
-	}
-	// 库行收成对外结果再交回。
-	return clientRecordFromRow(row), nil
-}
-
-// ListActiveGrantsForClient 列出该机仍有效的工程接收授权。
-func (s *Store) ListActiveGrantsForClient(ctx context.Context, clientID uuid.UUID) ([]ClientDistributionGrant, error) {
-	// 准备承接查到的多条下发授权。
-	var rows []clientGrantRow
-	// 按条件取多行失败就停，避免带着错误继续。
-	if err := s.db.WithContext(ctx).Where("client_id = ? AND active = ?", clientID, true).Order("updated_at DESC").Find(&rows).Error; err != nil {
-		return nil, err
-	}
-	// 按需要预留位置，避免后面反复扩容。
-	out := make([]ClientDistributionGrant, 0, len(rows))
-	// 逐条处理，避免漏掉还要读或还要写的行。
-	for _, row := range rows {
-		// 收进结果，保持原来的先后顺序。
-		out = append(out, clientGrantFromRow(row))
-	}
-	return out, nil
-}
-
-// LatestClientRecord 取该工程对该机最近一次下发记录。
-func (s *Store) LatestClientRecord(ctx context.Context, projectID, clientID uuid.UUID) (ClientDistributionRecord, error) {
-	// 准备承接查到的下发记录。
-	var row clientRecordRow
-	// 按条件去读，没有行交给后面的分支。
-	err := s.db.WithContext(ctx).Where("project_id = ? AND client_id = ?", projectID, clientID).Order("revision DESC").First(&row).Error
-	// 按条件取一行失败就停，避免带着错误继续。
-	if err != nil {
-		// 没有这一行就当成不存在。
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return ClientDistributionRecord{}, domain.ErrNotFound
-		}
-		return ClientDistributionRecord{}, err
-	}
-	// 库行收成对外结果再交回。
-	return clientRecordFromRow(row), nil
-}
-
 // 库行收成平台级副本视图。
 func replicaFromRow(row replicaRow) AssetReplica {
 	// 准备要交回的结果，后面逐条填。
@@ -550,20 +342,4 @@ func replicaFromRow(row replicaRow) AssetReplica {
 		out.Code = *row.Code
 	}
 	return out
-}
-
-// 库行收成 Client 下发授权。
-func clientGrantFromRow(row clientGrantRow) ClientDistributionGrant {
-	return ClientDistributionGrant{
-		ID: row.ID, ProjectID: row.ProjectID, ClientID: row.ClientID, Active: row.Active,
-		GrantedBy: row.GrantedBy, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
-	}
-}
-
-// 库行收成 Client 下发记录。
-func clientRecordFromRow(row clientRecordRow) ClientDistributionRecord {
-	return ClientDistributionRecord{
-		ID: row.ID, ProjectID: row.ProjectID, Revision: row.Revision, ClientID: row.ClientID,
-		ClosureDigest: row.ClosureDigest, Members: unmarshalAssetDeps(row.Members), CreatedAt: row.CreatedAt,
-	}
 }

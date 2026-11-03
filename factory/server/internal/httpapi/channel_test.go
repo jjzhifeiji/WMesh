@@ -164,11 +164,6 @@ func TestClientChannelHTTP(t *testing.T) {
 		// 与预期不符就停测，避免后面连环误判。
 		t.Fatal(err)
 	}
-	// 授权到设备失败则停测，后面无法拉包。
-	if err := svc.GrantClientProject(ctx, saTok, proj.ID, uuid.MustParse(cid)); err != nil {
-		// 与预期不符就停测，避免后面连环误判。
-		t.Fatal(err)
-	}
 
 	// 本机拉闭包旧入口已撤，应落到兜底的找不到。
 	code, body = do(t, srv, "GET", base+"/clients/"+cid+"/closures/"+proj.ID.String(), tok, "")

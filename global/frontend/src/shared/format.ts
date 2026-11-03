@@ -43,3 +43,14 @@ export function formatRelease(online: boolean, code?: number, name?: string) {
   if (!online || !code) return "—";
   return name ? `${name}（${code}）` : String(code);
 }
+
+// 最近使用、最近登录这类列看"多久以前"更直观；超过 30 天退回日期。
+export function formatAgo(iso?: string | null) {
+  if (!iso) return "—";
+  const sec = dayjs().diff(dayjs(iso), "second");
+  if (sec < 60) return "刚刚";
+  if (sec < 3600) return `${Math.floor(sec / 60)} 分钟前`;
+  if (sec < 86400) return `${Math.floor(sec / 3600)} 小时前`;
+  if (sec < 30 * 86400) return `${Math.floor(sec / 86400)} 天前`;
+  return dayjs(iso).format("YYYY-MM-DD");
+}

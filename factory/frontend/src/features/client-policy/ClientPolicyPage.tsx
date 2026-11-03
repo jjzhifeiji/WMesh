@@ -11,6 +11,17 @@ type FormValues = {
   cornerPassword: string;
 };
 
+// ttlText 把秒折成天、小时、分钟给人看，免得自己算 86400。
+function ttlText(sec: number | null | undefined) {
+  if (sec == null) return "";
+  if (sec <= 0) return "直到主动退出";
+  const d = Math.floor(sec / 86400);
+  const h = Math.floor((sec % 86400) / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const parts = [d ? `${d} 天` : "", h ? `${h} 小时` : "", m ? `${m} 分钟` : ""].filter(Boolean);
+  return parts.length ? `约 ${parts.join(" ")}` : `${sec} 秒`;
+}
+
 // 本厂全部 Client 共用这一份策略；超管可改，现场设备只收更高修订。
 export function ClientPolicyPage() {
   const policy = useClientPolicy();
@@ -18,15 +29,14 @@ export function ClientPolicyPage() {
   const { message } = App.useApp();
   const [form] = Form.useForm<FormValues>();
   const data = policy.data;
+  const ttl = Form.useWatch("keyTtlSeconds", form);
 
+  // 时效框改过还没保存就不回填，免得点开关后的重取把手填的值冲掉。
   useEffect(() => {
     if (!data) return;
-    form.setFieldsValue({
-      persistUnwrapKey: data.persistUnwrapKey,
-      keyTtlSeconds: data.keyTtlSeconds,
-      encryptPouch: data.encryptPouch,
-      cornerPassword: data.cornerPassword ?? "",
-    });
+    form.setFieldsValue({ persistUnwrapKey: data.persistUnwrapKey, encryptPouch: data.encryptPouch });
+    if (!form.isFieldTouched("keyTtlSeconds")) form.setFieldsValue({ keyTtlSeconds: data.keyTtlSeconds });
+    if (!form.isFieldTouched("cornerPassword")) form.setFieldsValue({ cornerPassword: data.cornerPassword });
   }, [data, form]);
 
   // 只提交 patch 里的项，其余取服务端当前值：开关不能顺带把时效框里未校验的输入（如清空）存成 0。
@@ -39,18 +49,23 @@ export function ClientPolicyPage() {
         persistUnwrapKey: patch.persistUnwrapKey ?? data.persistUnwrapKey,
         keyTtlSeconds: patch.keyTtlSeconds ?? data.keyTtlSeconds,
         encryptPouch: patch.encryptPouch ?? data.encryptPouch,
-        cornerPassword: (patch.cornerPassword ?? data.cornerPassword ?? "").trim(),
+        cornerPassword: patch.cornerPassword ?? data.cornerPassword,
         extra: data.extra ?? {},
       } satisfies ClientPolicyInput,
       {
-        onSuccess: () => message.success("策略已保存"),
+        onSuccess: () => {
+          if (patch.keyTtlSeconds !== undefined) form.setFields([{ name: "keyTtlSeconds", touched: false }]);
+          if (patch.cornerPassword !== undefined) form.setFields([{ name: "cornerPassword", touched: false }]);
+          message.success("策略已保存");
+        },
         onError: (e) => {
-          form.setFieldsValue({
-            persistUnwrapKey: data.persistUnwrapKey,
-            keyTtlSeconds: data.keyTtlSeconds,
-            encryptPouch: data.encryptPouch,
-            cornerPassword: data.cornerPassword ?? "",
-          });
+          // 只退回这次提交的项，别的框里没存的输入留着。
+          const back: Partial<FormValues> = {};
+          if (patch.persistUnwrapKey !== undefined) back.persistUnwrapKey = data.persistUnwrapKey;
+          if (patch.encryptPouch !== undefined) back.encryptPouch = data.encryptPouch;
+          if (patch.keyTtlSeconds !== undefined) back.keyTtlSeconds = data.keyTtlSeconds;
+          if (patch.cornerPassword !== undefined) back.cornerPassword = data.cornerPassword;
+          form.setFieldsValue(back);
           message.error(errorMessage(e));
         },
       },
@@ -98,17 +113,26 @@ export function ClientPolicyPage() {
           <Form.Item
             name="keyTtlSeconds"
             label="登录时效（秒）"
-            extra="0 表示直到主动退出。到期后下次打开须重新登录并清钥。已登录进程中途不踢出，可离线焊接。"
+            extra={
+              <>
+                {ttl != null ? <Typography.Text strong>{ttlText(ttl)}。</Typography.Text> : null}
+                0 表示直到主动退出；1 天 = 86400 秒。到期后下次打开须重新登录并清钥。已登录进程中途不踢出，可离线焊接。
+              </>
+            }
             rules={[{ required: true, message: "请填写时效" }]}
           >
             <InputNumber min={0} precision={0} style={{ width: "100%" }} />
           </Form.Item>
           <Form.Item
             name="cornerPassword"
-            label="T 排 / 包角口令"
-            extra="示教器进 T 排、解开包角几何时要输的口令，随登录和同步下发。留空表示未设，示教器一律不放行。"
+            label="包角确认口令"
+            extra="示教器打开包角参数和 T 排对接前要输这个口令。随策略下发，离线也按设备上最后收到的这份核对。"
+            rules={[
+              { required: true, whitespace: true, message: "请填写口令" },
+              { max: 64, message: "最多 64 个字" },
+            ]}
           >
-            <Input maxLength={64} allowClear autoComplete="off" placeholder="未设" />
+            <Input.Password autoComplete="new-password" />
           </Form.Item>
           <Button type="primary" htmlType="submit" loading={save.isPending}>
             保存
