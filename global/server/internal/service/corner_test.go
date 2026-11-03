@@ -42,7 +42,7 @@ func TestCornerSlotBinding(t *testing.T) {
 		// 把建工艺的错误打出来并停住。
 		t.Fatal(err)
 	}
-	// 网页新建会按焊接参数模版套正文，包角只能从示教器升上来；这里直接写库摆一条包角正文。
+	// 先建占位再走存储层改成包角正文，覆盖已有件改成包角的情形。
 	cornerBody := []byte(`{"kind":"cornerGeometry","name":"包角","passes":[{"length":5}]}`)
 	// 先建一条占位工艺。
 	corner, err := h.WAN.CreatePlatformProcess(ctx, tok, "包角", []byte(`{}`))
@@ -123,5 +123,39 @@ func TestCornerSlotBinding(t *testing.T) {
 	if _, err := h.WAN.UpdatePlatformAssetContent(ctx, tok, proj.ID, proj.Revision, body(weld.ID, weld.ID)); err != nil {
 		// 示教器存法的改正文被拒了。
 		t.Fatalf("update right: %v", err)
+	}
+}
+
+// 云端网页新建包角工艺：正文是几何参数，不套焊接模版，原样落库并标包角；加密开关与普通工艺一样可选。
+func TestCornerCreateKeepsGeometry(t *testing.T) {
+	// 准备本测上下文，没有它库和服务都开不了。
+	ctx := context.Background()
+	// 起云端库和服务，起不来整段验收作废。
+	h := New(t)
+	// 立云端超管失败就停。
+	if err := h.WAN.BootstrapAdmin(ctx, "w", "wan-secret"); err != nil {
+		// 立不住后面没有人能登录。
+		t.Fatal(err)
+	}
+	// 登录拿会话。
+	tok, err := h.WAN.Login(ctx, "w", "wan-secret")
+	// 登录失败就停。
+	if err != nil {
+		// 没有票后面接口都进不去。
+		t.Fatal(err)
+	}
+	// 一份包角几何正文。
+	body := []byte(`{"kind":"cornerGeometry","name":"包角","passes":[{"length":5}]}`)
+	// 直接按包角正文新建平台工艺。
+	got, err := h.WAN.CreatePlatformProcess(ctx, tok, "云端包角", body)
+	// 建不成就停。
+	if err != nil {
+		// 把建工艺的错误打出来并停住。
+		t.Fatal(err)
+	}
+	// 包角标记按落库正文算，没认出说明正文被焊接模版改掉了。
+	if !got.Corner {
+		// 包角正文丢了，打出来停住。
+		t.Fatalf("包角正文被改写：corner=%v", got.Corner)
 	}
 }

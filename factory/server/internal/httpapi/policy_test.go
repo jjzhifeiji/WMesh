@@ -151,25 +151,25 @@ func TestFactoryClientPolicyHTTP(t *testing.T) {
 		t.Fatalf("secret leaked: %s", body)
 	}
 
-	// 超管设上 T 排/包角口令。
+	// 包角口令已撤掉，再带这个字段按未知字段拒绝。
 	code, body = do(t, srv, "PUT", base+"/client-policy", tok, `{"maxCachedProjects":3,"cacheScope":"current","persistUnwrapKey":true,"keyTtlSeconds":60,"cornerPassword":"T-1234"}`)
-	// 不是成功或口令没回出来则失败。
-	if code != http.StatusOK || gjson(t, body, "cornerPassword") != "T-1234" {
-		// 口令没落库，示教器拿不到。
-		t.Fatalf("corner set %d %s", code, body)
+	// 没被拒就说明口令字段还在收。
+	if code != http.StatusBadRequest {
+		// 口令字段应已撤掉。
+		t.Fatalf("corner field must be rejected %d %s", code, body)
 	}
-	// 改别的项不带口令，口令应保持。
-	code, body = do(t, srv, "PUT", base+"/client-policy", tok, `{"maxCachedProjects":4,"cacheScope":"current","persistUnwrapKey":true,"keyTtlSeconds":60}`)
-	// 口令被清掉就失败。
-	if code != http.StatusOK || gjson(t, body, "cornerPassword") != "T-1234" {
-		// 省略口令把它清掉了。
-		t.Fatalf("corner keep %d %s", code, body)
+	// 读回策略不该再有口令。
+	code, body = do(t, srv, "GET", base+"/client-policy", tok, "")
+	// 读失败或回包里还有口令就失败。
+	if code != http.StatusOK || strings.Contains(body, "cornerPassword") {
+		// 策略回包不该再带口令。
+		t.Fatalf("policy still has corner %d %s", code, body)
 	}
-	// 示教器登录回包的策略顶层要带口令。
+	// 示教器登录回包的策略也不该带口令。
 	code, body = do(t, srv, "POST", base+"/pad/login", "", `{"loginName":"sa","password":"secret"}`)
-	// 登录失败或策略里没口令就失败。
-	if code != http.StatusOK || gjson(t, body, "policy.cornerPassword") != "T-1234" {
-		// 示教器读不到口令，T 排进不去。
+	// 登录失败或策略里还有口令就失败。
+	if code != http.StatusOK || strings.Contains(body, "cornerPassword") {
+		// 示教器不该再拿到口令。
 		t.Fatalf("pad login corner %d %s", code, body)
 	}
 }

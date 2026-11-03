@@ -285,6 +285,10 @@ func (s *kernel) normalizeContent(ctx context.Context, kind string, content []by
 		}
 		return out, nil
 	}
+	// 包角工艺正文是几何参数，不归焊接工艺模版管，原样保留。
+	if kind == KindProcess && contenttpl.IsCornerProcess(content) {
+		return content, nil
+	}
 	// 没有这份模版就补上种子。
 	tpl, err := s.ensureTemplate(ctx, kind)
 	// 补失败则厂端会缺字段。

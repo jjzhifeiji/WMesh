@@ -11,6 +11,7 @@ import (
 	"wmesh/factory/internal/platform/contenttpl"
 	"wmesh/factory/internal/platform/digest"
 	"wmesh/factory/internal/platform/domain"
+	"wmesh/factory/internal/platform/id"
 	factory "wmesh/factory/internal/service"
 	"wmesh/factory/internal/store"
 )
@@ -212,5 +213,111 @@ func TestCornerPadEntriesAndTemplate(t *testing.T) {
 	if _, err := fac.ApplyAppContent(ctx, op.tok, proj.ID, body(weld.ID, corner.ID)); !errors.Is(err, domain.ErrCornerSlotMismatch) {
 		// 示教器盖写入口没拦住挂错。
 		t.Fatalf("pad apply corner slot: %v", err)
+	}
+}
+
+// 包角工艺和普通工艺同一套可复制口径：平台不可复制的两种都不给看、不给另存、不给示教器盖，拉包都标不可复制；可复制的包角照常看、另存、盖写；示教器可建、可盖个人包角。
+func TestCornerFollowsCopyable(t *testing.T) {
+	// 准备无取消的上下文，后面每次调用都挂在上面。
+	ctx := context.Background()
+	// 拉起隔离厂库，起不来说明测试库还没就绪。
+	h := New(t)
+	// 建厂并签发超管激活码，失败则没有厂可测。
+	seed, fac, err := h.Provision(ctx, "sa-k", "超管K")
+	// 建厂失败就停，否则后面没有可靠结果。
+	if err != nil {
+		// 把建厂的错误打出来并停住，避免继续往下验。
+		t.Fatal(err)
+	}
+	// 登录并取出令牌，建人要用。
+	sa := mustLogin(t, ctx, fac, "sa-k", personPass("sa-k"))
+	// 建管理员，厂级盖写和另存权限都够，拒绝只能来自可复制口径。
+	op := mustCreateRole(t, ctx, fac, sa, "op-k", "op-pass", factory.RoleOrgAdmin)
+	// 留下工厂编号，下发要指明接收厂。
+	fid := seed.ID
+	// 包角正文。
+	cornerBody := []byte(`{"kind":"cornerGeometry","name":"包角","passes":[{"length":5}]}`)
+	// 普通焊接参数正文。
+	weldBody := []byte(`{"current":180}`)
+	// 按正文和可复制标记收一条平台工艺。
+	deliver := func(name string, body []byte, copyable bool) factory.ClosureMember {
+		// 标成辅助函数，失败算到调用方。
+		t.Helper()
+		// 组装平台工艺成员。
+		m := factory.ClosureMember{
+			ID: id.New(), Kind: factory.KindProcess, Level: factory.AssetLevelPlatform, Name: name,
+			Status: factory.AssetAvailable, Copyable: copyable, Revision: 1, Content: body, Digest: digest.Sum(body),
+		}
+		// 收不下就停。
+		if err := fac.AcceptPlatformDelivery(ctx, sealSnap(factory.KindProcess, m, nil, &fid, nil)); err != nil {
+			// 把收平台稿的错误打出来并停住。
+			t.Fatalf("deliver %s: %v", name, err)
+		}
+		return m
+	}
+	// 平台加密的包角和普通工艺。
+	locked := map[string]factory.ClosureMember{
+		"包角": deliver("加密包角", cornerBody, false),
+		"普通": deliver("加密焊接", weldBody, false),
+	}
+	// 两种加密工艺逐条走同一套核对，结果必须一样。
+	for name, m := range locked {
+		// 厂端读正文要拒。
+		if _, err := fac.ReadAssetContent(ctx, op.tok, m.ID); !errors.Is(err, domain.ErrForbidden) {
+			// 加密件参数露给厂端。
+			t.Fatalf("%s read: %v", name, err)
+		}
+		// 另存要按不可复制拒。
+		if _, err := fac.CopyProcess(ctx, op.tok, m.ID, name+"副本"); !errors.Is(err, domain.ErrAssetNotCopyable) {
+			// 加密件能另存出明文副本。
+			t.Fatalf("%s copy: %v", name, err)
+		}
+		// 示教器盖写要拒。
+		if _, err := fac.ApplyAppContent(ctx, op.tok, m.ID, weldBody); !errors.Is(err, domain.ErrForbidden) {
+			// 示教器能改加密件。
+			t.Fatalf("%s apply: %v", name, err)
+		}
+		// 示教器拉包应能拉到，且标不可复制，示教器据此不给看不给改。
+		got, err := fac.PadPullClientClosure(ctx, op.tok, m.ID)
+		// 拉不到或没标不可复制就停。
+		if err != nil || got.Snapshot.Copyable {
+			// 拉包口径和普通加密件不一致。
+			t.Fatalf("%s pull copyable=%v err %v", name, got.Snapshot.Copyable, err)
+		}
+	}
+
+	// 平台不加密的包角。
+	open := deliver("明文包角", cornerBody, true)
+	// 厂端能读正文，且原样不被焊接模版改写。
+	got, err := fac.ReadAssetContent(ctx, op.tok, open.ID)
+	// 读不出或被改写就停。
+	if err != nil || string(got) != string(cornerBody) {
+		// 明文包角被误拦或被改写。
+		t.Fatalf("open read %s %v", got, err)
+	}
+	// 另存成本厂厂级，照常带包角标记。
+	cp, err := fac.CopyProcess(ctx, op.tok, open.ID, "明文包角副本")
+	// 另存失败或没标包角就停。
+	if err != nil || !cp.Corner {
+		// 明文包角另存被误拦。
+		t.Fatalf("open copy %+v %v", cp, err)
+	}
+	// 示教器盖写本厂副本照常。
+	if _, err := fac.ApplyAppContent(ctx, op.tok, cp.ID, []byte(`{"kind":"cornerGeometry","name":"包角","passes":[{"length":6}]}`)); err != nil {
+		// 示教器盖明文包角被误拦。
+		t.Fatalf("open apply: %v", err)
+	}
+
+	// 示教器新建个人包角照常。
+	mine, err := fac.CreatePadPersonal(ctx, op.tok, factory.KindProcess, "平板包角", cornerBody, uuid.Nil, "", nil)
+	// 建不成或没标包角就停。
+	if err != nil || !mine.Corner {
+		// 示教器建包角被误拦。
+		t.Fatalf("pad create corner %+v %v", mine, err)
+	}
+	// 示教器盖自己的包角照常。
+	if _, err := fac.ApplyAppContent(ctx, op.tok, mine.ID, []byte(`{"kind":"cornerGeometry","name":"包角","passes":[{"length":7}]}`)); err != nil {
+		// 示教器盖个人包角被误拦。
+		t.Fatalf("pad apply corner: %v", err)
 	}
 }
