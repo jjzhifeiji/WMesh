@@ -7,7 +7,7 @@ export type WeldGroup = "factory" | "project" | "day" | "grain";
 export type WeldSummaryRow = {
   factoryId: string; // 上送工厂
   factoryName: string; // 名录显示名
-  day: string; // UTC 日期
+  day: string; // 厂端按本厂时区算好的日期，WAN 不重分
   projectName: string; // 工程名快照或未关联
   weldKind: string; // 焊接模式
   lengthMm: number; // 该粒焊长毫米
@@ -29,7 +29,7 @@ export function useWeldReports(from: string, to: string, factoryId = "") {
   });
 }
 
-// 所选日历日按 UTC 零点发：服务端按 UTC 日比较，用本地零点会多带进相邻一天。
+// 所选日历日按 UTC 零点发：服务端把日键当 UTC 零点起的一天比，这样就是按日键直接比；用本地零点会多带进相邻一天。
 export function utcDayRange(start: Dayjs, end: Dayjs) {
   return {
     from: `${start.format("YYYY-MM-DD")}T00:00:00Z`,

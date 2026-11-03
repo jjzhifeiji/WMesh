@@ -2,6 +2,7 @@
 const zh: Record<string, string> = {
   "invalid credentials": "登录名或密码不对",
   "wrong current password": "当前密码不对",
+  "password too short": "新密码至少 8 位",
   unauthorized: "会话已失效，请重新登录",
   forbidden: "没有这项许可：WAN 不代管厂内人员、组织和角色",
   "not found": "找不到这个对象",
@@ -22,7 +23,8 @@ const zh: Record<string, string> = {
   "client is not bound": "设备还没有分给工厂",
   "client public key already registered": "这把公钥已经登记过了",
   "device serial is required": "请填写识别号",
-  "device serial already bound": "这个识别号已经登记过了",
+  "device serial is too long": "识别号太长，最多 128 个字",
+  "device serial already bound": "这个识别号已经登记过了（大小写不论）",
   "revision does not match": "别人已经改过这条，请刷新后再写",
   "revision is not strictly newer": "不能下发更低的版本",
   "software update is applying": "上一个更新还在安装，等出结果后再确认",

@@ -2,7 +2,9 @@ package service
 
 import (
 	"context"
+	"errors"
 	"time"
+	"unicode/utf8"
 
 	"wmesh/global/internal/platform/audit"
 	"wmesh/global/internal/platform/domain"
@@ -11,8 +13,25 @@ import (
 
 const sessionTTL = 12 * time.Hour // 在线会话有效期；过期后必须重新登录
 
+const minPasswordLen = 8 // 新密码至少几个字，和前端改密表单同一口径
+
+// checkNewPassword 新密码按字数至少 8 个，绕过前端直调接口也设不进弱口令。
+func checkNewPassword(password string) error {
+	// 按字数而不是字节数，和前端表单口径一致。
+	if utf8.RuneCountInString(password) < minPasswordLen {
+		return domain.ErrPasswordTooShort
+	}
+	return nil
+}
+
 // BootstrapAdmin 写入唯一 WAN 管理员；已有管理员则拒绝并留审计。
 func (s *Auth) BootstrapAdmin(ctx context.Context, loginName, password string) error {
+	// 引导口令同样要够长，弱口令不进库。
+	if err := checkNewPassword(password); err != nil {
+		// 引导被拒就留审计，不写口令。
+		_ = s.audit(ctx, nil, &loginName, nil, "bootstrap_wan_admin", loginName, audit.Deny)
+		return err
+	}
 	// 只存哈希，不落密码原文。
 	hash, err := secret.HashPassword(password)
 	// 原文不进库，也不进审计。
@@ -83,6 +102,12 @@ func (s *Auth) ChangePassword(ctx context.Context, token, currentPassword, newPa
 	if err != nil {
 		return err
 	}
+	// 新密码太短先拒，不碰总闸，也不核当前密码。
+	if err := checkNewPassword(newPassword); err != nil {
+		// 改密被拒也留审计，不写口令。
+		_ = s.audit(ctx, &admin.ID, &admin.LoginName, nil, "change_password", admin.ID.String(), audit.Deny)
+		return err
+	}
 	// 和登录共用失败总闸，没余量就先拒，捡到会话也不能借改密爆破。
 	if s.loginFails.Tokens() < 1 {
 		// 被总闸挡下也记拒绝，不写口令。
@@ -111,8 +136,14 @@ func (s *Auth) ChangePassword(ctx context.Context, token, currentPassword, newPa
 	return s.audit(ctx, &admin.ID, &admin.LoginName, nil, "change_password", admin.ID.String(), audit.Allow)
 }
 
-// ResetAdminPassword 按登录名覆盖唯一管理员密码哈希，并作废其全部会话。
+// ResetAdminPassword 按登录名覆盖唯一管理员密码哈希，作废其全部会话，并记下这次重置的口令。
 func (s *Auth) ResetAdminPassword(ctx context.Context, loginName, password string) error {
+	// 重置口令同样要够长，弱口令不进库。
+	if err := checkNewPassword(password); err != nil {
+		// 重置被拒就留审计，不写新口令。
+		_ = s.audit(ctx, nil, &loginName, nil, "reset_wan_admin", loginName, audit.Deny)
+		return err
+	}
 	// 按登录名找唯一管理员。
 	admin, err := s.store.AdminByLogin(ctx, loginName)
 	// 会话或账号无效就拒绝。
@@ -127,16 +158,44 @@ func (s *Auth) ResetAdminPassword(ctx context.Context, loginName, password strin
 	if err != nil {
 		return err
 	}
-	// 覆盖哈希并作废其全部会话。
-	if err := s.store.SetAdminPassword(ctx, admin.ID, hash); err != nil {
-		return err
-	}
-	// 删除失败就停，避免库里留下残行。
-	if err := s.store.DeleteSessionsForAdmin(ctx, admin.ID); err != nil {
+	// 覆盖哈希、作废全部会话、记重置标记同一事务，不留半截。
+	if err := s.store.ResetAdminPasswordMarked(ctx, admin.ID, loginName, hash); err != nil {
 		return err
 	}
 	// 重置成功才记允许。
 	return s.audit(ctx, &admin.ID, &loginName, nil, "reset_wan_admin", admin.ID.String(), audit.Allow)
+}
+
+// ResetAdminPasswordOnce 按配置重置只生效一次：同一口令已重置过就跳过，交回这次是否真的重置了。
+// 管理员之后自己改了密码，变量没删、口令没换也不会再被盖回；换一个新口令才再生效。
+func (s *Auth) ResetAdminPasswordOnce(ctx context.Context, loginName, password string) (bool, error) {
+	// 先看这个登录名上次按配置重置用的是哪个口令。
+	prev, err := s.store.AdminResetHash(ctx, loginName)
+	// 读库出错就停，不能当没重置过再盖一次。
+	if err != nil && !errors.Is(err, domain.ErrNotFound) {
+		return false, err
+	}
+	// 同一口令已经重置过，这次跳过。
+	if err == nil && secret.VerifyPassword(prev, password) {
+		return false, nil
+	}
+	// 没重置过或换了新口令才真的重置。
+	if err := s.ResetAdminPassword(ctx, loginName, password); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// MarkAdminReset 引导时已按配置口令建号，就当这一口令已重置过，之后重启不再盖回。
+func (s *Auth) MarkAdminReset(ctx context.Context, loginName, password string) error {
+	// 标记只存慢哈希，不落原文。
+	hash, err := secret.HashPassword(password)
+	// 原文不进库，也不进审计。
+	if err != nil {
+		return err
+	}
+	// 记下标记，失败交回调用方。
+	return s.store.MarkAdminReset(ctx, loginName, hash)
 }
 
 // Logout 结束当前 WAN 会话，不等于停用管理员。

@@ -19,6 +19,7 @@ const (
 	CmdAssetSnapOK   = "asset_snapshot_ok" // 升档快照回执
 	CmdFSListOK      = "fs_list_ok"        // 目录结构回执
 	CmdSoftware      = "software"          // 厂服务包或 APK 已发布，厂去拉正文
+	CmdTemplateSet   = "template_set"      // 某类模版当前全集：只带身份，full=true 时厂端删掉不在集里的 WAN 来源副本
 )
 
 // Cmd 是厂↔WAN 控制面指令，不含闭包或软件包正文。
@@ -27,6 +28,8 @@ type Cmd struct {
 	ReqID              string          `json:"reqId,omitempty"`              // 问询与回执配对
 	AssetID            string          `json:"assetId,omitempty"`            // 平台级或撤回身份
 	TemplateID         string          `json:"templateId,omitempty"`         // 内容模版身份
+	TemplateIDs        []string        `json:"templateIds,omitempty"`        // template_set：该类当前全部模版身份；空集时省略
+	Full               bool            `json:"full,omitempty"`               // template_set：为真表示 templateIds 就是全集，缺省的 templateIds 当空集
 	Revision           int64           `json:"revision,omitempty"`           // 资产/治理修订
 	Kind               string          `json:"kind,omitempty"`               // process / project / 软件种类
 	Version            int64           `json:"version,omitempty"`            // 软件单调整数

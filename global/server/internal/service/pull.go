@@ -115,14 +115,26 @@ func (s *Service) indexForFactory(ctx context.Context, factoryID uuid.UUID, kind
 		if err != nil {
 			return nil, err
 		}
+		// 先留空，工程模版身份收齐后组成全集。
+		var projects []ContentTemplate
 		// 逐份模版下发，种类不符的跳过。
 		for _, t := range tpls {
+			// 工程模版身份另收一份，组全集用。
+			if t.Kind == KindProject {
+				// 只要身份和种类，正文另走拉取。
+				projects = append(projects, ContentTemplate{ID: t.ID, Kind: t.Kind})
+			}
 			// 空和有值走不同路，避免把空白写进名录。
 			if kind != "" && t.Kind != kind {
 				continue
 			}
 			// 把这一项接进结果。
 			out = append(out, Cmd{Typ: CmdTemplate, TemplateID: t.ID.String(), Kind: t.Kind, Revision: t.Revision})
+		}
+		// 涉及工程时补一条全集，排在各份模版之后；删光了也发空集。
+		if kind == "" || kind == KindProject {
+			// 把这一项接进结果。
+			out = append(out, templateSetCmd(KindProject, projects))
 		}
 	}
 	// 空和有值走不同路，避免把空白写进名录。

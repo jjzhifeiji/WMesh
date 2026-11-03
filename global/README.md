@@ -62,8 +62,8 @@ make down      # 停容器，保留数据卷
 | 变量 | 作用 |
 | --- | --- |
 | `POSTGRES_PASSWORD` | WAN 库密码 |
-| `WMESH_ADMIN_LOGIN` / `WMESH_ADMIN_PASSWORD` | 唯一 WAN 管理员，只在库里没有管理员时写入一次 |
-| `WMESH_ADMIN_RESET` | 设为 `true` 时启动按上面密码覆盖已有管理员哈希；用完关掉 |
+| `WMESH_ADMIN_LOGIN` / `WMESH_ADMIN_PASSWORD` | 唯一 WAN 管理员，只在库里没有管理员时写入一次；密码至少 8 位 |
+| `WMESH_ADMIN_RESET` | 设为 `true` 时启动按上面密码覆盖已有管理员哈希；同一密码只覆盖一次（库里记下所用密码的哈希），之后重启不再盖回，要再重置须换新密码；用完关掉 |
 | `OSS_ACCESS_KEY` / `OSS_SECRET_KEY` / `OSS_BUCKET` | 对象存储密钥与默认桶；桶由 app 启动时自动创建 |
 | `OSS_PORT` / `OSS_CONSOLE_PORT` | S3 端点（默认 52900）与 RustFS 管理台（默认 52901，用同一对密钥登录） |
 | `WMESH_REGISTRY` / `WMESH_VERSION` | 镜像前缀与标签，供 `make push` |

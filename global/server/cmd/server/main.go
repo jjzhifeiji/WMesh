@@ -254,7 +254,7 @@ func startHTTPS(log *slog.Logger, plain *http.Server, cfg config.Config, bus *mq
 	return srv
 }
 
-// bootstrapAdmin 库里没有管理员时写入；已有则跳过。显式打开覆盖开关时按环境变量重写密码。
+// bootstrapAdmin 库里没有管理员时写入；已有则跳过。显式打开覆盖开关时按环境变量重写密码，同一口令只重写一次。
 func bootstrapAdmin(ctx context.Context, log *slog.Logger, svc *service.Service, cfg config.Config) error {
 	// 没配管理员就跳过引导，库保持原样。
 	if cfg.AdminLogin == "" {
@@ -273,19 +273,37 @@ func bootstrapAdmin(ctx context.Context, log *slog.Logger, svc *service.Service,
 		if !cfg.AdminReset {
 			return nil
 		}
-		// 按配置重写密码，失败就不要假装已经改成。
-		if err := svc.ResetAdminPassword(ctx, cfg.AdminLogin, cfg.AdminPassword); err != nil {
-			// 改密码失败就停机，避免配置和库不一致。
+		// 按配置重写密码，同一口令已重写过就跳过，失败就不要假装已经改成。
+		applied, err := svc.ResetAdminPasswordOnce(ctx, cfg.AdminLogin, cfg.AdminPassword)
+		// 改密码失败就停机，避免配置和库不一致。
+		if err != nil {
+			// 把失败交回启动方，进程就此退出。
 			return fmt.Errorf("reset wan admin: %w", err)
 		}
-		// 记下密码已按配置重写，便于对照启动。
-		log.Info("wan admin password reset from config", "login", cfg.AdminLogin)
+		// 这一口令已经重写过，这次不再盖回管理员后来改的密码。
+		if !applied {
+			// 提醒运维变量还开着，用完该删。
+			log.Warn("WMESH_ADMIN_RESET is still set but this password was already applied once; skipped, remove WMESH_ADMIN_RESET from .env", "login", cfg.AdminLogin)
+			return nil
+		}
+		// 记下密码已按配置重写，并提醒删掉变量。
+		log.Warn("wan admin password reset from config; remove WMESH_ADMIN_RESET from .env now, the same password will not be applied again", "login", cfg.AdminLogin)
 		return nil
 	}
 	// 库里没有管理员就写入第一个，失败则无法登录。
 	if err := svc.BootstrapAdmin(ctx, cfg.AdminLogin, cfg.AdminPassword); err != nil {
 		// 第一个管理员写不进去就停机。
 		return fmt.Errorf("bootstrap wan admin: %w", err)
+	}
+	// 首次建号时覆盖开关也开着，就当这一口令已重写过，免得之后重启把改过的密码盖回。
+	if cfg.AdminReset {
+		// 记不下标记就停机，否则下次启动会盖回管理员改过的密码。
+		if err := svc.MarkAdminReset(ctx, cfg.AdminLogin, cfg.AdminPassword); err != nil {
+			// 把失败交回启动方，进程就此退出。
+			return fmt.Errorf("mark wan admin reset: %w", err)
+		}
+		// 提醒运维变量用不上，该删掉。
+		log.Warn("WMESH_ADMIN_RESET is set on first bootstrap and has no effect; remove it from .env", "login", cfg.AdminLogin)
 	}
 	// 记下第一个管理员已写入。
 	log.Info("wan admin bootstrapped", "login", cfg.AdminLogin)

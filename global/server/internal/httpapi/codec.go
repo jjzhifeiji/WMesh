@@ -165,7 +165,8 @@ func statusOf(err error) int {
 	// 参数或钥不合法、校验失败或改密时当前密码不对，一律坏请求，免得踢回登录页。
 	case errors.Is(err, domain.ErrInvalidKey), errors.Is(err, domain.ErrUnbound),
 		errors.Is(err, domain.ErrInvalidName), errors.Is(err, domain.ErrDeviceSerialRequired),
-		errors.Is(err, domain.ErrWrongCurrentPassword),
+		errors.Is(err, domain.ErrWrongCurrentPassword), errors.Is(err, domain.ErrPasswordTooShort),
+		errors.Is(err, domain.ErrDeviceSerialTooLong),
 		isDomain(err), errors.Is(err, errInvalidID):
 		return http.StatusBadRequest
 	// 对不上的错误当内部故障，不把原文抛出。

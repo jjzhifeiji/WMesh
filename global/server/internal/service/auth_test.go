@@ -24,7 +24,7 @@ func TestAuthCircle(t *testing.T) {
 		t.Fatalf("bootstrap: %v", err)
 	}
 	// 立云端超管应被拒为已有管理员，放行或错类都算没拦住。
-	if err := h.WAN.BootstrapAdmin(ctx, "w2", "x"); !errors.Is(err, domain.ErrWANAdminExists) {
+	if err := h.WAN.BootstrapAdmin(ctx, "w2", "w2-secret"); !errors.Is(err, domain.ErrWANAdminExists) {
 		// 不符即停：立云端超管应被拒为已有管理员。
 		t.Fatalf("1.1 second wan: %v", err)
 	}

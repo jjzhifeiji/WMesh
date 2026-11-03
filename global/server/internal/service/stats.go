@@ -32,7 +32,7 @@ type Stats struct {
 
 // WeldSummaryIn 是厂端上送的一粒：日、工程名、模式和合计。
 type WeldSummaryIn struct {
-	Day         string `json:"day"`         // UTC 日期 YYYY-MM-DD
+	Day         string `json:"day"`         // 厂端按本厂时区算好的日 YYYY-MM-DD，WAN 原样存
 	ProjectName string `json:"projectName"` // 工程名快照；空则未关联
 	WeldKind    string `json:"weldKind"`    // single / multilayer / tbar / 空
 	RunCount    int64  `json:"runCount"`    // 该粒次数
@@ -56,7 +56,7 @@ type WeldSummaryReceipt struct {
 type WeldSummaryView struct {
 	FactoryID   uuid.UUID `json:"factoryId"`   // 上送工厂
 	FactoryName string    `json:"factoryName"` // 名录显示名
-	Day         string    `json:"day"`         // UTC 日期 YYYY-MM-DD
+	Day         string    `json:"day"`         // 厂端按本厂时区算好的日 YYYY-MM-DD，WAN 原样存
 	ProjectName string    `json:"projectName"` // 工程名快照或未关联
 	WeldKind    string    `json:"weldKind"`    // 焊接模式
 	RunCount    int64     `json:"runCount"`    // 该粒次数

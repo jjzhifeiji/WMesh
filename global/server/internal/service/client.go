@@ -27,15 +27,20 @@ func normalizeClientName(name string) (string, error) {
 	return name, nil
 }
 
-// normalizeDeviceSerial 去掉首尾空白后须 1～128 字。
+// normalizeDeviceSerial 去掉首尾空白、收成大写后须 1～128 字；空号和超长各回各的错。
+// 识别号是网卡号一类，大小写不论；示教器比对时同样先收大写，存大写两边对得上。
 func normalizeDeviceSerial(serial string) (string, error) {
-	// 去掉多余空白或前后缀。
-	serial = strings.TrimSpace(serial)
+	// 去掉首尾空白，再收成大写，大小写不同的同一号只登记一次。
+	serial = strings.ToUpper(strings.TrimSpace(serial))
 	// 按字数看长度，失败就不能继续。
 	n := utf8.RuneCountInString(serial)
-	// 字数不在允许范围就拒绝，避免空名或超长。
-	if n < 1 || n > 128 {
+	// 没填就按必填拒绝。
+	if n < 1 {
 		return "", domain.ErrDeviceSerialRequired
+	}
+	// 超长单独报，免得提示成没填。
+	if n > 128 {
+		return "", domain.ErrDeviceSerialTooLong
 	}
 	return serial, nil
 }

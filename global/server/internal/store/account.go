@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"wmesh/global/internal/platform/domain"
 	"wmesh/global/internal/platform/id"
@@ -187,4 +188,67 @@ func (s *Store) ReplaceAdminPasswordKeepSession(ctx context.Context, adminID uui
 func (s *Store) DeleteSessionsForAdmin(ctx context.Context, adminID uuid.UUID) error {
 	// 作废该管理员的全部会话，没有会话也不算错。
 	return s.db.WithContext(ctx).Where("admin_id = ?", adminID).Delete(&Session{}).Error
+}
+
+// adminResetRow 是按环境变量重置口令的一次性标记，每个登录名一行。
+type adminResetRow struct {
+	LoginName    string    `gorm:"primaryKey"` // 按配置重置过的登录名
+	PasswordHash string    `gorm:"not null"`   // 重置所用口令的慢哈希，只用来认出同一口令
+	ResetAt      time.Time `gorm:"not null"`   // 最近一次按配置重置的时刻
+}
+
+// 重置标记落这张表，不跟结构体复数走。
+func (adminResetRow) TableName() string { return "wan_admin_resets" }
+
+// AdminResetHash 取该登录名上次按配置重置所用口令的哈希；没重置过回不存在。
+func (s *Store) AdminResetHash(ctx context.Context, loginName string) (string, error) {
+	// 准备接住库里的那一行，没有再另作处理。
+	var row adminResetRow
+	// 取不到或库出错先停住，再区分没有还是故障。
+	if err := s.db.WithContext(ctx).First(&row, "login_name = ?", loginName).Error; err != nil {
+		// 没有这一行就按不存在交回，不当成库故障。
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return "", domain.ErrNotFound
+		}
+		return "", err
+	}
+	return row.PasswordHash, nil
+}
+
+// markAdminReset 记下这次按配置重置所用口令的哈希，已有就覆盖成这一次。
+func markAdminReset(tx *gorm.DB, loginName, passwordHash string) error {
+	// 同一登录名只留一行，再重置就改成新哈希和新时刻。
+	return tx.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "login_name"}},
+		DoUpdates: clause.AssignmentColumns([]string{"password_hash", "reset_at"}),
+	}).Create(&adminResetRow{LoginName: loginName, PasswordHash: passwordHash, ResetAt: time.Now().UTC()}).Error
+}
+
+// MarkAdminReset 只记重置标记，不动口令；引导时已按配置口令建号就用它。
+func (s *Store) MarkAdminReset(ctx context.Context, loginName, passwordHash string) error {
+	// 单独记一行标记，失败交回调用方。
+	return markAdminReset(s.db.WithContext(ctx), loginName, passwordHash)
+}
+
+// ResetAdminPasswordMarked 同一事务覆盖口令哈希、作废全部会话并记下重置标记。
+func (s *Store) ResetAdminPasswordMarked(ctx context.Context, adminID uuid.UUID, loginName, passwordHash string) error {
+	// 放进同一事务，改了口令却没记标记就整单回滚，下次启动照样重来。
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// 只改密码哈希，登录名保持不动。
+		res := tx.Model(&Admin{}).Where("id = ?", adminID).Update("password_hash", passwordHash)
+		// 写库报错就停，事务随之回滚。
+		if res.Error != nil {
+			return res.Error
+		}
+		// 一行都没碰到，按不存在拒绝。
+		if res.RowsAffected == 0 {
+			return domain.ErrNotFound
+		}
+		// 作废该管理员的全部会话，旧令牌立刻失效。
+		if err := tx.Where("admin_id = ?", adminID).Delete(&Session{}).Error; err != nil {
+			return err
+		}
+		// 标记存同一份慢哈希，下次启动拿配置口令核对即可认出。
+		return markAdminReset(tx, loginName, passwordHash)
+	})
 }

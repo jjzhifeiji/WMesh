@@ -269,7 +269,7 @@ func (k *kernel) notifyTemplate(ctx context.Context, id uuid.UUID, kind string, 
 	k.publishActive(ctx, Cmd{Typ: CmdTemplate, TemplateID: id.String(), Kind: kind, Revision: revision})
 }
 
-// 删除后把仍在的模版再通知一遍。
+// 删除后把仍在的模版再通知一遍，并补发工程模版全集，厂端据此删掉已不在的副本。
 func (k *kernel) notifyRemainingTemplates(ctx context.Context) {
 	// 没有这份模版就补上种子。
 	proc, err := k.ensureTemplate(ctx, KindProcess)
@@ -280,7 +280,7 @@ func (k *kernel) notifyRemainingTemplates(ctx context.Context) {
 	}
 	// 工程项不齐就按种子补。
 	projects, err := k.ensureProjectItems(ctx)
-	// 补失败就拒绝，模版不能缺层。
+	// 读不出当前全集就不发，免得厂端按残缺名单误删。
 	if err != nil {
 		return
 	}
@@ -289,6 +289,24 @@ func (k *kernel) notifyRemainingTemplates(ctx context.Context) {
 		// 通知厂端去拉模版。
 		k.notifyTemplate(ctx, t.ID, t.Kind, t.Revision)
 	}
+	// 全集一定要发，删光了也发空集，厂端才知道该删哪些。
+	k.publishActive(ctx, templateSetCmd(KindProject, projects))
+}
+
+// templateSetCmd 把某类当前全部模版收成一条全集指令；没有模版时 templateIds 为空、full 仍为真。
+func templateSetCmd(kind string, rows []ContentTemplate) Cmd {
+	// 按数量先准备容器。
+	ids := make([]string, 0, len(rows))
+	// 只收这一类的身份，别的类不混进来。
+	for _, t := range rows {
+		// 种类不符的跳过，全集只说这一类。
+		if t.Kind != kind {
+			continue
+		}
+		// 把这一项接进结果。
+		ids = append(ids, t.ID.String())
+	}
+	return Cmd{Typ: CmdTemplateSet, Kind: kind, Full: true, TemplateIDs: ids}
 }
 
 // 厂服务包或客户端包发布后通知已认领有效厂去拉，不含字节。

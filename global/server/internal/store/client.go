@@ -96,13 +96,13 @@ func normalizePublicKey(publicKey []byte) []byte {
 	return publicKey
 }
 
-// normalizeStoredSerial 去掉首尾空白；空号允许，超过 128 字拒绝。
+// normalizeStoredSerial 去掉首尾空白并收成大写；空号允许，超过 128 字拒绝。
 func normalizeStoredSerial(serial string) (string, error) {
-	// 去掉首尾空白，空号允许留下。
-	serial = strings.TrimSpace(serial)
+	// 去掉首尾空白再收大写，空号允许留下；库里唯一索引也按大写判重。
+	serial = strings.ToUpper(strings.TrimSpace(serial))
 	// 识别号超长就拒绝，避免截断以后撞号。
 	if utf8.RuneCountInString(serial) > 128 {
-		return "", domain.ErrDeviceSerialRequired
+		return "", domain.ErrDeviceSerialTooLong
 	}
 	return serial, nil
 }

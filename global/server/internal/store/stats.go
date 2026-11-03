@@ -23,7 +23,7 @@ const weldSummaryInsertBatch = 1000 // 整表替换时每批写入的行数
 type WeldSummary struct {
 	FactoryID   uuid.UUID // 上送工厂
 	FactoryName string    // 名录显示名
-	Day         string    // UTC 日期 YYYY-MM-DD
+	Day         string    // 厂端时区日 YYYY-MM-DD，原样存
 	ProjectName string    // 工程名快照或未关联
 	WeldKind    string    // single / multilayer / tbar / 空
 	RunCount    int64     // 该粒次数
@@ -35,7 +35,7 @@ type WeldSummary struct {
 type weldSummaryRow struct {
 	ID          uuid.UUID `gorm:"type:uuid;primaryKey"`         // 汇总行稳定身份
 	FactoryID   uuid.UUID `gorm:"type:uuid;not null"`           // 上送工厂
-	Day         string    `gorm:"type:date;not null"`           // UTC 日历日
+	Day         string    `gorm:"type:date;not null"`           // 厂端时区日历日
 	ProjectName string    `gorm:"column:project_name;not null"` // 工程名快照
 	WeldKind    string    `gorm:"column:weld_kind;not null"`    // 焊接模式
 	RunCount    int64     `gorm:"column:run_count;not null"`    // 该粒次数
@@ -51,7 +51,7 @@ func (weldSummaryRow) TableName() string { return "weld_summaries" }
 type weldSummaryScan struct {
 	FactoryID   uuid.UUID `gorm:"column:factory_id"`   // 上送工厂
 	FactoryName string    `gorm:"column:factory_name"` // 名录显示名
-	Day         string    `gorm:"column:day"`          // UTC 日期
+	Day         string    `gorm:"column:day"`          // 厂端时区日期
 	ProjectName string    `gorm:"column:project_name"` // 工程名
 	WeldKind    string    `gorm:"column:weld_kind"`    // 焊接模式
 	RunCount    int64     `gorm:"column:run_count"`    // 次数
@@ -106,7 +106,8 @@ func (s *Store) ReplaceWeldSummaries(ctx context.Context, factoryID uuid.UUID, r
 	})
 }
 
-// ListWeldSummaries 列出各厂上送汇总；窗按 UTC 日与查询区间是否相交裁。
+// ListWeldSummaries 列出各厂上送汇总；日键是厂端时区日，不按发生时刻重分。
+// 窗把日键当作 UTC 零点起的一天来比，前端按所选日历日的 UTC 零点发起止，等于按日键直接比。
 func (s *Store) ListWeldSummaries(ctx context.Context, factoryID *uuid.UUID, from, to *time.Time) ([]WeldSummary, error) {
 	// 先接上厂名，日期窗口在后面再收窄。
 	q := s.db.WithContext(ctx).Table("weld_summaries AS w").

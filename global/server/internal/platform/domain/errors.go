@@ -43,7 +43,8 @@ var (
 	ErrClientBound           = errors.New("client already bound to a factory")    // 已属一厂，不能再绑到另一厂
 	ErrUnbound               = errors.New("client is not bound")                  // 未绑定不能改绑
 	ErrDeviceSerialRequired  = errors.New("device serial is required")            // 登记必须填写机械臂识别号
-	ErrDeviceSerialTaken     = errors.New("device serial already bound")          // 该识别号已登记在另一台设备
+	ErrDeviceSerialTaken     = errors.New("device serial already bound")          // 该识别号已登记在另一台设备（大小写不论）
+	ErrDeviceSerialTooLong   = errors.New("device serial is too long")            // 识别号超过 128 字
 	ErrStaleRevision       = errors.New("revision is not strictly newer")         // 只接受更高软件版本或节点修订
 	ErrRevisionConflict    = errors.New("revision does not match")                // 资产期望修订对不上
 	ErrIntegrity           = errors.New("asset integrity check failed")           // 正文与摘要不一致或摘要长度不对
@@ -68,6 +69,7 @@ var (
 	ErrTooManyAttempts       = errors.New("too many login attempts")         // 登录超频或失败总闸已关，稍后再试
 	ErrTooManyRequests       = errors.New("too many requests")               // 匿名入口按来源超频，稍后再试
 	ErrWrongCurrentPassword  = errors.New("wrong current password")          // 改密时当前密码没带或不对，会话仍有效
+	ErrPasswordTooShort      = errors.New("password too short")              // 新密码不足 8 个字
 )
 
 // known 列出本包全部业务哨兵，Known 只认这些；新增哨兵须一并补进来，测试会核对。
@@ -80,11 +82,11 @@ var known = []error{
 	ErrFactoryBootstrap, ErrInvalidEnrollment, ErrFactoryDisabled, ErrFactoryRetired, ErrFactoryOffline,
 	ErrInvalidName, ErrDuplicateName, ErrInvalidKey, ErrClientKeyTaken, ErrFactoryKeyExists,
 	ErrSigningKeyExists, ErrClientBound, ErrUnbound, ErrDeviceSerialRequired, ErrDeviceSerialTaken,
-	ErrStaleRevision, ErrRevisionConflict, ErrIntegrity, ErrContentLeaseExpired, ErrAssetNotAvailable,
+	ErrDeviceSerialTooLong, ErrStaleRevision, ErrRevisionConflict, ErrIntegrity, ErrContentLeaseExpired, ErrAssetNotAvailable,
 	ErrAssetNotCopyable, ErrAssetDependency, ErrInvalidWeldKind, ErrWeldKindMismatch, ErrCornerSlotMismatch, ErrWeldKindInUse,
 	ErrClosureIncomplete, ErrClosureMismatch, ErrClientCacheFull, ErrTemplateInvalid, ErrAssetCodeMissing,
 	ErrAssetCodeConflict, ErrAssetSourceTaken, ErrOriginCodeExhausted, ErrSoftwareInstallFailed, ErrSoftwareApplying,
-	ErrTooManyAttempts, ErrTooManyRequests, ErrWrongCurrentPassword,
+	ErrTooManyAttempts, ErrTooManyRequests, ErrWrongCurrentPassword, ErrPasswordTooShort,
 }
 
 // Known 交回 err 包着的业务哨兵，不是业务错误就交回 nil。
