@@ -60,6 +60,7 @@ var (
 	ErrClosureMismatch     = errors.New("closure revision mismatch")              // 组包串版：身份或修订被顶替
 	ErrClientCacheFull = errors.New("client cache is full")        // 工程份已达缓存上限
 	ErrTemplateInvalid     = errors.New("content template is invalid")    // 字段表不合法
+	ErrProjectItemTemplate = errors.New("project item template not found") // 工程焊道点的模版库里没有，也不是内置种子
 	ErrAssetCodeMissing    = errors.New("asset origin code is not assigned") // 未齐创建端短码，不得新建
 	ErrAssetCodeConflict   = errors.New("asset code already exists")       // 同号不同身份，或同身份编号不一致
 	ErrAssetSourceTaken    = errors.New("asset source already promoted")   // 同一升档源已有平台级；并发升档撞上时回读那条
@@ -84,7 +85,7 @@ var known = []error{
 	ErrSigningKeyExists, ErrClientBound, ErrUnbound, ErrDeviceSerialRequired, ErrDeviceSerialTaken,
 	ErrDeviceSerialTooLong, ErrStaleRevision, ErrRevisionConflict, ErrIntegrity, ErrContentLeaseExpired, ErrAssetNotAvailable,
 	ErrAssetNotCopyable, ErrAssetDependency, ErrInvalidWeldKind, ErrWeldKindMismatch, ErrCornerSlotMismatch, ErrWeldKindInUse,
-	ErrClosureIncomplete, ErrClosureMismatch, ErrClientCacheFull, ErrTemplateInvalid, ErrAssetCodeMissing,
+	ErrClosureIncomplete, ErrClosureMismatch, ErrClientCacheFull, ErrTemplateInvalid, ErrProjectItemTemplate, ErrAssetCodeMissing,
 	ErrAssetCodeConflict, ErrAssetSourceTaken, ErrOriginCodeExhausted, ErrSoftwareInstallFailed, ErrSoftwareApplying,
 	ErrTooManyAttempts, ErrTooManyRequests, ErrWrongCurrentPassword, ErrPasswordTooShort,
 }

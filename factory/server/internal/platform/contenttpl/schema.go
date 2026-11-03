@@ -255,66 +255,103 @@ func Apply(schemaJSON, content []byte) ([]byte, error) {
 	return json.Marshal(out)
 }
 
+// ErrUnknownProjectItem 工程焊道点的模版库里没有，也不是内置种子；不能悄悄丢掉这条焊道。
+var ErrUnknownProjectItem = fmt.Errorf("project item template is unknown")
+
 // ApplyProjectItems 工程正文是数组；按 templateId 套那一份对象字段，种子身份缺份时用内置字段。
-func ApplyProjectItems(items []ProjectItemSchema, content []byte) ([]byte, error) {
-	// 定下身份，再交给后面。
+// 没写 templateId 的焊道按工程作业类型取对应的空库种子身份；认不出的模版身份报 ErrUnknownProjectItem。
+func ApplyProjectItems(items []ProjectItemSchema, weldKind string, content []byte) ([]byte, error) {
+	// 按模版身份记下各自的字段。
 	byID := map[string][]Field{}
-	// 逐项处理，空列表就直接跳过。
+	// 每一份模版登记自己的字段。
 	for _, it := range items {
-		// 定下身份，再交给后面。
+		// 这份身份对上自己的字段表。
 		byID[it.ID] = it.Fields
 	}
-	// 准备放下取值，再交给后面。
+	// 准备接拆开的正文。
 	var v any
-	// 去掉两头空白再使用。
+	// 先去掉空白，空正文当没有。
 	trim := bytes.TrimSpace(content)
-	// 去掉空白之后还有字才当成有效文本。
+	// 有正文才尝试拆开。
 	if len(trim) > 0 {
-		// 没能把字节还原成结构就停，避免带着残缺继续。
+		// 拆不开就不是工程正文。
 		if err := json.Unmarshal(trim, &v); err != nil {
-			// 定下取值，再交给后面。
+			// 非法正文退回空，好补缺省。
 			v = nil
 		}
 	}
-	// 收成数组再往下走，对不上就当不是数组。
+	// 工程正文必须是数组。
 	src, ok := v.([]any)
-	// 实际类型对不上就换一种收法。
+	// 不是数组就没有焊道可留。
 	if !ok {
-		// 交回把结构收成字节的结果。
+		// 对不上就交回空数组。
 		return json.Marshal([]any{})
 	}
-	// 按需要的长度把缓冲准备好。
+	// 按原份数预留结果。
 	out := make([]any, 0, len(src))
-	// 逐个元素套用，空数组就保持空。
+	// 每一份都要对上模版，对不上就整份拒绝。
 	for _, el := range src {
-		// 收成对象再往下看，对不上就当不是对象。
+		// 这一份要是对象才套。
 		obj, _ := el.(map[string]any)
-		// 这一层不是对象就不再往下走。
+		// 不是对象就不是焊道，丢掉这一份。
 		if obj == nil {
 			continue
 		}
-		// 收成文本，对不上就当这个槽是空的。
-		id, _ := obj["templateId"].(string)
-		// 先当还没找到，找到再改成命中。
+		// 取这条焊道点的模版身份，没写就按作业类型补。
+		id, err := projectItemID(obj, weldKind)
+		// 身份写法不对或补不出来就拒绝整份。
+		if err != nil {
+			return nil, err
+		}
+		// 对上身份就用那一份字段。
 		fields, ok := byID[id]
 		// 库里没这份但身份是空库种子，就按内置字段套，免得网页新建的焊道被吞。
 		if seed, isSeed := SeedProjectItem(id); !ok && isSeed {
 			// 改用种子自带的字段表，删掉种子后照样能新建。
 			fields, ok = seed.Fields, true
 		}
-		// 没有命中就走另一路，不用零值冒充有值。
+		// 库里没有也不是种子，报出来，不悄悄丢掉焊道。
 		if !ok {
-			continue
+			// 带上身份方便查是哪一份。
+			return nil, fmt.Errorf("%w: %s", ErrUnknownProjectItem, id)
 		}
-		// 按字段表套一个对象。
+		// 只留这份字段表里的键。
 		applied := applyObject(fields, obj)
-		// 定下做过，再交给后面。
+		// 套完把模版身份写回去，推断出来的也落进正文。
 		applied["templateId"] = id
-		// 把这一段接进结果，顺序要保持住。
+		// 收下套完的这一份。
 		out = append(out, applied)
 	}
-	// 交回把结构收成字节的结果。
+	// 套完的结果再收成正文。
 	return json.Marshal(out)
+}
+
+// projectItemID 取焊道的模版身份；没写或写空时按作业类型取空库种子身份。
+func projectItemID(obj map[string]any, weldKind string) (string, error) {
+	// 先看正文里有没有写模版身份。
+	raw, has := obj["templateId"]
+	// 写了非空值就必须是文本身份。
+	if has && raw != nil {
+		// 收成文本，不是文本就认不出。
+		id, isText := raw.(string)
+		// 模版身份只能是文本。
+		if !isText {
+			// 带上原值方便查。
+			return "", fmt.Errorf("%w: %v", ErrUnknownProjectItem, raw)
+		}
+		// 去掉空白后有字才算写了身份。
+		if id = strings.TrimSpace(id); id != "" {
+			return id, nil
+		}
+	}
+	// 没写身份就按工程作业类型补空库种子身份。
+	id, ok := SeedTemplateOfWeldKind(weldKind)
+	// 作业类型认不出就补不出模版。
+	if !ok {
+		// 带上作业类型方便查。
+		return "", fmt.Errorf("%w: weld kind %q", ErrUnknownProjectItem, weldKind)
+	}
+	return id, nil
 }
 
 // applyObject 只保留模版里的键，缺的补默认；正文里的空对象/数组原样留下。

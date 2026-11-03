@@ -414,7 +414,7 @@ func TestApplyKeepsCornerOff(t *testing.T) {
 		{"templateId":"` + SeedTplTBar + `","kind":"tbar","gapBands":[{"rootProcessId":"B","capProcessIds":["C","D"]},{"capProcessId":"E"}]}
 	]`)
 	// 按空库三份套正文。
-	out, err := ApplyProjectItems(SeedProjectItems(), raw)
+	out, err := ApplyProjectItems(SeedProjectItems(), WeldSingle, raw)
 	// 套不上就停住本用例。
 	if err != nil {
 		// 套不上就停住本用例。

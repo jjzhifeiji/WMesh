@@ -43,7 +43,7 @@ func applyOne(t *testing.T, body string) map[string]any {
 	// 测试辅助，出错时报调用方的行。
 	t.Helper()
 	// 按空库三份套正文，和 normalizeContent 走同一个入口。
-	out, err := ApplyProjectItems(SeedProjectItems(), []byte(body))
+	out, err := ApplyProjectItems(SeedProjectItems(), "", []byte(body))
 	// 套用失败则后面无从核对。
 	if err != nil {
 		// 失败就中止本用例。
@@ -166,14 +166,14 @@ func TestTBarPadContentKept(t *testing.T) {
 // 套过一遍的正文再套一遍不变，空槽不会第二遍被补出来。
 func TestTBarPadContentIdempotent(t *testing.T) {
 	// 第一遍套用。
-	first, err := ApplyProjectItems(SeedProjectItems(), []byte(padTBarJSON))
+	first, err := ApplyProjectItems(SeedProjectItems(), WeldTBar, []byte(padTBarJSON))
 	// 套用失败则后面无从核对。
 	if err != nil {
 		// 失败就中止本用例。
 		t.Fatal(err)
 	}
 	// 拿第一遍的结果再套一遍。
-	second, err := ApplyProjectItems(SeedProjectItems(), first)
+	second, err := ApplyProjectItems(SeedProjectItems(), WeldTBar, first)
 	// 套用失败则后面无从核对。
 	if err != nil {
 		// 失败就中止本用例。
@@ -395,7 +395,7 @@ const padSingleJSON = `[{"id":"s1","name":"焊道 1","points":[` +
 // 单层按示教器真实形状过模版：延长长度、包角组和附加工艺一个不丢；枪姿没写的不补零，没包角的不补出空组。
 func TestSinglePadContentKept(t *testing.T) {
 	// 按空库三份套正文，和 normalizeContent 走同一个入口。
-	out, err := ApplyProjectItems(SeedProjectItems(), []byte(strings.ReplaceAll(padSingleJSON, `{"id":"s`, `{"templateId":"`+SeedTplSingle+`","id":"s`)))
+	out, err := ApplyProjectItems(SeedProjectItems(), WeldSingle, []byte(strings.ReplaceAll(padSingleJSON, `{"id":"s`, `{"templateId":"`+SeedTplSingle+`","id":"s`)))
 	// 套用失败则后面无从核对。
 	if err != nil {
 		// 失败就中止本用例。

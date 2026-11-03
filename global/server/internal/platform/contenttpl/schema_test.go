@@ -3,6 +3,7 @@ package contenttpl
 
 import (
 	"encoding/json"
+	"errors"
 	"testing"
 )
 
@@ -724,14 +725,14 @@ func countProcessType(f *Field) int {
 	return n
 }
 
-// 库里删了单层种子，带单层种子身份的元素仍按内置字段套上，挂已删自定义模版的丢掉。
+// 库里删了单层种子，带单层种子身份的元素仍按内置字段套上。
 func TestApplyProjectItemsSeedFallback(t *testing.T) {
 	// 库里只剩多层那份，单层种子已被删掉。
 	items := []ProjectItemSchema{{ID: SeedTplMulti, Name: "多层焊缝", Fields: itemMulti()}}
-	// 一条单层种子身份的焊道带模版外的键，另一条挂已删的自定义模版。
-	body := []byte(`[{"templateId":"` + SeedTplSingle + `","name":"焊道 1","junk":1},{"templateId":"00000000-0000-4000-8000-000000000009","name":"x"}]`)
+	// 一条单层种子身份的焊道带模版外的键。
+	body := []byte(`[{"templateId":"` + SeedTplSingle + `","name":"焊道 1","junk":1}]`)
 	// 按当前各份套正文。
-	out, err := ApplyProjectItems(items, body)
+	out, err := ApplyProjectItems(items, WeldSingle, body)
 	// 套用失败则后面无从核对。
 	if err != nil {
 		// 失败就中止本用例。
@@ -744,7 +745,7 @@ func TestApplyProjectItemsSeedFallback(t *testing.T) {
 		// 失败就中止本用例。
 		t.Fatal(err)
 	}
-	// 只该留下单层种子那条，自定义那条丢掉。
+	// 单层种子那条要留下。
 	if len(got) != 1 || got[0]["templateId"] != SeedTplSingle || got[0]["name"] != "焊道 1" {
 		// 种子身份的焊道被吞就中止。
 		t.Fatalf("seed item dropped: %s", out)
@@ -753,5 +754,88 @@ func TestApplyProjectItemsSeedFallback(t *testing.T) {
 	if _, ok := got[0]["junk"]; ok || got[0]["isEnabled"] != true {
 		// 没按内置字段套就中止。
 		t.Fatalf("seed fields not applied: %s", out)
+	}
+}
+
+// 挂了库里没有、也不是种子的模版，整份报错，不悄悄丢掉焊道。
+func TestApplyProjectItemsUnknownTemplate(t *testing.T) {
+	// 库里只剩多层那份。
+	items := []ProjectItemSchema{{ID: SeedTplMulti, Name: "多层焊缝", Fields: itemMulti()}}
+	// 认不出的几种写法：已删的自定义身份、非文本身份。
+	for _, body := range []string{
+		// 已删的自定义模版身份。
+		`[{"templateId":"` + SeedTplMulti + `"},{"templateId":"00000000-0000-4000-8000-000000000009","name":"x"}]`,
+		// 身份写成数字。
+		`[{"templateId":7,"name":"x"}]`,
+	} {
+		// 按当前各份套正文。
+		_, err := ApplyProjectItems(items, WeldMultilayer, []byte(body))
+		// 必须报认不出的模版。
+		if !errors.Is(err, ErrUnknownProjectItem) {
+			// 没报就中止。
+			t.Fatalf("%s: want ErrUnknownProjectItem, got %v", body, err)
+		}
+	}
+}
+
+// 没写模版身份的焊道按工程作业类型补种子身份，库里有那份就用库里的字段。
+func TestApplyProjectItemsInferByWeldKind(t *testing.T) {
+	// 库里的单层份只留名字和启用两个键，T 排份不在库里。
+	items := []ProjectItemSchema{{ID: SeedTplSingle, Name: "单层焊道", Fields: []Field{
+		// 名字。
+		{Key: "name", Label: "名称", Type: TypeString},
+		// 启用。
+		{Key: "isEnabled", Label: "启用", Type: TypeBool, Default: true},
+	}}}
+	// 逐个作业类型核对补出来的身份和字段来源。
+	for _, c := range []struct {
+		weld string // 工程作业类型
+		want string // 该补上的种子身份
+		keep string // 补完后该留下的键
+		drop string // 补完后该删掉的键
+	}{
+		// 单层用库里那份，只留名字和启用。
+		{WeldSingle, SeedTplSingle, "name", "processId"},
+		// T 排库里没有，用内置字段，示教方式会补上。
+		{WeldTBar, SeedTplTBar, "teachMode", "junk"},
+	} {
+		// 两条都没写身份，一条写了空串。
+		body := `[{"name":"a","processId":"p","junk":1},{"templateId":"","name":"b"}]`
+		// 按作业类型套正文。
+		out, err := ApplyProjectItems(items, c.weld, []byte(body))
+		// 套用失败则后面无从核对。
+		if err != nil {
+			// 失败就中止本用例。
+			t.Fatal(err)
+		}
+		// 准备接套完的各个元素。
+		var got []map[string]any
+		// 拆不开就不是套用后的正文。
+		if err := json.Unmarshal(out, &got); err != nil {
+			// 失败就中止本用例。
+			t.Fatal(err)
+		}
+		// 两条都要留下。
+		if len(got) != 2 {
+			// 丢了焊道就中止。
+			t.Fatalf("%s: items dropped: %s", c.weld, out)
+		}
+		// 每条都要补上种子身份并按对应字段套过。
+		for _, it := range got {
+			// 先看有没有删掉该删的键。
+			_, dropped := it[c.drop]
+			// 再看该留的键在不在。
+			_, kept := it[c.keep]
+			// 身份不对或字段来源不对就中止。
+			if it["templateId"] != c.want || dropped || !kept {
+				// 带上正文方便查。
+				t.Fatalf("%s: wrong inference: %s", c.weld, out)
+			}
+		}
+	}
+	// 作业类型认不出又没写身份就报错。
+	if _, err := ApplyProjectItems(items, "", []byte(`[{"name":"a"}]`)); !errors.Is(err, ErrUnknownProjectItem) {
+		// 没报就中止。
+		t.Fatalf("empty weld kind: %v", err)
 	}
 }

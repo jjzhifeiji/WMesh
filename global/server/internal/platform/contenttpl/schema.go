@@ -255,8 +255,12 @@ func Apply(schemaJSON, content []byte) ([]byte, error) {
 	return json.Marshal(out)
 }
 
+// ErrUnknownProjectItem 工程焊道点的模版库里没有，也不是内置种子；不能悄悄丢掉这条焊道。
+var ErrUnknownProjectItem = fmt.Errorf("project item template is unknown")
+
 // ApplyProjectItems 工程正文是数组；按 templateId 套那一份对象字段，种子身份缺份时用内置字段。
-func ApplyProjectItems(items []ProjectItemSchema, content []byte) ([]byte, error) {
+// 没写 templateId 的焊道按工程作业类型取对应的空库种子身份；认不出的模版身份报 ErrUnknownProjectItem。
+func ApplyProjectItems(items []ProjectItemSchema, weldKind string, content []byte) ([]byte, error) {
 	// 按模版身份记下各自的字段。
 	byID := map[string][]Field{}
 	// 每一份模版登记自己的字段。
@@ -270,7 +274,7 @@ func ApplyProjectItems(items []ProjectItemSchema, content []byte) ([]byte, error
 	trim := bytes.TrimSpace(content)
 	// 有正文才尝试拆开。
 	if len(trim) > 0 {
-		// 拆不开就不是套用后的正文。
+		// 拆不开就不是工程正文。
 		if err := json.Unmarshal(trim, &v); err != nil {
 			// 非法正文退回空，好补缺省。
 			v = nil
@@ -278,23 +282,27 @@ func ApplyProjectItems(items []ProjectItemSchema, content []byte) ([]byte, error
 	}
 	// 工程正文必须是数组。
 	src, ok := v.([]any)
-	// 不是正文就当没有引用。
+	// 不是数组就没有焊道可留。
 	if !ok {
 		// 对不上就交回空数组。
 		return json.Marshal([]any{})
 	}
 	// 按原份数预留结果。
 	out := make([]any, 0, len(src))
-	// 每一份对上模版才留下。
+	// 每一份都要对上模版，对不上就整份拒绝。
 	for _, el := range src {
 		// 这一份要是对象才套。
 		obj, _ := el.(map[string]any)
-		// 不是对象就丢掉这一份。
+		// 不是对象就不是焊道，丢掉这一份。
 		if obj == nil {
 			continue
 		}
-		// 用模版身份找这一份的字段。
-		id, _ := obj["templateId"].(string)
+		// 取这条焊道点的模版身份，没写就按作业类型补。
+		id, err := projectItemID(obj, weldKind)
+		// 身份写法不对或补不出来就拒绝整份。
+		if err != nil {
+			return nil, err
+		}
 		// 对上身份就用那一份字段。
 		fields, ok := byID[id]
 		// 库里没这份但身份是空库种子，就按内置字段套，免得网页新建的焊道被吞。
@@ -302,19 +310,48 @@ func ApplyProjectItems(items []ProjectItemSchema, content []byte) ([]byte, error
 			// 改用种子自带的字段表，删掉种子后照样能新建。
 			fields, ok = seed.Fields, true
 		}
-		// 不是正文就当没有引用。
+		// 库里没有也不是种子，报出来，不悄悄丢掉焊道。
 		if !ok {
-			continue
+			// 带上身份方便查是哪一份。
+			return nil, fmt.Errorf("%w: %s", ErrUnknownProjectItem, id)
 		}
 		// 只留这份字段表里的键。
 		applied := applyObject(fields, obj)
-		// 套完把模版身份写回去。
+		// 套完把模版身份写回去，推断出来的也落进正文。
 		applied["templateId"] = id
 		// 收下套完的这一份。
 		out = append(out, applied)
 	}
 	// 套完的结果再收成正文。
 	return json.Marshal(out)
+}
+
+// projectItemID 取焊道的模版身份；没写或写空时按作业类型取空库种子身份。
+func projectItemID(obj map[string]any, weldKind string) (string, error) {
+	// 先看正文里有没有写模版身份。
+	raw, has := obj["templateId"]
+	// 写了非空值就必须是文本身份。
+	if has && raw != nil {
+		// 收成文本，不是文本就认不出。
+		id, isText := raw.(string)
+		// 模版身份只能是文本。
+		if !isText {
+			// 带上原值方便查。
+			return "", fmt.Errorf("%w: %v", ErrUnknownProjectItem, raw)
+		}
+		// 去掉空白后有字才算写了身份。
+		if id = strings.TrimSpace(id); id != "" {
+			return id, nil
+		}
+	}
+	// 没写身份就按工程作业类型补空库种子身份。
+	id, ok := SeedTemplateOfWeldKind(weldKind)
+	// 作业类型认不出就补不出模版。
+	if !ok {
+		// 带上作业类型方便查。
+		return "", fmt.Errorf("%w: weld kind %q", ErrUnknownProjectItem, weldKind)
+	}
+	return id, nil
 }
 
 // applyObject 只保留模版里的键，缺的补默认；正文里的空对象/数组原样留下。

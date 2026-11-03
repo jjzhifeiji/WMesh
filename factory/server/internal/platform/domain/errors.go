@@ -53,6 +53,7 @@ var (
 	ErrFactoryDisabled       = errors.New("factory is disabled")                    // WAN 停用后不得登录或新开操作
 	ErrFactoryRetired        = errors.New("factory is retired")                     // 已注销，通道不再重连
 	ErrTemplateInvalid       = errors.New("content template is invalid")            // 字段表不合法
+	ErrProjectItemTemplate   = errors.New("project item template not found")        // 工程焊道点的模版库里没有，也不是内置种子
 	ErrAssetCodeMissing      = errors.New("asset origin code is not assigned")      // 未齐创建端短码，不得新建
 	ErrAssetCodeConflict     = errors.New("asset code already exists")              // 同号不同身份，或同身份编号不一致
 	ErrOriginCodeExhausted   = errors.New("origin code exhausted")                  // 短码用尽或编号序号溢出
@@ -77,7 +78,7 @@ var known = []error{
 	ErrIntegrity, ErrContentLeaseExpired, ErrAssetNotAvailable, ErrAssetNotCopyable, ErrAssetDependency,
 	ErrInvalidWeldKind, ErrWeldKindMismatch, ErrCornerSlotMismatch, ErrWeldKindInUse, ErrClosureIncomplete, ErrClosureMismatch,
 	ErrClientCacheFull, ErrSyncRetry, ErrInvalidEnrollment, ErrWANUnreachable, ErrFactoryDisabled,
-	ErrFactoryRetired, ErrTemplateInvalid, ErrAssetCodeMissing, ErrAssetCodeConflict,
+	ErrFactoryRetired, ErrTemplateInvalid, ErrProjectItemTemplate, ErrAssetCodeMissing, ErrAssetCodeConflict,
 	ErrOriginCodeExhausted, ErrSoftwareInstallFailed, ErrSoftwareApplying, ErrTooManyAttempts, ErrTooManyRequests,
 	ErrWANSignatureRejected, ErrWrongCurrentPassword, ErrWeakPassword,
 }

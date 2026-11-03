@@ -43,6 +43,7 @@ const zh: Record<string, string> = {
   "device serial does not match": "读到的识别号和这台设备不一致",
   "content lease expired": "解包租约已过期或尚未从云端领到，请确认厂端已连上云端后再试",
   "content template is invalid": "内容模版字段不合法",
+  "project item template not found": "工程焊道的模版不存在",
   "asset origin code is not assigned": "还没有本端编号短码，不能新建",
   "asset code already exists": "编号已占用或与身份不一致",
   "origin code exhausted": "短码或编号已用尽",

@@ -117,7 +117,7 @@ func (s *Assets) CreatePlatformProcessIn(ctx context.Context, token, name string
 	// 后面入库和审计都用整理过的名字。
 	name = clean
 	// 收成合法值，空或太长不要。
-	content, err = s.normalizeContent(ctx, KindProcess, content)
+	content, err = s.normalizeContent(ctx, KindProcess, "", content)
 	// 不合法就拒绝，避免脏数据入库。
 	if err != nil {
 		// 建资产被拒就留审计，不写正文。
@@ -800,7 +800,7 @@ func (s *Assets) CreatePlatformProjectIn(ctx context.Context, token, name string
 		return Asset{}, err
 	}
 	// 收成合法值，空或太长不要。
-	content, err = s.normalizeContent(ctx, KindProject, content)
+	content, err = s.normalizeContent(ctx, KindProject, kind, content)
 	// 不合法就拒绝，避免脏数据入库。
 	if err != nil {
 		// 建资产被拒就留审计，不写正文。

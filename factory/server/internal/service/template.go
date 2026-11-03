@@ -79,8 +79,9 @@ func (s *kernel) projectItems(ctx context.Context) ([]contenttpl.ProjectItemSche
 	return out, nil
 }
 
-// normalizeContent 新建时按已收模版套正文；尚未收到副本则原样返回。
-func (s *kernel) normalizeContent(ctx context.Context, kind string, content []byte) ([]byte, error) {
+// normalizeContent weldKind 是工程作业类型，补没写模版的焊道；工艺可传空。
+// 新建时按已收模版套正文；尚未收到副本则原样返回。
+func (s *kernel) normalizeContent(ctx context.Context, kind, weldKind string, content []byte) ([]byte, error) {
 	// 不是工程则拒绝装袋或授权
 	if kind == KindProject {
 		// 新建工程不得再带路径键。
@@ -98,9 +99,13 @@ func (s *kernel) normalizeContent(ctx context.Context, kind string, content []by
 			return content, nil
 		}
 		// 套上工程明细，避免留下不一致的结果
-		out, err := contenttpl.ApplyProjectItems(items, content)
+		out, err := contenttpl.ApplyProjectItems(items, weldKind, content)
 		// 套不上则正文保持原样
 		if err != nil {
+			// 焊道点了认不出的模版就明说，不和字段表坏混在一起。
+			if errors.Is(err, contenttpl.ErrUnknownProjectItem) {
+				return nil, domain.ErrProjectItemTemplate
+			}
 			return nil, domain.ErrTemplateInvalid
 		}
 		return out, nil

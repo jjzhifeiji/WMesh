@@ -190,7 +190,7 @@ func (s *Assets) insertAuthored(ctx context.Context, acc Account, wc WorkContext
 		return Asset{}, err
 	}
 	// 按当前模版整理正文，套不上就拒绝。
-	content, err = s.normalizeContent(ctx, kind, content)
+	content, err = s.normalizeContent(ctx, kind, weld, content)
 	// 正文套不上模版则记拒绝。
 	if err != nil {
 		// 创建被拒时补记审计，写失败仍维持拒绝。

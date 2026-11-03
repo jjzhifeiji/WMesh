@@ -184,7 +184,7 @@ func isDomain(err error) bool {
 		domain.ErrDisabledOrgType, domain.ErrDisabledOrgUnit, domain.ErrHasActiveUnits, domain.ErrHasActiveChildren,
 		domain.ErrIntegrity, domain.ErrAssetNotAvailable, domain.ErrAssetNotCopyable, domain.ErrAssetDependency,
 		domain.ErrInvalidWeldKind, domain.ErrWeldKindMismatch, domain.ErrCornerSlotMismatch,
-		domain.ErrTemplateInvalid, domain.ErrAssetCodeMissing, domain.ErrAssetCodeConflict, domain.ErrOriginCodeExhausted,
+		domain.ErrTemplateInvalid, domain.ErrProjectItemTemplate, domain.ErrAssetCodeMissing, domain.ErrAssetCodeConflict, domain.ErrOriginCodeExhausted,
 		domain.ErrStaleRevision,
 	} {
 		if errors.Is(err, t) {

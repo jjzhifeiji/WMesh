@@ -27,6 +27,25 @@ func WeldKindOfTemplate(id string) (string, bool) {
 	}
 }
 
+// SeedTemplateOfWeldKind 作业类型对应的空库模版身份；没写模版的焊道按它补。
+func SeedTemplateOfWeldKind(weldKind string) (string, bool) {
+	// 按作业类型分路，对不上就走默认。
+	switch weldKind {
+	// 单层对单层种子。
+	case WeldSingle:
+		return SeedTplSingle, true
+	// 多层对多层种子。
+	case WeldMultilayer:
+		return SeedTplMulti, true
+	// T 排对 T 排种子。
+	case WeldTBar:
+		return SeedTplTBar, true
+	// 认不出的作业类型没有种子。
+	default:
+		return "", false
+	}
+}
+
 // weldKindOfItemKind 工程焊缝种类对应的作业类型；附加工艺没有。
 func weldKindOfItemKind(kind string) (string, bool) {
 	// 只认三种焊缝种类，附加工艺没有作业类型。

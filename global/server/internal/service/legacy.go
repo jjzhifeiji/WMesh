@@ -635,7 +635,7 @@ func (s *Assets) importDigests(ctx context.Context, content []byte) [][]byte {
 	// 覆盖时存的是原文，先按原文算一份。
 	sums := [][]byte{digest.Sum(content)}
 	// 新建时会按当前模版套正文，再按套后的算一份。
-	norm, err := s.normalizeContent(ctx, KindProcess, content)
+	norm, err := s.normalizeContent(ctx, KindProcess, "", content)
 	// 套得上且和原文不同，才多比一份摘要。
 	if err == nil && !bytes.Equal(norm, content) {
 		// 套后正文的摘要也拿来比对。
