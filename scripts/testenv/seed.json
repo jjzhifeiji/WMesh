@@ -1,0 +1,118 @@
+{
+  "_说明": "本机测试初始数据。只在本机用；账号密码明文写在这里，所有人共用一套。资产文件路径相对 data_root。",
+  "wan": {
+    "url": "http://localhost:52080",
+    "login": "wan",
+    "password_env_file": "global/.env",
+    "password_env_key": "WMESH_ADMIN_PASSWORD"
+  },
+  "factory_url": "http://localhost:52081",
+  "data_root": "docs/device-date",
+
+  "factories": [
+    {
+      "key": "A",
+      "name": "测试厂A",
+      "claim": true,
+      "sa": { "login": "changzhang", "display": "王厂长", "password": "changzhang123456" },
+      "org": [
+        { "name": "生产部", "children": [
+          { "name": "一车间", "children": [ { "name": "焊接一组" }, { "name": "焊接二组" } ] },
+          { "name": "二车间" }
+        ] },
+        { "name": "质检部" }
+      ],
+      "people": [
+        { "login": "gongyi1", "display": "李工艺", "role": "org_admin", "org": "生产部" },
+        { "login": "gongyi2", "display": "赵工艺", "role": "org_admin", "org": "二车间" },
+        { "login": "hangong1", "display": "张焊工", "role": "operator", "org": "焊接一组" },
+        { "login": "hangong2", "display": "刘焊工", "role": "operator", "org": "焊接一组" },
+        { "login": "hangong3", "display": "陈焊工", "role": "operator", "org": "焊接二组" },
+        { "login": "hangong4", "display": "杨焊工", "role": "operator", "org": "二车间" },
+        { "login": "hangong5", "display": "周焊工（离职）", "role": "operator", "org": "焊接二组", "disabled": true }
+      ],
+      "policy": { "maxCachedProjects": 2, "cacheScope": "all", "persistUnwrapKey": true, "keyTtlSeconds": 0, "encryptPouch": true },
+      "factory_processes": [
+        "1焊角6.5mm以下.json",
+        "User/1K6.5mmD.json",
+        "User/3K10-11mm-1.json",
+        "Standard/1T1.2/1P-1F/3K10-11mm-2.json",
+        "Standard/1T1.2/1P-1F/3K10-11mm-3.json",
+        "Standard/1T1.2/1P-1F/3K10-11mm-4.json",
+        "Standard/1T1.2/1P-1F/2K8.5-9.5mm-1.json",
+        "Standard/1T1.2/1P-1F/3K7.5-8.5mm打底-1.json"
+      ],
+      "factory_projects": [
+        { "path": "single_layer/我的工程/第七轴/平焊/project_data.json", "name": "第七轴-平角焊7道" },
+        { "path": "single_layer/第七轴/project_data.json", "name": "第七轴-单道" },
+        { "path": "single_layer/第八轴/project_data.json", "name": "第八轴-单层8道",
+          "remap": { "新工艺大.json": "Standard/1T1.2/1P-1F/2K8.5-9.5mm-1.json" } },
+        { "path": "multi_layer/第七轴/multilayer_data.json", "name": "第七轴-多层",
+          "fill": { "base": "Standard/1T1.2/1P-1F/3K7.5-8.5mm打底-1.json",
+                    "passes": [ "Standard/1T1.2/1P-1F/3K10-11mm-2.json", "Standard/1T1.2/1P-1F/3K10-11mm-3.json", "Standard/1T1.2/1P-1F/3K10-11mm-4.json" ] } },
+        { "path": "multi_layer/第八轴/multilayer_data.json", "name": "第八轴-多层",
+          "fill": { "base": "Standard/1T1.2/1P-1F/3K7.5-8.5mm打底-1.json",
+                    "passes": [ "Standard/1T1.2/1P-1F/3K10-11mm-2.json", "Standard/1T1.2/1P-1F/3K10-11mm-3.json", "Standard/1T1.2/1P-1F/3K10-11mm-4.json" ] } }
+      ],
+      "personal": {
+        "owner": "hangong1",
+        "processes": [ "Standard/1T1.2/1P-1F/1K6.5mmD.json" ],
+        "projects": [
+          { "path": "single_layer/我的工程/第七轴/平焊/project_data.json", "name": "张焊工-平焊练习",
+            "remap": { "1焊角6.5mm以下.json": "Standard/1T1.2/1P-1F/1K6.5mmD.json",
+                       "Standard/1T1.2/1P-1F/3K10-11mm-2.json": "Standard/1T1.2/1P-1F/1K6.5mmD.json",
+                       "Standard/1T1.2/1P-1F/3K10-11mm-3.json": "Standard/1T1.2/1P-1F/1K6.5mmD.json",
+                       "Standard/1T1.2/1P-1F/3K10-11mm-4.json": "Standard/1T1.2/1P-1F/1K6.5mmD.json" } }
+        ]
+      }
+    },
+    {
+      "key": "B",
+      "name": "测试厂B",
+      "claim": true,
+      "sa": { "login": "changzhangb", "display": "孙厂长", "password": "changzhangb123456" },
+      "org": [ { "name": "焊接车间" } ],
+      "people": [
+        { "login": "hangongb1", "display": "吴焊工", "role": "operator", "org": "焊接车间" }
+      ],
+      "policy": { "maxCachedProjects": 2, "cacheScope": "all", "persistUnwrapKey": true, "keyTtlSeconds": 0, "encryptPouch": true },
+      "factory_processes": [],
+      "factory_projects": []
+    },
+    {
+      "key": "C",
+      "name": "测试厂C（未认领）",
+      "claim": false,
+      "sa": { "login": "changzhangc", "display": "钱厂长" }
+    }
+  ],
+
+  "devices": [
+    { "name": "一车间1号臂", "serial": "FA:KE:00:00:00:01", "factory": "A" },
+    { "name": "一车间2号臂", "serial": "FA:KE:00:00:00:02", "factory": "A" },
+    { "name": "B厂1号臂", "serial": "FA:KE:00:00:00:03", "factory": "B" },
+    { "name": "备用臂", "serial": "FA:KE:00:00:00:04", "factory": null }
+  ],
+
+  "platform": {
+    "processes": "Standard/1T1.2/**/*.json",
+    "non_copyable": "Standard/1T1.2/3BJ/*.json"
+  },
+
+  "history": {
+    "factory": "A",
+    "days": 30,
+    "welders": [ "hangong1", "hangong2", "hangong3", "hangong4" ],
+    "devices": [ "FA:KE:00:00:00:01", "FA:KE:00:00:00:02" ],
+    "runs_per_workday": [ 6, 14 ],
+    "runs_per_weekend": [ 0, 4 ],
+    "length_mm": [ 200, 1500 ],
+    "speed_mm_s": [ 6, 11 ],
+    "seed": 20261102
+  },
+
+  "fake_robot": {
+    "serial": "FA:KE:00:00:00:01",
+    "start_pose_from": "single_layer/我的工程/第七轴/平焊/project_data.json"
+  }
+}

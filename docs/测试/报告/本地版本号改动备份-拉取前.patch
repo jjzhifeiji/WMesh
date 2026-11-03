@@ -1,0 +1,54 @@
+diff --git a/factory/frontend/src/shared/version.ts b/factory/frontend/src/shared/version.ts
+index 828918a..ecb4f48 100644
+--- a/factory/frontend/src/shared/version.ts
++++ b/factory/frontend/src/shared/version.ts
+@@ -1,5 +1,5 @@
+ /** 前端版本号，只向前比较。 */
+-export const VERSION_CODE = 33;
++export const VERSION_CODE = 34;
+ 
+ /** 前端版本名。 */
+-export const VERSION_NAME = "1.1.31";
++export const VERSION_NAME = "1.1.32";
+diff --git a/factory/server/internal/platform/release/release.go b/factory/server/internal/platform/release/release.go
+index d49a776..9df5d1b 100644
+--- a/factory/server/internal/platform/release/release.go
++++ b/factory/server/internal/platform/release/release.go
+@@ -2,8 +2,8 @@
+ package release
+ 
+ const (
+-	Code    int64 = 33       // 服务版本号，只向前比较
+-	Name          = "1.1.31" // 服务版本名
+-	WebCode int64 = 33       // 前端版本号，与 frontend/src/shared/version.ts 对齐
+-	WebName       = "1.1.31" // 前端版本名
++	Code    int64 = 34       // 服务版本号，只向前比较
++	Name          = "1.1.32" // 服务版本名
++	WebCode int64 = 34       // 前端版本号，与 frontend/src/shared/version.ts 对齐
++	WebName       = "1.1.32" // 前端版本名
+ )
+diff --git a/global/frontend/src/shared/version.ts b/global/frontend/src/shared/version.ts
+index ee61c0e..51d3571 100644
+--- a/global/frontend/src/shared/version.ts
++++ b/global/frontend/src/shared/version.ts
+@@ -1,5 +1,5 @@
+ /** 前端版本号，只向前比较。 */
+-export const VERSION_CODE = 32;
++export const VERSION_CODE = 33;
+ 
+ /** 前端版本名。 */
+-export const VERSION_NAME = "1.0.31";
++export const VERSION_NAME = "1.0.32";
+diff --git a/global/server/internal/platform/release/release.go b/global/server/internal/platform/release/release.go
+index 5236e5b..cc6dca4 100644
+--- a/global/server/internal/platform/release/release.go
++++ b/global/server/internal/platform/release/release.go
+@@ -2,6 +2,6 @@
+ package release
+ 
+ const (
+-	Code int64 = 32       // 版本号，只向前比较
+-	Name       = "1.0.31" // 给人看的版本名
++	Code int64 = 33       // 版本号，只向前比较
++	Name       = "1.0.32" // 给人看的版本名
+ )

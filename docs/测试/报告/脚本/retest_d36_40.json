@@ -1,0 +1,30 @@
+{
+ "D-36": {
+  "result": "通过",
+  "evidence": "两轮均通过。第1轮：单层「工程管理>厂级」打开「第七轴-单道」(状态栏 工程:第七轴-单道) → 回首页进T排，状态栏「工程: 未打开」，日志「TBarWeld active project=01a1a01c-2093… kind=single not tbar, unbound」（RT6_D36_进T排状态栏.png）；T排里采起安、A下（RT6_D36_T排采起安.png）→ 回单层再开第七轴-单道，焊道1仍是 起安/起点/中间/终点/终安 全部已采集，无 A下/B下（RT6_D36_回单层再开.png）。第2轮：同样先在单层打开第七轴-单道，进T排仍「未打开」（RT6_D36_第2轮进T排.png），在T排个人级新建工程「rtsixaj」并采起安/A下/B下（RT6_D36_第2轮T排采点.png，厂端出现 personal tbar 工程 01a1a025-f9ea… rev4）→ 回单层再开第七轴-单道，焊道点不变（RT6_D36_第2轮回单层.png）。两轮后厂端第七轴-单道 revision 仍为 2、/content 与测前快照逐字段相同；厂端 app 日志 grep mismatch 为 0。T排「工程管理>厂级」点第七轴-单道，两次都 Toast「「第七轴-单道」是单层焊道工程，不能在T排对接里打开」，状态栏保持「未打开」（RT6_D36_T排里点单层工程.png、RT6_D36_第2轮T排点单层工程.png）。"
+ },
+ "D-37": {
+  "result": "通过",
+  "evidence": "脚本 rt6_d37.py。厂端 POST /v1/factories/{FA}/assets {kind:project,level:factory,weldKind:tbar} 建「RT6-厂T排」(01a1a01e-27d0…)：teachMode=LASER、plateThickness=12.5、grooveAngleDeg=35、extendUpMm=20、extendDownMm=10、laserWeldLengthMm=150、laserLower/UpperWidthMm=1.2/1.4、gapBands 两条(0-5,5-10)，10 个点中仅 START_SAFE、GROOVE_A_LOWER 带位姿；发布后读 /content：上述字段全部原值保留（gapBands 补了空的 root/cap 工艺槽），8 个未采点只有 {id,type}，无 pose/refPointX/jointAngles，没有补 0。再经 POST /assets/{id}/content 改板厚 16、焊长 180，读回字段仍在、未采点仍无位姿。WAN POST /v1/assets {kind:project,weldKind:tbar}(01a1a01e-2806…) 读回同样完整。单层工程（extendLengthMm=16/17/18、第 3 条带 cornerGroupParams 含 refPathA/B、torchRx/Ry/Rz、passes[{8,8,1}]）厂端与 WAN 建后读回逐字段一致。示教器 T 排「工程管理>厂级」打开 RT6-厂T排：只有起安、A下 显示「已采集」，B下/A上/B上/底1/底2/终安 无「已采集」也无 X 标；右栏为「激光示教」、板厚 16.0、坡口角 35.0、焊长 180.0（RT6_D37_示教器打开T排.png、RT6_D37_示教器T排参数.png）。附带观察（非本缺陷范围）：正文条目不带 templateId 时，厂端 ApplyProjectItems 把整条丢掉，接口仍回 201，/content 为「[]」（首次未带 templateId 建的两份已停用）；建议对接口调用方要么按 kind 推断模版，要么回 400 提示缺 templateId。"
+ },
+ "D-38": {
+  "result": "通过",
+  "evidence": "环境重置后工艺全部可用（平台 single 33 条、厂级 single 7/multilayer 5 条，未停用）。另建厂级 tbar 工艺 10 条（RT6T排打底/盖面、RT6T排工艺01~08）和 WAN 平台 tbar「RT6平台T排」。T 排工程 RT6-厂T排 → 工艺 → T排间隙带 1H-0-5 →「打底：未选择」：弹窗列 11 条，全部是 T 排工艺，名后带级别「（厂级）/（平台）」，45 条单层/多层工艺都不出现；一屏显示 5~6 条，列表可上下滑动，滑到底露出 RT6T排盖面（厂级）、RT6平台T排（平台），「不选工艺」「取消」始终固定在底部 y≈837 可点（RT6_D38_选工艺弹窗_多条.png、RT6_D38_选工艺弹窗_滚到底.png）；点末条 RT6平台T排 → 显示「打底：RT6平台T排」（RT6_D38_选中末条.png）；「再加一道盖面」弹窗里点「不选工艺」、「取消」均正常关闭。单层工程「第八轴-单层8道」→添加包角→「焊接工艺」弹窗：滑动列完 42 条，全是单层工艺（平台/厂级/个人均带级别标注，例如 1K6.5mmD（平台）/（厂级）/（个人）），没有任何 tbar（RT6T排*）或 multilayer（*-多层、厂级 3K7.5-8.5mm打底-1）工艺，底部按钮始终可点（RT6_D38_包角焊接工艺列表.png、RT6_D38_包角焊接工艺列表_底部.png）。说明：服务端把空 weldKind 一律收成 single（store/weld.go NormalizeWeldKind），经接口建的「RT6通用工艺」也成了 single，所以「无作业类型工艺」这一支在真机上造不出来，只能以 ProcessPick.pickable 代码（weldKind 为空也保留）和单测为准。"
+ },
+ "D-39": {
+  "result": "通过",
+  "evidence": "只断激光的办法：假控制器没有只断激光的命令（help 里 link off 是臂和激光一起断，laser on/off 只改寄存器 256，mute 只停 8083），本轮把它拆成两个进程——主进程（8080/8082/8083/控制口 8090）不带 --laser-host，另起一个只做激光的实例「--base-port 9180 --laser-host 0.0.0.0」（监听 :502，日志 fake_robot_runs/fake_laser_only.log），pkill 这个实例就只断 :502，臂不受影响（状态栏一直「连接: 已连接」）。没改防火墙和系统设置。线激光页把地址从默认 192.168.57.10 改成 192.168.123.150，点连接后「已连接 192.168.123.150」，读数「有效」（RT6_D39_线激光已连.png）。T 排工程 RT6-厂T排（激光示教）面板显示「线激光 Y 15.2 Z -7.9 宽 1.0 有效」，杀掉激光实例后每 0.2 秒截一次图：0.21 秒那张还是旧读数，0.41 秒起变成「线激光已断开」（RT6_D39_断开计时_0.png、_1.png；第一轮 uiautomator 1.3 秒读到的也是「线激光已断开」，RT6_D39_断激光后面板.png）；线激光页状态行「线激光已断开：failed to connect to /192.168.123.150 (port 502) … ECONNREFUSED」，读数区全部变成「—」，不再标「有效」（RT6_D39_激光页断开后.png）。这时采 B下/A上（collectLaserGroove）、底1（collectLaserBase）都 Toast「线激光读数未刷新，不能采集」，工具未标定和已标定工具 1 两种情况都是这个提示（RT6_D39_断激光采点.png）。重起激光实例后约 1 秒恢复「有效」，采 A下 → Toast「已采集焊缝下 顶宽 0.9 mm 底宽 0.0 mm」，A下/B下 显示已采集（RT6_D39_恢复后采点.png）。地址保存：am force-stop 后重开 App，线激光页地址仍是 192.168.123.150（RT6_D39_重启后激光地址.png）。说明：采点要用工具 1，本轮把工具 1 设为 (0,0,300,0,0,0) 并选中，收尾时恢复。"
+ },
+ "D-40": {
+  "result": "部分通过",
+  "evidence": "WAN 建平台包角工艺「RT6包角」(copyable=true，passes [{8,8,1}])，约 15 秒后厂端 asset_replicas 收到。单层工程「第八轴-单层8道」→添加包角→包角工艺下拉只有「RT6包角（平台）」，选中后改焊道长度 8→9 点保存 → Toast「已另存为个人工艺「RT6包角（个人）」」，厂端出现 personal corner 工艺 01a1a030-7dc2…，name=「RT6包角（个人）」（RT6_D40_改长度9.png、RT6_D40_保存后.png）。再选个人副本改长度 10 点保存 → Toast「包角工艺已保存」，同一份 revision 1→2，名字不变。提示和另存改名都符合预期。问题：下拉里个人副本显示成「RT6包角（个人）（个人）」，原件是「RT6包角（平台）」（RT6_D40_下拉两条.png、RT6_D40_再存个人.png）。能分清，但级别后缀重复了：另存时名字已经加了「（个人）」（CornerWrite.personalCopyName），下拉又按级别再加一次（CornerWeldDialog.kt:638-641 cornerItemLabel）。建议二选一：cornerItemLabel 在名字已经以「（个人…）」结尾时不再加级别；或者另存时不改名，只靠下拉的级别后缀区分。T 排、单层工艺弹窗用的 ProcessPick.label 也是同样写法，个人工艺名里带「（个人）」时同样会重复。"
+ },
+ "新问题-1": {
+  "result": "观察（建议 S3）",
+  "evidence": "D-38 复测时在 T 排工程「RT6-厂T排」间隙带 1H-0-5 的打底选了「RT6平台T排（平台）」（WAN 平台工艺，copyable=false）。示教器把这份工程另存为个人工程（01a1a02c-c295…），上传 POST /pad/assets 时 deps 为 []，厂端从正文收集工艺引用后走 pinPersonalProcess，平台级不能钉在个人工程上，回 400「asset dependency missing or mismatched」，Toast「工程「RT6-厂T排」 上传被厂端拒绝…」，首页显示「有 1 项厂服没收下」。改选厂级「RT6T排工艺01」后，示教器先上传个人副本 RT6T排工艺01（201），工程随后上传成功（201）。也就是说，选工艺弹窗给个人工程列出了不可复制的平台工艺，但选了之后存不上厂端。位置：示教器 ProcessPick.pickable（PouchProjectScreen.kt:497）没按工程级别和 copyable 过滤；厂端 service/asset.go pinPersonalProcess / assertPersonalProjectDeps 不允许平台级。建议：给个人工程选工艺时，不列不可复制的平台工艺，或标灰并提示；也可以由厂端允许个人工程钉已收的平台工艺。单层、多层是否同样会出现，本轮没有验证（RT6_新问题_平台工艺被拒_改前.png）。"
+ },
+ "观察-1": {
+  "result": "观察",
+  "evidence": "D-37：经接口建工程时，正文条目不带 templateId 会被厂端 ApplyProjectItems（contenttpl/schema.go:296-305）整条丢掉，接口仍回 201，/content 读回「[]」，调用方不会察觉。带 templateId（T 排 4444…、单层 1111…）后一切正常。建议回 400，或按 kind 推断模版。"
+ }
+}

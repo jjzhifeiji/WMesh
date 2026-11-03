@@ -22,3 +22,10 @@ client/**/*.iml
 client/captures/
 client/.cxx/
 
+
+# 本机测试环境每次生成的身份和基线
+scripts/testenv/*.local.json
+
+# 测试脚本的临时状态、令牌缓存和日志
+docs/测试/报告/脚本/.*
+__pycache__/

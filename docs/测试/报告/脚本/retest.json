@@ -1,0 +1,147 @@
+{
+ "D-01": {
+  "result": "通过",
+  "evidence": "可升档列表 200 17 条，非厂级/非可用 0 条；停用件升档→400 {\"error\": \"asset is not available\"}；个人件升档→403 {\"error\": \"forbidden\"}；正常厂级件→201",
+  "at": "11-03 10:23"
+ },
+ "D-02": {
+  "result": "通过",
+  "evidence": "厂端改密 3 位→400 {\"error\": \"password too short\"}；WAN 改密 5 位→400 {\"error\": \"password too short\"}（认领入口由厂端单测 TestClaimWeakPassword 覆盖，本机厂均已认领）",
+  "at": "11-03 10:23"
+ },
+ "D-03": {
+  "result": "通过",
+  "evidence": "小写重复登记→409 {\"error\": \"device serial already bound\"}；129 字→400 {\"error\": \"device serial is too long\"}；小写新号存为 FA:KE:00:00:00:77",
+  "at": "11-03 10:23"
+ },
+ "D-04": {
+  "result": "通过",
+  "evidence": "新建→201 下发到厂=True；删除→200；厂端撤下=True（0.0 秒）",
+  "at": "11-03 10:23"
+ },
+ "D-05": {
+  "result": "通过",
+  "evidence": "示教器建包角工艺→201；示教器建工程挂包角→400 {\"error\": \"corner process slot mismatch\"}；网页建包角后正文 kind=cornerGeometry",
+  "at": "11-03 10:23"
+ },
+ "D-06": {
+  "result": "通过",
+  "evidence": "网页连错 12 次状态 [401, 401, 401, 401, 401, 401, 401, 401, 401, 401, 429, 429]；示教器连错 12 次 [401, 401, 401, 401, 401, 401, 401, 401, 401, 401, 429, 429]；锁定期内正确密码→429 {\"error\": \"too many attempts\"}",
+  "at": "11-03 10:23"
+ },
+ "D-20": {
+  "result": "通过",
+  "evidence": "厂端设口令 rt-corner-1（修订 1→2），示教器首页 T 排卡片输该口令 → 进入 T 排焊接页（截图 RT_D20_T排进入）",
+  "at": "11-03"
+ },
+ "D-26": {
+  "result": "通过",
+  "evidence": "推 2099 年 + 超前 5 分钟各一条→200 {\"accepted\": [\"1bb4c98d-95c1-429e-afee-2ff7c6a0b2b0\"], \"rejected\": [{\"id\": \"11f8916b-9c72-4f87-88d1-8945d9377baf\", \"error\": \"forbidden\"}]}；库里 2099=0 条，+5 分钟=1 条",
+  "at": "11-03 10:23"
+ },
+ "D-27": {
+  "result": "通过",
+  "evidence": "北京时间 11-02 00:01、03:30 两条；WAN 日键 ['2026-11-02']；厂端按日（不带 tz）[{\"day\": \"2026-11-03\", \"lengthMm\": 100, \"durationSec\": 10, \"runCount\": 1}, {\"day\": \"2026-11-02\", \"lengthMm\": 222, \"durationSec\": 22, \"runCount\": 2}]",
+  "at": "11-03 10:23"
+ },
+ "D-33": {
+  "result": "通过",
+  "evidence": "WMESH_ADMIN_RESET=true 启动→改密为新口令→带变量重启：日志 WARN already applied once; skipped，新口令 200、.env 口令 401；已改回",
+  "at": "11-03 10:25"
+ },
+ "D-11": {
+  "result": "通过",
+  "evidence": "登录后 3 分钟内厂端上下线 1 条；35 分钟内（约 8 次登录/重启/切网）上下线 19 条、登录记录 20 条，示教器到 52184 始终只有 1 条 ESTABLISHED（原来约 9 条，每分钟 887～2648 条日志）",
+  "at": "11-03"
+ },
+ "D-07": {
+  "result": "通过",
+  "evidence": "panogo mini 单层焊接页状态栏最前面依次是 报警/连接/焊接/电弧/外轴伺服（截图 RT_D07_状态栏）；alarm 3 后显示「碰撞故障」，点报警项→fake.log ResetAllError()，恢复「无故障」",
+  "at": "11-03"
+ },
+ "D-08": {
+  "result": "通过",
+  "evidence": "alarm 3 后 2 秒声卡起扬声器（logcat audio_hw enable speaker），不再每 5 秒刷 speak failed；TTS 引擎仍缺，报警改为蜂鸣",
+  "at": "11-03"
+ },
+ "D-10": {
+  "result": "通过",
+  "evidence": "noack 106 后长按模拟焊接：105→106 无确认，8 秒后只发 3 次 Mode(1)，没有 Mode(0)/Start；App 日志 Toast「程序下发失败」（复测 2 次）",
+  "at": "11-03"
+ },
+ "D-09": {
+  "result": "通过",
+  "evidence": "silent 826 + 重启 App，长按模拟焊接：假控制器什么都没收到，Toast「设备号未匹配，不能作业」(SingleWeldViewModel.kt:959)",
+  "at": "11-03"
+ },
+ "D-18": {
+  "result": "通过",
+  "evidence": "speed 2 模拟焊接运行中，手动区「起弧」灰掉（截图 RT_D18_运行中起弧）；按住 0.8 秒假控制器无 ARCStart/STOP，程序继续跑",
+  "at": "11-03"
+ },
+ "D-19": {
+  "result": "通过",
+  "evidence": "mute 后 0.6 秒点采集数据→Toast「位姿未刷新，机械臂数据中断，不能采集」；超过 1 秒为「设备未连接」，均拒采",
+  "at": "11-03"
+ },
+ "D-17": {
+  "result": "通过",
+  "evidence": "状态栏工具→工具0「未设置」→标题「修改工具0参数」",
+  "at": "11-03"
+ },
+ "D-15": {
+  "result": "通过",
+  "evidence": "hangong1 打开厂级「第八轴-多层」模拟焊接跑完 2 次、回首页同步：厂库个人件焊前 工艺2/工程1，焊后不变（原来会多出个人工程 + 8 份工艺）",
+  "at": "11-03"
+ },
+ "D-16": {
+  "result": "通过",
+  "evidence": "个人工艺 1K6.5mmD 电流 250→245 保存，回到焊道两张卡片都显示 245.0A（截图 RT_D16_卡片刷新）",
+  "at": "11-03"
+ },
+ "D-12": {
+  "result": "通过",
+  "evidence": "停用账号 hangong5 登录 → 「账号已停用，请联系管理员」（截图 RT_D12_停用账号）",
+  "at": "11-03"
+ },
+ "D-13": {
+  "result": "通过",
+  "evidence": "勾「记住账号密码」登录后，DataStore 只有 loginPasswordSealed=ks1:…（Keystore 加密），无明文；退出并重启 App 后账号密码正常回填",
+  "at": "11-03"
+ },
+ "D-14": {
+  "result": "通过",
+  "evidence": "gongyi1 在厂级树根新建文件夹 → 厂端 POST fs/folders 201，厂库 asset_fs_nodes 出现 factory 级文件夹（名字带输入法多打的 jj）",
+  "at": "11-03"
+ },
+ "D-23": {
+  "result": "通过",
+  "evidence": "hangong1/gongyi1 在线时 WAN 给 A 厂登记 C0006（FA:KE:00:00:00:31），首页同步后假控制器换成该号：不再断开，厂端登录记录 RT23新臂，无需重新登录",
+  "at": "11-03"
+ },
+ "D-28": {
+  "result": "通过",
+  "evidence": "登录 12 分钟后厂端改策略 TTL=120、解封钥不落盘 → 1.3 秒示教器退回登录页，files/wmesh-unwrap.bin 被删",
+  "at": "11-03"
+ },
+ "D-29": {
+  "result": "通过",
+  "evidence": "厂里 322 条资产，pm clear 后首次登录同步 26 秒完成（原来卡在 108/300）；同步中切臂网，遮罩 31 秒自动退出（原来 160 秒不退），回厂网补同步成功",
+  "at": "11-03"
+ },
+ "D-32": {
+  "result": "部分通过",
+  "evidence": "WAN 发布 83 → 厂端拉到 → 检查更新弹窗 → 立即更新：不再报「签名不一致」，进入系统安装；系统提示「已禁止安装来自此来源的未知应用」，属设备安全设置，未改，需人工在设置里允许示教器 2.0 安装未知应用后再验证装成",
+  "at": "11-03"
+ },
+ "D-21": {
+  "result": "代码+单测",
+  "evidence": "界面未构造（需选中圆弧点且不在点位模式）；改动为加括号",
+  "at": "11-03"
+ },
+ "D-24": {
+  "result": "代码+单测",
+  "evidence": "T 排现在能进，但需构造存储顺序与排序不一致的多条间隙带，未在界面复测；WeldGuardsTest 覆盖 gapBandStoreIndex",
+  "at": "11-03"
+ }
+}

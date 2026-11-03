@@ -1,0 +1,47 @@
+{
+ "D-01": {
+  "result": "通过",
+  "evidence": "可升档列表 200 17 条，非厂级/非可用 0 条；停用件升档→400 {\"error\": \"asset is not available\"}；个人件升档→403 {\"error\": \"forbidden\"}；正常厂级件→201",
+  "at": "11-03 11:37"
+ },
+ "D-02": {
+  "result": "通过",
+  "evidence": "厂端改密 3 位→400 {\"error\": \"password too short\"}；WAN 改密 5 位→400 {\"error\": \"password too short\"}（认领入口由厂端单测 TestClaimWeakPassword 覆盖，本机厂均已认领）",
+  "at": "11-03 11:37"
+ },
+ "D-03": {
+  "result": "通过",
+  "evidence": "小写重复登记→409 {\"error\": \"device serial already bound\"}；129 字→400 {\"error\": \"device serial is too long\"}；小写新号存为 FA:KE:00:00:00:77",
+  "at": "11-03 11:37"
+ },
+ "D-04": {
+  "result": "通过",
+  "evidence": "新建→201 下发到厂=True；删除→200；厂端撤下=True（0.0 秒）",
+  "at": "11-03 11:37"
+ },
+ "D-05": {
+  "result": "通过",
+  "evidence": "示教器建包角工艺→201；示教器建工程挂包角→400 {\"error\": \"corner process slot mismatch\"}；网页建包角后正文 kind=cornerGeometry",
+  "at": "11-03 11:37"
+ },
+ "D-06": {
+  "result": "通过",
+  "evidence": "网页连错 12 次状态 [401, 401, 401, 401, 401, 429, 429, 429, 429, 429, 429, 429]；示教器连错 12 次 [401, 401, 401, 401, 401, 429, 429, 429, 429, 429, 429, 429]；锁定期内正确密码→429 {\"error\": \"too many attempts\"}",
+  "at": "11-03 11:37"
+ },
+ "D-20": {
+  "result": "通过",
+  "evidence": "设口令→200，修订 1→2；pad/login 回包 policy.cornerPassword=rt-corner-1",
+  "at": "11-03 11:37"
+ },
+ "D-26": {
+  "result": "通过",
+  "evidence": "推 2099 年 + 超前 5 分钟各一条→200 {\"accepted\": [\"d93f0793-fbdf-42ef-b8a1-fb89a138391d\"], \"rejected\": [{\"id\": \"ff10c93f-af9a-468c-9036-7bc9bff1629c\", \"error\": \"forbidden\"}]}；库里 2099=0 条，+5 分钟=1 条",
+  "at": "11-03 11:37"
+ },
+ "D-27": {
+  "result": "通过",
+  "evidence": "北京时间 11-02 00:01、03:30 两条；WAN 日键 ['2026-11-02']；厂端按日（不带 tz）[{\"day\": \"2026-11-03\", \"lengthMm\": 100, \"durationSec\": 10, \"runCount\": 1}, {\"day\": \"2026-11-02\", \"lengthMm\": 222, \"durationSec\": 22, \"runCount\": 2}]",
+  "at": "11-03 11:37"
+ }
+}
