@@ -1,6 +1,7 @@
 package contenttpl
 
 import (
+	"encoding/hex"
 	"fmt"
 	"regexp"
 	"strings"
@@ -22,6 +23,11 @@ const (
 	defaultTplMulti  = SeedTplMulti                           // 与 SeedTplMulti 相同
 	maxProjectTpls   = 50                                     // 命名模版份数上限
 	maxTplNameRunes  = 80                                     // 名称字数上限
+)
+
+const (
+	TeachFourPoint = "FOUR_POINT" // T 排四点示教
+	TeachLaser     = "LASER"      // T 排线激光免示教
 )
 
 // CatalogKinds 旧种类表顺序；新模版不再把 extra 当独立份。
@@ -64,6 +70,45 @@ func SeedProjectItem(id string) (ProjectItemSchema, bool) {
 		}
 	}
 	return ProjectItemSchema{}, false
+}
+
+// retiredSeed 旧版代码落下的一份内置种子：身份、单层是否带附加槽、规范字段表的 SHA-256。
+type retiredSeed struct {
+	id     string // 种子身份
+	extra  bool   // 单层是否带附加工艺槽
+	digest string // 旧版规范字段表摘要，十六进制
+}
+
+// retiredSeeds 历次内置种子的旧版摘要（含网页“补建 T排对接”按旧前端字段表建出的几版）；库里仍是其中一份原样，说明没人改过，可换成当前代码的种子。
+var retiredSeeds = []retiredSeed{
+	{SeedTplSingle, true, "4be24fb11e694d8f93f0bc8af341c8f621481673c91743d603e26d5c0a9071d1"},
+	{SeedTplSingle, true, "69f93d10f86e37e8ed59775bbe317b73fc7575fed29d94a29723a72bf148a61e"},
+	{SeedTplSingle, false, "9ff8a71d1f75f7453b171791c73d0574b33a9700937d7a779fb78d8b4a702302"},
+	{SeedTplSingle, false, "014672f377634d80c137e588b87231527b9f6f9e5babd5c1ab487455511e80f0"},
+	{SeedTplMulti, false, "32a0876675695eb02c177a5fa245b21cb1ccfb100a7de538c1c6493de8f53a36"},
+	{SeedTplMulti, false, "34a8c5627b5b6956f87253a920e58400cd8fd13dab1714c174b527aff512113e"},
+	{SeedTplTBar, false, "4c054ed30eb2f3c57e75856580215e618e58a5977aebccb84e5b98fd558e2144"},
+	{SeedTplTBar, false, "f6d4ee8046384f6a9dd9388d01919a71277302cb5cdd6c5b375f32f94e97a67c"},
+	{SeedTplTBar, false, "8093c847c56a8caa706c027707fa9e511820f2a2159fea5bdfe0b3032d6f5b3b"},
+	{SeedTplTBar, false, "252d2863d3f6b58227e2c6eec54683eb2801d2bcf1c4aaeb5a8bb22d711c179f"},
+	{SeedTplTBar, false, "68047c4e3c7a63ee01970bc680301437b811c50b2a3df4a3eb5d82a95f395046"},
+	{SeedTplTBar, false, "7fb0b78ab2eadd04723f9f8a6cbf76663630f504f775f1bc1719bb08ac83550c"},
+}
+
+// UpgradeSeed 库里这份仍是旧版内置种子原样时，交回当前代码的同一份字段表；改过的或不认识的交回 false。
+func UpgradeSeed(id string, sum []byte) ([]Field, bool) {
+	// 摘要收成十六进制再比。
+	hexSum := hex.EncodeToString(sum)
+	// 逐份旧种子比身份和摘要。
+	for _, r := range retiredSeeds {
+		// 身份或摘要对不上就看下一份。
+		if r.id != id || r.digest != hexSum {
+			continue
+		}
+		// 按种子身份取当前代码的字段表，单层保留原来的附加槽选择。
+		return ItemFields(seedKind(id), r.extra), true
+	}
+	return nil, false
 }
 
 // LegacyProjectItems 已有库拆行用的两份，不含 T 排。
@@ -475,6 +520,8 @@ func itemSingle(extra bool) []Field {
 		procRef("processId", "工艺"),
 		num("selectedPointIndex", "选中点", "", 0),
 		flag("isEnabled", "启用", true),
+		num("extendLengthMm", "延长长度", "mm", 0),
+		cornerGroupField(),
 	}
 	// 要附加槽才挂上去。
 	if extra {
@@ -487,7 +534,7 @@ func itemSingle(extra bool) []Field {
 // itemMulti 基准路径加各层偏移。
 func itemMulti() []Field {
 	// 一层焊道的字段先摆好。
-	pass := Field{Type: TypeObject, Label: "焊道", Fields: []Field{
+	pass := Field{Key: "pass", Type: TypeObject, Label: "焊道", Fields: []Field{
 		str("id", "焊道身份", ""),
 		str("name", "焊道名", ""),
 		num("valX", "X", "mm", 0),
@@ -505,27 +552,27 @@ func itemMulti() []Field {
 		str("kind", "种类", ItemMulti),
 		{Key: "basePath", Label: "基准层", Type: TypeObject, Fields: pathFields()},
 		{Key: "passes", Label: "填充层", Type: TypeArray, Items: &pass},
-		{Key: "refPointX1", Label: "X1", Type: TypeObject, Fields: refFields()},
-		{Key: "refPointZ1", Label: "Z1", Type: TypeObject, Fields: refFields()},
-		{Key: "refPointXMiddle", Label: "X中", Type: TypeObject, Fields: refFields()},
-		{Key: "refPointZMiddle", Label: "Z中", Type: TypeObject, Fields: refFields()},
-		{Key: "refPointXEnd", Label: "X2", Type: TypeObject, Fields: refFields()},
-		{Key: "refPointZEnd", Label: "Z2", Type: TypeObject, Fields: refFields()},
+		optional(Field{Key: "refPointX1", Label: "X1", Type: TypeObject, Fields: refFields()}),
+		optional(Field{Key: "refPointZ1", Label: "Z1", Type: TypeObject, Fields: refFields()}),
+		optional(Field{Key: "refPointXMiddle", Label: "X中", Type: TypeObject, Fields: refFields()}),
+		optional(Field{Key: "refPointZMiddle", Label: "Z中", Type: TypeObject, Fields: refFields()}),
+		optional(Field{Key: "refPointXEnd", Label: "X2", Type: TypeObject, Fields: refFields()}),
+		optional(Field{Key: "refPointZEnd", Label: "Z2", Type: TypeObject, Fields: refFields()}),
 		flag("isBaseCompleted", "基准完成", false),
 		flag("isEnabled", "启用", true),
 	}
 }
 
-// itemTBar 坡口点列加间隙带工艺引用，不嵌打底/盖面参数。
+// itemTBar 和示教器 T 排焊道正文一致：坡口点列、间隙带工艺引用、板厚坡口与免示教几何，不嵌打底/盖面参数。
 func itemTBar() []Field {
 	// 一条间隙带的字段先摆好。
-	band := Field{Type: TypeObject, Label: "间隙带", Fields: []Field{
+	band := Field{Key: "band", Type: TypeObject, Label: "间隙带", Fields: []Field{
 		num("minGap", "最小间隙", "mm", 0),
 		num("maxGap", "最大间隙", "mm", 0),
 		num("layer", "层", "", 1),
 		procRef("rootProcessId", "打底工艺"),
 		procRef("capProcessId", "盖面工艺"),
-		{Key: "capProcessIds", Label: "盖面工艺组", Type: TypeArray, Items: &Field{Type: TypeProcess, Label: "盖面工艺", Default: ""}},
+		{Key: "capProcessIds", Label: "盖面工艺组", Type: TypeArray, Items: &Field{Key: "cap", Type: TypeProcess, Label: "盖面工艺", Default: ""}},
 	}}
 	return []Field{
 		str("id", "身份", ""),
@@ -535,17 +582,52 @@ func itemTBar() []Field {
 		num("selectedPointIndex", "选中点", "", 0),
 		flag("isEnabled", "启用", true),
 		{Key: "gapBands", Label: "间隙带", Type: TypeArray, Items: &band},
+		num("plateThickness", "板厚", "mm", 0),
+		num("grooveAngleDeg", "坡口夹角", "°", 0),
+		{Key: "teachMode", Label: "示教方式", Type: TypeString, Options: []string{TeachFourPoint, TeachLaser}, Default: TeachFourPoint},
+		num("laserLowerWidthMm", "焊缝下顶宽", "mm", 0),
+		num("laserUpperWidthMm", "焊缝上顶宽", "mm", 0),
+		num("extendUpMm", "上端延长", "mm", 0),
+		num("extendDownMm", "下端延长", "mm", 0),
+		num("laserWeldLengthMm", "免示教焊道长", "mm", 0),
 	}
 }
 
 // extraProcessesField 挂在焊道上的额外工艺槽。
 func extraProcessesField() Field {
-	return Field{Key: "extraProcesses", Label: "附加工艺", Type: TypeArray, Items: &Field{Type: TypeObject, Label: "附加", Fields: []Field{
+	return Field{Key: "extraProcesses", Label: "附加工艺", Type: TypeArray, Items: &Field{Key: "extra", Type: TypeObject, Label: "附加", Fields: []Field{
 		str("id", "身份", ""), procRef("processId", "工艺"), flag("isEnabled", "启用", true),
 	}}}
 }
 
-// cornerRefField 包角组上的底工艺引用（焊接参数，和焊道 processId 相同）；只给收引用和改写用，不进模版套用，免得给普通焊道补出空包角组。
+// cornerGroupField 单层焊道上的包角组，和示教器 CornerGroupParams 一致；整组可空，没有包角的焊道不补出空组。
+func cornerGroupField() Field {
+	// 一层包角的几何，和示教器 CornerPassParams 一致。
+	pass := Field{Key: "pass", Type: TypeObject, Label: "包角层", Fields: []Field{
+		num("length", "焊道长度", "mm", 0),
+		num("flatOffset", "平焊偏移", "mm", 0),
+		num("upwardOffset", "立焊偏移", "mm", 0),
+	}}
+	// 交回整组可空的包角组，示教器没写就不补。
+	return optional(Field{Key: "cornerGroupParams", Label: "包角组", Type: TypeObject, Fields: []Field{
+		str("groupId", "组身份", ""),
+		str("refPathAId", "参考焊道 A", ""),
+		str("refPathBId", "参考焊道 B", ""),
+		num("layerCount", "层数", "", 0),
+		num("initialLength", "底层长度", "mm", 0),
+		num("upwardOffset", "立焊偏移", "mm", 0),
+		num("lengthReduction", "逐层缩短", "mm", 0),
+		optional(num("firstPassLength", "第一道长度", "mm", 0)),
+		flag("isMaster", "主道", false),
+		optional(num("torchRx", "枪姿 Rx", "°", 0)),
+		optional(num("torchRy", "枪姿 Ry", "°", 0)),
+		optional(num("torchRz", "枪姿 Rz", "°", 0)),
+		procRef("processId", "包角组焊接工艺"),
+		{Key: "passes", Label: "逐层几何", Type: TypeArray, Items: &pass},
+	}})
+}
+
+// cornerRefField 包角组上的底工艺引用（焊接参数，和焊道 processId 相同）；给多层/T 排收引用和改写用，单层已在 cornerGroupField 里。
 func cornerRefField() Field {
 	return Field{Key: "cornerGroupParams", Label: "包角组", Type: TypeObject, Fields: []Field{procRef("processId", "包角组焊接工艺")}}
 }

@@ -339,6 +339,7 @@ function withKind(field: TemplateField, kind: Kind): TemplateField {
   }
   if (kind === "process") {
     const next: TemplateField = { ...field, type: "process", default: "" };
+    delete next.nullable; // 工艺槽不能可空，后端会拒
     delete next.fields;
     delete next.items;
     delete next.options;

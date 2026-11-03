@@ -42,6 +42,7 @@ type Field struct {
 	Options  []string `json:"options,omitempty"`  // 枚举取值；有则按枚举套用
 	Fields   []Field  `json:"fields,omitempty"`   // object 的子字段
 	Items    *Field   `json:"items,omitempty"`    // array 的元素
+	Nullable bool     `json:"nullable,omitempty"` // 可空：正文没有就不补，显式空就留空；工艺槽不能可空
 }
 
 // Schema 是一份类型的当前模版：工艺为字段表，工程为若干命名项。
@@ -176,7 +177,7 @@ func validateField(f Field, depth int) error {
 	// 叶子类型不能再带子字段或元素。
 	case TypeString, TypeNumber, TypeBool, TypeProcess:
 		// 叶子再套结构，或工艺引用带选项，都不合法。
-		if len(f.Fields) > 0 || f.Items != nil || (f.Type == TypeProcess && len(f.Options) > 0) {
+		if len(f.Fields) > 0 || f.Items != nil || (f.Type == TypeProcess && (len(f.Options) > 0 || f.Nullable)) {
 			// 这一种组合不能用来套用。
 			return fmt.Errorf("content template is invalid")
 		}
@@ -331,6 +332,16 @@ func applyObject(fields []Field, v any) map[string]any {
 	for _, f := range fields {
 		// 看正文里有没有这个键。
 		val, exists := src[f.Key]
+		// 可空的槽正文里没有就不补，没采的点不能补成零位姿冒充已采。
+		if f.Nullable && !exists {
+			continue
+		}
+		// 可空的槽显式写了空就留空。
+		if f.Nullable && val == nil {
+			// 留空，不补缺省值。
+			out[f.Key] = nil
+			continue
+		}
 		// 显式空对象或空数组要原样留下。
 		if exists && val == nil && (f.Type == TypeObject || f.Type == TypeArray) {
 			// 空值留下，不要补成缺省结构。
@@ -731,15 +742,24 @@ func refFields() []Field {
 	}
 }
 
-// pointField 一个焊点：身份、类型、位姿、关节角、执行偏移、X 向参考。
+// optional 把字段标成可空：正文没有就不补，表示没采或没设。
+func optional(f Field) Field {
+	// 标上可空，套用时不补缺省结构。
+	f.Nullable = true
+	return f
+}
+
+// pointField 一个焊点，和示教器 WeldPoint 一致：没采的位姿、关节角、偏移、参考、拍摄位都留空。
 func pointField() Field {
-	return Field{Type: TypeObject, Label: "点", Fields: []Field{
+	return Field{Key: "point", Type: TypeObject, Label: "点", Fields: []Field{
 		str("id", "点身份", ""),
 		str("type", "点类型", "START"),
-		{Key: "pose", Label: "位姿", Type: TypeObject, Fields: poseFields()},
-		anglesField(),
-		{Key: "executionOffsets", Label: "执行偏移", Type: TypeArray, Items: &Field{Key: "a", Label: "偏移", Type: TypeString, Default: 0.0}},
-		{Key: "refPointX", Label: "X 向参考", Type: TypeObject, Fields: refFields()},
+		optional(Field{Key: "pose", Label: "位姿", Type: TypeObject, Fields: poseFields()}),
+		optional(anglesField()),
+		optional(Field{Key: "executionOffsets", Label: "执行偏移", Type: TypeArray, Items: &Field{Key: "a", Label: "偏移", Type: TypeString, Default: 0.0}}),
+		optional(Field{Key: "refPointX", Label: "X 向参考", Type: TypeObject, Fields: refFields()}),
+		optional(Field{Key: "scanPose", Label: "拍摄位姿", Type: TypeObject, Fields: poseFields()}),
+		optional(Field{Key: "scanJoints", Label: "拍摄关节角", Type: TypeArray, Items: &Field{Key: "a", Label: "角", Type: TypeString, Default: 0.0}}),
 	}}
 }
 
@@ -754,6 +774,7 @@ func pathFields() []Field {
 		procRef("processId", "工艺"),
 		num("selectedPointIndex", "选中点", "", 0),
 		flag("isEnabled", "启用", true),
+		num("extendLengthMm", "延长长度", "mm", 0),
 	}
 }
 

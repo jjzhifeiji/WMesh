@@ -528,11 +528,23 @@ func TestDefaultProjectRefsProcessID(t *testing.T) {
 		// 没有得到预期结果就停住。
 		t.Fatalf("process type count %d want >=5", n)
 	}
-	// 结果和预期不符就进入失败。
-	if has["cornerGroupParams"] != 0 {
+	// 包角组只在单层里出现一次，且整组可空，没有包角的焊道不补出空组。
+	if has["cornerGroupParams"] != 1 || !cornerNullable() {
 		// 和预期不符就停住本用例。
-		t.Fatalf("corner still in catalog: %v", keys)
+		t.Fatalf("corner group in catalog: %v", keys)
 	}
+}
+
+// cornerNullable 单层带附加槽那份里的包角组是否标了可空。
+func cornerNullable() bool {
+	// 逐个字段找包角组。
+	for _, f := range itemSingle(true) {
+		// 找到就看可空标记。
+		if f.Key == "cornerGroupParams" {
+			return f.Nullable
+		}
+	}
+	return false
 }
 
 // 种子工程应是单层、多层和丁字排三份。

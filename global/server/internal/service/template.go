@@ -76,7 +76,7 @@ func (s *kernel) ensureTemplate(ctx context.Context, kind string) (ContentTempla
 	return openTemplate(row)
 }
 
-// ensureProjectItems 工程模版多份独立行；旧登记簿拆开，空库首次落三份种子，之后只读不改。
+// ensureProjectItems 工程模版多份独立行；旧登记簿拆开，空库首次落三份种子；之后只把没人改过的旧版种子升成当前种子，改过的不动。
 func (s *kernel) ensureProjectItems(ctx context.Context) ([]ContentTemplate, error) {
 	// 按字段模版处理。
 	rows, err := s.store.TemplatesByKind(ctx, KindProject)
@@ -149,6 +149,12 @@ func (s *kernel) ensureProjectItems(ctx context.Context) ([]ContentTemplate, err
 		if openErr != nil {
 			return nil, openErr
 		}
+		// 仍是旧版内置种子原样就升成当前种子，管理员改过的不动。
+		opened, openErr = s.upgradeRetiredSeed(ctx, opened)
+		// 升级失败就停，不能拿半新半旧的下发。
+		if openErr != nil {
+			return nil, openErr
+		}
 		// 把这一项接进结果。
 		current = append(current, opened)
 	}
@@ -161,12 +167,56 @@ func (s *kernel) ensureProjectItems(ctx context.Context) ([]ContentTemplate, err
 			return nil, err
 		}
 	}
-	// 库里已有份就照原样交回，读路径不按代码改写种子。
+	// 库里已有份就交回；读路径只升没人改过的旧版种子，删掉的不补回。
 	if len(current) > 0 {
 		return current, nil
 	}
 	// 一份都没有才走一次性种子；删光过的库读到仍是空。
 	return s.seedProjectItemsOnce(ctx)
+}
+
+// upgradeRetiredSeed 库里这份仍是旧版内置种子原样（没人改过）就升一版成当前种子并通知厂端；改过的原样交回。
+func (s *kernel) upgradeRetiredSeed(ctx context.Context, row ContentTemplate) (ContentTemplate, error) {
+	// 按身份和摘要认旧版种子，认不出就是改过的或自建的。
+	fields, ok := contenttpl.UpgradeSeed(row.ID.String(), row.Digest)
+	// 不是旧版种子原样就不碰。
+	if !ok {
+		return row, nil
+	}
+	// 编成规范字段表再落库。
+	canon, err := contenttpl.Marshal(contenttpl.ObjectSchema(fields))
+	// 编不出就拒绝，不写半截种子。
+	if err != nil {
+		return ContentTemplate{}, domain.ErrTemplateInvalid
+	}
+	// 按读到的修订升一版，名称不变。
+	updated, err := s.store.UpdateTemplateByID(ctx, row.ID, row.Revision, row.Name, canon, digest.Sum(canon))
+	// 别人刚改过这份就以库里的为准，不再覆盖。
+	if errors.Is(err, domain.ErrRevisionConflict) {
+		// 读回库里现在的这一份。
+		got, getErr := s.store.TemplateByID(ctx, row.ID)
+		// 读不回就停，不能当成已经升好。
+		if getErr != nil {
+			return ContentTemplate{}, getErr
+		}
+		// 解开库里现在的这一份交回。
+		return openTemplate(got)
+	}
+	// 写库失败就停，避免留下半截。
+	if err != nil {
+		return ContentTemplate{}, err
+	}
+	// 解开新写的这一份，摘要对不上就不下发。
+	updated, err = openTemplate(updated)
+	// 坏的按损坏拒绝，不能下发。
+	if err != nil {
+		return ContentTemplate{}, err
+	}
+	// 系统升级种子记一笔审计，没有操作人；写失败不改变已升好的结果。
+	_ = s.audit(ctx, nil, nil, nil, "update_template", projectTemplateTarget(updated.Name, updated.Revision), audit.Allow)
+	// 通知厂端去拉新修订。
+	s.notifyTemplate(ctx, updated.ID, updated.Kind, updated.Revision)
+	return updated, nil
 }
 
 // seedProjectItemsOnce 空库首次落下三份种子；已落过则只读当前各份，不补回。

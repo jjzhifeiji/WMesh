@@ -139,7 +139,7 @@ export function itemFields(kind: string, extra: boolean): TemplateField[] {
   return [];
 }
 
-// refItemFields 收引用用：本种类标准槽再加包角工艺槽；包角组不进模版套用，免得给普通焊道补出空包角组。
+// refItemFields 收引用用：本种类标准槽再加包角工艺槽；单层自带可空的包角组，多层/T 排靠这里补上包角工艺槽。
 export function refItemFields(kind: string): TemplateField[] {
   return [...itemFields(kind, true), cornerRefField()];
 }
@@ -211,6 +211,11 @@ function flag(key: string, label: string, on: boolean): TemplateField {
   return { key, label, type: "bool", default: on };
 }
 
+// optional 标成可空：正文没有就不补，表示没采或没设；和后端 contenttpl.optional 一致。
+function optional(f: TemplateField): TemplateField {
+  return { ...f, nullable: true };
+}
+
 function poseFields(): TemplateField[] {
   return [
     num("x", "X", "mm", 0),
@@ -242,10 +247,12 @@ function pointField(): TemplateField {
     fields: [
       str("id", "点身份", ""),
       str("type", "点类型", "START"),
-      { key: "pose", label: "位姿", type: "object", fields: poseFields() },
-      anglesField(),
-      { key: "executionOffsets", label: "执行偏移", type: "array", items: { key: "a", label: "偏移", type: "string", default: 0 } },
-      { key: "refPointX", label: "X 向参考", type: "object", fields: refFields() },
+      optional({ key: "pose", label: "位姿", type: "object", fields: poseFields() }),
+      optional(anglesField()),
+      optional({ key: "executionOffsets", label: "执行偏移", type: "array", items: { key: "a", label: "偏移", type: "string", default: 0 } }),
+      optional({ key: "refPointX", label: "X 向参考", type: "object", fields: refFields() }),
+      optional({ key: "scanPose", label: "拍摄位姿", type: "object", fields: poseFields() }),
+      optional({ key: "scanJoints", label: "拍摄关节角", type: "array", items: { key: "a", label: "角", type: "string", default: 0 } }),
     ],
   };
 }
@@ -258,7 +265,39 @@ function pathFields(): TemplateField[] {
     procRef("processId", "工艺"),
     num("selectedPointIndex", "选中点", "", 0),
     flag("isEnabled", "启用", true),
+    num("extendLengthMm", "延长长度", "mm", 0),
   ];
+}
+
+// cornerGroupField 单层焊道上的包角组，和示教器 CornerGroupParams 一致；整组可空，没有包角的焊道不补出空组。
+function cornerGroupField(): TemplateField {
+  const pass: TemplateField = {
+    type: "object",
+    key: "pass",
+    label: "包角层",
+    fields: [num("length", "焊道长度", "mm", 0), num("flatOffset", "平焊偏移", "mm", 0), num("upwardOffset", "立焊偏移", "mm", 0)],
+  };
+  return optional({
+    key: "cornerGroupParams",
+    label: "包角组",
+    type: "object",
+    fields: [
+      str("groupId", "组身份", ""),
+      str("refPathAId", "参考焊道 A", ""),
+      str("refPathBId", "参考焊道 B", ""),
+      num("layerCount", "层数", "", 0),
+      num("initialLength", "底层长度", "mm", 0),
+      num("upwardOffset", "立焊偏移", "mm", 0),
+      num("lengthReduction", "逐层缩短", "mm", 0),
+      optional(num("firstPassLength", "第一道长度", "mm", 0)),
+      flag("isMaster", "主道", false),
+      optional(num("torchRx", "枪姿 Rx", "°", 0)),
+      optional(num("torchRy", "枪姿 Ry", "°", 0)),
+      optional(num("torchRz", "枪姿 Rz", "°", 0)),
+      procRef("processId", "包角组焊接工艺"),
+      { key: "passes", label: "逐层几何", type: "array", items: pass },
+    ],
+  });
 }
 
 function extraProcessesField(): TemplateField {
@@ -284,6 +323,8 @@ function itemSingle(extra: boolean): TemplateField[] {
     procRef("processId", "工艺"),
     num("selectedPointIndex", "选中点", "", 0),
     flag("isEnabled", "启用", true),
+    num("extendLengthMm", "延长长度", "mm", 0),
+    cornerGroupField(),
   ];
   if (extra) fields.push(extraProcessesField());
   return fields;
@@ -314,17 +355,21 @@ function itemMulti(): TemplateField[] {
     str("kind", "种类", ITEM_MULTI),
     { key: "basePath", label: "基准层", type: "object", fields: pathFields() },
     { key: "passes", label: "填充层", type: "array", items: pass },
-    { key: "refPointX1", label: "X1", type: "object", fields: ref },
-    { key: "refPointZ1", label: "Z1", type: "object", fields: ref },
-    { key: "refPointXMiddle", label: "X中", type: "object", fields: ref },
-    { key: "refPointZMiddle", label: "Z中", type: "object", fields: ref },
-    { key: "refPointXEnd", label: "X2", type: "object", fields: ref },
-    { key: "refPointZEnd", label: "Z2", type: "object", fields: ref },
+    optional({ key: "refPointX1", label: "X1", type: "object", fields: ref }),
+    optional({ key: "refPointZ1", label: "Z1", type: "object", fields: ref }),
+    optional({ key: "refPointXMiddle", label: "X中", type: "object", fields: ref }),
+    optional({ key: "refPointZMiddle", label: "Z中", type: "object", fields: ref }),
+    optional({ key: "refPointXEnd", label: "X2", type: "object", fields: ref }),
+    optional({ key: "refPointZEnd", label: "Z2", type: "object", fields: ref }),
     flag("isBaseCompleted", "基准完成", false),
     flag("isEnabled", "启用", true),
   ];
 }
 
+export const TEACH_FOUR_POINT = "FOUR_POINT";
+export const TEACH_LASER = "LASER";
+
+// itemTBar 和示教器 T 排焊道正文一致：坡口点列、间隙带工艺引用、板厚坡口与免示教几何；和后端 itemTBar 逐字段相同。
 function itemTBar(): TemplateField[] {
   const band: TemplateField = {
     type: "object",
@@ -347,5 +392,13 @@ function itemTBar(): TemplateField[] {
     num("selectedPointIndex", "选中点", "", 0),
     flag("isEnabled", "启用", true),
     { key: "gapBands", label: "间隙带", type: "array", items: band },
+    num("plateThickness", "板厚", "mm", 0),
+    num("grooveAngleDeg", "坡口夹角", "°", 0),
+    { key: "teachMode", label: "示教方式", type: "string", options: [TEACH_FOUR_POINT, TEACH_LASER], default: TEACH_FOUR_POINT },
+    num("laserLowerWidthMm", "焊缝下顶宽", "mm", 0),
+    num("laserUpperWidthMm", "焊缝上顶宽", "mm", 0),
+    num("extendUpMm", "上端延长", "mm", 0),
+    num("extendDownMm", "下端延长", "mm", 0),
+    num("laserWeldLengthMm", "免示教焊道长", "mm", 0),
   ];
 }

@@ -15,6 +15,7 @@ export type TemplateField = {
   options?: string[]; // 枚举取值
   fields?: TemplateField[]; // object 子字段
   items?: TemplateField; // array 元素
+  nullable?: boolean; // 可空：正文没有就不补，显式空就留空；没采的点不补零位姿。工艺槽不能可空
 };
 
 export type ProjectItemSchema = {
@@ -101,6 +102,8 @@ export function asProjectSchema(schema: ContentSchema | null): ContentSchema | n
 }
 
 export function defaultField(field: TemplateField): unknown {
+  // 可空字段缺省就是空，不补零值冒充已采。
+  if (field.nullable && kindOf(field) !== "process") return null;
   if (field.type === "bool") {
     return field.default === true || field.default === "是" || field.default === "true";
   }
@@ -135,9 +138,13 @@ export function defaultItemFromFields(fields: TemplateField[], templateId: strin
   return out;
 }
 
+// objectFromFields 按字段表补缺省；可空字段不写键，和后端套用一致，新建的点不带零位姿。
 function objectFromFields(fields: TemplateField[]): Record<string, unknown> {
   const out: Record<string, unknown> = {};
-  for (const f of fields) out[f.key] = defaultField(f);
+  for (const f of fields) {
+    if (f.nullable && kindOf(f) !== "process") continue;
+    out[f.key] = defaultField(f);
+  }
   return out;
 }
 
@@ -369,6 +376,7 @@ export function canonicalizeSchema(schema: ContentSchema): ContentSchema {
 function canonicalizeField(field: TemplateField): TemplateField {
   if (kindOf(field) === "process") {
     const next: TemplateField = { ...field, type: "process", default: typeof field.default === "string" ? field.default : "" };
+    delete next.nullable;
     delete next.options;
     delete next.fields;
     delete next.items;
