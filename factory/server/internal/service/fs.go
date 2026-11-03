@@ -401,6 +401,11 @@ func (s *Assets) precheckFSCopy(ctx context.Context, acc Account, n FSNode) erro
 	if err != nil {
 		return err
 	}
+	// 工程按复制工程的口径核。
+	if a.Kind == KindProject {
+		// 和单件复制工程同一口径。
+		return s.canCopyProject(ctx, acc, a)
+	}
 	// 和单件另存同一口径，免得两边松紧不一。
 	return s.canCopyProcess(ctx, acc, a)
 }
@@ -440,9 +445,9 @@ func (s *Assets) copyFSInto(ctx context.Context, token string, src, dest FSNode)
 	if src.AssetID == nil {
 		return FSNode{}, domain.ErrNotFound
 	}
-	// 文件按可复制工艺另存，再挂到目标目录。
-	copied, err := s.CopyProcess(ctx, token, *src.AssetID, name)
-	// 工艺复制失败则目录复制停下。
+	// 文件按种类另存（工程连带复制普通工艺），再挂到目标目录。
+	copied, err := s.CopyAsset(ctx, token, *src.AssetID, name)
+	// 复制失败则目录复制停下。
 	if err != nil {
 		return FSNode{}, err
 	}
@@ -525,7 +530,7 @@ func clipFSName(name, tail string) string {
 	return name + tail
 }
 
-// canCopyFSInto 只限工艺树、个人树只许主人贴：同树可粘贴；平台副本可粘进本厂厂级。
+// canCopyFSInto 工艺树和工程树各贴各的、个人树只许主人贴：同树可粘贴；平台副本可粘进本厂厂级。
 func canCopyFSInto(personID uuid.UUID, src, dest FSNode) error {
 	// 只能粘进文件夹，根节点本身不能当源。
 	if dest.NodeKind != store.FSNodeFolder || src.ParentID == nil {
@@ -537,10 +542,6 @@ func canCopyFSInto(personID uuid.UUID, src, dest FSNode) error {
 	}
 	// 工艺和工程不能贴到对方的树上。
 	if dest.AssetKind != src.AssetKind {
-		return domain.ErrForbidden
-	}
-	// 工程树没有另存入口，复制一律拒绝，免得留下空文件夹。
-	if dest.AssetKind != KindProcess {
 		return domain.ErrForbidden
 	}
 	// 同一棵树可以直接粘贴。

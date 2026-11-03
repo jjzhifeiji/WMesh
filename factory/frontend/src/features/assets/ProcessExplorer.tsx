@@ -92,15 +92,15 @@ function canMoveInto(src: FSNode, dest: FSNode, byId: Map<string, FSNode>, canWr
 }
 
 function canCopyNode(n: FSNode) {
-  // 工程树不支持复制，和服务端口径一致。
-  if (!n.parentId || n.assetKind !== "process") return false;
+  // 工艺树和工程树都能复制；加密工艺不能复制，和服务端口径一致。
+  if (!n.parentId) return false;
   if (n.nodeKind === "file" && n.asset && n.asset.kind === "process" && !n.asset.copyable) return false;
   return true;
 }
 
 function canCopyInto(src: FSNode, dest: FSNode, byId: Map<string, FSNode>) {
   if (dest.nodeKind !== "folder" || !src.parentId || src.id === dest.id) return false;
-  if (src.assetKind !== dest.assetKind || dest.assetKind !== "process") return false;
+  if (src.assetKind !== dest.assetKind) return false;
   if (sameTree(src, dest)) return src.nodeKind !== "folder" || !isAncestor(src.id, dest.id, byId);
   return src.treeLevel === "platform" && dest.treeLevel === "factory";
 }
@@ -525,8 +525,8 @@ export function ProcessExplorer({
     );
   };
 
-  // 工程页不出现复制和粘贴。
-  const clipOk = kind === "process";
+  // 工艺页和工程页都能复制粘贴；工程连带复制普通工艺。
+  const clipOk = kind === "process" || kind === "project";
 
   const folderMenu = (n: FSNode): MenuProps["items"] => {
     const write = writable(n);

@@ -515,9 +515,9 @@ func (h *Handler) deleteAsset(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// 可复制工艺另存为新草稿。
+// 可复制工艺或工程另存为新草稿；工程里加密平台工艺保持原身份，普通工艺复制一份。
 func (h *Handler) copyAsset(w http.ResponseWriter, r *http.Request) {
-	// 可复制工艺另存为新草稿。
+	// 工艺或工程另存为新草稿。
 	h.withAsset(w, r, func(svc *service.Service, assetID uuid.UUID) {
 		// 承接另存之后要用的新显示名。
 		var req copyAssetReq
@@ -527,8 +527,8 @@ func (h *Handler) copyAsset(w http.ResponseWriter, r *http.Request) {
 			writeBadRequest(w, err)
 			return
 		}
-		// 把可复制工艺另存成新的草稿。
-		row, err := svc.Assets.CopyProcess(r.Context(), bearer(r), assetID, req.Name)
+		// 按种类另存成新的草稿，工程连带复制普通工艺。
+		row, err := svc.Assets.CopyAsset(r.Context(), bearer(r), assetID, req.Name)
 		// 上一步没通过则停止，不把失败写成成功。
 		if err != nil {
 			// 把失败译成状态回给调用方，不写成功。

@@ -1154,30 +1154,23 @@ func TestCopyFS(t *testing.T) {
 		// 新建工程目标夹失败即停，不能把这一步的失败当成通过。
 		t.Fatal(err)
 	}
-	// 记下复制前工程树的节点数和资产数。
-	nodesBefore, assetsBefore = fsTotals(t, ctx, fac, factory.KindProject)
-	// 工程树里复制文件必须因越权被拒。
-	if _, err := fac.CopyFSNode(ctx, pe.tok, projFile.ID, projDest.ID); !errors.Is(err, domain.ErrForbidden) {
-		// 没被拒就停，工程树还开着复制口子。
-		t.Fatalf("copy project file: %v", err)
+	// 工程树里复制文件要另起一份新身份的工程，落在目标夹里。
+	copiedProj, err := fac.CopyFSNode(ctx, pe.tok, projFile.ID, projDest.ID)
+	// 复制被拒或没落在目标夹，说明工程树复制没打通。
+	if err != nil || copiedProj.ParentID == nil || *copiedProj.ParentID != projDest.ID || copiedProj.AssetID == nil || *copiedProj.AssetID == proj.ID {
+		// 工程复制结果不对就停。
+		t.Fatalf("copy project file: %+v %v", copiedProj, err)
 	}
-	// 工程树里复制空文件夹也必须因越权被拒。
-	if _, err := fac.CopyFSNode(ctx, pe.tok, projEmpty.ID, projDest.ID); !errors.Is(err, domain.ErrForbidden) {
-		// 没被拒就停，工程树里能复制出文件夹。
+	// 工程树里复制空文件夹也照常建出同名文件夹。
+	if _, err := fac.CopyFSNode(ctx, pe.tok, projEmpty.ID, projDest.ID); err != nil {
+		// 空文件夹复制失败就停。
 		t.Fatalf("copy project folder: %v", err)
 	}
-	// 两次被拒之后再数一遍工程树。
-	nodesAfter, assetsAfter = fsTotals(t, ctx, fac, factory.KindProject)
-	// 节点数或资产数变了，说明被拒前留下了文件夹。
-	if nodesAfter != nodesBefore || assetsAfter != assetsBefore {
-		// 工程树多出东西就停，被拒的复制留了痕迹。
-		t.Fatalf("project copy left nodes %d->%d assets %d->%d", nodesBefore, nodesAfter, assetsBefore, assetsAfter)
-	}
-	// 读出目标夹的下级，核对里面仍是空的。
+	// 读出目标夹的下级，应正好是工程副本和空夹副本。
 	destKids, err := fac.Store().ListFSChildren(ctx, projDest.ID)
-	// 目标夹里有东西或读不出，都说明复制留了痕迹。
-	if err != nil || len(destKids) != 0 {
-		// 目标夹不空就停，被拒的复制留下了文件夹。
+	// 数量不对或读不出，都说明复制没按预期落下。
+	if err != nil || len(destKids) != 2 {
+		// 目标夹下级不对就停。
 		t.Fatalf("project dest kids %d %v", len(destKids), err)
 	}
 

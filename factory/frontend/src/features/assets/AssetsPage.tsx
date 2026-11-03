@@ -204,7 +204,12 @@ function AssetsBody({ kind }: { kind: AssetKind }) {
     if (row.level === "personal") return row.creatorId === meId || isSA;
     return true;
   };
-  const canCopy = (row: Asset) => isProcess && row.copyable && row.status !== "disabled" && canRead(row);
+  // 工艺看可复制；工程都能复制（加密平台工艺保持原引用，普通工艺复制一份），厂级副本要管理员。
+  const canCopy = (row: Asset) => {
+    if (row.status === "disabled" || !canRead(row)) return false;
+    if (row.kind === "process") return row.copyable;
+    return row.level === "personal" || isAdmin;
+  };
   const isFactoryAdmin = isSA;
   const folderOpts = fsFolderOptions(fs.data ?? [], (n) => {
     if (n.treeLevel === "platform") return false;
@@ -461,6 +466,11 @@ function AssetsBody({ kind }: { kind: AssetKind }) {
               detailing ? (
                 <FileDetail row={detailing} catalog={catalog.data} canRead={canRead(detailing)} schema={detailSchema} processes={processes.data ?? []} templates={projectTpls.data ?? []}>
                   <Space wrap>
+                    {canCopy(detailing) ? (
+                      <Button size="small" onClick={() => setCopyFor(detailing)}>
+                        复制
+                      </Button>
+                    ) : null}
                     {covers(detailing) ? (
                       <Button size="small" type="primary" onClick={() => openEdit(detailing)}>
                         编辑
@@ -673,7 +683,7 @@ function AssetsBody({ kind }: { kind: AssetKind }) {
         </Form>
       </Modal>
       <Modal
-        title="复制工艺"
+        title={copyFor?.kind === "project" ? "复制工程" : "复制工艺"}
         open={copyFor != null}
         onCancel={() => setCopyFor(null)}
         okText="确定"
@@ -700,7 +710,16 @@ function AssetsBody({ kind }: { kind: AssetKind }) {
             );
           }}
         >
-          <Form.Item name="name" label="新工艺名称" extra="另存为新草稿，原件不动；之后同新建。" rules={[{ required: true, message: "请输入新工艺名称" }]}>
+          <Form.Item
+            name="name"
+            label={copyFor?.kind === "project" ? "新工程名称" : "新工艺名称"}
+            extra={
+              copyFor?.kind === "project"
+                ? "另存为新草稿，原件不动；加密工艺保持原引用，普通工艺各复制一份。"
+                : "另存为新草稿，原件不动；之后同新建。"
+            }
+            rules={[{ required: true, message: "请输入新名称" }]}
+          >
             <Input autoComplete="off" autoFocus />
           </Form.Item>
         </Form>
@@ -986,13 +1005,20 @@ function processIdsFromContent(content: string | undefined, schema: ContentSchem
   }
 }
 
+// 加密平台工艺只显示名称和「加密」标记，不带参数。
+function isEncrypted(p: Asset) {
+  return p.kind === "process" && p.level === "platform" && !p.copyable;
+}
+
 function processLabel(p: Asset) {
-  return `${p.name} · ${levelLabel(p.level)} · r${p.revision}`;
+  return `${p.name} · ${levelLabel(p.level)}${isEncrypted(p) ? " · 加密" : ""} · r${p.revision}`;
 }
 
 function canPinForProject(projectLevel: string | undefined, p: Asset, meId?: string) {
   if (p.status !== "available") return false;
-  if (p.level === "factory" || p.level === "platform") return true;
+  if (p.level === "factory") return true;
+  // 加密平台工艺人人能挂；普通平台工艺个人工程要先另存个人副本。
+  if (p.level === "platform") return projectLevel !== "personal" || isEncrypted(p);
   if (p.level !== "personal") return false;
   return projectLevel === "factory" || p.creatorId === meId;
 }

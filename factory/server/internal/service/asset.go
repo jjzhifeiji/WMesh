@@ -556,12 +556,20 @@ func (s *Assets) CreatePersonalProject(ctx context.Context, token string, wc Wor
 	return s.insertAuthored(ctx, acc, wc, KindProject, AssetLevelPersonal, name, content, deps, true, weldKind...)
 }
 
-// assertPersonalProjectDeps 个人工程只能钉自己的个人工艺或厂级可用工艺。
+// assertPersonalProjectDeps 个人工程只能钉自己的个人工艺、厂级可用工艺或已收的加密平台工艺。
 func (s *kernel) assertPersonalProjectDeps(ctx context.Context, acc Account, deps []AssetDep) error {
 	// 逐条核对接上的工艺，有一条不合格就整份拒绝。
 	for _, d := range deps {
 		// 只读本厂原件元数据，先不解开正文。
 		p, err := s.loadCheckedMeta(ctx, d.ID)
+		// 本厂没有原件，再按钉死修订核加密平台工艺。
+		if errors.Is(err, domain.ErrNotFound) {
+			// 加密平台工艺按原身份引用，不合格就整份拒绝。
+			if err := s.assertPlatformDep(ctx, d, personalPlatformDep); err != nil {
+				return err
+			}
+			continue
+		}
 		// 元数据读不到则拒绝，避免钉上空依赖。
 		if err != nil {
 			return err
@@ -590,6 +598,35 @@ func (s *kernel) assertPersonalProjectDeps(ctx context.Context, acc Account, dep
 		}
 	}
 	return nil
+}
+
+// assertPlatformDep 按钉死修订核已收平台副本：种类级别由 ok 判，修订摘要对上且可用。
+func (s *kernel) assertPlatformDep(ctx context.Context, d AssetDep, ok func(AssetReplica) bool) error {
+	// 按修订取副本元数据，用来核依赖。
+	r, err := s.store.ReplicaMetaByIDRev(ctx, d.ID, d.Revision)
+	// 副本元数据读失败则不能当依赖。
+	if err != nil {
+		// 找不到就换成业务上的缺失，不当成库故障。
+		if errors.Is(err, domain.ErrNotFound) {
+			return domain.ErrAssetDependency
+		}
+		return err
+	}
+	// 种类级别不合口径，或修订摘要对不上，则依赖不成立。
+	if !ok(r) || r.Revision != d.Revision || !bytes.Equal(r.Digest, d.Digest) {
+		return domain.ErrAssetDependency
+	}
+	// 停用或草稿的副本不能钉进工程。
+	if r.Status != AssetAvailable {
+		return domain.ErrAssetNotAvailable
+	}
+	return nil
+}
+
+// platformProcessDep 厂级工程可直接引用的平台副本：平台级工艺，加密与否都行。
+func platformProcessDep(r AssetReplica) bool {
+	// 种类和级别对上就算。
+	return r.Kind == KindProcess && r.Level == AssetLevelPlatform
 }
 
 // CreateFactoryProject 创建厂级工程；参数里的工艺写入 deps，不必另填。
@@ -718,16 +755,17 @@ func factoryProjectProcessLevel(level string) bool {
 	return level == AssetLevelFactory || level == AssetLevelPersonal
 }
 
-// pinPersonalProcess 个人工程钉自己的个人工艺或本厂厂级可用工艺。
+// pinPersonalProcess 个人工程钉自己的个人工艺、本厂厂级可用工艺或已收的加密平台工艺。
 func (s *kernel) pinPersonalProcess(ctx context.Context, acc Account, id uuid.UUID) (AssetDep, error) {
 	// 只读本厂原件元数据，先不解开正文。
 	p, err := s.loadCheckedMeta(ctx, id)
+	// 本厂没有原件，再看是不是已收的加密平台工艺。
+	if errors.Is(err, domain.ErrNotFound) {
+		// 只有加密平台工艺能按原身份钉进个人工程。
+		return s.pinPersonalPlatformProcess(ctx, id)
+	}
 	// 元数据读不到则拒绝，避免钉上空依赖。
 	if err != nil {
-		// 找不到就换成业务上的缺失，不当成库故障。
-		if errors.Is(err, domain.ErrNotFound) {
-			return AssetDep{}, domain.ErrAssetDependency
-		}
 		return AssetDep{}, err
 	}
 	// 只能钉工艺，工程或其他种类都不行。
@@ -753,6 +791,35 @@ func (s *kernel) pinPersonalProcess(ctx context.Context, acc Account, id uuid.UU
 		return AssetDep{}, domain.ErrAssetDependency
 	}
 	return AssetDep{ID: p.ID, Revision: p.Revision, Digest: p.Digest}, nil
+}
+
+// pinPersonalPlatformProcess 个人工程按原身份钉已收的加密平台工艺；普通平台工艺须先另存个人副本再钉。
+func (s *kernel) pinPersonalPlatformProcess(ctx context.Context, id uuid.UUID) (AssetDep, error) {
+	// 取副本元数据，先不解开正文。
+	r, err := s.store.LatestReplicaMeta(ctx, id)
+	// 副本元数据读失败则停下。
+	if err != nil {
+		// 找不到就换成业务上的缺失，不当成库故障。
+		if errors.Is(err, domain.ErrNotFound) {
+			return AssetDep{}, domain.ErrAssetDependency
+		}
+		return AssetDep{}, err
+	}
+	// 只认加密的平台级工艺；可复制的按「普通工艺复制一份」另存后再钉。
+	if !personalPlatformDep(r) {
+		return AssetDep{}, domain.ErrAssetDependency
+	}
+	// 副本不是可用则不能当依赖。
+	if r.Status != AssetAvailable {
+		return AssetDep{}, domain.ErrAssetNotAvailable
+	}
+	return AssetDep{ID: r.ID, Revision: r.Revision, Digest: r.Digest}, nil
+}
+
+// personalPlatformDep 个人工程可直接引用的平台副本：加密（不可复制）的平台级工艺。
+func personalPlatformDep(r AssetReplica) bool {
+	// 种类、级别、可复制三样都对上才算。
+	return r.Kind == KindProcess && r.Level == AssetLevelPlatform && !r.Copyable
 }
 
 // resolveProjectDeps 改依赖时按身份重钉当前可用修订，跟上工艺升版。
@@ -1079,6 +1146,13 @@ func newlyPinnedDeps(old, merged []AssetDep) []AssetDep {
 	return out
 }
 
+// isPlatformReplica 本厂有这份身份的已收平台副本。
+func (s *kernel) isPlatformReplica(ctx context.Context, id uuid.UUID) bool {
+	// 读得到副本元数据就算有。
+	_, err := s.store.LatestReplicaMeta(ctx, id)
+	return err == nil
+}
+
 // canApplyApp 平台级拒绝；厂级只给管理员；个人级只给创建人。
 func (s *kernel) canApplyApp(ctx context.Context, acc Account, a Asset) error {
 	// 平台级拒绝回写；厂级看管理员；个人级看创建人。
@@ -1351,6 +1425,10 @@ func (s *kernel) mutateAsset(ctx context.Context, acc Account, assetID uuid.UUID
 	if err != nil {
 		// 这一步被拒时补记审计，写失败仍维持拒绝。
 		_ = s.audit(ctx, &acc.ID, nil, action, assetTarget(assetID, expected), audit.Deny)
+		// 平台级只在云端配置，厂端一律无权改，不当成找不到。
+		if errors.Is(err, domain.ErrNotFound) && s.isPlatformReplica(ctx, assetID) {
+			return Asset{}, domain.ErrForbidden
+		}
 		return Asset{}, err
 	}
 	// 按级别核制作权：厂级要管理员，个人级另验创建人或超管。
@@ -1660,10 +1738,18 @@ func (s *Assets) assertPromoteToFactoryDeps(ctx context.Context, src Asset) erro
 	if src.Kind != KindProject {
 		return nil
 	}
-	// 升厂级时逐条确认依赖已是可用厂级工艺。
+	// 升厂级时逐条确认依赖已是可用厂级工艺或已收平台工艺。
 	for _, d := range src.Deps {
 		// 只读本厂原件元数据，先不解开正文。
 		p, err := s.loadCheckedMeta(ctx, d.ID)
+		// 本厂没有原件，加密平台工艺按原身份跟着升。
+		if errors.Is(err, domain.ErrNotFound) {
+			// 平台副本按钉死修订核，不合格就拒绝升档。
+			if err := s.assertPlatformDep(ctx, d, platformProcessDep); err != nil {
+				return err
+			}
+			continue
+		}
 		// 元数据读不到则拒绝，避免钉上空依赖。
 		if err != nil {
 			return err

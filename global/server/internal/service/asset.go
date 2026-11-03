@@ -156,7 +156,7 @@ func (s *Assets) CreatePlatformProcessIn(ctx context.Context, token, name string
 	return stripContent(row), nil
 }
 
-// CopyPlatformProcess 平台级工艺或工程另存为新草稿；不看可复制，原件正文原样拷贝，不套模版。
+// CopyPlatformProcess 平台级工艺或工程另存为新草稿；不看可复制，原件正文原样拷贝，不套模版；工程里普通工艺复制一份，加密工艺保持原引用。
 func (s *Assets) CopyPlatformProcess(ctx context.Context, token string, assetID uuid.UUID, name string) (Asset, error) {
 	// 只有 WAN 管理员能另存；停用拒绝。可复制只拦厂端升档，不拦云端另存。
 	admin, err := s.RequireAdmin(ctx, token)
@@ -187,6 +187,11 @@ func (s *Assets) CopyPlatformProcess(ctx context.Context, token string, assetID 
 		// 建资产被拒就留审计，不写正文。
 		_ = s.audit(ctx, &admin.ID, nil, nil, "create_asset", assetTarget(src.ID, src.Revision), audit.Deny)
 		return Asset{}, err
+	}
+	// 工程另走：加密工艺保持原引用，普通工艺复制一份并改指新身份。
+	if src.Kind == KindProject {
+		// 工程连带复制普通工艺，失败时回收已复制的。
+		return s.copyPlatformProject(ctx, token, admin, src, name)
 	}
 	// 原件正文与依赖原样落新草稿，不套模版、不写升档来源。
 	row, err := s.store.InsertAsset(ctx, Asset{
