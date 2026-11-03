@@ -3,6 +3,7 @@ package httpapi
 import (
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -50,6 +51,31 @@ type padLoginLogReq struct {
 	AndroidRelease     string `json:"androidRelease"`     // 平板系统版本
 	NetworkName        string `json:"networkName"`        // 当时 WiFi 名
 	ClientID           string `json:"clientId"`           // 已匹配本机
+	OccurredAt         string `json:"occurredAt"`         // 臂网上连臂后回厂网补报的原时刻（RFC3339）；空表示现在
+}
+
+// 补报原时刻最多往前认这么久，再早的按现在记。
+const loginBackfillWindow = 7 * 24 * time.Hour
+
+// backfillAt 解析补报原时刻；空、非法、超前现在一分钟以上或早于补报窗口都当没传。
+func backfillAt(raw string, now time.Time) *time.Time {
+	// 去掉空白，空串表示不是补报。
+	raw = strings.TrimSpace(raw)
+	// 没带原时刻就按现在记。
+	if raw == "" {
+		return nil
+	}
+	// 解析原时刻，非法就当没传。
+	at, err := time.Parse(time.RFC3339, raw)
+	// 解析失败不拒请求，只按现在记。
+	if err != nil {
+		return nil
+	}
+	// 超前现在或早于补报窗口都不认，防止时钟乱跳污染记录。
+	if at.After(now.Add(time.Minute)) || at.Before(now.Add(-loginBackfillWindow)) {
+		return nil
+	}
+	return &at
 }
 
 // 列出本厂已绑定现场设备。
@@ -110,8 +136,12 @@ func (h *Handler) reportPadLogin(w http.ResponseWriter, r *http.Request) {
 			writeBadRequest(w, err)
 			return
 		}
+		// 组装自报现场，设备号按自报解析。
+		snap := loginSnap(service.LoginKindPad, req.AppVersion, req.AppVersionName, req.DeviceSerial, req.DeviceModel, req.DeviceManufacturer, req.AndroidRelease, req.NetworkName, req.ClientID, nil)
+		// 补报带了原时刻就按原时刻记，范围不对的当没传。
+		snap.OccurredAt = backfillAt(req.OccurredAt, time.Now())
 		// 补记自己的现场，令牌无效则拒绝。
-		err := svc.Node.RecordOwnAppLogin(r.Context(), bearer(r), loginSnap(service.LoginKindPad, req.AppVersion, req.AppVersionName, req.DeviceSerial, req.DeviceModel, req.DeviceManufacturer, req.AndroidRelease, req.NetworkName, req.ClientID, nil))
+		err := svc.Node.RecordOwnAppLogin(r.Context(), bearer(r), snap)
 		// 上一步没通过则停止，不把失败写成成功。
 		if err != nil {
 			// 把失败译成状态回给调用方，不写成功。

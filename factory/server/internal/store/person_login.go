@@ -53,6 +53,7 @@ type LoginSnap struct {
 	NetworkName        string     // WiFi 名
 	ClientID           *uuid.UUID // 已匹配本机
 	ClientName         string     // 本厂设备名
+	OccurredAt         *time.Time // 补报时示教器记下的原时刻；空就按服务端现在
 }
 
 // InsertPersonLogin 写下这一次现场；每人只留最近若干条。
@@ -68,12 +69,19 @@ func (s *Store) InsertPersonLogin(ctx context.Context, personID uuid.UUID, snap 
 		// 没标来源就当厂网示教器登录。
 		kind = LoginKindPad
 	}
+	// 先按服务端现在记时刻，补报带了原时刻就用原时刻。
+	at := time.Now().UTC()
+	// 补报带了原时刻（入口已核过范围）就记原时刻。
+	if snap.OccurredAt != nil {
+		// 统一存成 UTC，和其余记录一致。
+		at = snap.OccurredAt.UTC()
+	}
 	// 组装这一次登录现场，不含密码或令牌。
 	row := PersonLoginLog{
 		ID:                 id.New(),
 		PersonID:           personID,
 		Kind:               kind,
-		OccurredAt:         time.Now().UTC(),
+		OccurredAt:         at,
 		AppVersion:         snap.AppVersion,
 		AppVersionName:     clipLoginText(snap.AppVersionName, 80),
 		DeviceSerial:       clipLoginText(snap.DeviceSerial, 80),

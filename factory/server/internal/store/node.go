@@ -500,6 +500,7 @@ func maxRevision(tx *gorm.DB, model any, query string, args ...any) (int64, erro
 	}
 	return n.Int64, nil
 }
+
 // NormalizeDeviceSerial 臂号去首尾空白并转大写；网卡号大小写不同算同一台。
 func NormalizeDeviceSerial(serial string) string {
 	// 去空白后转大写，比对和落库都用这一份。
