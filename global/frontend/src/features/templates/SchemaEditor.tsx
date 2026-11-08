@@ -6,7 +6,12 @@ import { enumDefault, enumOptions, kindOf, type ContentSchema, type Kind, type T
 
 type DragRef = { listId: string; index: number };
 
+// 正在拖的字段；各层 FieldList 共用一份，靠 listId 认出是不是同一层。
 let dragging: DragRef | null = null;
+const currentDrag = () => dragging;
+const setDragging = (d: DragRef | null) => {
+  dragging = d;
+};
 
 const typeOptionsBase = [
   { value: "string", label: "文本" },
@@ -67,9 +72,9 @@ function FieldList({
     onChange(next);
   };
   const remove = (i: number) => onChange(fields.filter((_, j) => j !== i));
-  const sameList = () => dragging?.listId === listId;
+  const sameList = () => currentDrag()?.listId === listId;
   const clearDrag = () => {
-    dragging = null;
+    setDragging(null);
     setFrom(null);
     setOver(null);
   };
@@ -93,7 +98,7 @@ function FieldList({
   const dropOn = (e: DragEvent<HTMLElement>, i: number, force?: "before" | "after") => {
     e.preventDefault();
     e.stopPropagation();
-    const src = sameList() ? dragging?.index : undefined;
+    const src = sameList() ? currentDrag()?.index : undefined;
     const edge = force ?? over?.edge ?? dropEdge(e, e.currentTarget);
     clearDrag();
     if (src == null) return;
@@ -125,7 +130,7 @@ function FieldList({
               sortable
               onDragStart={(e) => {
                 e.stopPropagation();
-                dragging = { listId, index: i };
+                setDragging({ listId, index: i });
                 e.dataTransfer.effectAllowed = "move";
                 e.dataTransfer.setData("text/plain", `${listId}:${i}`);
                 setFrom(i);

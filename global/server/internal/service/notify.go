@@ -293,6 +293,18 @@ func (k *kernel) notifyRemainingTemplates(ctx context.Context) {
 	k.publishActive(ctx, templateSetCmd(KindProject, projects))
 }
 
+// 新建工程模版后补发工程模版全集；厂端名单里有、本厂已撤下的副本据此恢复。
+func (k *kernel) notifyProjectTemplateSet(ctx context.Context) {
+	// 读当前工程各份。
+	projects, err := k.ensureProjectItems(ctx)
+	// 读不出当前全集就不发，免得厂端按残缺名单误删。
+	if err != nil {
+		return
+	}
+	// 只推给仍有效的厂。
+	k.publishActive(ctx, templateSetCmd(KindProject, projects))
+}
+
 // templateSetCmd 把某类当前全部模版收成一条全集指令；没有模版时 templateIds 为空、full 仍为真。
 func templateSetCmd(kind string, rows []ContentTemplate) Cmd {
 	// 按数量先准备容器。

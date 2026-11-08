@@ -14,6 +14,7 @@ import (
 func New(w io.Writer, loggerName, version string) *slog.Logger {
 	// 没给输出就写到标准输出，给容器采集。
 	if w == nil {
+		// 落到标准输出。
 		w = os.Stdout
 	}
 	// 按环境级别把日志收成 JSON。
@@ -37,13 +38,18 @@ func jsonAttr(groups []string, a slog.Attr) slog.Attr {
 	if len(groups) > 0 {
 		return a
 	}
+	// 只改时间和正文两个键，其余原样。
 	switch a.Key {
+	// 时间键。
 	case slog.TimeKey:
 		// 收成 UTC 毫秒时间，Alloy 用它做 Loki 时间。
 		if a.Value.Kind() == slog.KindTime {
+			// 键名改成 ts。
 			return slog.String("ts", a.Value.Time().UTC().Format("2006-01-02T15:04:05.000Z"))
 		}
+	// 正文键。
 	case slog.MessageKey:
+		// 键名改成 msg。
 		return slog.String("msg", a.Value.String())
 	}
 	return a
@@ -51,13 +57,18 @@ func jsonAttr(groups []string, a slog.Attr) slog.Attr {
 
 // levelFromEnv 读 WMESH_LOG_LEVEL；认不出就用 info。
 func levelFromEnv() slog.Level {
+	// 环境变量不分大小写、去掉首尾空白再认。
 	switch strings.ToLower(strings.TrimSpace(os.Getenv("WMESH_LOG_LEVEL"))) {
+	// 调试级。
 	case "debug":
 		return slog.LevelDebug
+	// 警告级，两种写法都认。
 	case "warn", "warning":
 		return slog.LevelWarn
+	// 错误级。
 	case "error":
 		return slog.LevelError
+	// 没设或认不出，按 info。
 	default:
 		return slog.LevelInfo
 	}

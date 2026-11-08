@@ -125,6 +125,7 @@ services:
     image: grafana/alloy:v1.19.2
     user: "0:0"
     environment:
+      # 生产默认推共享 Loki；本机测试由 scripts/testenv/reset.sh 覆盖成本机 Loki（host.docker.internal:3100）。
       LOKI_URL: ${LOKI_URL:-http://154.82.81.16:3100/loki/api/v1/push}
       WMESH_SIDE: factory
       COMPOSE_PROJECT_NAME: wmesh-factory
@@ -132,6 +133,9 @@ services:
       - ./alloy/config.alloy:/etc/alloy/config.alloy:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - alloydata:/var/lib/alloy
+    # Linux 上 host.docker.internal 默认不解析，补上指向宿主，本机测试 Loki 才连得到；Docker Desktop 自带，不受影响。
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "${ALLOY_PAD_PORT:-3500}:3500"
     restart: unless-stopped

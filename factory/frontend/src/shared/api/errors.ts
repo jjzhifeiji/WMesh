@@ -22,6 +22,7 @@ const zh: Record<string, string> = {
   "org unit parent would create a cycle": "不能把节点挂到自己或自己的下级",
   "invalid id": "标识格式不对",
   "invalid name": "名字不能为空，最多 64 个字",
+  "name too long": "名字太长，工艺、工程名最多 200 个字",
   "name already exists in this folder": "这个文件夹里已有同名项",
   "invalid key material": "公钥格式不对，需要 32 字节的 base64 或 hex",
   "revision is not strictly newer": "修订号必须比已接受的更大",
@@ -51,6 +52,13 @@ const zh: Record<string, string> = {
   "too many attempts": "尝试太频繁，请稍后再试",
   "too many requests": "请求太频繁，请稍后再试",
   "internal error": "服务异常，请稍后再试",
+  // 网关或代理回的非 JSON 错误页只有状态文字；连不上由 request 归到 network error。
+  "network error": "连不上服务端，请检查网络后重试",
+  "request failed": "请求失败，请稍后再试",
+  "internal server error": "服务异常，请稍后再试",
+  "bad gateway": "服务暂时不可用，请稍后再试",
+  "service unavailable": "服务暂时不可用，请稍后再试",
+  "gateway timeout": "服务响应超时，请稍后再试",
 };
 
 export function translateError(code: string) {

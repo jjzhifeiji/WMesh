@@ -113,35 +113,56 @@ type healthResp struct {
 // healthz 库不通回 503 让编排判定不健康；OSS 掉线只标 degraded，不影响账号管理继续服务。
 // 个别厂库迁移失败只列在 schema 里，按退避自动重试，不拖累整体状态。
 func (h *Handler) healthz(w http.ResponseWriter, r *http.Request) {
-	// 给这次探活限时，免得库卡住拖死接口。
-	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
-	// 离开时取消限时，避免计时器一直留着。
-	defer cancel()
 	// 先按全健康填写，库或存储失败再降级。
 	resp := healthResp{Status: "ok", Version: h.VersionCode, VersionName: h.VersionName, Build: h.Version, DB: "ok", OSS: "off", DemoData: h.Hub.DemoData()}
 	// 默认按正常返回，库探活失败再改。
 	code := http.StatusOK
-	// 被拒绝则停止，不继续写成功响应。
-	if err := h.Hub.Ping(ctx); err != nil {
+	// 对象存储另起一路探，各自限时；连不上要等满超时，不能拖着库和迁移版本一起超时。
+	ossDone := make(chan error, 1)
+	// 接了对象存储才去探，没接不算故障。
+	if h.OSSProbe != nil {
+		// 已配置存储则先标正常，探测失败再改。
+		resp.OSS = "ok"
+		// 在后台探，结果送回通道。
+		go func() { ossDone <- probeWithin(r.Context(), h.OSSProbe) }()
+	}
+	// 库探活自己限时，免得库卡住拖死接口。
+	if err := probeWithin(r.Context(), h.Hub.Ping); err != nil {
 		// 库不通则标降级，并让编排视为不健康。
 		resp.Status, resp.DB, code = "degraded", "down", http.StatusServiceUnavailable
 		// 探活失败只记日志，响应里不写内部原因。
 		slog.Warn("healthz db ping failed", "err", err)
 	}
-	// 接了对象存储才去探，没接不算故障。
+	// 各厂库迁移版本和打开失败的厂只作参考，用自己的限时去读，不被对象存储探测拖到超时报 -1。
+	schemaCtx, cancel := context.WithTimeout(r.Context(), healthProbeTimeout)
+	// 读完就取消限时，避免计时器一直留着。
+	defer cancel()
+	// 读各厂库迁移版本，不影响整体状态和状态码。
+	resp.Schema = h.Hub.SchemaStatus(schemaCtx)
+	// 接了对象存储就等它探完。
 	if h.OSSProbe != nil {
-		// 已配置存储则先标正常，探测失败再改。
-		resp.OSS = "ok"
-		if err := h.OSSProbe(ctx); err != nil {
-			// 存储探活失败则标降级，接口仍可服务。
+		// 存储探活失败则标降级，接口仍可服务。
+		if err := <-ossDone; err != nil {
+			// 只把存储标掉线，库和迁移版本照实报。
 			resp.Status, resp.OSS = "degraded", "down"
 			slog.Warn("healthz oss probe failed", "err", err)
 		}
 	}
-	// 各厂库迁移版本和打开失败的厂只作参考，不影响整体状态和状态码。
-	resp.Schema = h.Hub.SchemaStatus(ctx)
 	// 通过之后把结果回给调用方。
 	writeJSON(w, code, resp)
+}
+
+// healthProbeTimeout 探活每一项各自的限时。
+const healthProbeTimeout = 3 * time.Second
+
+// probeWithin 给一项探测单独限时，互不占用对方的时间。
+func probeWithin(parent context.Context, probe func(context.Context) error) error {
+	// 这一项自己的限时。
+	ctx, cancel := context.WithTimeout(parent, healthProbeTimeout)
+	// 探完就取消限时。
+	defer cancel()
+	// 交回这一项的结果。
+	return probe(ctx)
 }
 
 // 按 URL 工厂身份打开已有厂库；库不在就当未初始化。

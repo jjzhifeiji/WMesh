@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 
 	"wmesh/factory/internal/platform/audit"
+	"wmesh/factory/internal/platform/contenttpl"
 	"wmesh/factory/internal/platform/digest"
 	"wmesh/factory/internal/platform/domain"
 	"wmesh/factory/internal/store"
@@ -38,7 +39,7 @@ func sealClosure(kind string, root ClosureMember, rest []ClosureMember, facID, c
 	members := make([]ClosureMember, 0, 1+len(rest))
 	// 根放在第一位，校验时就认这个。
 	members = append(members, root)
-	// 依赖成员跟在根后面，顺序和钉死一致。
+	// 依赖成员跟在根后面，顺序和根的 deps 一致。
 	members = append(members, rest...)
 	// 按包内顺序准备摘要材料。
 	parts := make([]digest.Member, len(members))
@@ -54,7 +55,7 @@ func sealClosure(kind string, root ClosureMember, rest []ClosureMember, facID, c
 	}
 }
 
-// validateClosure 核对成员摘要、钉死依赖和整包摘要。
+// validateClosure 核对成员摘要、根 deps 与成员是否对上、整包摘要。
 func validateClosure(snap ClosureSnapshot) error {
 	// 一个成员都没有则包不完整，直接拒绝。
 	if len(snap.Members) == 0 {
@@ -104,15 +105,15 @@ func validateClosure(snap ClosureSnapshot) error {
 		}
 		return domain.ErrClosureMismatch
 	}
-	// 下一位成员必须对上这条钉死的工艺。
+	// 快照里根的 deps 由组包时写成当前版，这里只核包内自洽。
 	for i, d := range root.Deps {
-		// 依赖的下一位必须对上这条钉死。
+		// 依赖的下一位必须对上这一条。
 		m := snap.Members[i+1]
-		// 身份或修订和钉死的不一致则整包作废。
+		// 身份或修订和根 deps 不一致则整包作废。
 		if m.ID != d.ID || m.Revision != d.Revision {
 			return domain.ErrClosureMismatch
 		}
-		// 摘要和钉死的不一致则整包作废。
+		// 摘要和根 deps 不一致则整包作废。
 		if !bytes.Equal(m.Digest, d.Digest) {
 			return domain.ErrClosureMismatch
 		}
@@ -120,11 +121,11 @@ func validateClosure(snap ClosureSnapshot) error {
 	return nil
 }
 
-// loadDepMember 按钉死修订取工艺成员；原件没有再看副本。
-func (s *Closure) loadDepMember(ctx context.Context, d AssetDep) (ClosureMember, error) {
-	// 先看本厂原件，没有再按钉死修订取副本。
-	a, err := s.store.GovernedAssetByID(ctx, d.ID)
-	// 本厂原件在就收成成员，没有再按修订取副本。
+// loadDepMember 按身份取工艺当前版成员：本厂原件取当前行，没有再取已收的最高修订副本（已撤回的也算）。
+func (s *Closure) loadDepMember(ctx context.Context, depID uuid.UUID) (ClosureMember, error) {
+	// 先看本厂原件，没有再取已收副本。
+	a, err := s.store.GovernedAssetByID(ctx, depID)
+	// 本厂原件在就收成成员，没有再看副本。
 	if err == nil {
 		// 摘要对不上当被篡改，拒绝继续使用。
 		if !digest.Match(a.Content, a.Digest) {
@@ -134,14 +135,6 @@ func (s *Closure) loadDepMember(ctx context.Context, d AssetDep) (ClosureMember,
 		if a.Kind != KindProcess {
 			return ClosureMember{}, domain.ErrClosureMismatch
 		}
-		// 原件修订和钉死的不一致则包没收齐。
-		if a.Revision != d.Revision {
-			return ClosureMember{}, domain.ErrClosureIncomplete
-		}
-		// 原件摘要和钉死的不一致则拒绝组包。
-		if !bytes.Equal(a.Digest, d.Digest) {
-			return ClosureMember{}, domain.ErrClosureMismatch
-		}
 		// 把本厂原件收成组包成员。
 		return memberFromAsset(a), nil
 	}
@@ -149,9 +142,9 @@ func (s *Closure) loadDepMember(ctx context.Context, d AssetDep) (ClosureMember,
 	if !errors.Is(err, domain.ErrNotFound) {
 		return ClosureMember{}, err
 	}
-	// 按钉死的修订取副本正文。
-	r, err := s.store.ReplicaByIDRev(ctx, d.ID, d.Revision)
-	// 这一修订没有或读失败则闭包不齐。
+	// 取已收的最高修订副本；已撤回的也要，被依赖的工艺撤回后仍可读。
+	r, err := s.store.HighestReplica(ctx, depID)
+	// 一份都没收过或读失败则闭包不齐。
 	if err != nil {
 		// 找不到就换成业务上的缺失，不当成库故障。
 		if errors.Is(err, domain.ErrNotFound) {
@@ -163,19 +156,15 @@ func (s *Closure) loadDepMember(ctx context.Context, d AssetDep) (ClosureMember,
 	if !digest.Match(r.Content, r.Digest) {
 		return ClosureMember{}, domain.ErrIntegrity
 	}
-	// 副本必须是同一修订的工艺，否则对不上。
-	if r.Kind != KindProcess || r.Revision != d.Revision {
-		return ClosureMember{}, domain.ErrClosureMismatch
-	}
-	// 副本摘要和钉死的不一致则拒绝组包。
-	if !bytes.Equal(r.Digest, d.Digest) {
+	// 副本必须是工艺，否则对不上。
+	if r.Kind != KindProcess {
 		return ClosureMember{}, domain.ErrClosureMismatch
 	}
 	// 把已收副本收成组包成员。
 	return memberFromReplica(r), nil
 }
 
-// packFromMember 根须可用，依赖按钉死修订收齐。
+// packFromMember 根须可用，依赖按身份取当前版，快照里根的 deps 改写成当前版，库里的工程行不动。
 func (s *Closure) packFromMember(ctx context.Context, root ClosureMember) (ClosureSnapshot, error) {
 	// 根不是可用则拒绝组包，草稿和停用都不行。
 	if root.Status != AssetAvailable {
@@ -183,17 +172,23 @@ func (s *Closure) packFromMember(ctx context.Context, root ClosureMember) (Closu
 	}
 	// 按依赖条数准备成员，收不齐就失败。
 	rest := make([]ClosureMember, 0, len(root.Deps))
-	// 按钉死修订把工艺收进包。
+	// 这份快照里根的依赖，按成员当前版改写。
+	deps := make([]AssetDep, 0, len(root.Deps))
+	// 工程 deps 只定用哪几条工艺，修订一律取当前版。
 	for _, d := range root.Deps {
-		// 按钉死的修订取工艺，原件没有再看副本。
-		m, err := s.loadDepMember(ctx, d)
+		// 按身份取工艺，原件没有再看副本。
+		m, err := s.loadDepMember(ctx, d.ID)
 		// 这条依赖收不齐则整包失败。
 		if err != nil {
 			return ClosureSnapshot{}, err
 		}
-		// 这条工艺已按钉死修订收进包。
+		// 这条工艺已按当前版收进包。
 		rest = append(rest, m)
+		// 快照里的依赖写成这次实际带上的修订和摘要。
+		deps = append(deps, AssetDep{ID: m.ID, Revision: m.Revision, Digest: m.Digest})
 	}
+	// 只改传进来的这份根成员，调用方的依赖切片不动。
+	root.Deps = deps
 	// 成员收齐后算整包摘要。
 	snap := sealClosure(root.Kind, root, rest, nil, nil)
 	// 闭包对不上则拒绝装入或激活。
@@ -242,11 +237,11 @@ func (s *Closure) packForPad(ctx context.Context, assetID uuid.UUID) (ClosureSna
 	return snap, nil
 }
 
-// packPinnedForPad 列表外钉住的平台工艺按钉死修订单独成包；钉死修订读不到就拒，不退回最新版。
-func (s *Closure) packPinnedForPad(ctx context.Context, d AssetDep) (ClosureSnapshot, error) {
-	// 按钉死的修订取工艺，原件没有再看副本。
-	m, err := s.loadDepMember(ctx, d)
-	// 钉死修订读不到或对不上则整包拒绝。
+// packPinnedForPad 列表外、被工程依赖的平台工艺按已收最高修订单独成包；已撤回的也给，一份都没有才拒。
+func (s *Closure) packPinnedForPad(ctx context.Context, depID uuid.UUID) (ClosureSnapshot, error) {
+	// 按身份取工艺，原件没有再看副本。
+	m, err := s.loadDepMember(ctx, depID)
+	// 读不到或对不上则整包拒绝。
 	if err != nil {
 		return ClosureSnapshot{}, err
 	}
@@ -254,7 +249,7 @@ func (s *Closure) packPinnedForPad(ctx context.Context, d AssetDep) (ClosureSnap
 	if m.Level != AssetLevelPlatform {
 		return ClosureSnapshot{}, domain.ErrNotFound
 	}
-	// 标成停用：示教器工艺列表不显示，钉住它的工程照样能用。
+	// 标成停用：示教器工艺列表不显示，依赖它的工程照样能用。
 	m.Status = AssetDisabled
 	// 工艺单独成包，不带别的成员。
 	snap := sealClosure(KindProcess, m, nil, nil, nil)
@@ -347,7 +342,7 @@ func closureTarget(snap ClosureSnapshot) string {
 	return t
 }
 
-// AssembleProject 从本厂当前行或已收副本组包；草稿/停用/缺失/串版拒绝。
+// AssembleProject 从本厂当前行或已收副本组包，工艺按身份取当前版；草稿/停用/缺失拒绝。
 func (s *Closure) AssembleProject(ctx context.Context, token string, assetID uuid.UUID) (ClosureSnapshot, error) {
 	// 核对登录仍有效，后面的操作都靠这次会话。
 	acc, err := s.RequireActive(ctx, token)
@@ -369,7 +364,7 @@ func (s *Closure) AssembleProject(ctx context.Context, token string, assetID uui
 		_ = s.audit(ctx, &acc.ID, nil, "pack_closure", assetTarget(root.ID, root.Revision), audit.Deny)
 		return ClosureSnapshot{}, err
 	}
-	// 根须可用，依赖按钉死修订收齐再封包。
+	// 根须可用，依赖按身份取当前版收齐再封包。
 	snap, err := s.packFromMember(ctx, root)
 	// 组包失败则记拒绝。
 	if err != nil {
@@ -412,7 +407,7 @@ func copyDeps(deps []AssetDep) []AssetDep {
 	return out
 }
 
-// SetProjectDeps 显式改工程依赖并升高修订；钉死必须仍能读到。
+// SetProjectDeps 显式改工程依赖并升高修订；所填工艺必须仍能读到。
 func (s *Closure) SetProjectDeps(ctx context.Context, token string, assetID uuid.UUID, expected int64, deps []AssetDep) (Asset, error) {
 	// 核对登录仍有效，后面的操作都靠这次会话。
 	acc, err := s.RequireActive(ctx, token)
@@ -420,8 +415,10 @@ func (s *Closure) SetProjectDeps(ctx context.Context, token string, assetID uuid
 	if err != nil {
 		return Asset{}, err
 	}
+	// 把个人工艺换成厂级的结果，写完告诉调用方，写失败要回收。
+	var adopted adoptResult
 	// 只改工程依赖；停用拒绝，引用必须仍能读到。
-	return s.mutateAsset(ctx, acc, assetID, expected, "update_asset", func(cur Asset) (store.AssetWrite, error) {
+	row, err := s.mutateAsset(ctx, acc, assetID, expected, "update_asset", func(cur Asset) (store.AssetWrite, error) {
 		// 只有工程能改依赖，工艺拒绝。
 		if cur.Kind != KindProject {
 			return store.AssetWrite{}, domain.ErrAssetDependency
@@ -430,27 +427,75 @@ func (s *Closure) SetProjectDeps(ctx context.Context, token string, assetID uuid
 		if cur.Status == AssetDisabled {
 			return store.AssetWrite{}, domain.ErrAssetNotAvailable
 		}
-		// 按身份重钉当前可用修订，跟上工艺升版。
-		deps, err := s.resolveProjectDeps(ctx, acc, cur.Level, deps)
-		// 有一条重钉失败则整份依赖不改。
-		if err != nil {
-			return store.AssetWrite{}, err
-		}
-		// 焊道类型对不上则拒绝。
-		if err := s.assertDepsWeldKind(ctx, cur.WeldKind, deps); err != nil {
-			return store.AssetWrite{}, err
-		}
-		// 改依赖后，当前模版下的旧引用仍须落在新 deps 里。
+		// 正文原件后面要核引用，厂级工程还可能要改写。
 		opened, err := s.loadChecked(ctx, cur.ID)
 		// 原件读不到或摘要不符则拒绝。
 		if err != nil {
 			return store.AssetWrite{}, err
 		}
-		// 有引用对不上依赖则拒绝保存。
-		if err := s.assertProjectProcessIDs(ctx, opened.Content, deps); err != nil {
+		// 接下来要写的正文，不换工艺就是原件。
+		body := opened.Content
+		// 厂级工程先把已换走的个人工艺对回已有的厂级副本，不再复制。
+		wanted := deps
+		// 只有厂级工程有这一步。
+		if cur.Level == AssetLevelFactory {
+			// 只查依赖里已有的副本，这一步不新建。
+			body, wanted, err = s.applyAdoptedCopies(ctx, acc, cur.Deps, body, wanted)
+			// 换不了就整份依赖不改。
+			if err != nil {
+				return store.AssetWrite{}, err
+			}
+		}
+		// 按身份重钉当前可用修订，跟上工艺升版；已声明的停用或云端已删工艺原样留着。
+		resolved, err := s.resolveProjectDeps(ctx, acc, cur.Level, cur.Deps, wanted)
+		// 有一条重钉失败则整份依赖不改。
+		if err != nil {
 			return store.AssetWrite{}, err
 		}
+		// 焊道类型对不上则拒绝。
+		if err := s.assertDepsWeldKind(ctx, cur.WeldKind, resolved); err != nil {
+			return store.AssetWrite{}, err
+		}
+		// 改依赖后，当前模版下的旧引用仍须落在新 deps 里。
+		if err := s.assertProjectProcessIDs(ctx, body, resolved); err != nil {
+			return store.AssetWrite{}, err
+		}
+		// 校验都过了，厂级工程还钉着的个人工艺复制成厂级再写。
+		if cur.Level == AssetLevelFactory {
+			// 修订已经对不上就别复制了，写也写不进去。
+			if cur.Revision != expected {
+				return store.AssetWrite{}, domain.ErrRevisionConflict
+			}
+			// 复制并改写，记下结果，写失败要回收。
+			adopted, err = s.copyPersonalDeps(ctx, acc, cur.Deps, body, resolved)
+			// 复制不了就整份依赖不改，已复制的里面回收过了。
+			if err != nil {
+				return store.AssetWrite{}, err
+			}
+			// 写入的是改写过的正文和依赖。
+			body, resolved = adopted.content, adopted.deps
+		}
 		// 拼出本次要写入的内容，没通过的字段不改。
-		return store.AssetWrite{Name: cur.Name, Digest: cur.Digest, Copyable: cur.Copyable, Status: cur.Status, Deps: copyDeps(deps), KeepContent: true}, nil
+		write := store.AssetWrite{Name: cur.Name, Digest: cur.Digest, Copyable: cur.Copyable, Status: cur.Status, Deps: copyDeps(resolved), KeepContent: true}
+		// 服务端改写过正文才写正文，否则正文和摘要都不动。
+		if !bytes.Equal(body, opened.Content) {
+			// 改写过，换成新正文。
+			write.KeepContent = false
+			// 写入改写后的正文。
+			write.Content = body
+			// 摘要跟着新正文算。
+			write.Digest = digest.Sum(body)
+			// 调用方手里的正文旧了，回包要带上；这份从库里读的，包角几何要遮。
+			adopted.content, adopted.rewritten = contenttpl.MaskCornerGeometry(body), true
+		}
+		return write, nil
 	})
+	// 没写成就回收刚复制的工艺。
+	if err != nil {
+		// 回收失败不盖住真因。
+		s.recyclePersonalCopies(ctx, acc, adopted.made)
+		return Asset{}, err
+	}
+	// 把改写后的正文和新工艺告诉调用方。
+	return adopted.stamp(row), nil
 }

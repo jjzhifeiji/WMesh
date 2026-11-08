@@ -33,6 +33,17 @@ export type Asset = {
   deps: AssetDep[]; // 工艺必须空
   createdAt: string; // 创建时间
   updatedAt: string; // 最近升高修订的时间
+  content?: string; // 保存厂级工程时服务端改写过的正文；没改写不带
+  personalCopies?: PersonalCopy[]; // 保存厂级工程时新复制出的厂级工艺；没复制不带
+};
+
+// 保存厂级工程时，引用的个人工艺被复制成的那条厂级工艺。
+export type PersonalCopy = {
+  sourceId: string; // 被复制的个人工艺身份
+  id: string; // 新厂级工艺身份
+  code: string; // 新厂级工艺编号
+  name: string; // 新厂级工艺显示名
+  revision: number; // 新厂级工艺修订
 };
 
 export type CreateAssetInput = {
@@ -101,8 +112,12 @@ export function useCopyFSNode() {
   return useFSMutation((input: { id: string; parentId: string }) => http.post<FSNode>(fpath(`/fs/${input.id}/copy`), { parentId: input.parentId }));
 }
 
+// 删文件可带当前修订（别人刚改过回冲突）；只给节点 ID 时照旧删，文件夹不看修订。
 export function useDeleteFSNode() {
-  return useFSMutation((id: string) => http.post(fpath(`/fs/${id}/delete`)));
+  return useFSMutation((input: string | { id: string; expected?: number }) => {
+    const { id, expected } = typeof input === "string" ? { id: input, expected: undefined } : input;
+    return http.post(fpath(`/fs/${id}/delete`), expected ? { expected } : undefined);
+  });
 }
 
 export const assetKeys = {
@@ -186,8 +201,11 @@ export function useEnableAsset() {
   );
 }
 
+// 删除也带当前修订，别人刚改过回冲突，提示刷新后再删。
 export function useDeleteAsset() {
-  return useAssetMutation((id: string) => http.post(fpath(`/assets/${id}/delete`)));
+  return useAssetMutation((input: { id: string; expected: number }) =>
+    http.post(fpath(`/assets/${input.id}/delete`), { expected: input.expected }),
+  );
 }
 
 // 升档：复制一份到所选厂级文件夹，落成草稿；每次都另起一份。

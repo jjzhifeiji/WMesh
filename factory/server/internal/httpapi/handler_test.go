@@ -530,8 +530,24 @@ func TestFactoryHTTP(t *testing.T) {
 		// 与预期不符就停测，避免后面连环误判。
 		t.Fatalf("promote again %d %s", code, body)
 	}
+	// 读出被引用工艺的当前修订，删除要带上它。
+	code, body = do(t, srv, "GET", base+"/assets/"+pid, tok, "")
+	// 读不到则本测失败。
+	if code != http.StatusOK {
+		// 与预期不符就停测，避免后面连环误判。
+		t.Fatalf("get referenced %d %s", code, body)
+	}
+	// 记下当前修订。
+	pidRev := gjson(t, body, "revision")
+	// 不带期望修订的删除按修订对不上拒绝，原件不动（D-44）。
+	code, body = do(t, srv, "POST", base+"/assets/"+pid+"/delete", tok, `{"expected":99}`)
+	// 不是修订冲突则失败。
+	if code != http.StatusConflict || gjson(t, body, "error") != "revision does not match" {
+		// 与预期不符就停测，避免后面连环误判。
+		t.Fatalf("delete stale %d %s", code, body)
+	}
 	// 删除对象，仍被引用时应当冲突。
-	code, body = do(t, srv, "POST", base+"/assets/"+pid+"/delete", tok, "")
+	code, body = do(t, srv, "POST", base+"/assets/"+pid+"/delete", tok, `{"expected":`+pidRev+`}`)
 	// 不是冲突，或正文与预期不符则失败。
 	if code != http.StatusConflict || gjson(t, body, "error") != "still referenced" {
 		// 与预期不符就停测，避免后面连环误判。
@@ -546,8 +562,8 @@ func TestFactoryHTTP(t *testing.T) {
 	}
 	// 从回包取出字段，供下一步继续使用。
 	dropID := gjson(t, body, "id")
-	// 删除对象，仍被引用时应当冲突。
-	code, body = do(t, srv, "POST", base+"/assets/"+dropID+"/delete", tok, "")
+	// 新建的草稿是修订 1，带上它删除。
+	code, body = do(t, srv, "POST", base+"/assets/"+dropID+"/delete", tok, `{"expected":1}`)
 	// 不是成功则本测失败。
 	if code != http.StatusOK {
 		// 与预期不符就停测，避免后面连环误判。

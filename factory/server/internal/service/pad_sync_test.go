@@ -289,23 +289,15 @@ func TestPadPinnedPersonalProcess(t *testing.T) {
 	}
 	// 工程正文引用这份个人工艺，建工程时据此钉依赖。
 	body := []byte(`[{"name":"w","processId":"` + pinned.ID.String() + `"}]`)
-	// 超管建厂级工程钉住 pe 的个人工艺，超管看得到别人的个人级。
-	proj, err := fac.CreateFactoryProject(ctx, sa, direct, "钉个人工艺的工程", body, nil)
+	// 保存入口已不留个人工艺（D-101），这里验的是修复前留下的存量：直接落库造一份钉着 pe 个人工艺的厂级工程。
+	proj, err := fac.Store().InsertGovernedAssetInto(ctx, factory.Asset{
+		Kind: factory.KindProject, Level: factory.AssetLevelFactory, Name: "钉个人工艺的工程", Status: factory.AssetAvailable, Copyable: true, WeldKind: "single",
+		Content: body, Digest: digest.Sum(body), CreatorID: pe.acc.ID,
+		Deps: []factory.AssetDep{{ID: pinned.ID, Revision: pinned.Revision, Digest: pinned.Digest}},
+	}, uuid.Nil, false)
 	// 建工程失败就停，否则后面没有可靠结果。
 	if err != nil {
 		// 把建工程的错误打出来并停住，避免继续往下验。
-		t.Fatal(err)
-	}
-	// 依赖里应正好是那份个人工艺，没钉上则后面断言不成立。
-	if len(proj.Deps) != 1 || proj.Deps[0].ID != pinned.ID {
-		// 依赖没钉上这份个人工艺，用例前提不成立。
-		t.Fatalf("deps %+v", proj.Deps)
-	}
-	// 发布当前修订，失败说明状态不允许发布。
-	proj, err = fac.PublishAsset(ctx, sa, proj.ID, proj.Revision)
-	// 发布失败就停，否则后面没有可靠结果。
-	if err != nil {
-		// 把发布的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
 
@@ -403,7 +395,7 @@ func TestPadPinnedPersonalProcess(t *testing.T) {
 	padSyncPullAll(t, ctx, fac, peSess.Token, peBox)
 }
 
-// 云端停用并撤回的平台工艺：厂级工程钉住的仍按钉死修订给示教器，没人钉的不给。
+// 云端停用并撤回的平台工艺：厂级工程依赖的仍给示教器，给已收最高修订而不是声明时的旧修订；没人依赖的不给。
 func TestPadPinnedPlatformProcess(t *testing.T) {
 	// 准备无取消的上下文，后面每次调用都挂在上面。
 	ctx := context.Background()
@@ -428,7 +420,7 @@ func TestPadPinnedPlatformProcess(t *testing.T) {
 	// 记下本厂标识，下发的快照要指到这家厂。
 	fid := seed.ID
 
-	// 平台工艺 P 第一修订的正文，钉死后拿它对照。
+	// 平台工艺 P 第一修订的正文，工程声明依赖时就是这一版。
 	pBody := []byte(`{"current":150}`)
 	// 组一份可用的平台工艺 P，后面被工程钉住。
 	p := factory.ClosureMember{
@@ -464,13 +456,11 @@ func TestPadPinnedPlatformProcess(t *testing.T) {
 		// 把建工程的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
-	// 依赖应正好钉在 P 的第一修订，没钉上则后面断言不成立。
+	// 依赖应记下 P 的第一修订，没记上则后面断言不成立。
 	if len(proj.Deps) != 1 || proj.Deps[0].ID != p.ID || proj.Deps[0].Revision != 1 || !bytes.Equal(proj.Deps[0].Digest, p.Digest) {
 		// 依赖没钉上这份平台工艺，用例前提不成立。
 		t.Fatalf("deps %+v", proj.Deps)
 	}
-	// 记下钉死的那一条，后面拿来比对修订和摘要。
-	pinned := proj.Deps[0]
 	// 发布当前修订，失败说明状态不允许发布。
 	proj, err = fac.PublishAsset(ctx, sa, proj.ID, proj.Revision)
 	// 发布失败就停，否则后面没有可靠结果。
@@ -485,7 +475,7 @@ func TestPadPinnedPlatformProcess(t *testing.T) {
 	pOff.Revision = 2
 	// 标成停用，厂端列表不再展示。
 	pOff.Status = factory.AssetDisabled
-	// 换一份正文，免得拉到停用版也能对上摘要。
+	// 换一份正文，免得拉到旧版也能对上摘要。
 	pOff.Content = []byte(`{"current":999}`)
 	// 摘要跟着新正文重算。
 	pOff.Digest = digest.Sum(pOff.Content)
@@ -508,11 +498,11 @@ func TestPadPinnedPlatformProcess(t *testing.T) {
 
 	// op 用平板登录，领人钥和会话。
 	sess := padSyncLogin(t, ctx, fac, "op", "op-pass")
-	// 只停用未撤回时，清单里的 P 应是钉死修订。
+	// 只停用未撤回时，清单里的 P 应是已收最高修订。
 	ref, ok := padInboxRef(padSyncInbox(t, ctx, fac, sess.Token), p.ID)
-	// 清单缺了 P 或修订不是钉死那版，示教器就会删掉或拿错。
-	if !ok || ref.Revision != pinned.Revision {
-		// 停用后钉住的 P 没按钉死修订列出。
+	// 清单缺了 P 或退回声明时的旧修订，示教器就会删掉或和别的设备不一致。
+	if !ok || ref.Revision != pOff.Revision {
+		// 停用后依赖的 P 没按最高修订列出。
 		t.Fatalf("disabled pinned ref %+v %v", ref, ok)
 	}
 	// 撤回下发失败就停，否则后面没有可靠结果。
@@ -525,9 +515,9 @@ func TestPadPinnedPlatformProcess(t *testing.T) {
 	box := padSyncInbox(t, ctx, fac, sess.Token)
 	// 取出清单里 P 的那一条。
 	ref, ok = padInboxRef(box, p.ID)
-	// 清单缺了 P 或修订不是钉死那版，工程在现场就没法焊。
-	if !ok || ref.Revision != pinned.Revision || ref.Level != factory.AssetLevelPlatform {
-		// 撤回后钉住的 P 没按钉死修订列出。
+	// 清单缺了 P 工程在现场就没法焊；退回旧修订则撤回会改变焊接参数。
+	if !ok || ref.Revision != pOff.Revision || ref.Level != factory.AssetLevelPlatform {
+		// 撤回后依赖的 P 没按最高修订列出。
 		t.Fatalf("retracted pinned ref %+v %v", ref, ok)
 	}
 	// 钉住 P 的工程仍应在清单，没人钉的 Q 不应进来。
@@ -536,7 +526,7 @@ func TestPadPinnedPlatformProcess(t *testing.T) {
 		t.Fatalf("inbox %+v", box.Closures)
 	}
 
-	// 平板拉 P，应拿到钉死修订的过站包。
+	// 平板拉 P，应拿到最高修订的过站包。
 	got, err := fac.PadPullClientClosure(ctx, sess.Token, p.ID)
 	// 拉不到、没封信封或种类不对，说明钉住的 P 没放行。
 	if err != nil || !contentcrypt.IsEnvelope(got.Wrap) || got.Snapshot.Kind != factory.KindProcess || got.Snapshot.AssetID != p.ID {
@@ -557,9 +547,9 @@ func TestPadPinnedPlatformProcess(t *testing.T) {
 	}
 	// 取出唯一的工艺成员。
 	m := opened.Members[0]
-	// 身份、修订、摘要和正文都应是钉死的那一版，不是停用版。
-	if m.ID != p.ID || m.Revision != pinned.Revision || !bytes.Equal(m.Digest, pinned.Digest) || !bytes.Equal(m.Content, pBody) {
-		// 拿到的不是钉死修订，说明退回了最新版。
+	// 身份、修订、摘要和正文都应是已收最高修订，不是工程声明时的旧版。
+	if m.ID != p.ID || m.Revision != pOff.Revision || !bytes.Equal(m.Digest, pOff.Digest) || !bytes.Equal(m.Content, pOff.Content) {
+		// 拿到的不是最高修订，说明退回了声明时的旧版。
 		t.Fatalf("pinned member %s rev=%d digest=%x content=%s", m.ID, m.Revision, m.Digest, m.Content)
 	}
 	// 成员标成停用，示教器工艺列表才不显示它。

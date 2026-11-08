@@ -7,6 +7,7 @@ import { formatTime } from "@/shared/format";
 import { IdText } from "@/shared/ui/IdText";
 import { useConfirmDiscard } from "@/shared/ui/confirmDiscard";
 import { PageHeader } from "@/shared/ui/PageHeader";
+import { QueryErrorAlert } from "@/shared/ui/QueryErrorAlert";
 import { useDirectory } from "@/features/factories/api";
 import { ContentEditor } from "@/features/templates/ContentFields";
 import { badContentJSON, collectProcessIds, defaultValue, projectContentSchema } from "@/features/templates/schema";
@@ -251,6 +252,11 @@ function AssetsBody({ kind }: { kind: AssetKind }) {
   }, [detailing, isProcess, schema, projectTpls.data]);
 
   const openCreate = (parentId?: string) => {
+    // 模版没读到时表单只有裸 JSON 框和默认内容，建出来是空壳，先不让开。
+    if ((isProcess ? processTpl.data : projectTpls.data) === undefined) {
+      message.error(`${isProcess ? "工艺" : "工程"}模版还没读到，暂时不能新建，请稍后重试`);
+      return;
+    }
     form.setFieldsValue({
       content: isProcess && schema ? JSON.stringify(defaultValue(schema)) : "[]",
       weldKind: WELD_SINGLE,
@@ -328,6 +334,10 @@ function AssetsBody({ kind }: { kind: AssetKind }) {
           </Space>
         }
       />
+      {isProcess ? <QueryErrorAlert query={processTpl} what="工艺模版" /> : <QueryErrorAlert query={projectTpls} what="工程模版" />}
+      {/* 工艺列表读不到时工程详情的工艺名、绑工艺的下拉都是空的；名录读不到时升档、下发选不到工厂，都要说清楚。 */}
+      {isProcess ? null : <QueryErrorAlert query={processes} what="工艺列表" />}
+      <QueryErrorAlert query={directory} what="工厂名录" />
       {isProcess ? (
         <Card styles={{ body: { padding: 0 } }}>
           <div style={{ padding: 12, borderBottom: "1px solid #f0f0f0" }}>
@@ -804,7 +814,7 @@ function AssetsBody({ kind }: { kind: AssetKind }) {
         row={editing?.kind === "project" ? editing : null}
         base={editing?.kind === "project" ? editBase : null}
         templates={projectTpls.data ?? []}
-        processes={availableProcesses}
+        processes={processes.data ?? []}
         saving={rename.isPending || updateContent.isPending || setAssetDeps.isPending || setWeldKind.isPending}
         onBaseContent={fillBaseContent}
         onClose={closeEdit}

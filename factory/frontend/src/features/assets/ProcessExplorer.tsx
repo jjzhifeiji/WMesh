@@ -1,6 +1,6 @@
 import { FolderOutlined, FileOutlined } from "@ant-design/icons";
 import { App, Button, Dropdown, Empty, Input, Space, Tree, Typography, type MenuProps, type TreeDataNode } from "antd";
-import { useEffect, useMemo, useRef, useState, type DragEvent, type CSSProperties, type KeyboardEvent, type MouseEvent, type PointerEvent, type ReactNode } from "react";
+import { useEffect, useEffectEvent, useMemo, useRef, useState, type DragEvent, type CSSProperties, type KeyboardEvent, type MouseEvent, type PointerEvent, type ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { errorMessage } from "@/shared/api/client";
 import { weldKindLabel, WELD_SINGLE } from "@/features/templates/projectKinds";
@@ -67,7 +67,7 @@ export function fsFolderOptions(nodes: FSNode[], allow?: (n: FSNode) => boolean)
   return nodes
     .filter((n) => n.nodeKind === "folder" && (!allow || allow(n)))
     .map((n) => ({ value: n.id, label: fsFolderPath(n, byId) }))
-    .toSorted((a, b) => a.label.localeCompare(b.label, "zh"));
+    .sort((a, b) => a.label.localeCompare(b.label, "zh"));
 }
 
 function sameTree(a: FSNode, b: FSNode) {
@@ -321,7 +321,7 @@ export function ProcessExplorer({
     if (!current) return none;
     return nodes
       .filter((n) => n.parentId === current.id)
-      .toSorted((a, b) => {
+      .sort((a, b) => {
         if (a.nodeKind !== b.nodeKind) return a.nodeKind === "folder" ? -1 : 1;
         return fsNodeTitle(a).localeCompare(fsNodeTitle(b), "zh");
       });
@@ -333,7 +333,7 @@ export function ProcessExplorer({
     if (!searching) return none;
     return nodes
       .filter((n) => matchesFSSearch(n, needle, weldFilter))
-      .toSorted((a, b) => {
+      .sort((a, b) => {
         if (a.nodeKind !== b.nodeKind) return a.nodeKind === "folder" ? -1 : 1;
         return fsNodeTitle(a).localeCompare(fsNodeTitle(b), "zh");
       });
@@ -358,17 +358,23 @@ export function ProcessExplorer({
     } else pickFile(n);
   };
 
+  // 换目录、换搜索后列表重排，选中行在列表里就滚到可见处。
   useEffect(() => {
-    if (!listFocusId) return;
+    if (!listFocusId || !shown.some((n) => n.id === listFocusId)) return;
     const el = document.querySelector(`.fs-list-body [data-fs-id="${listFocusId}"]`);
     el?.scrollIntoView({ block: "nearest" });
-  }, [listFocusId, current, searching]);
+  }, [listFocusId, shown]);
 
+  // 选中行已不在当前列表（被删、被搬走、搜索换了）就在渲染时清掉选中，记一次丢失；提交后再告诉上层清详情。
+  const [lostFocus, setLostFocus] = useState(0);
+  if (listFocusId && !shown.some((n) => n.id === listFocusId)) {
+    setListFocusId(null);
+    setLostFocus((k) => k + 1);
+  }
+  const clearDetail = useEffectEvent(() => onSelectFile(null));
   useEffect(() => {
-    if (!listFocusId) return;
-    if (shown.some((n) => n.id === listFocusId)) return;
-    clearFile();
-  }, [shown, listFocusId]);
+    if (lostFocus) clearDetail();
+  }, [lostFocus]);
 
   const onErr = (err: unknown) => message.error(errorMessage(err));
   const allowFile = (n: FSNode) => Boolean((canCreateFile ?? writable)(n));
@@ -407,7 +413,8 @@ export function ProcessExplorer({
       content: n.nodeKind === "folder" ? `文件夹里的${noun}也会删掉。` : noun === "工艺" ? "删除后不能恢复。若已被工程依赖会拒绝。" : "删除后不能恢复。",
       okButtonProps: { danger: true },
       onOk: () =>
-        remove.mutate(n.id, {
+        // 删文件带上页面看到的修订，别人刚改过就回修订冲突，不删掉新版（D-44）。
+        remove.mutate(n.nodeKind === "file" && n.asset ? { id: n.id, expected: n.asset.revision } : n.id, {
           onError: onErr,
           onSuccess: () => {
             message.success("已删除");

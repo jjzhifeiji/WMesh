@@ -4,6 +4,7 @@ import { useMe } from "@/features/auth/api";
 import { errorMessage } from "@/shared/api/client";
 import { IdText } from "@/shared/ui/IdText";
 import { PageHeader } from "@/shared/ui/PageHeader";
+import { QueryErrorAlert, readFailed } from "@/shared/ui/QueryErrorAlert";
 import { useChangePassword, type ChangePasswordInput } from "./api";
 
 type FormValues = ChangePasswordInput & { confirm: string };
@@ -20,14 +21,17 @@ export function AccountPage() {
       <PageHeader title="我的账号" description="登录名和密码都可以变，稳定身份永远不变。WAN 不代管厂内密码。" />
       <Row gutter={[16, 16]}>
         <Col xs={24} lg={14}>
-          <Card title="基本信息" loading={me.isLoading}>
-            <Descriptions
-              column={1}
-              items={[
-                { key: "login", label: "登录名", children: me.data?.loginName },
-                { key: "id", label: "稳定身份", children: me.data ? <IdText id={me.data.id} /> : null },
-              ]}
-            />
+          <Card title="基本信息" loading={me.isLoading && !readFailed(me)}>
+            <QueryErrorAlert query={me} what="账号信息" />
+            {readFailed(me) ? null : (
+              <Descriptions
+                column={1}
+                items={[
+                  { key: "login", label: "登录名", children: me.data?.loginName },
+                  { key: "id", label: "稳定身份", children: me.data ? <IdText id={me.data.id} /> : null },
+                ]}
+              />
+            )}
           </Card>
         </Col>
         <Col xs={24} lg={10}>

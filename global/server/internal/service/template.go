@@ -590,6 +590,8 @@ func (s *Templates) CreateProjectTemplate(ctx context.Context, token string, id 
 	}
 	// 通知厂端去拉模版。
 	s.notifyTemplate(ctx, row.ID, row.Kind, row.Revision)
+	// 再补发工程模版全集，按原身份补建、之前被厂端撤下的那份据此恢复。
+	s.notifyProjectTemplateSet(ctx)
 	return row, nil
 }
 

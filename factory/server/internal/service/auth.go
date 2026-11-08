@@ -202,22 +202,34 @@ func (s *Auth) Logout(ctx context.Context, token string) error {
 
 // RequireActive 校验会话后重查账号状态；停用或待启用的旧会话也不能再做新操作。
 func (s *kernel) RequireActive(ctx context.Context, token string) (Account, error) {
+	// 租约到期也照样拦，和其它受保护操作同一道门
+	return s.requireSession(ctx, token, s.requireFactoryOpen)
+}
+
+// RequireSignedIn 只核会话、厂停用注销和账号状态，不看内容租约；给不碰正文的通道现状和本人信息用，
+// 租约没领到时网页仍能显示断线横幅和登录人。
+func (s *kernel) RequireSignedIn(ctx context.Context, token string) (Account, error) {
+	// 租约这道门不拦，停用注销照拦
+	return s.requireSession(ctx, token, s.requireFactoryNotClosed)
+}
+
+// requireSession 核会话、厂况和账号状态；厂况由调用方指定查到哪一层。
+// 只有令牌对不上或已过期才回未登录，库读失败照实交回，免得把在线的人踢下线。
+func (s *kernel) requireSession(ctx context.Context, token string, gate func(context.Context) error) (Account, error) {
 	// 令牌只比哈希；过期、停用、待启用都拒绝，会话不当权限缓存。
 	sess, err := s.store.SessionByTokenHash(ctx, secret.TokenHash(token))
 	// 令牌摘要失败，不能对上会话
 	if err != nil {
-		// 会话过期单独拒绝，并准备记审计
-		if errors.Is(err, domain.ErrSessionExpired) {
-			// 会话已经过期，记下续接会话被拒绝，写失败不改变结果
-			_ = s.audit(ctx, nil, nil, "protect", s.store.FactoryID().String(), audit.Deny)
-			return Account{}, domain.ErrUnauthorized
+		// 没有这条会话或已过期才算未登录；库连不上等内部故障照实交回，回 5xx 而不是 401
+		if !errors.Is(err, domain.ErrSessionExpired) && !errors.Is(err, domain.ErrNotFound) {
+			return Account{}, err
 		}
 		// 记下续接会话被拒绝，写失败不改变结果
 		_ = s.audit(ctx, nil, nil, "protect", s.store.FactoryID().String(), audit.Deny)
 		return Account{}, domain.ErrUnauthorized
 	}
 	// 厂已停用、注销或租约到期，拒绝本次
-	if err := s.requireFactoryOpen(ctx); err != nil {
+	if err := gate(ctx); err != nil {
 		// 厂已停用、注销或租约到期，记下续接会话被拒绝，写失败不改变结果
 		_ = s.audit(ctx, &sess.PersonID, nil, "protect", s.store.FactoryID().String(), audit.Deny)
 		return Account{}, err
@@ -326,6 +338,8 @@ func (s *Auth) DisableAccount(ctx context.Context, token string, targetID uuid.U
 		_ = s.audit(ctx, &acc.ID, nil, "disable_account", targetID.String(), audit.Deny)
 		return err
 	}
+	// 会话已清，立刻断开他在线的示教器，重连被拒即登出，不等下一次访问厂服
+	s.dropApp(targetID)
 	// 停用账号成功后记审计，再把结果交回
 	return s.audit(ctx, &acc.ID, nil, "disable_account", targetID.String(), audit.Allow)
 }
@@ -381,6 +395,8 @@ func (s *Auth) ResetPassword(ctx context.Context, token string, targetID uuid.UU
 	if err := s.store.DeleteSessionsForPerson(ctx, p.ID); err != nil {
 		return Account{}, err
 	}
+	// 会话已清，立刻断开他在线的示教器，重连被拒即登出，不等下一次访问厂服
+	s.dropApp(p.ID)
 	// 按稳定身份读人员，改名也不变
 	p, err = s.store.PersonByID(ctx, p.ID)
 	// 人员不存在，拒绝这次变更

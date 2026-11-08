@@ -1,7 +1,10 @@
 package store
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -29,21 +32,31 @@ const (
 	WeldMaxLengthMM    = 10_000_000   // 单条焊长上限毫米，即 10 公里
 	WeldMaxDurationSec = 86_400       // 单条时长上限秒，即一整天
 	WeldMaxProjectName = 200          // 工程名去首尾空白后的字数上限，和 WAN 一致
+	WeldMaxProcesses   = 512          // 一条焊次最多记几条工艺，多层和 T 排也到不了这么多
 )
+
+// WeldProcessUse 是一次焊接用到的一条工艺：只有身份、修订和摘要，不含参数值。
+type WeldProcessUse struct {
+	ProcessID uuid.UUID `json:"processId"` // 工艺稳定身份
+	Revision  int64     `json:"revision"`  // 开焊时示教器本机的修订，可能落后于实际下发，以摘要为准
+	Digest    []byte    `json:"digest"`    // 正文 SHA-256，和工程依赖同一算法
+}
 
 // WeldFact 是一次起停焊的运行事实：只绑人，组织按人现在的所属组织算；工程名按当时快照。
 type WeldFact struct {
-	ID          uuid.UUID  // 产生端事实身份
-	CreatorID   uuid.UUID  // 当时登录人
-	FactoryID   uuid.UUID  // 所属工厂
-	ClientID    *uuid.UUID // 当时 Client；未匹配可空
-	ProjectID   *uuid.UUID // 当时工程身份；未打开可空
-	ProjectName string     // 当时工程名快照
-	WeldKind    string     // single / multilayer / tbar / 空
-	LengthMM    int64      // 本段焊长毫米
-	DurationSec int64      // 本段时长秒
-	OccurredAt  time.Time  // 焊完时间
-	CreatedAt   time.Time  // 首次汇聚时间
+	ID              uuid.UUID        // 产生端事实身份
+	CreatorID       uuid.UUID        // 当时登录人
+	FactoryID       uuid.UUID        // 所属工厂
+	ClientID        *uuid.UUID       // 当时 Client；未匹配可空
+	ProjectID       *uuid.UUID       // 当时工程身份；未打开可空
+	ProjectName     string           // 当时工程名快照
+	WeldKind        string           // single / multilayer / tbar / 空
+	LengthMM        int64            // 本段焊长毫米
+	DurationSec     int64            // 本段时长秒
+	OccurredAt      time.Time        // 焊完时间
+	CreatedAt       time.Time        // 首次汇聚时间
+	ProjectRevision int64            // 开焊时工程修订；旧行和没记的为零
+	Processes       []WeldProcessUse // 这次用到的工艺；旧行和没记的为空
 }
 
 // WeldFactView 是带人名和人现在所属组织的焊事实，供报表和下钻。
@@ -128,6 +141,9 @@ type weldFactRow struct {
 	DurationSec int64      `gorm:"column:duration_sec;not null"` // 时长秒
 	OccurredAt  time.Time  `gorm:"not null"`                     // 焊完时间
 	CreatedAt   time.Time  `gorm:"not null"`                     // 首次汇聚时间
+	// 下面两列旧行为空：没记到就落空值，不落零和空数组。
+	ProjectRevision *int64 `gorm:"column:project_revision"`     // 开焊时工程修订
+	Processes       []byte `gorm:"column:processes;type:jsonb"` // 工艺清单 JSON
 }
 
 // 指定落库表名，避免查询时按类型名去猜。
@@ -148,6 +164,9 @@ type weldFactScan struct {
 	DurationSec int64      `gorm:"column:duration_sec"` // 时长秒
 	OccurredAt  time.Time  `gorm:"column:occurred_at"`  // 焊完时间
 	CreatedAt   time.Time  `gorm:"column:created_at"`   // 汇聚时间
+	// 工艺追溯两列，旧行为空。
+	ProjectRevision *int64 `gorm:"column:project_revision"` // 开焊时工程修订
+	Processes       []byte `gorm:"column:processes"`        // 工艺清单 JSON
 }
 
 // 按维度汇总焊事实的扫描行；这一维没选的列留零值。
@@ -192,6 +211,23 @@ func ValidWeldAmounts(lengthMM, durationSec int64) bool {
 	return lengthMM >= 0 && durationSec >= 0 && lengthMM <= WeldMaxLengthMM && durationSec <= WeldMaxDurationSec
 }
 
+// ValidWeldProcesses 工程修订和工艺清单是否合规：修订不为负，条数不超上限，每条身份、修订、摘要都齐。
+// 不查工艺认不认识：焊完才上报，工艺可能已删，也可能是本机改过还没推的那一版。
+func ValidWeldProcesses(projectRevision int64, uses []WeldProcessUse) bool {
+	// 修订为负或条数离谱都拒收，免得撑大这一行。
+	if projectRevision < 0 || len(uses) > WeldMaxProcesses {
+		return false
+	}
+	// 逐条核对，一条不齐这条焊次就拒收。
+	for _, u := range uses {
+		// 身份空、修订为负或摘要不是 32 字节都不算一条记录。
+		if u.ProcessID == uuid.Nil || u.Revision < 0 || len(u.Digest) != sha256.Size {
+			return false
+		}
+	}
+	return true
+}
+
 // ValidWeldProjectName 工程名去首尾空白后是否不超过上限。
 func ValidWeldProjectName(name string) bool {
 	// 按 WAN 口径先去空白再数字数，超长 WAN 会整批拒收
@@ -227,6 +263,10 @@ func (s *Store) MergeWeldFact(ctx context.Context, in WeldFact) (WeldFact, error
 	if !ValidWeldProjectName(in.ProjectName) {
 		return WeldFact{}, domain.ErrInvalidName
 	}
+	// 工艺清单不合规就拒收，这条留在本机。
+	if !ValidWeldProcesses(in.ProjectRevision, in.Processes) {
+		return WeldFact{}, domain.ErrForbidden
+	}
 	// 先按身份读事实，结果留给紧跟着的判断。
 	got, err := s.WeldFactByID(ctx, in.ID)
 	// 已经查到就按现有结果核对，不再插入。
@@ -248,6 +288,12 @@ func (s *Store) MergeWeldFact(ctx context.Context, in WeldFact) (WeldFact, error
 		// 取当前时刻，时间列和租约用同一个时钟。
 		occurred = time.Now().UTC()
 	}
+	// 工艺清单收成 JSON，没记到的留空值。
+	uses, err := marshalWeldProcesses(in.Processes)
+	// 收不成就停，避免带着错误继续。
+	if err != nil {
+		return WeldFact{}, err
+	}
 	// 按入参组装要写入的行。
 	row := weldFactRow{
 		ID:          in.ID,
@@ -261,6 +307,14 @@ func (s *Store) MergeWeldFact(ctx context.Context, in WeldFact) (WeldFact, error
 		DurationSec: in.DurationSec,
 		OccurredAt:  occurred,
 		CreatedAt:   time.Now().UTC(),
+		Processes:   uses,
+	}
+	// 工程修订只有记到才落，旧口径留空值。
+	if in.ProjectRevision > 0 {
+		// 指向入参的一份拷贝，不和调用方共用。
+		rev := in.ProjectRevision
+		// 记到了才落这一列。
+		row.ProjectRevision = &rev
 	}
 	// 写入一行失败就停，避免带着错误继续。
 	if err := s.db.WithContext(ctx).Create(&row).Error; err != nil {
@@ -400,7 +454,7 @@ func weldFactWhere(q *gorm.DB, f WeldFactFilter) *gorm.DB {
 func (s *Store) ListWeldFacts(ctx context.Context, f WeldFactFilter) ([]WeldFactView, error) {
 	// 补上筛选或限定列，避免动到不该动的字段。
 	q := s.db.WithContext(ctx).Table(weldFactsWithOrg).
-		Select("f.id, f.creator_id, p.login_name, p.display_name, f.org_unit_id, f.client_id, f.project_id, f.project_name, f.weld_kind, f.length_mm, f.duration_sec, f.occurred_at, f.created_at").
+		Select("f.id, f.creator_id, p.login_name, p.display_name, f.org_unit_id, f.client_id, f.project_id, f.project_name, f.weld_kind, f.length_mm, f.duration_sec, f.occurred_at, f.created_at, f.project_revision, f.processes").
 		Joins("JOIN people p ON p.id = f.creator_id").
 		Order("f.occurred_at DESC, f.id DESC")
 	// 拼上查询窗和可见范围，分页前先裁。
@@ -428,17 +482,19 @@ func (s *Store) ListWeldFacts(ctx context.Context, f WeldFactFilter) ([]WeldFact
 		// 收进结果，保持原来的先后顺序。
 		out = append(out, WeldFactView{
 			WeldFact: WeldFact{
-				ID:          r.ID,
-				CreatorID:   r.CreatorID,
-				FactoryID:   s.factoryID,
-				ClientID:    r.ClientID,
-				ProjectID:   r.ProjectID,
-				ProjectName: r.ProjectName,
-				WeldKind:    r.WeldKind,
-				LengthMM:    r.LengthMM,
-				DurationSec: r.DurationSec,
-				OccurredAt:  r.OccurredAt,
-				CreatedAt:   r.CreatedAt,
+				ID:              r.ID,
+				CreatorID:       r.CreatorID,
+				FactoryID:       s.factoryID,
+				ClientID:        r.ClientID,
+				ProjectID:       r.ProjectID,
+				ProjectName:     r.ProjectName,
+				WeldKind:        r.WeldKind,
+				LengthMM:        r.LengthMM,
+				DurationSec:     r.DurationSec,
+				OccurredAt:      r.OccurredAt,
+				CreatedAt:       r.CreatedAt,
+				ProjectRevision: revisionValue(r.ProjectRevision),
+				Processes:       unmarshalWeldProcesses(r.Processes),
 			},
 			LoginName:   r.LoginName,
 			DisplayName: r.DisplayName,
@@ -552,18 +608,70 @@ func weldReportColumns(group string) (string, string, bool) {
 // weldFromRow 把库行收成焊事实视图。
 func weldFromRow(row weldFactRow) WeldFact {
 	return WeldFact{
-		ID:          row.ID,
-		CreatorID:   row.CreatorID,
-		FactoryID:   row.FactoryID,
-		ClientID:    row.ClientID,
-		ProjectID:   row.ProjectID,
-		ProjectName: row.ProjectName,
-		WeldKind:    row.WeldKind,
-		LengthMM:    row.LengthMM,
-		DurationSec: row.DurationSec,
-		OccurredAt:  row.OccurredAt,
-		CreatedAt:   row.CreatedAt,
+		ID:              row.ID,
+		CreatorID:       row.CreatorID,
+		FactoryID:       row.FactoryID,
+		ClientID:        row.ClientID,
+		ProjectID:       row.ProjectID,
+		ProjectName:     row.ProjectName,
+		WeldKind:        row.WeldKind,
+		LengthMM:        row.LengthMM,
+		DurationSec:     row.DurationSec,
+		OccurredAt:      row.OccurredAt,
+		CreatedAt:       row.CreatedAt,
+		ProjectRevision: revisionValue(row.ProjectRevision),
+		Processes:       unmarshalWeldProcesses(row.Processes),
 	}
+}
+
+// revisionValue 可空修订取值；旧行为空当零。
+func revisionValue(p *int64) int64 {
+	// 旧行没有这一列的值。
+	if p == nil {
+		return 0
+	}
+	return *p
+}
+
+// marshalWeldProcesses 工艺清单收成 JSON；没记到的交回空，落库是空值，和旧行同一口径。
+func marshalWeldProcesses(uses []WeldProcessUse) ([]byte, error) {
+	// 没记到就不落空数组。
+	if len(uses) == 0 {
+		return nil, nil
+	}
+	// 摘要按标准 Base64 落，和接口口径一致。
+	return json.Marshal(uses)
+}
+
+// unmarshalWeldProcesses 读工艺清单；空值和解不开都当没记到，追溯字段不挡报表。
+func unmarshalWeldProcesses(raw []byte) []WeldProcessUse {
+	// 旧行是空值，直接当没记到。
+	if len(raw) == 0 {
+		return nil
+	}
+	// 准备承接解开的清单。
+	var out []WeldProcessUse
+	// 解不开也不报错，整页明细不能因一行坏值读不出来。
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil
+	}
+	return out
+}
+
+// sameWeldProcesses 两份工艺清单是否逐条相同；先后也算，同一条焊次重发是同一份快照。
+func sameWeldProcesses(a, b []WeldProcessUse) bool {
+	// 条数不同就不是同一份。
+	if len(a) != len(b) {
+		return false
+	}
+	// 逐条比身份、修订和摘要。
+	for i := range a {
+		// 有一项对不上就不是同一份。
+		if a[i].ProcessID != b[i].ProcessID || a[i].Revision != b[i].Revision || !bytes.Equal(a[i].Digest, b[i].Digest) {
+			return false
+		}
+	}
+	return true
 }
 
 // weldFactSame 已有行与待汇聚是否同一份，不同则拒绝覆盖。
@@ -582,6 +690,10 @@ func weldFactSame(got WeldFact, in WeldFact) bool {
 	}
 	// 焊长或时长不同就不能当成同一份。
 	if got.LengthMM != in.LengthMM || got.DurationSec != in.DurationSec {
+		return false
+	}
+	// 工程修订或工艺清单不同也不能覆盖，幂等口径和其它字段一样。
+	if got.ProjectRevision != in.ProjectRevision || !sameWeldProcesses(got.Processes, in.Processes) {
 		return false
 	}
 	// 还没有更新时间就补上现在，避免零时间。

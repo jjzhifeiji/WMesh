@@ -29,3 +29,9 @@ scripts/testenv/*.local.json
 # 测试脚本的临时状态、令牌缓存和日志
 docs/测试/报告/脚本/.*
 __pycache__/
+
+# 本机测试 Loki 的日志数据（scripts/testenv/loki/data）
+scripts/testenv/loki/data/
+
+# 第二轮测试报告（截图、脚本输出、测试包），只留本机
+docs/测试/报告-第二轮/

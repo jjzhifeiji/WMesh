@@ -64,6 +64,8 @@ var (
 	ErrWANSignatureRejected  = errors.New("wan rejected factory signature")         // WAN 不认本厂签名：钟偏出时间窗或厂钥没登记
 	ErrWrongCurrentPassword  = errors.New("wrong current password")                 // 改密时当前密码没带或不对，会话仍有效
 	ErrWeakPassword          = errors.New("password too short")                     // 自设密码不足 8 位，和网页校验同一口径
+	ErrNameTooLong           = errors.New("name too long")                          // 工艺/工程名超过焊次可收的字数上限
+	ErrSessionClientMismatch = errors.New("session is bound to another client")     // 本次示教器登录钉的不是这台设备，换设备须重新登录（D-59）
 )
 
 // known 列出本包全部业务哨兵，Known 只认这些；新增哨兵须一并补进来，测试会核对。
@@ -80,7 +82,7 @@ var known = []error{
 	ErrClientCacheFull, ErrSyncRetry, ErrInvalidEnrollment, ErrWANUnreachable, ErrFactoryDisabled,
 	ErrFactoryRetired, ErrTemplateInvalid, ErrProjectItemTemplate, ErrAssetCodeMissing, ErrAssetCodeConflict,
 	ErrOriginCodeExhausted, ErrSoftwareInstallFailed, ErrSoftwareApplying, ErrTooManyAttempts, ErrTooManyRequests,
-	ErrWANSignatureRejected, ErrWrongCurrentPassword, ErrWeakPassword,
+	ErrWANSignatureRejected, ErrWrongCurrentPassword, ErrWeakPassword, ErrNameTooLong, ErrSessionClientMismatch,
 }
 
 // Known 交回 err 包着的业务哨兵，不是业务错误就交回 nil。

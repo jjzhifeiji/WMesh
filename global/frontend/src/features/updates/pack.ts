@@ -140,7 +140,7 @@ export async function planDistPublish(files: Iterable<File>, published: Software
 
   const latest = new Map<SoftwareKind, DistRow>();
   const rows: DistRow[] = [];
-  const sorted = found.toSorted((a, b) => a.kind.localeCompare(b.kind) || b.version - a.version);
+  const sorted = [...found].sort((a, b) => a.kind.localeCompare(b.kind) || b.version - a.version);
   for (const row of sorted) {
     if (row.action === "reject") {
       rows.push(row);
@@ -170,7 +170,7 @@ export async function planDistPublish(files: Iterable<File>, published: Software
     });
   }
 
-  return rows.toSorted((a, b) => a.kind.localeCompare(b.kind) || b.version - a.version);
+  return [...rows].sort((a, b) => a.kind.localeCompare(b.kind) || b.version - a.version);
 }
 
 const hashChunk = 1024 * 1024; // 按 1MiB 读，避免整包一次进内存

@@ -45,6 +45,14 @@ const zh: Record<string, string> = {
   "request body too large": "提交内容太大，超过服务端上限",
   "too many login attempts": "登录尝试太频繁，请稍后再试",
   "too many requests": "请求太频繁，请稍后再试",
+  // 网关或代理回的非 JSON 错误页只有状态文字；连不上由 request 归到 network error。
+  "network error": "连不上服务端，请检查网络后重试",
+  "request failed": "请求失败，请稍后再试",
+  "internal server error": "服务异常，请稍后再试",
+  "bad gateway": "服务暂时不可用，请稍后再试",
+  "service unavailable": "服务暂时不可用，请稍后再试",
+  "gateway timeout": "服务响应超时，请稍后再试",
+  "internal error": "服务异常，请稍后再试",
 };
 
 export function translateError(code: string) {

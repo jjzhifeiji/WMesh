@@ -11,6 +11,7 @@ import (
 
 	"wmesh/factory/internal/platform/audit"
 	"wmesh/factory/internal/platform/domain"
+	"wmesh/factory/internal/platform/secret"
 	"wmesh/factory/internal/store"
 )
 
@@ -55,8 +56,8 @@ func (s *Assets) ListFS(ctx context.Context, token, kind string) ([]FSNodeView, 
 	if err != nil {
 		return nil, err
 	}
-	// 超管或整厂管理员能看见别人的个人树。
-	admin := s.isComputerAdmin(ctx, acc)
+	// 超管能看见别人的个人树；示教器上不给，超管看全部个人件只在网页（口径 K2）。
+	admin := s.isComputerAdmin(ctx, acc) && !s.isAppSession(ctx, token)
 	// 先按节点数准备可见列表，再按人筛。
 	visible := make([]FSNode, 0, len(nodes))
 	// 同事看不到别人的个人树，看不见的丢掉。
@@ -162,8 +163,8 @@ func (s *Assets) CreateFSFolder(ctx context.Context, token string, parentID uuid
 		_ = s.audit(ctx, &acc.ID, nil, "create_fs_folder", name, audit.Deny)
 		return FSNode{}, domain.ErrForbidden
 	}
-	// 这棵树只读或不是主人则记拒绝。
-	if err := s.canWriteFS(ctx, acc, parent); err != nil {
+	// 这棵树只读或不是主人则记拒绝；示教器上不能动别人的个人树。
+	if err := s.canWriteFSAs(ctx, token, acc, parent); err != nil {
 		// 建文件夹被拒时补记审计，写失败仍不建。
 		_ = s.audit(ctx, &acc.ID, nil, "create_fs_folder", name, audit.Deny)
 		return FSNode{}, err
@@ -205,8 +206,8 @@ func (s *Assets) RenameFSNode(ctx context.Context, token string, nodeID uuid.UUI
 		_ = s.audit(ctx, &acc.ID, nil, "rename_fs", nodeID.String(), audit.Deny)
 		return FSNode{}, domain.ErrForbidden
 	}
-	// 这棵树只读或不是主人则记拒绝。
-	if err := s.canWriteFS(ctx, acc, n); err != nil {
+	// 这棵树只读或不是主人则记拒绝；示教器上不能动别人的个人树。
+	if err := s.canWriteFSAs(ctx, token, acc, n); err != nil {
 		// 改名被拒时补记审计，写失败仍不改。
 		_ = s.audit(ctx, &acc.ID, nil, "rename_fs", nodeID.String(), audit.Deny)
 		return FSNode{}, err
@@ -250,14 +251,14 @@ func (s *Assets) MoveFSNode(ctx context.Context, token string, nodeID, parentID 
 		_ = s.audit(ctx, &acc.ID, nil, "move_fs", nodeID.String(), audit.Deny)
 		return FSNode{}, err
 	}
-	// 这棵树只读或不是主人则记拒绝。
-	if err := s.canWriteFS(ctx, acc, n); err != nil {
+	// 这棵树只读或不是主人则记拒绝；示教器上不能动别人的个人树。
+	if err := s.canWriteFSAs(ctx, token, acc, n); err != nil {
 		// 移动被拒时补记审计，位置保持不变。
 		_ = s.audit(ctx, &acc.ID, nil, "move_fs", nodeID.String(), audit.Deny)
 		return FSNode{}, err
 	}
-	// 这棵树只读或不是主人则记拒绝。
-	if err := s.canWriteFS(ctx, acc, parent); err != nil {
+	// 这棵树只读或不是主人则记拒绝；示教器上不能动别人的个人树。
+	if err := s.canWriteFSAs(ctx, token, acc, parent); err != nil {
 		// 移动被拒时补记审计，位置保持不变。
 		_ = s.audit(ctx, &acc.ID, nil, "move_fs", nodeID.String(), audit.Deny)
 		return FSNode{}, err
@@ -320,8 +321,8 @@ func (s *Assets) CopyFSNode(ctx context.Context, token string, nodeID, destID uu
 		_ = s.audit(ctx, &acc.ID, nil, "copy_fs", nodeID.String(), audit.Deny)
 		return FSNode{}, err
 	}
-	// 这棵树只读或不是主人则记拒绝。
-	if err := s.canWriteFS(ctx, acc, dest); err != nil {
+	// 这棵树只读或不是主人则记拒绝；示教器上不能动别人的个人树。
+	if err := s.canWriteFSAs(ctx, token, acc, dest); err != nil {
 		// 复制被拒时补记审计，原件保持不动。
 		_ = s.audit(ctx, &acc.ID, nil, "copy_fs", nodeID.String(), audit.Deny)
 		return FSNode{}, err
@@ -576,6 +577,13 @@ func ownerEqPtr(a, b *uuid.UUID) bool {
 
 // DeleteFSNode 删文件夹（先整体预检再递归）或本厂原件文件；平台级副本不能从目录删。
 func (s *Assets) DeleteFSNode(ctx context.Context, token string, nodeID uuid.UUID) error {
+	// 不带期望修订，示教器和内部回收走这里
+	return s.DeleteFSNodeAt(ctx, token, nodeID, 0)
+}
+
+// DeleteFSNodeAt 同 DeleteFSNode；删的是文件且带了期望修订（大于零）时，修订对不上回冲突，原件不变。
+// 文件夹不看期望修订。
+func (s *Assets) DeleteFSNodeAt(ctx context.Context, token string, nodeID uuid.UUID, expected int64) error {
 	// 核对登录仍有效，后面的操作都靠这次会话。
 	acc, err := s.RequireActive(ctx, token)
 	// 登录已失效则拒绝，避免未登录的人继续。
@@ -602,8 +610,8 @@ func (s *Assets) DeleteFSNode(ctx context.Context, token string, nodeID uuid.UUI
 		_ = s.audit(ctx, &acc.ID, nil, "delete_fs", nodeID.String(), audit.Deny)
 		return domain.ErrForbidden
 	}
-	// 这棵树只读或不是主人则记拒绝。
-	if err := s.canWriteFS(ctx, acc, n); err != nil {
+	// 这棵树只读或不是主人则记拒绝；示教器上不能动别人的个人树。
+	if err := s.canWriteFSAs(ctx, token, acc, n); err != nil {
 		// 删除被拒时补记审计，节点先留着。
 		_ = s.audit(ctx, &acc.ID, nil, "delete_fs", nodeID.String(), audit.Deny)
 		return err
@@ -616,6 +624,11 @@ func (s *Assets) DeleteFSNode(ctx context.Context, token string, nodeID uuid.UUI
 			_ = s.audit(ctx, &acc.ID, nil, "delete_fs", nodeID.String(), audit.Deny)
 			return err
 		}
+	}
+	// 单删文件且带了期望修订，按修订删，别人刚改过的不删
+	if n.NodeKind == store.FSNodeFile && expected > 0 && n.AssetID != nil {
+		// 带上期望修订去删资产
+		return s.deleteAsset(ctx, token, *n.AssetID, expected)
 	}
 	// 预检已过，按原顺序递归删掉这一支。
 	return s.deleteFSTree(ctx, token, acc, n)
@@ -748,6 +761,37 @@ func (s *kernel) canWriteFS(ctx context.Context, acc Account, n FSNode) error {
 	default:
 		return domain.ErrForbidden
 	}
+}
+
+// canWriteFSAs 在 canWriteFS 之上再看会话：示教器会话只能动自己的个人树，别人的一律拒，
+// 超管改别人个人件只在网页（口径 K2）。
+func (s *kernel) canWriteFSAs(ctx context.Context, token string, acc Account, n FSNode) error {
+	// 示教器上碰别人的个人树直接拒
+	if isForeignPersonal(acc.ID, n) && s.isAppSession(ctx, token) {
+		return domain.ErrForbidden
+	}
+	// 其余照网页口径判
+	return s.canWriteFS(ctx, acc, n)
+}
+
+// isForeignPersonal 是别人的个人树节点。
+func isForeignPersonal(personID uuid.UUID, n FSNode) bool {
+	// 个人树且主人不是自己才算
+	return n.TreeLevel == store.FSTreePersonal && (n.OwnerID == nil || *n.OwnerID != personID)
+}
+
+// isAppSession 这张令牌是不是示教器会话；会话不在当不是，库读失败按示教器从严判，
+// 免得库抖动时示教器上的超管看到、改到别人的个人树。
+func (s *kernel) isAppSession(ctx context.Context, token string) bool {
+	// 只拿令牌摘要对会话
+	sess, err := s.store.SessionByTokenHash(ctx, secret.TokenHash(token))
+	// 库读失败分不清种类，按示教器从严
+	if err != nil {
+		// 没有这条会话或已过期才当不是示教器
+		return !errors.Is(err, domain.ErrNotFound) && !errors.Is(err, domain.ErrSessionExpired)
+	}
+	// 种类是示教器才算
+	return sess.Kind == store.SessionKindApp
 }
 
 // ensureVisibleRoots 保证平台、厂级和当前人的个人根存在。
@@ -912,6 +956,10 @@ func (s *Assets) padNewAssetFolder(ctx context.Context, acc Account, parentID uu
 	// 库错误照实交回，这次新建不算成。
 	if err != nil {
 		return uuid.Nil, err
+	}
+	// 示教器上别人的个人树不往里放，改挂自己的树根（口径 K2）
+	if isForeignPersonal(acc.ID, parent) {
+		return uuid.Nil, nil
 	}
 	// 核当前人能不能往这里写，结果留给下面分辨。
 	err = s.canWriteFS(ctx, acc, parent)

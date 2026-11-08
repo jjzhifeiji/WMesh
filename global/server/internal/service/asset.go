@@ -922,8 +922,8 @@ func (s *kernel) pinPlatformProcess(ctx context.Context, id uuid.UUID) (AssetDep
 	return AssetDep{ID: p.ID, Revision: p.Revision, Digest: p.Digest}, nil
 }
 
-// resolvePlatformProjectDeps 改依赖时按身份重钉当前可用修订。
-func (s *kernel) resolvePlatformProjectDeps(ctx context.Context, deps []AssetDep) ([]AssetDep, error) {
+// resolvePlatformProjectDeps 改依赖时按身份重钉当前可用修订；工程已声明、后来停用的原样留着，只有新加的才拒。
+func (s *kernel) resolvePlatformProjectDeps(ctx context.Context, declared, deps []AssetDep) ([]AssetDep, error) {
 	// 按数量先准备容器。
 	out := make([]AssetDep, 0, len(deps))
 	// 用来挡住同一键被写两次。
@@ -940,14 +940,33 @@ func (s *kernel) resolvePlatformProjectDeps(ctx context.Context, deps []AssetDep
 		seen[key] = struct{}{}
 		// 钉住当前可用的工艺。
 		pin, err := s.pinPlatformProcess(ctx, d.ID)
-		// 草稿和厂级不能当依赖。
+		// 钉不住先看是不是工程早已声明、只是后来停用的。
 		if err != nil {
-			return nil, err
+			// 只有停用这一种原因才看声明，草稿和厂级不能当依赖。
+			kept, ok := declaredDep(declared, d.ID)
+			// 不是停用或没声明过就拒绝。
+			if !errors.Is(err, domain.ErrAssetNotAvailable) || !ok {
+				return nil, err
+			}
+			// 记录保持声明时的修订，工程照常按身份用它。
+			pin = kept
 		}
 		// 把这一项接进结果。
 		out = append(out, pin)
 	}
 	return out, nil
+}
+
+// declaredDep 从已声明依赖里按身份找一条。
+func declaredDep(declared []AssetDep, id uuid.UUID) (AssetDep, bool) {
+	// 逐条比身份。
+	for _, d := range declared {
+		// 身份对上就交回。
+		if d.ID == id {
+			return d, true
+		}
+	}
+	return AssetDep{}, false
 }
 
 // mergeProjectDeps 保留已声明依赖，再按参数引用补缺。

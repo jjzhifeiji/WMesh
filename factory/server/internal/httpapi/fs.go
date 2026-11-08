@@ -1,6 +1,8 @@
 package httpapi
 
 import (
+	"errors"
+	"io"
 	"net/http"
 	"strings"
 
@@ -177,8 +179,16 @@ func (h *Handler) deleteFSNode(w http.ResponseWriter, r *http.Request) {
 			writeBadRequest(w, err)
 			return
 		}
+		// 网页删文件可带期望修订；示教器和旧页面不带正文，照旧删
+		var req expectedReq
+		// 有正文才解析，空正文当没带修订
+		if err := decodeJSON(r, &req); err != nil && !errors.Is(err, io.EOF) {
+			// 请求不合法，回非法请求并不进入业务。
+			writeBadRequest(w, err)
+			return
+		}
 		// 被拒绝则停止，不继续写成功响应。
-		if err := svc.Assets.DeleteFSNode(r.Context(), bearer(r), nodeID); err != nil {
+		if err := svc.Assets.DeleteFSNodeAt(r.Context(), bearer(r), nodeID, req.Expected); err != nil {
 			// 把失败译成状态回给调用方，不写成功。
 			writeErr(w, err)
 			return

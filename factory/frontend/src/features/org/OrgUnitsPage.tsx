@@ -5,6 +5,7 @@ import { useCatalog } from "@/features/catalog/api";
 import { errorMessage } from "@/shared/api/client";
 import { formatTime } from "@/shared/format";
 import { PageHeader } from "@/shared/ui/PageHeader";
+import { QueryErrorAlert } from "@/shared/ui/QueryErrorAlert";
 import { StatusTag } from "@/shared/ui/StatusTag";
 import { buildUnitTree, useCreateOrgUnit, useDeleteOrgUnit, useDisableOrgUnit, useEnableOrgUnit, useMoveOrgUnit, useRenameOrgUnit, type CreateOrgUnitInput, type UnitTreeNode } from "./api";
 
@@ -143,6 +144,7 @@ export function OrgUnitsPage() {
           </Button>
         }
       />
+      <QueryErrorAlert query={catalog} what="本厂名册" />
       <Card>
         <Table<UnitTreeNode>
           rowKey="id"

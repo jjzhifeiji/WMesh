@@ -62,13 +62,23 @@ func (s *Auth) CloseFromWAN(ctx context.Context) error {
 
 // requireFactoryOpen 停用、注销或解包租约到期后，拒绝登录和新操作。
 func (k *kernel) requireFactoryOpen(ctx context.Context) error {
+	// 停用和注销直接拒绝，有效再看租约
+	if err := k.requireFactoryNotClosed(ctx); err != nil {
+		return err
+	}
+	// 超时整厂业务不可用；探活和 WAN 通道仍可把钥匙领回来。
+	return k.store.RequireContentLease()
+}
+
+// requireFactoryNotClosed 只看停用和注销，不看租约；通道现状这类不碰正文的读用它。
+func (k *kernel) requireFactoryNotClosed(ctx context.Context) error {
 	// 读本厂启停状态和修订
 	lc, err := k.store.Lifecycle(ctx)
 	// 厂况读失败，不能改登录门
 	if err != nil {
 		return err
 	}
-	// 停用和注销直接拒绝，有效再看租约
+	// 停用和注销直接拒绝
 	switch lc.Status {
 	// 厂已停用，拒绝新登录和新操作
 	case store.FactoryDisabled:
@@ -77,6 +87,5 @@ func (k *kernel) requireFactoryOpen(ctx context.Context) error {
 	case store.FactoryRetired:
 		return domain.ErrFactoryRetired
 	}
-	// 超时整厂业务不可用；探活和 WAN 通道仍可把钥匙领回来。
-	return k.store.RequireContentLease()
+	return nil
 }

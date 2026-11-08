@@ -16,11 +16,12 @@ import (
 
 // ClosureRef 是 inbox 里一份工程闭包的元数据，不含正文。
 type ClosureRef struct {
-	AssetID  uuid.UUID `json:"assetId"`  // 工艺或工程身份
-	Revision int64     `json:"revision"` // 当前可拉修订
-	Digest   []byte    `json:"digest"`   // 整包摘要；尚未组包可空
-	Name     string    `json:"name"`     // 显示名
-	Level    string    `json:"level"`    // factory / platform / personal
+	AssetID  uuid.UUID `json:"assetId"`        // 工艺或工程身份
+	Revision int64     `json:"revision"`       // 当前可拉修订
+	Digest   []byte    `json:"digest"`         // 整包摘要；尚未组包可空
+	Name     string    `json:"name"`           // 显示名
+	Level    string    `json:"level"`          // factory / platform / personal
+	Code     string    `json:"code,omitempty"` // 只读编号；示教器据此纠正修复前补错的本机号（D-54），老示教器不认这一项
 }
 
 // ClientInbox 登录或回连后要对账的策略和获准闭包清单。
@@ -37,10 +38,11 @@ type TransitClosure struct {
 	Snapshot ClosureSnapshot `json:"snapshot"`       // 成员正文都是过站信封
 }
 
-// AuthClientMQTT 厂网或本机 CONNECT：令牌有效；已登记 Client 须绑定未作废；未登记身份允许厂网登录人收听回连。
+// AuthClientMQTT 厂网或本机 CONNECT：令牌有效且还握着角色；已登记 Client 须绑定未作废，且就是本次登录钉住的那台；
+// 未登记的机器号只能是登录人自己的身份（示教器没对上臂时用本人身份收听回连）。
 func (s *Node) AuthClientMQTT(ctx context.Context, clientID uuid.UUID, token string) (Account, error) {
-	// 先确认会话仍有效，过期或停用直接拒绝
-	acc, err := s.RequireActive(ctx, token)
+	// 先确认会话仍有效且还握着角色，过期、停用或角色全收回直接拒绝
+	acc, err := s.requirePadActor(ctx, token)
 	// 会话无效或账号已停用，拒绝继续
 	if err != nil {
 		return Account{}, err
@@ -51,9 +53,13 @@ func (s *Node) AuthClientMQTT(ctx context.Context, clientID uuid.UUID, token str
 	cli, err := s.store.ClientByID(ctx, clientID)
 	// 这台设备不在名录，拒绝
 	if err != nil {
-		// 设备尚未登记，允许厂网登录人收听回连
+		// 设备尚未登记时示教器拿本人身份当机器号收听回连；报别人的身份不让连，免得订到别人的下行
 		if errors.Is(err, domain.ErrNotFound) {
-			return acc, nil
+			// 机器号就是本人才放行
+			if clientID == acc.ID {
+				return acc, nil
+			}
+			return acc, domain.ErrForbidden
 		}
 		return acc, err
 	}
@@ -61,13 +67,17 @@ func (s *Node) AuthClientMQTT(ctx context.Context, clientID uuid.UUID, token str
 	if cli.Status != ClientStatusBound {
 		return acc, domain.ErrBindingVoid
 	}
+	// 令牌与设备绑定（D-59）：本次登录钉的必须就是这台，没钉或钉的别台都不让连，免得拿自己的令牌冒充别台收下行
+	if s.sessionClient(ctx, token) != clientID {
+		return acc, domain.ErrSessionClientMismatch
+	}
 	return acc, nil
 }
 
 // PadClientInbox 厂网登录拉本人可用的工艺/工程清单，别人的个人级不给；不要求已绑设备。
 func (s *Closure) PadClientInbox(ctx context.Context, token string) (ClientInbox, error) {
-	// 先确认会话仍有效，过期或停用直接拒绝
-	acc, err := s.RequireActive(ctx, token)
+	// 先确认会话仍有效且还握着角色，角色全收回的旧会话不再对账
+	acc, err := s.requirePadActor(ctx, token)
 	// 会话无效或账号已停用，拒绝继续
 	if err != nil {
 		// 记下厂网对账被拒绝，写失败不改变结果
@@ -104,10 +114,10 @@ func (s *Closure) PadClientInbox(ctx context.Context, token string) (ClientInbox
 	return out, s.audit(ctx, &acc.ID, nil, "pad_inbox", acc.ID.String(), audit.Allow)
 }
 
-// PadPullClientClosure 厂网登录后拉包：工程和工艺都用登录人钥封过站 DEK；列表外钉住的平台工艺按钉死修订给。
+// PadPullClientClosure 厂网登录后拉包：工程和工艺都用登录人钥封过站 DEK；列表外被工程依赖的平台工艺按已收最高修订给。
 func (s *Closure) PadPullClientClosure(ctx context.Context, token string, assetID uuid.UUID) (TransitClosure, error) {
-	// 先确认会话仍有效，过期或停用直接拒绝
-	acc, err := s.RequireActive(ctx, token)
+	// 先确认会话仍有效且还握着角色，角色全收回的旧会话不再拉包
+	acc, err := s.requirePadActor(ctx, token)
 	// 收成文本身份，供审计或对账对准
 	target := assetID.String()
 	// 会话无效或账号已停用，拒绝继续
@@ -116,7 +126,7 @@ func (s *Closure) PadPullClientClosure(ctx context.Context, token string, assetI
 		_ = s.audit(ctx, actorOf(acc), nil, "pad_pull", target, audit.Deny)
 		return TransitClosure{}, err
 	}
-	// 不在本人示教器清单里则拒绝拉包；列表外钉住的平台工艺带回钉死修订
+	// 不在本人示教器清单里则拒绝拉包；列表外被工程依赖的平台工艺另走一条
 	pin, err := s.assertPadPullable(ctx, acc, assetID)
 	// 清单里没有这份则记拒绝并停下
 	if err != nil {
@@ -126,10 +136,10 @@ func (s *Closure) PadPullClientClosure(ctx context.Context, token string, assetI
 	}
 	// 可见资产照旧按身份取当前版组包
 	var snap ClosureSnapshot
-	// 列表外钉住的平台工艺按钉死修订单独成包，不拿最新版顶
+	// 列表外被工程依赖的平台工艺按已收最高修订单独成包
 	if pin != nil {
-		// 按钉死修订组单工艺包，读不到钉死修订就拒
-		snap, err = s.packPinnedForPad(ctx, *pin)
+		// 组单工艺包，一份都读不到就拒
+		snap, err = s.packPinnedForPad(ctx, pin.ID)
 		// 列表里有的照旧组包
 	} else {
 		// 组出工程根或单工艺包，正文随后统一封过站
@@ -228,7 +238,7 @@ func actorOf(acc Account) *uuid.UUID {
 	return &id
 }
 
-// 厂网登录只能拉本人清单里的资产，与清单同一套裁剪；不另走下发授权。列表外钉住的平台工艺交回钉死依赖。
+// 厂网登录只能拉本人清单里的资产，与清单同一套裁剪；不另走下发授权。列表外被工程依赖的平台工艺交回它的依赖项。
 func (s *Closure) assertPadPullable(ctx context.Context, acc Account, assetID uuid.UUID) (*AssetDep, error) {
 	// 按登录人裁过：别人的个人级不给
 	rows, err := s.padVisibleAssets(ctx, acc)
@@ -243,17 +253,17 @@ func (s *Closure) assertPadPullable(ctx context.Context, acc Account, assetID uu
 			return nil, nil
 		}
 	}
-	// 列表里没有，再看可见工程钉住的平台工艺
+	// 列表里没有，再看可见工程依赖的平台工艺
 	pins, err := s.padPinnedProcesses(ctx, rows)
-	// 钉住的收不齐则不放行
+	// 依赖的收不齐则不放行
 	if err != nil {
 		return nil, err
 	}
-	// 逐份钉住的平台工艺找要拉的那一份
+	// 逐份依赖的平台工艺找要拉的那一份
 	for _, p := range pins {
-		// 身份对上就按钉死修订放行
+		// 身份对上就放行
 		if p.Dep.ID == assetID {
-			// 另拷一份钉死依赖再取址，避免指向循环变量
+			// 另拷一份依赖项再取址，避免指向循环变量
 			d := p.Dep
 			return &d, nil
 		}
@@ -282,27 +292,29 @@ func (s *Closure) listPadAssetRefs(ctx context.Context, acc Account) ([]ClosureR
 		// 把这一条收进结果，漏了清单就不齐
 		out = append(out, ref)
 	}
-	// 再补列表外、被可见工程钉住的平台工艺，免得示教器对账把它删掉
+	// 再补列表外、被可见工程依赖的平台工艺，免得示教器对账把它删掉
 	pins, err := s.padPinnedProcesses(ctx, rows)
-	// 钉住的收不齐则不交残缺清单
+	// 依赖的收不齐则不交残缺清单
 	if err != nil {
 		return nil, err
 	}
-	// 逐份钉住的平台工艺补进清单
+	// 逐份依赖的平台工艺补进清单
 	for _, p := range pins {
-		// 修订填钉死修订，示教器照常逐条拉
+		// 修订填已收最高修订，示教器照常逐条拉
 		out = append(out, s.refForPinned(ctx, p))
 	}
 	return out, nil
 }
 
-// padPin 可见工程钉住、但列表里已没有的一份平台工艺。
+// padPin 可见工程依赖、但列表里已没有的一份平台工艺（云端已停用或已删除）。
 type padPin struct {
-	Dep  AssetDep // 钉死的身份、修订和摘要
-	Name string   // 钉死那一修订的显示名
+	Dep  AssetDep // 已收最高修订的身份、修订和摘要
+	Name string   // 那一修订的显示名
 }
 
-// padPinnedProcesses 收出可见工程钉住、列表外但副本表能按修订读到的平台工艺；同身份取最高钉死修订。
+// padPinnedProcesses 收出可见工程依赖、列表外但已收过的平台工艺，给已收的最高修订。
+// 不给工程 deps 声明的旧修订：焊接一律按身份用最新，停用或删除只是撤下展示，不该让工程退回旧参数；
+// 示教器同身份只留最高修订，给旧修订时已有新版的设备不接、新设备却拿旧版，同一工程两台焊出两种参数。
 func (s *Closure) padPinnedProcesses(ctx context.Context, rows []Asset) ([]padPin, error) {
 	// 记下列表里已有的身份，这些照旧按身份给当前版
 	listed := make(map[uuid.UUID]struct{}, len(rows))
@@ -311,31 +323,31 @@ func (s *Closure) padPinnedProcesses(ctx context.Context, rows []Asset) ([]padPi
 		// 这个身份已在清单里，不再另补
 		listed[a.ID] = struct{}{}
 	}
-	// 同一身份只留最高的钉死修订
-	best := map[uuid.UUID]padPin{}
+	// 同一身份只收一次
+	seen := map[uuid.UUID]struct{}{}
 	// 按首次碰到的先后排，清单顺序稳定
-	order := []uuid.UUID{}
-	// 逐份可见资产看它钉了哪些工艺
+	out := []padPin{}
+	// 逐份可见资产看它依赖哪些工艺
 	for _, a := range rows {
-		// 只有工程才有钉死依赖，工艺跳过
+		// 只有工程才有依赖，工艺跳过
 		if a.Kind != KindProject {
 			continue
 		}
-		// 逐条看钉死依赖，列表里有的不再补
+		// 逐条看依赖，列表里有的不再补
 		for _, d := range a.Deps {
 			// 列表里已有这份工艺，照旧给当前版
 			if _, ok := listed[d.ID]; ok {
 				continue
 			}
-			// 看这个身份是否已收过钉死修订
-			prev, ok := best[d.ID]
-			// 已有不低于这一条的修订，不再重读
-			if ok && prev.Dep.Revision >= d.Revision {
+			// 这个身份已经收过，不再重读
+			if _, ok := seen[d.ID]; ok {
 				continue
 			}
-			// 按钉死修订读副本元数据，不解正文
-			r, err := s.store.ReplicaMetaByIDRev(ctx, d.ID, d.Revision)
-			// 副本表里没有这一修订就不补，库错误则整份失败
+			// 记下这个身份，别的工程再依赖它也不重读
+			seen[d.ID] = struct{}{}
+			// 读已收最高修订的元数据，不解正文；已撤回的也算
+			r, err := s.store.HighestReplicaMeta(ctx, d.ID)
+			// 副本表里没有就不补，库错误则整份失败
 			if err != nil {
 				// 找不到说明这条不是已收的平台工艺，跳过即可
 				if errors.Is(err, domain.ErrNotFound) {
@@ -347,34 +359,23 @@ func (s *Closure) padPinnedProcesses(ctx context.Context, rows []Asset) ([]padPi
 			if r.Kind != KindProcess || r.Level != AssetLevelPlatform {
 				continue
 			}
-			// 头一回碰到这个身份就记下先后
-			if !ok {
-				// 按首次出现的位置排进清单
-				order = append(order, d.ID)
-			}
-			// 留下这条更高的钉死修订和它的名字
-			best[d.ID] = padPin{Dep: d, Name: r.Name}
+			// 收进这份依赖的平台工艺和它的名字
+			out = append(out, padPin{Dep: AssetDep{ID: r.ID, Revision: r.Revision, Digest: r.Digest}, Name: r.Name})
 		}
-	}
-	// 按记下的先后备好结果
-	out := make([]padPin, 0, len(order))
-	// 按先后把每个身份的最高钉死修订收进来
-	for _, pid := range order {
-		// 收进这份钉住的平台工艺
-		out = append(out, best[pid])
 	}
 	return out, nil
 }
 
-// refForPinned 钉住的平台工艺按钉死修订组包；组包失败仍给出身份、修订和名称。
+// refForPinned 依赖的平台工艺按已收最高修订组包；组包失败仍给出身份、修订和名称。
 func (s *Closure) refForPinned(ctx context.Context, p padPin) ClosureRef {
-	// 按钉死修订组单工艺包，拿整包摘要
-	snap, err := s.packPinnedForPad(ctx, p.Dep)
-	// 组不出来仍按钉死修订列出，和可见资产组包失败同一口径
+	// 组单工艺包，拿整包摘要
+	snap, err := s.packPinnedForPad(ctx, p.Dep.ID)
+	// 组不出来仍按这一修订列出，和可见资产组包失败同一口径
 	if err != nil {
 		return ClosureRef{AssetID: p.Dep.ID, Revision: p.Dep.Revision, Name: p.Name, Level: AssetLevelPlatform}
 	}
-	return ClosureRef{AssetID: snap.AssetID, Revision: snap.Revision, Digest: snap.Digest, Name: p.Name, Level: snap.Level}
+	// 编号跟包里的根走，示教器拿它对齐本机编号
+	return ClosureRef{AssetID: snap.AssetID, Revision: snap.Revision, Digest: snap.Digest, Name: p.Name, Level: snap.Level, Code: rootCode(snap)}
 }
 
 // padVisibleAssets 示教器可拉范围：厂端列表去掉别人的个人级，钉住的也不给。
@@ -411,9 +412,19 @@ func (s *Closure) refForPad(ctx context.Context, assetID uuid.UUID) (ClosureRef,
 	snap, err := s.packForPad(ctx, assetID)
 	// 组包失败则这次拉包拒绝
 	if err != nil {
-		return ClosureRef{AssetID: root.ID, Revision: root.Revision, Name: root.Name, Level: root.Level}, nil
+		return ClosureRef{AssetID: root.ID, Revision: root.Revision, Name: root.Name, Level: root.Level, Code: root.Code}, nil
 	}
-	return ClosureRef{AssetID: snap.AssetID, Revision: snap.Revision, Digest: snap.Digest, Name: root.Name, Level: snap.Level}, nil
+	// 编号带上，示教器修复前补错的本机号据此改回厂端编号（D-54）
+	return ClosureRef{AssetID: snap.AssetID, Revision: snap.Revision, Digest: snap.Digest, Name: root.Name, Level: snap.Level, Code: root.Code}, nil
+}
+
+// rootCode 包里根成员的编号；没有成员为空。
+func rootCode(snap ClosureSnapshot) string {
+	// 包是空的就没有编号可给
+	if len(snap.Members) == 0 {
+		return ""
+	}
+	return snap.Members[0].Code
 }
 
 // sealTransit 另造过站 DEK；boundID 是登录人或本机，到站用登录人钥解开后再重封进袋。

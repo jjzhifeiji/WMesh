@@ -2,6 +2,7 @@
 package service_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"testing"
@@ -277,20 +278,41 @@ func testClosurePack(t *testing.T, run func(string, func(*testing.T))) {
 		}
 	})
 
-	// 验收工艺升修订后旧钉不能组包，放行即失败
+	// 验收工艺升修订后组包用新版、快照根 deps 跟上、工程行不动，拒绝或仍带旧版即失败
 	run("3.1", func(t *testing.T) {
+		// 改正文并升修订，工程不改
+		p1b, err := e.fac.UpdateAssetContent(e.ctx, e.pe.tok, p1.ID, p1.Revision, []byte("p1-v2"))
 		// 改正文并升修订失败就停，避免带着错误继续验
-		if _, err := e.fac.UpdateAssetContent(e.ctx, e.pe.tok, p1.ID, p1.Revision, []byte("p1-v2")); err != nil {
+		if err != nil {
 			// 改正文并升修订失败就把原因打出并停掉本例
 			t.Fatal(err)
 		}
-		// 期望组工程闭包被拒为闭包不完整，放行即失败
-		if _, err := e.fac.AssembleProject(e.ctx, e.pe.tok, proj.ID); !errors.Is(err, domain.ErrClosureIncomplete) {
-			// 没拒成闭包不完整就失败，并打出实际错误
-			t.Fatalf("got %v", err)
+		// 组工程闭包，工艺升版不该挡住
+		got, err := e.fac.AssembleProject(e.ctx, e.pe.tok, proj.ID)
+		// 组工程闭包失败就停，避免带着错误继续验
+		if err != nil {
+			// 组工程闭包失败就把原因打出并停掉本例
+			t.Fatal(err)
+		}
+		// 成员必须是工艺当前版，仍带旧版即失败
+		if got.Members[1].ID != p1.ID || got.Members[1].Revision != p1b.Revision || !bytes.Equal(got.Members[1].Digest, p1b.Digest) {
+			// 成员不是当前版就把实际值打出并停掉本例
+			t.Fatalf("member %+v", got.Members[1])
+		}
+		// 快照根 deps 必须改写成当前版，否则验收对不上
+		if d := got.Members[0].Deps[0]; d.ID != p1.ID || d.Revision != p1b.Revision || !bytes.Equal(d.Digest, p1b.Digest) {
+			// 根 deps 没跟上就把实际值打出并停掉本例
+			t.Fatalf("snap dep %+v", d)
+		}
+		// 读库里的工程行，组包不得动它
+		row, err := e.fac.Store().GovernedAssetByID(e.ctx, proj.ID)
+		// 读工程行失败或声明的依赖、修订被改，都算失败
+		if err != nil || row.Revision != proj.Revision || row.Deps[0].Revision != p1.Revision || !bytes.Equal(row.Deps[0].Digest, p1.Digest) {
+			// 工程行被改就把实际值打出并停掉本例
+			t.Fatalf("project row %+v %v", row, err)
 		}
 	})
-	// 验收改钉新修订后组包跟上，仍停旧修订即失败
+	// 验收显式改依赖后记录跟上、组包仍是当前版，升了工程修订后组不出来即失败
 	run("3.2", func(t *testing.T) {
 		// 读取资产，失败则本步验收不能继续
 		p1b, err := e.fac.GetAsset(e.ctx, e.pe.tok, p1.ID)
@@ -305,6 +327,11 @@ func testClosurePack(t *testing.T, run func(string, func(*testing.T))) {
 		if err != nil {
 			// 收成工程依赖失败就把原因打出并停掉本例
 			t.Fatal(err)
+		}
+		// 显式改依赖后工程行记下新修订，依赖关系和升档看这一份
+		if proj.Deps[0].Revision != p1b.Revision {
+			// 依赖记录没跟上就把实际值打出并停掉本例
+			t.Fatalf("deps %+v", proj.Deps)
 		}
 		// 组工程闭包，失败则本步验收不能继续
 		got, err := e.fac.AssembleProject(e.ctx, e.pe.tok, proj.ID)

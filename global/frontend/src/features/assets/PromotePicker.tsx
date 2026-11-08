@@ -1,6 +1,6 @@
 import { FileOutlined, FolderOutlined } from "@ant-design/icons";
 import { Button, Empty, Input, Select, Tag, Tree, Typography, type TreeDataNode } from "antd";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { errorMessage } from "@/shared/api/client";
 import { weldKindLabel, WELD_SINGLE } from "@/features/templates/projectKinds";
 import { useFactoryFS, type Asset, type AssetKind, type FSNode } from "./api";
@@ -53,16 +53,14 @@ export function PromotePicker({
   const nodes = fs.data ?? none;
   const [query, setQuery] = useState("");
   const [pickedId, setPickedId] = useState<string | null>(null);
-  const [expandedKeys, setExpandedKeys] = useState<string[]>([]);
+  // 用户还没展开/收起过（null）就默认展开各根目录。
+  const [touchedKeys, setExpandedKeys] = useState<string[] | null>(null);
   const byId = useMemo(() => new Map(nodes.map((n) => [n.id, n])), [nodes]);
   const counts = useMemo(() => innerCounts(nodes), [nodes]);
   const roots = useMemo(() => nodes.filter((n) => !n.parentId && n.nodeKind === "folder"), [nodes]);
   const current = (pickedId && byId.get(pickedId)?.nodeKind === "folder" ? byId.get(pickedId) : null) ?? roots[0] ?? null;
 
-  useEffect(() => {
-    if (!roots.length) return;
-    setExpandedKeys((keys) => (keys.length ? keys : roots.map((r) => r.id)));
-  }, [roots]);
+  const expandedKeys = touchedKeys ?? roots.map((r) => r.id);
 
   const needle = query.trim().toLowerCase();
   const exact = query.trim();
@@ -71,7 +69,7 @@ export function PromotePicker({
     if (!current || searching) return [];
     return nodes
       .filter((n) => n.parentId === current.id)
-      .toSorted((a, b) => {
+      .sort((a, b) => {
         if (a.nodeKind !== b.nodeKind) return a.nodeKind === "folder" ? -1 : 1;
         return fsNodeTitle(a).localeCompare(fsNodeTitle(b), "zh");
       });
@@ -86,7 +84,7 @@ export function PromotePicker({
         if (code && (code === exact || code === exact.toUpperCase())) return true;
         return name.toLowerCase().includes(needle) || code.toLowerCase().includes(needle);
       })
-      .toSorted((a, b) => (a.asset?.name || a.name).localeCompare(b.asset?.name || b.name, "zh"));
+      .sort((a, b) => (a.asset?.name || a.name).localeCompare(b.asset?.name || b.name, "zh"));
   }, [nodes, searching, needle, exact]);
   const shown = searching ? hits : children;
 
@@ -131,7 +129,7 @@ export function PromotePicker({
       ids.push(cur.id);
       cur = cur.parentId ? byId.get(cur.parentId) : undefined;
     }
-    setExpandedKeys((keys) => [...new Set([...keys, ...ids])]);
+    setExpandedKeys((keys) => [...new Set([...(keys ?? roots.map((r) => r.id)), ...ids])]);
   };
 
   return (

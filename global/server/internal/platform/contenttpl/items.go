@@ -629,11 +629,13 @@ func cornerGroupField() Field {
 
 // cornerRefField 包角组上的底工艺引用（焊接参数，和焊道 processId 相同）；给多层/T 排收引用和改写用，单层已在 cornerGroupField 里。
 func cornerRefField() Field {
+	// 只放一个底工艺引用槽。
 	return Field{Key: "cornerGroupParams", Label: "包角组", Type: TypeObject, Fields: []Field{procRef("processId", "包角组焊接工艺")}}
 }
 
 // RefFields 收引用用的字段：本种类标准槽（单层带附加槽）再并上包角组工艺槽。
 func RefFields(kind string) []Field {
+	// 标准槽并上包角组槽，同键并成一份。
 	return mergeFields(ItemFields(kind, true), []Field{cornerRefField()})
 }
 

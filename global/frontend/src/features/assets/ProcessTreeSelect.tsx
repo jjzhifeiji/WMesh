@@ -1,6 +1,7 @@
 import { FileOutlined, FolderOutlined } from "@ant-design/icons";
 import { TreeSelect, type TreeSelectProps } from "antd";
 import { useMemo } from "react";
+import { errorMessage } from "@/shared/api/client";
 import { useFS, type FSNode } from "./api";
 import { fsNodeTitle } from "./ProcessExplorer";
 
@@ -112,6 +113,8 @@ export function ProcessTreeSelect({
       popupMatchSelectWidth={false}
       listHeight={360}
       popupClassName="process-tree-select-drop"
+      // 目录读失败时下拉是空的，照实说读不到，别显示成没有工艺。
+      notFoundContent={q.isError ? `读不到工艺目录：${errorMessage(q.error)}` : undefined}
       onChange={(id) => onPick((id as string) ?? "")}
     />
   );

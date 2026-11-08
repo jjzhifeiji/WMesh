@@ -1,5 +1,5 @@
 // 采本 compose 项目里打了 observe=true 的容器，并收 Pad 的 Loki push，一并推到 LOKI_URL。
-// Loki 索引只留 product、service、level。factory 等业务字段留在正文里。
+// Loki 索引只留 product、service、level（统一大写 INFO/WARN/ERROR）。factory、client 进结构化元数据，其余业务字段留在正文里。
 
 discovery.docker "containers" {
 	host             = "unix:///var/run/docker.sock"
@@ -55,23 +55,27 @@ loki.source.docker "containers" {
 loki.process "apps" {
 	forward_to = [loki.write.loki.receiver]
 
+	// level 也先摘掉，下面按统一大小写重打；Pad 推来的小写 level 在提取表里还留着。
 	stage.label_drop {
-		values = ["container", "job", "side", "service_name", "serviceName", "factory", "client"]
+		values = ["container", "job", "side", "service_name", "serviceName", "factory", "client", "level"]
 	}
 
 	stage.json {
 		expressions = {
-			level = "level",
-			ts    = `ts || "@timestamp"`,
-			msg   = "msg",
+			level   = "level",
+			ts      = `ts || "@timestamp"`,
+			msg     = "msg",
+			factory = "factory",
+			client  = "client",
 		}
 		drop_malformed = false
 	}
 
-	// 只把 INFO / WARN / ERROR 提升成标签。
+	// level 标签统一成大写：服务端 JSON 是 INFO/WARN/ERROR，Pad 推来的是小写 info/warn/error。
+	// 只把 INFO / WARN / ERROR 提升成标签，其它级别（DEBUG 等）不打 level 标签。
 	stage.template {
 		source   = "keep_level"
-		template = `{{ if or (eq .level "INFO") (eq .level "WARN") (eq .level "ERROR") }}{{ .level }}{{ end }}`
+		template = `{{ if .level }}{{ $l := ToUpper .level }}{{ if or (eq $l "INFO") (eq $l "WARN") (eq $l "ERROR") }}{{ $l }}{{ end }}{{ end }}`
 	}
 
 	stage.labels {
@@ -85,9 +89,12 @@ loki.process "apps" {
 		format = "RFC3339Nano"
 	}
 
+	// 厂、设备只进结构化元数据（不进索引）：服务端取 JSON 正文里的 factory/client，Pad 取推送时带的同名标签。
 	stage.structured_metadata {
 		values = {
-			msg = "",
+			msg     = "",
+			factory = "",
+			client  = "",
 		}
 	}
 

@@ -15,6 +15,7 @@ import { AuthLayout } from "@/layouts/AuthLayout";
 import { RequireAuth } from "@/shared/auth/RequireAuth";
 import { RequireSuperAdmin } from "@/shared/auth/RequireSuperAdmin";
 import { NotFoundPage } from "@/shared/ui/NotFoundPage";
+import { RouteErrorPage } from "@/shared/ui/RouteErrorPage";
 import { PlaceholderPage } from "@/shared/ui/PlaceholderPage";
 import { placeholderPaths } from "./navigation";
 import { paths } from "./routes";
@@ -22,9 +23,11 @@ import { paths } from "./routes";
 const sa = (page: React.ReactNode) => <RequireSuperAdmin>{page}</RequireSuperAdmin>;
 
 // 两棵路由树：公开的登录/认领区，和需要会话的后台区；管理页再套一层超管守卫。
+// 后台区的页面出错只换内容区，侧栏还在；布局自己出错才整页兜底。
 export const router = createBrowserRouter([
   {
     element: <AuthLayout />,
+    errorElement: <RouteErrorPage />,
     children: [
       { path: paths.login, element: <LoginPage /> },
       { path: paths.claim, element: <ClaimPage /> },
@@ -36,20 +39,26 @@ export const router = createBrowserRouter([
         <AdminLayout />
       </RequireAuth>
     ),
+    errorElement: <RouteErrorPage />,
     children: [
-      { index: true, element: <DashboardPage /> },
-      { path: paths.updates, element: <Navigate to={paths.dashboard} replace /> },
-      { path: paths.orgUnits, element: sa(<OrgUnitsPage />) },
-      { path: paths.people, element: sa(<PeoplePage />) },
-      { path: paths.clients, element: sa(<ClientsPage />) },
-      { path: paths.clientPolicy, element: sa(<ClientPolicyPage />) },
-      { path: paths.processes, element: <AssetsPage key="process" kind="process" /> },
-      { path: paths.projects, element: <AssetsPage key="project" kind="project" /> },
-      { path: paths.legacyImport, element: <LegacyImportPage /> },
-      { path: paths.account, element: <AccountPage /> },
-      { path: paths.reports, element: <ReportsPage /> },
-      ...placeholderPaths.map((path) => ({ path, element: <PlaceholderPage /> })),
-      { path: "*", element: <NotFoundPage /> },
+      {
+        errorElement: <RouteErrorPage />,
+        children: [
+          { index: true, element: <DashboardPage /> },
+          { path: paths.updates, element: <Navigate to={paths.dashboard} replace /> },
+          { path: paths.orgUnits, element: sa(<OrgUnitsPage />) },
+          { path: paths.people, element: sa(<PeoplePage />) },
+          { path: paths.clients, element: sa(<ClientsPage />) },
+          { path: paths.clientPolicy, element: sa(<ClientPolicyPage />) },
+          { path: paths.processes, element: <AssetsPage key="process" kind="process" /> },
+          { path: paths.projects, element: <AssetsPage key="project" kind="project" /> },
+          { path: paths.legacyImport, element: <LegacyImportPage /> },
+          { path: paths.account, element: <AccountPage /> },
+          { path: paths.reports, element: <ReportsPage /> },
+          ...placeholderPaths.map((path) => ({ path, element: <PlaceholderPage /> })),
+          { path: "*", element: <NotFoundPage /> },
+        ],
+      },
     ],
   },
 ]);

@@ -46,6 +46,12 @@ func (s *Assets) CopyProject(ctx context.Context, token string, assetID uuid.UUI
 		_ = s.audit(ctx, &acc.ID, nil, "create_asset", assetID.String(), audit.Deny)
 		return Asset{}, domain.ErrInvalidName
 	}
+	// 名字太长焊次收不下，复制时就拒
+	if err := checkAssetNameLen(name); err != nil {
+		// 创建被拒时补记审计，写失败仍维持拒绝。
+		_ = s.audit(ctx, &acc.ID, nil, "create_asset", assetID.String(), audit.Deny)
+		return Asset{}, err
+	}
 	// 先读原件元数据，没有再看副本。
 	src, err := s.loadAnyMeta(ctx, assetID)
 	// 元数据读不到则记拒绝，不继续。
@@ -120,7 +126,7 @@ func (s *kernel) canCopyProject(ctx context.Context, acc Account, src Asset) err
 	return s.canTouchPersonal(ctx, acc, src)
 }
 
-// copyProjectDeps 加密平台工艺和无权看正文的别人个人工艺保持原引用，其余工艺按目标级别复制一份。
+// copyProjectDeps 加密平台工艺和无权看正文的别人个人工艺保持原身份、修订记当前版，其余工艺按目标级别复制一份。
 // 交回新依赖、旧身份到新身份的对照，以及本次新建的工艺身份。
 func (s *Assets) copyProjectDeps(ctx context.Context, acc Account, level string, deps []AssetDep) ([]AssetDep, map[uuid.UUID]uuid.UUID, []uuid.UUID, error) {
 	// 新依赖按原顺序排。
@@ -149,10 +155,16 @@ func (s *Assets) copyProjectDeps(ctx context.Context, acc Account, level string,
 		if meta.Kind != KindProcess {
 			return nil, nil, made, domain.ErrAssetDependency
 		}
-		// 加密平台工艺保持原身份和钉死修订，不复制。
+		// 加密平台工艺保持原身份，不复制；另存是一次新声明，修订记当前版，当前版停用就拒绝。
 		if meta.Level == AssetLevelPlatform && !meta.Copyable {
-			// 原样留下这条依赖。
-			out = append(out, d)
+			// 按目标级别钉到当前可用修订，不看源工程声明的旧修订。
+			pin, err := s.pinProjectProcess(ctx, acc, level, d.ID)
+			// 钉不上就整次拒绝。
+			if err != nil {
+				return nil, nil, made, err
+			}
+			// 留下这条依赖。
+			out = append(out, pin)
 			// 对照里指回自己，正文引用不改。
 			idMap[d.ID] = d.ID
 			continue

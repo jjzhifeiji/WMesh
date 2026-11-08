@@ -49,12 +49,13 @@ func (Person) TableName() string { return "people" }
 
 // Session 是厂内在线会话；库里只存令牌哈希，每次操作要重查账号状态和角色。
 type Session struct {
-	ID        uuid.UUID `gorm:"type:uuid;primaryKey" json:"id"`     // 会话稳定身份
-	PersonID  uuid.UUID `gorm:"type:uuid;not null" json:"personId"` // 持有该会话的本厂人员
-	TokenHash string    `gorm:"not null;uniqueIndex" json:"-"`      // 会话令牌哈希，不存原文
-	Kind      string    `gorm:"not null" json:"kind"`               // web / app；名册 APP 在线只认 app
-	CreatedAt time.Time `gorm:"not null" json:"createdAt"`          // 会话建立时间
-	ExpiresAt time.Time `gorm:"not null" json:"expiresAt"`          // 过期后立刻无效
+	ID        uuid.UUID  `gorm:"type:uuid;primaryKey" json:"id"`      // 会话稳定身份
+	PersonID  uuid.UUID  `gorm:"type:uuid;not null" json:"personId"`  // 持有该会话的本厂人员
+	TokenHash string     `gorm:"not null;uniqueIndex" json:"-"`       // 会话令牌哈希，不存原文
+	Kind      string     `gorm:"not null" json:"kind"`                // web / app；名册 APP 在线只认 app
+	ClientID  *uuid.UUID `gorm:"type:uuid" json:"clientId,omitempty"` // 示教器会话钉住的 Client；空表示还没对上臂（D-59）
+	CreatedAt time.Time  `gorm:"not null" json:"createdAt"`           // 会话建立时间
+	ExpiresAt time.Time  `gorm:"not null" json:"expiresAt"`           // 过期后立刻无效
 }
 
 // 指定落库表名，避免查询时按类型名去猜。
@@ -557,6 +558,30 @@ func (s *Store) SessionByTokenHash(ctx context.Context, tokenHash string) (Sessi
 	return row, nil
 }
 
+// BindSessionClient 把这条示教器会话钉到一台 Client：还没钉过才写，钉过的不改；交回钉住的那台。
+// 并发两次钉不同设备时只有先到的写得进，后到的读回先到的那台，由调用方判冲突（D-59）。
+func (s *Store) BindSessionClient(ctx context.Context, tokenHash string, clientID uuid.UUID) (uuid.UUID, error) {
+	// 只钉示教器会话，且只在还空着时写，钉过的一律不动。
+	err := s.db.WithContext(ctx).Model(&Session{}).
+		Where("token_hash = ? AND kind = ? AND client_id IS NULL", tokenHash, SessionKindApp).
+		Update("client_id", clientID).Error
+	// 写库失败就交回，不当成钉上了。
+	if err != nil {
+		return uuid.Nil, err
+	}
+	// 读回这条会话，看最终钉的是哪台；过期或不存在照原样交回。
+	row, err := s.SessionByTokenHash(ctx, tokenHash)
+	// 会话读不到就交回原因。
+	if err != nil {
+		return uuid.Nil, err
+	}
+	// 网页会话或别的原因没钉上，按不存在交回。
+	if row.ClientID == nil {
+		return uuid.Nil, domain.ErrNotFound
+	}
+	return *row.ClientID, nil
+}
+
 // DeleteSessionByTokenHash 作废这一条会话；找不到算不存在。
 func (s *Store) DeleteSessionByTokenHash(ctx context.Context, tokenHash string) error {
 	// 删掉匹配行，没有行交给后面判断。
@@ -576,6 +601,12 @@ func (s *Store) DeleteSessionByTokenHash(ctx context.Context, tokenHash string) 
 func (s *Store) DeleteSessionsForPerson(ctx context.Context, personID uuid.UUID) error {
 	// 删掉匹配行，库错误原样交回。
 	return s.db.WithContext(ctx).Where("person_id = ?", personID).Delete(&Session{}).Error
+}
+
+// DeleteAppSessionsForPerson 作废此人全部示教器会话；网页会话不动，没有可删不算错。
+func (s *Store) DeleteAppSessionsForPerson(ctx context.Context, personID uuid.UUID) error {
+	// 只删示教器那一种，库错误原样交回。
+	return s.db.WithContext(ctx).Where("person_id = ? AND kind = ?", personID, SessionKindApp).Delete(&Session{}).Error
 }
 
 // DeleteOtherAppSessions 作废此人比本次更早的示教器会话；网页会话不动，没有可删不算错。

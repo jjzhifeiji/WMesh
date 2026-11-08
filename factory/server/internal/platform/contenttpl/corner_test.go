@@ -26,6 +26,7 @@ func TestIsCornerProcess(t *testing.T) {
 	for _, c := range cases {
 		// 和期望不符就报。
 		if got := IsCornerProcess([]byte(c.body)); got != c.want {
+			// 报出正文和实得结果。
 			t.Errorf("%q => %v", c.body, got)
 		}
 	}
@@ -72,6 +73,7 @@ func TestHasCornerProcess(t *testing.T) {
 	for _, c := range cases {
 		// 和期望不符就报。
 		if got := HasCornerProcess(c.ids, look); got != c.want {
+			// 报出编号和实得结果。
 			t.Errorf("%v => %v", c.ids, got)
 		}
 	}

@@ -115,8 +115,12 @@ func (h *Handler) loginPad(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, err)
 			return
 		}
+		// 组装自报现场，补记和钉设备共用。
+		snap := loginSnap(service.LoginKindPad, req.AppVersion, req.AppVersionName, req.DeviceSerial, req.DeviceModel, req.DeviceManufacturer, req.AndroidRelease, req.NetworkName, req.ClientID, nil)
 		// 补记现场，记失败也不推翻刚完成的登录。
-		_ = svc.Node.RecordAppLogin(r.Context(), sess.Account.ID, loginSnap(service.LoginKindPad, req.AppVersion, req.AppVersionName, req.DeviceSerial, req.DeviceModel, req.DeviceManufacturer, req.AndroidRelease, req.NetworkName, req.ClientID, nil))
+		_ = svc.Node.RecordAppLogin(r.Context(), sess.Account.ID, snap)
+		// 登录带着臂号就把本次会话钉到这台（D-59）；没臂号等第一次对上臂补报再钉，钉失败也不推翻登录。
+		_ = svc.Node.BindPadClient(r.Context(), sess.Token, snap)
 		// 决定回给平板的通道地址，配置优先。
 		sess.MqttURL = h.clientMQTTURL(r)
 		// 通过之后把结果回给调用方。

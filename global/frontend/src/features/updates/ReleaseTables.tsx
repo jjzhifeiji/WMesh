@@ -2,6 +2,7 @@ import { App, Button, Card, Modal, Popconfirm, Progress, Space, Table, Tag, type
 import { useState } from "react";
 import { formatBytes, formatTime } from "@/shared/format";
 import { HashText } from "@/shared/ui/HashText";
+import { QueryErrorAlert, readFailed } from "@/shared/ui/QueryErrorAlert";
 import { errorMessage } from "@/shared/api/client";
 import {
   softwareKindLabel,
@@ -57,7 +58,7 @@ export function ReleaseTables({ rows, loading }: { rows: SoftwareRelease[]; load
   const images = storage.data?.images;
   const imageItems = images?.items ?? [];
   const imageOld = imageItems.filter((row) => !row.keep).length;
-  const imageText = images?.kind ? `${images.count} 个　${formatBytes(images.used)}` : "还没有回报";
+  const imageText = readFailed(storage) ? "读不到" : images?.kind ? `${images.count} 个　${formatBytes(images.used)}` : "还没有回报";
 
   const summaries: KindSummary[] = kinds.map((kind) => {
     const data = rows.filter((r) => r.kind === kind);
@@ -204,22 +205,26 @@ export function ReleaseTables({ rows, loading }: { rows: SoftwareRelease[]; load
           pagination={false}
         />
       </Card>
-      <Card title="本机存储" loading={storage.isLoading}>
-        <Space direction="vertical" size={12} style={{ width: "100%" }}>
-          <div>
+      <QueryErrorAlert query={storage} what="本机存储" style={{ marginBottom: 0 }} />
+      {/* 读失败不画卡片：磁盘、对象存储都会写成已用 0。 */}
+      {readFailed(storage) ? null : (
+        <Card title="本机存储" loading={storage.isLoading}>
+          <Space direction="vertical" size={12} style={{ width: "100%" }}>
             <div>
-              本机磁盘　已用 {formatBytes(disk?.used ?? 0)} / 共 {formatBytes(disk?.total ?? 0)}，可用 {formatBytes(disk?.avail ?? 0)}
+              <div>
+                本机磁盘　已用 {formatBytes(disk?.used ?? 0)} / 共 {formatBytes(disk?.total ?? 0)}，可用 {formatBytes(disk?.avail ?? 0)}
+              </div>
+              <Progress percent={diskPct} size="small" status={diskPct >= 90 ? "exception" : undefined} />
             </div>
-            <Progress percent={diskPct} size="small" status={diskPct >= 90 ? "exception" : undefined} />
-          </div>
-          <div>
-            对象存储　已用 {formatBytes(storage.data?.oss.used ?? 0)}（{storage.data?.oss.objects ?? 0} 个对象）
-            {storage.data?.oss.bucket ? `　${storage.data.oss.bucket}` : ""}
-          </div>
-          <div>数据库　已用 {formatBytes(storage.data?.database ?? 0)}</div>
-          <div>本机镜像　{images?.kind ? `已用 ${formatBytes(images.used)}（${images.count} 个）` : "还没有回报"}</div>
-        </Space>
-      </Card>
+            <div>
+              对象存储　已用 {formatBytes(storage.data?.oss.used ?? 0)}（{storage.data?.oss.objects ?? 0} 个对象）
+              {storage.data?.oss.bucket ? `　${storage.data.oss.bucket}` : ""}
+            </div>
+            <div>数据库　已用 {formatBytes(storage.data?.database ?? 0)}</div>
+            <div>本机镜像　{images?.kind ? `已用 ${formatBytes(images.used)}（${images.count} 个）` : "还没有回报"}</div>
+          </Space>
+        </Card>
+      )}
       <Modal
         title={detail ? `${softwareKindLabel[detail]}全部版本` : "全部版本"}
         open={detail !== null}

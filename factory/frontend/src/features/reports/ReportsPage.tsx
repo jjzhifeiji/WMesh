@@ -1,10 +1,13 @@
-import { App, Button, Card, Col, DatePicker, Row, Select, Statistic, Table, Tabs, type TableColumnsType } from "antd";
+import { App, Button, Card, Col, DatePicker, Popover, Row, Select, Statistic, Table, Tabs, Typography, type TableColumnsType } from "antd";
 import type { Dayjs } from "dayjs";
 import dayjs from "dayjs";
 import { useMemo, useState } from "react";
 import { useIsSuperAdmin } from "@/features/catalog/api";
 import { useHealth } from "@/features/dashboard/api";
+import { HashText } from "@/shared/ui/HashText";
+import { IdText } from "@/shared/ui/IdText";
 import { PageHeader } from "@/shared/ui/PageHeader";
+import { QueryErrorAlert, readFailed } from "@/shared/ui/QueryErrorAlert";
 import { errorMessage } from "@/shared/api/client";
 import {
   avg,
@@ -31,6 +34,36 @@ function defaultRange(): [Dayjs, Dayjs] {
   return [dayjs().subtract(29, "day").startOf("day"), dayjs().startOf("day")];
 }
 
+// 这次焊接用的哪版工艺；旧焊次没记，只显示横线。
+function ProcessUses({ row }: { row: WeldRunRow }) {
+  const uses = row.processes ?? [];
+  if (!uses.length && !row.projectRevision) return <>—</>;
+  return (
+    <Popover
+      title={row.projectRevision ? `工程修订 ${row.projectRevision}` : "这次用到的工艺"}
+      content={
+        <div style={{ maxWidth: 480 }}>
+          {uses.map((p) => (
+            <div key={p.processId} style={{ marginBottom: 8 }}>
+              <div>
+                {p.name || "（已删除或无权查看）"}
+                {p.code ? ` · ${p.code}` : ""} · 修订 {p.revision}
+              </div>
+              <IdText id={p.processId} />
+              <div>
+                摘要 <HashText value={p.digest} />
+              </div>
+            </div>
+          ))}
+          <Typography.Text type="secondary">修订是开焊时示教器本机的值，本机改过没推时可能落后，以摘要为准。</Typography.Text>
+        </div>
+      }
+    >
+      <Typography.Link>{uses.length} 条</Typography.Link>
+    </Popover>
+  );
+}
+
 function runColumns(): TableColumnsType<WeldRunRow> {
   return [
     { title: "时间", dataIndex: "occurredAt", width: 180, render: (v: string) => dayjs(v).format("YYYY-MM-DD HH:mm") },
@@ -40,6 +73,7 @@ function runColumns(): TableColumnsType<WeldRunRow> {
     { title: "组织", key: "org", render: (_, r) => pathLabel(r.orgPath) },
     { title: "焊长", key: "len", width: 100, render: (_, r) => formatLengthM(r.lengthMm) },
     { title: "时长", key: "dur", width: 100, render: (_, r) => formatDuration(r.durationSec) },
+    { title: "工艺", key: "processes", width: 80, render: (_, r) => <ProcessUses row={r} /> },
   ];
 }
 
@@ -50,6 +84,11 @@ function projectKey(r: { projectId?: string | null; projectName?: string }) {
 }
 
 // 展开分组行时按这一行的维度单独取下钻，叠上页面的人员和工程筛选，分页由服务端做。
+// groupRunsRow 展开行渲染：筛选一变换 key，明细重拉。放在组件外，免得每次渲染都新定义一个组件。
+function groupRunsRow(key: string, props: { tab: WeldGroup; row: WeldReportRow; from: string; to: string; filter: WeldRunFilter }) {
+  return <GroupRuns key={key} {...props} />;
+}
+
 function GroupRuns({ tab, row, from, to, filter }: { tab: WeldGroup; row: WeldReportRow; from: string; to: string; filter: WeldRunFilter }) {
   const [page, setPage] = useState(1);
   const f: WeldRunFilter = { ...filter };
@@ -190,30 +229,33 @@ export function ReportsPage() {
           </>
         }
       />
-      {grouped.error ? <p>{errorMessage(grouped.error)}</p> : null}
-      {runsQ.error ? <p>{errorMessage(runsQ.error)}</p> : null}
-      <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
-        <Col xs={24} sm={6}>
-          <Card>
-            <Statistic title="起停次数" value={totals.runCount} loading={runsQ.isLoading} />
-          </Card>
-        </Col>
-        <Col xs={24} sm={6}>
-          <Card>
-            <Statistic title="总焊长" value={formatLengthM(totals.lengthMm)} loading={runsQ.isLoading} />
-          </Card>
-        </Col>
-        <Col xs={24} sm={6}>
-          <Card>
-            <Statistic title="总时长" value={formatDuration(totals.durationSec)} loading={runsQ.isLoading} />
-          </Card>
-        </Col>
-        <Col xs={24} sm={6}>
-          <Card>
-            <Statistic title="次均时长" value={formatDuration(avg(totals.durationSec, totals.runCount))} loading={runsQ.isLoading} />
-          </Card>
-        </Col>
-      </Row>
+      <QueryErrorAlert query={grouped} what="焊长汇总" />
+      <QueryErrorAlert query={runsQ} what="焊次明细和合计" />
+      {/* 合计读失败不画统计卡：全是 0 会被当成真没焊过。 */}
+      {readFailed(runsQ) ? null : (
+        <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
+          <Col xs={24} sm={6}>
+            <Card>
+              <Statistic title="起停次数" value={totals.runCount} loading={runsQ.isLoading} />
+            </Card>
+          </Col>
+          <Col xs={24} sm={6}>
+            <Card>
+              <Statistic title="总焊长" value={formatLengthM(totals.lengthMm)} loading={runsQ.isLoading} />
+            </Card>
+          </Col>
+          <Col xs={24} sm={6}>
+            <Card>
+              <Statistic title="总时长" value={formatDuration(totals.durationSec)} loading={runsQ.isLoading} />
+            </Card>
+          </Col>
+          <Col xs={24} sm={6}>
+            <Card>
+              <Statistic title="次均时长" value={formatDuration(avg(totals.durationSec, totals.runCount))} loading={runsQ.isLoading} />
+            </Card>
+          </Col>
+        </Row>
+      )}
       <Tabs
         activeKey={tab}
         onChange={(k) => setTab(k as WeldGroup)}
@@ -225,7 +267,7 @@ export function ReportsPage() {
           { key: "person-day", label: "明细" },
         ]}
       />
-      {tab === "person-day" ? (
+      {readFailed(tab === "person-day" ? runsQ : grouped) ? null : tab === "person-day" ? (
         <Table
           rowKey="id"
           columns={runColumns()}
@@ -241,9 +283,7 @@ export function ReportsPage() {
           loading={grouped.isLoading}
           pagination={{ pageSize: 20 }}
           expandable={{
-            expandedRowRender: (row) => (
-              <GroupRuns key={`${from}|${to}|${personFilter ?? ""}|${projectFilter ?? ""}`} tab={tab} row={row} from={from} to={to} filter={runFilter} />
-            ),
+            expandedRowRender: (row) => groupRunsRow(`${from}|${to}|${personFilter ?? ""}|${projectFilter ?? ""}`, { tab, row, from, to, filter: runFilter }),
           }}
         />
       )}

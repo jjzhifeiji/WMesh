@@ -71,6 +71,18 @@ type Asset struct {
 	Deps           []AssetDep `json:"deps"`           // 工艺必须空
 	CreatedAt      time.Time  `json:"createdAt"`      // 创建时间
 	UpdatedAt      time.Time  `json:"updatedAt"`      // 最近升高修订的时间
+	// 下面两项不落库，只在保存厂级工程时回给调用方：个人工艺被换成厂级副本后，调用方手里的正文就旧了。
+	SavedContent   *string        `json:"content,omitempty"`        // 服务端改写过的工程正文；没改写不带；工程正文只有工艺引用，不含参数
+	PersonalCopies []PersonalCopy `json:"personalCopies,omitempty"` // 这次新复制出的厂级工艺；没复制不带
+}
+
+// PersonalCopy 是厂级工程保存时从个人工艺复制出的一条厂级工艺。
+type PersonalCopy struct {
+	SourceID uuid.UUID `json:"sourceId"` // 被复制的个人工艺身份
+	ID       uuid.UUID `json:"id"`       // 新厂级工艺身份
+	Code     string    `json:"code"`     // 新厂级工艺编号
+	Name     string    `json:"name"`     // 新厂级工艺显示名，沿用个人工艺的
+	Revision int64     `json:"revision"` // 新厂级工艺修订
 }
 
 // AssetWrite 是一次改名/改内容/改可复制/改状态/改依赖的写入。
@@ -536,23 +548,61 @@ func lockAssetDepsTx(tx *gorm.DB, weldKind string, deps, kept []AssetDep) error 
 
 // DeleteGovernedAsset 物理删除本厂一条；调用方须先确认未被依赖。
 func (s *Store) DeleteGovernedAsset(ctx context.Context, assetID uuid.UUID) error {
+	// 不核修订，内部回收和整夹删除走这里。
+	return s.deleteGoverned(ctx, assetID, 0)
+}
+
+// DeleteGovernedAssetAt 按期望修订删本厂原件；修订已被别人改过就整单不删，回修订冲突。
+func (s *Store) DeleteGovernedAssetAt(ctx context.Context, assetID uuid.UUID, expected int64) error {
+	// 期望修订从 1 起，零或负数一律当对不上。
+	if expected < 1 {
+		return domain.ErrRevisionConflict
+	}
+	// 带上期望修订去删。
+	return s.deleteGoverned(ctx, assetID, expected)
+}
+
+// deleteGoverned 删原件和文件节点；expected 大于零时只删这一修订，对不上回修订冲突。
+func (s *Store) deleteGoverned(ctx context.Context, assetID uuid.UUID, expected int64) error {
 	// 放进同一事务，中途失败就整单回滚。
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// 删除匹配行失败就停，避免带着错误继续。
 		if err := tx.Where("asset_id = ? AND node_kind = ?", assetID, FSNodeFile).Delete(&fsNodeRow{}).Error; err != nil {
 			return err
 		}
+		// 先按身份筛原件。
+		q := tx.Where("id = ?", assetID)
+		// 带了期望修订就只删这一修订，别人刚改过的不删。
+		if expected > 0 {
+			// 修订也要对上。
+			q = q.Where("revision = ?", expected)
+		}
 		// 删掉匹配行，没有行交给后面判断。
-		res := tx.Where("id = ?", assetID).Delete(&governedAssetRow{})
+		res := q.Delete(&governedAssetRow{})
 		// 更新失败则交回库错误，不能当成已经改完。
 		if res.Error != nil {
 			return res.Error
 		}
-		// 没有改到行就当目标不存在。
-		if res.RowsAffected == 0 {
+		// 删到了就算完成。
+		if res.RowsAffected > 0 {
+			return nil
+		}
+		// 没带期望修订时没删到就是不存在。
+		if expected == 0 {
 			return domain.ErrNotFound
 		}
-		return nil
+		// 准备数一下这件还在不在。
+		var n int64
+		// 数不出就交回库错误，事务回滚。
+		if err := tx.Model(&governedAssetRow{}).Where("id = ?", assetID).Count(&n).Error; err != nil {
+			return err
+		}
+		// 已经没了就是不存在。
+		if n == 0 {
+			return domain.ErrNotFound
+		}
+		// 还在却没删到，是修订对不上，文件节点随事务回滚。
+		return domain.ErrRevisionConflict
 	})
 }
 

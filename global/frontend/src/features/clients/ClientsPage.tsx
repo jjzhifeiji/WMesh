@@ -7,6 +7,7 @@ import { formatTime } from "@/shared/format";
 import { AgoText } from "@/shared/ui/AgoText";
 import { CodeText } from "@/shared/ui/CodeText";
 import { PageHeader } from "@/shared/ui/PageHeader";
+import { QueryErrorAlert, readFailed } from "@/shared/ui/QueryErrorAlert";
 import {
   useAssignClient,
   useClients,
@@ -109,9 +110,14 @@ export function ClientsPage() {
           </Button>
         }
       />
-      <Card>
-        <Table<Client> rowKey="id" columns={columns} dataSource={clients.data ?? []} loading={clients.isLoading} pagination={{ pageSize: 20, hideOnSinglePage: true }} />
-      </Card>
+      <QueryErrorAlert query={clients} what="设备列表" />
+      <QueryErrorAlert query={dir} what="工厂名录" />
+      {/* 读失败不画表：空表会被当成真没设备。 */}
+      {readFailed(clients) ? null : (
+        <Card>
+          <Table<Client> rowKey="id" columns={columns} dataSource={clients.data ?? []} loading={clients.isLoading} pagination={{ pageSize: 20, hideOnSinglePage: true }} />
+        </Card>
+      )}
       <Modal
         title="登记设备"
         open={open}

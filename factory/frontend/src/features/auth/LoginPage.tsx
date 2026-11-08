@@ -5,7 +5,7 @@ import { paths } from "@/app/routes";
 import { errorMessage } from "@/shared/api/client";
 import { useSession } from "@/shared/auth/session";
 import { useLogin, useSite, type LoginInput } from "./api";
-import { FactoryClosedNotice, FactoryStatusTag, factoriesBlocked, factoryOptionLabel, pickFactoryId, selectableFactories } from "./status";
+import { FactoryClosedNotice, FactoryLeaseNotice, FactoryStatusTag, factoriesBlocked, factoryOptionLabel, loginFactories, pickFactoryId } from "./status";
 
 const uuidRule = { pattern: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i, message: "工厂 ID 应为 UUID" };
 
@@ -20,7 +20,8 @@ export function LoginPage() {
   const state = location.state as { from?: string; loginName?: string } | null;
   const from = state?.from ?? paths.dashboard;
   const factories = site.data?.factories ?? [];
-  const listed = selectableFactories(factories);
+  // 已注销的厂只在它是会话所在厂时列出，免得退回登录页时工厂框里是一串 ID。
+  const listed = loginFactories(factories, factoryId);
   const only = listed.length === 1 ? listed[0] : undefined;
   const presetId = pickFactoryId(listed, factoryId);
   const hideFactoryId = Boolean(presetId) || site.isLoading;
@@ -40,6 +41,7 @@ export function LoginPage() {
       </Space>
       <Typography.Paragraph type="secondary">用本厂账号登录。第一次开厂请用云端建厂码认领。</Typography.Paragraph>
       <FactoryClosedNotice factories={factories} factoryId={watchedId || only?.id} />
+      <FactoryLeaseNotice factories={listed} factoryId={watchedId || presetId || only?.id} />
       <Form<LoginInput>
         form={form}
         layout="vertical"

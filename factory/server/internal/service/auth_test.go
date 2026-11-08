@@ -374,6 +374,11 @@ func TestLoginNameTrimmed(t *testing.T) {
 		// 网页登不上，说明默认口令按原样名字拼了。
 		t.Fatalf("web login zhang3: %v", err)
 	}
+	// 示教器只给有角色的人用，先授操作员。
+	if _, err := fac.GrantRole(ctx, saTok, zhang.ID, service.RoleOperator); err != nil {
+		// 授不上角色就停，后面的示教器登录无从验起。
+		t.Fatalf("grant zhang3: %v", err)
+	}
 	// 示教器登录也用规范名和默认口令，应能过。
 	if _, err := fac.LoginPad(ctx, "zhang3", personPass("zhang3")); err != nil {
 		// 示教器登不上，正是这次要修的问题。

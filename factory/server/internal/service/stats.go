@@ -19,7 +19,7 @@ import (
 
 const padRecentLimit = 100 // 示教器最近焊次条数上限
 
-const weldFutureSkew = 10 * time.Minute // 焊完时间最多比厂端钟超前这么久，再超前当钟错拒收
+const weldClockWarnSkew = 10 * time.Minute // 焊完时间比厂端钟超前这么久以上记一条告警；只做监控，焊次照收
 
 const (
 	weldRunsDefaultLimit = 200  // 下钻不带条数时每页默认条数
@@ -147,6 +147,18 @@ type WeldRunRow struct {
 	LengthMM    int64      `json:"lengthMm"`            // 本段焊长毫米
 	DurationSec int64      `json:"durationSec"`         // 本段时长秒
 	OccurredAt  string     `json:"occurredAt"`          // RFC3339 焊完时间
+	// 用了哪版工艺（D-109）；旧焊次两项都没有。
+	ProjectRevision int64            `json:"projectRevision,omitempty"` // 开焊时工程修订
+	Processes       []WeldRunProcess `json:"processes,omitempty"`       // 这次用到的工艺
+}
+
+// WeldRunProcess 是下钻行里的一条工艺：焊次记的身份、修订、摘要，加上现在能给这人看的名字和编号；不含参数值。
+type WeldRunProcess struct {
+	ProcessID uuid.UUID `json:"processId"`      // 工艺身份
+	Revision  int64     `json:"revision"`       // 开焊时本机修订，可能落后，以摘要为准
+	Digest    []byte    `json:"digest"`         // 正文 SHA-256
+	Name      string    `json:"name,omitempty"` // 现在的显示名；已删或无权看就空着
+	Code      string    `json:"code,omitempty"` // 只读编号；已删或无权看就空着
 }
 
 // WeldDemoResult 是演示焊次写入结果。
@@ -180,8 +192,8 @@ type WeldRunPage struct {
 // AuthorizeWeldFlush 汇聚前核对会话；不通过就留汇聚拒绝审计。
 // HTTP 读大正文前先调它，匿名被挡时审计口径不丢。
 func (s *Stats) AuthorizeWeldFlush(ctx context.Context, token string) (Account, error) {
-	// 先确认会话仍有效，过期或停用直接拒绝
-	acc, err := s.RequireActive(ctx, token)
+	// 先确认会话仍有效且还握着角色，角色全收回的人不再上报焊次
+	acc, err := s.requirePadActor(ctx, token)
 	// 会话无效或账号已停用，拒绝继续
 	if err != nil {
 		// 记下汇聚焊次被拒绝，写失败不改变结果
@@ -201,6 +213,10 @@ func (s *Stats) FlushWeldFacts(ctx context.Context, token string, items []WeldFa
 	}
 	// 先备好收下和拒绝两栏，失败的条仍留本机
 	out := WeldFlushResult{Accepted: []uuid.UUID{}, Rejected: []WeldReject{}}
+	// 本批焊完时间最超前厂端钟的一条，只用来记监控告警
+	var aheadMax time.Duration
+	// 记下最超前的那条，告警里带它的焊次 ID
+	var aheadItem WeldFact
 	// 逐条待发或清单处理，失败的留下次
 	for _, item := range items {
 		// 身份不齐则拒绝这条，避免写下没有归属的记录
@@ -215,17 +231,22 @@ func (s *Stats) FlushWeldFacts(ctx context.Context, token string, items []WeldFa
 			out.Rejected = append(out.Rejected, WeldReject{ID: item.ID, Error: domain.ErrForbidden.Error()})
 			continue
 		}
+		// 工程修订或工艺清单不合规，拒绝这条；工艺认不认识不看，已删的也照收
+		if !store.ValidWeldProcesses(item.ProjectRevision, item.Processes) {
+			// 取出失败原因放进拒绝行，本机留着
+			out.Rejected = append(out.Rejected, WeldReject{ID: item.ID, Error: domain.ErrForbidden.Error()})
+			continue
+		}
 		// 工程名去首尾空白后仍超长，拒绝这条，免得 WAN 整批拒收
 		if !store.ValidWeldProjectName(item.ProjectName) {
 			// 取出失败原因放进拒绝行，本机留着等改名
 			out.Rejected = append(out.Rejected, WeldReject{ID: item.ID, Error: domain.ErrInvalidName.Error()})
 			continue
 		}
-		// 焊完时间比厂端钟超前太多，当示教器钟错拒收，免得报表冒出未来日期；本机留着等钟对上
-		if item.OccurredAt.After(time.Now().Add(weldFutureSkew)) {
-			// 取出失败原因放进拒绝行，本机留着
-			out.Rejected = append(out.Rejected, WeldReject{ID: item.ID, Error: domain.ErrForbidden.Error()})
-			continue
+		// 焊完时间比厂端钟超前太多只记下来做监控，焊次照常收下、照常汇聚
+		if d := item.OccurredAt.Sub(time.Now()); d > weldClockWarnSkew && d > aheadMax {
+			// 一批只记最大的那条，免得一批几百条刷屏
+			aheadMax, aheadItem = d, item
 		}
 		// 焊长和时长都是零则拒绝，空跑不算一次焊
 		if item.LengthMM == 0 && item.DurationSec == 0 {
@@ -241,6 +262,21 @@ func (s *Stats) FlushWeldFacts(ctx context.Context, token string, items []WeldFa
 		}
 		// 把这一条收进结果，漏了清单就不齐
 		out.Accepted = append(out.Accepted, item.ID)
+	}
+	// 示教器钟比厂端钟超前过阈值，记一条告警供监控；不改焊次、不影响报表和登录
+	if aheadMax > 0 {
+		// 当时 Client 可能没匹配上，空着记空串
+		client := ""
+		// 匹配上了才取身份
+		if aheadItem.ClientID != nil {
+			// 取 Client ID 文本写进告警
+			client = aheadItem.ClientID.String()
+		}
+		// 带上账号、示教器和偏差秒数，便于查设备异常或人为改钟
+		slog.Warn("pad clock ahead of factory clock",
+			"accountId", acc.ID, "loginName", acc.LoginName,
+			"clientId", client, "deviceSerial", acc.AppDeviceSerial, "clientName", acc.AppClientName,
+			"weldId", aheadItem.ID, "skewSeconds", int64(aheadMax/time.Second))
 	}
 	// 有新收下的焊次，厂库汇总就变了
 	if len(out.Accepted) > 0 {
@@ -435,6 +471,8 @@ func (s *Stats) ListWeldRuns(ctx context.Context, token string, q WeldRunQuery) 
 	}
 	// 组织路径按当前树补，同一节点只走一次
 	paths := s.newOrgPaths()
+	// 工艺名按当前资产补，同一条只查一次
+	labels := map[uuid.UUID]weldProcessLabel{}
 	// 逐条收成下钻行，范围已在库里裁过
 	for _, f := range facts {
 		// 把这一条收进结果，漏了清单就不齐
@@ -443,11 +481,65 @@ func (s *Stats) ListWeldRuns(ctx context.Context, token string, q WeldRunQuery) 
 			OrgUnitID: f.OrgUnitID, OrgPath: paths.of(ctx, f.OrgUnitID), ProjectID: f.ProjectID,
 			ProjectName: store.ProjectLabel(f.ProjectName), WeldKind: f.WeldKind,
 			LengthMM: f.LengthMM, DurationSec: f.DurationSec,
-			OccurredAt: f.OccurredAt.UTC().Format(time.RFC3339),
+			OccurredAt:      f.OccurredAt.UTC().Format(time.RFC3339),
+			ProjectRevision: f.ProjectRevision,
+			Processes:       s.weldRunProcesses(ctx, acc, f.Processes, labels),
 		})
 	}
 	// 查看每次起停成功后记审计，再把结果交回
 	return out, s.audit(ctx, &acc.ID, nil, "list_weld_runs", "runs", audit.Allow)
+}
+
+// weldProcessLabel 是一条工艺现在能给调用方看的名字和编号。
+type weldProcessLabel struct {
+	name string // 显示名
+	code string // 只读编号
+}
+
+// weldRunProcesses 把焊次记的工艺清单收成下钻行，名字和编号按当前资产补；已删或无权看的只留身份、修订和摘要。
+func (s *Stats) weldRunProcesses(ctx context.Context, acc Account, uses []store.WeldProcessUse, labels map[uuid.UUID]weldProcessLabel) []WeldRunProcess {
+	// 没记到就不带这一项，旧焊次回包不变。
+	if len(uses) == 0 {
+		return nil
+	}
+	// 按条数备好结果，顺序和焊次记的一样。
+	out := make([]WeldRunProcess, 0, len(uses))
+	// 逐条补名字。
+	for _, u := range uses {
+		// 这一页已经查过的直接用。
+		label, ok := labels[u.ProcessID]
+		// 没查过才去读元数据，读不到当没有名字。
+		if !ok {
+			// 只读元数据，不解正文。
+			label = s.weldProcessLabelOf(ctx, acc, u.ProcessID)
+			// 记下来，这一页同一条不再查。
+			labels[u.ProcessID] = label
+		}
+		// 收进结果，参数值从来不在这里。
+		out = append(out, WeldRunProcess{ProcessID: u.ProcessID, Revision: u.Revision, Digest: u.Digest, Name: label.name, Code: label.code})
+	}
+	return out
+}
+
+// weldProcessLabelOf 读一条工艺的名字和编号；原件没有再看已收副本，别人的个人工艺不给名字。
+func (s *Stats) weldProcessLabelOf(ctx context.Context, acc Account, id uuid.UUID) weldProcessLabel {
+	// 本厂原件优先，只读元数据。
+	a, err := s.store.GovernedAssetMetaByID(ctx, id)
+	// 本厂没有就看已收的平台副本。
+	if err != nil {
+		// 取最高修订的副本元数据，云端已删的也认。
+		r, rerr := s.store.HighestReplicaMeta(ctx, id)
+		// 副本也没有就只留身份。
+		if rerr != nil {
+			return weldProcessLabel{}
+		}
+		return weldProcessLabel{name: r.Name, code: r.Code}
+	}
+	// 个人工艺名字和列表同一口径：只给创建人和超管。
+	if s.canViewAssetMeta(ctx, acc, a) != nil {
+		return weldProcessLabel{}
+	}
+	return weldProcessLabel{name: a.Name, code: a.Code}
 }
 
 // SeedWeldDemo 开发版开关打开时，超管写入固定身份的演示焊次，已有则跳过；开关关着回找不到。

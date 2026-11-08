@@ -35,12 +35,19 @@ export async function request<T>(path: string, init: RequestInitLite = {}): Prom
   const token = session.token;
   if (token) headers.set("Authorization", `Bearer ${token}`);
 
-  const res = await fetch(path, {
-    method: init.method ?? "GET",
-    headers,
-    body,
-    signal: init.signal,
-  });
+  let res: Response;
+  try {
+    res = await fetch(path, {
+      method: init.method ?? "GET",
+      headers,
+      body,
+      signal: init.signal,
+    });
+  } catch (err) {
+    // 主动取消原样抛，查询库靠它识别；其余都是连不上（断网、服务没起），浏览器只给英文 Failed to fetch。
+    if (init.signal?.aborted) throw err;
+    throw new ApiError(0, "network error", translateError("network error"));
+  }
   if (res.status === 204) return undefined as T;
 
   const text = await res.text();
@@ -51,7 +58,7 @@ export async function request<T>(path: string, init: RequestInitLite = {}): Prom
     data = undefined;
   }
   if (!res.ok) {
-    const code = (data as { error?: string } | undefined)?.error ?? res.statusText.toLowerCase();
+    const code = (data as { error?: string } | undefined)?.error ?? (res.statusText.toLowerCase() || "request failed");
     if (res.status === 401 && token) session.clear();
     throw new ApiError(res.status, code, translateError(code));
   }

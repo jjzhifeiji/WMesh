@@ -24,6 +24,37 @@ type recDown struct {
 	mu sync.Mutex
 	// 按到达顺序记下的下行字节。
 	msgs [][]byte
+	// 按到达顺序记下被断开连接的人。
+	dropped []uuid.UUID
+}
+
+// 把一次按人断开记下来，没记下则验不到立即下线。
+func (r *recDown) DropPerson(factoryID, personID uuid.UUID) {
+	// 先锁住记录，避免并发写乱。
+	r.mu.Lock()
+	// 记下被断开的人。
+	r.dropped = append(r.dropped, personID)
+	// 放开记录锁，不放则会把下一次读堵住。
+	r.mu.Unlock()
+}
+
+// droppedOf 数这个人被断开过几次。
+func (r *recDown) droppedOf(personID uuid.UUID) int {
+	// 先锁住记录，避免读到写一半的切片。
+	r.mu.Lock()
+	// 读完放开锁。
+	defer r.mu.Unlock()
+	// 逐条数这个人。
+	n := 0
+	// 逐条看被断开的人。
+	for _, p := range r.dropped {
+		// 对上就计一次。
+		if p == personID {
+			// 计一次。
+			n++
+		}
+	}
+	return n
 }
 
 // 把一封下行记下来，没记下则后面验不到推送。

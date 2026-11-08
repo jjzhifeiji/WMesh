@@ -269,6 +269,38 @@ func (s *Store) LatestReplicaMeta(ctx context.Context, assetID uuid.UUID) (Asset
 	return replicaFromRow(row), nil
 }
 
+// HighestReplica 读该身份已收的最高修订副本，含正文；已撤回的也算，被工程依赖的工艺撤回后仍要可读。
+func (s *Store) HighestReplica(ctx context.Context, assetID uuid.UUID) (AssetReplica, error) {
+	// 准备承接查到的平台副本。
+	var row replicaRow
+	// 按条件取一行失败就停，避免带着错误继续。
+	if err := s.db.WithContext(ctx).Where("id = ?", assetID).Order("revision DESC").First(&row).Error; err != nil {
+		// 没有这一行就当成不存在。
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return AssetReplica{}, domain.ErrNotFound
+		}
+		return AssetReplica{}, err
+	}
+	// 库行收成对外结果再交回。
+	return s.decodeReplica(row)
+}
+
+// HighestReplicaMeta 读该身份已收最高修订副本的元数据，不解包；已撤回的也算。
+func (s *Store) HighestReplicaMeta(ctx context.Context, assetID uuid.UUID) (AssetReplica, error) {
+	// 准备承接查到的平台副本。
+	var row replicaRow
+	// 按条件取一行失败就停，避免带着错误继续。
+	if err := s.db.WithContext(ctx).Where("id = ?", assetID).Omit("Content").Order("revision DESC").First(&row).Error; err != nil {
+		// 没有这一行就当成不存在。
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return AssetReplica{}, domain.ErrNotFound
+		}
+		return AssetReplica{}, err
+	}
+	// 库行收成对外结果再交回。
+	return replicaFromRow(row), nil
+}
+
 // ListReplicas 列出本厂未撤回的平台级副本，不含正文。
 func (s *Store) ListReplicas(ctx context.Context) ([]AssetReplica, error) {
 	// 准备承接查到的多条平台副本。

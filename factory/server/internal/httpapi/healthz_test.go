@@ -200,3 +200,78 @@ func latestVersion(t *testing.T) int64 {
 	}
 	return top
 }
+
+// 对象存储连不上要等满超时：只把 oss 标 down、status 降级；库照常 ok，各厂迁移版本照报真实值，不被拖成 -1（D-88）。
+func TestHealthzOSSDownKeepsSchema(t *testing.T) {
+	// 连上测试库并建枢纽，连不上就停测。
+	h, err := hub.New(testpg.AdminDSN())
+	// 测试库连不上则停测。
+	if err != nil {
+		// 与预期不符就停测，避免后面连环误判。
+		t.Fatalf("hub: %v", err)
+	}
+	// 本测单独一家厂。
+	fid := id.New()
+	// 测完删掉厂库并关枢纽。
+	t.Cleanup(func() {
+		// 删掉这家厂库。
+		_ = h.Drop(fid)
+		// 关掉枢纽，释放测试占用的连接。
+		h.Close()
+	})
+	// 按约定身份建厂，库随之打开。
+	enrollSA(t, h, fid)
+	// 装好处理器，对象存储探测一直等到超时。
+	api := httpapi.New(h, "")
+	// 模拟 OSS 停掉：连不上，要等满限时才报错。
+	api.OSSProbe = func(ctx context.Context) error {
+		// 等到限时到期。
+		<-ctx.Done()
+		// 交回超时原因，当作连不上。
+		return ctx.Err()
+	}
+	// 拉起临时服务，测完由清理关掉。
+	srv := httptest.NewServer(api.Router())
+	// 测完关闭临时服务，把端口让出来。
+	t.Cleanup(srv.Close)
+	// 探活。
+	code, body := do(t, srv, "GET", "/healthz", "", "")
+	// 库好着，状态码仍是 200；整体降级、存储掉线。
+	if code != http.StatusOK || gjson(t, body, "status") != "degraded" || gjson(t, body, "db") != "ok" || gjson(t, body, "oss") != "down" {
+		// 把探活结果打出来。
+		t.Fatalf("healthz %d %s", code, body)
+	}
+	// 准备按结构读出 schema 一段。
+	var resp struct {
+		// 探活里的厂库结构一段。
+		Schema hub.SchemaState `json:"schema"`
+	}
+	// 读不出就停测。
+	if err := json.Unmarshal([]byte(body), &resp); err != nil {
+		// 把回包打出来便于对照。
+		t.Fatalf("json %s: %v", body, err)
+	}
+	// 应有的最新迁移版本。
+	want := latestVersion(t)
+	// 准备找本测这家。
+	found := false
+	// 逐条看已打开列表。
+	for _, f := range resp.Schema.Factories {
+		// 只看本测这家。
+		if f.FactoryID != fid {
+			continue
+		}
+		// 记下找到了。
+		found = true
+		// 被拖成 -1 或版本不对就停测。
+		if f.Version != want {
+			// 把这一条和应有版本打出来。
+			t.Fatalf("schema version %d, want %d: %s", f.Version, want, body)
+		}
+	}
+	// 没列出本测这家就停测。
+	if !found {
+		// 把探活结果打出来。
+		t.Fatalf("factory not listed: %s", body)
+	}
+}

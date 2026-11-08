@@ -7,6 +7,7 @@ import { weldKindLabel } from "@/features/templates/projectKinds";
 import { errorMessage } from "@/shared/api/client";
 import { translateError } from "@/shared/api/errors";
 import { PageHeader } from "@/shared/ui/PageHeader";
+import { QueryErrorAlert, readFailed } from "@/shared/ui/QueryErrorAlert";
 import { useImportLegacy, type LegacyFile, type LegacyImportResult, type LegacyLevel, type LegacyReject } from "./api";
 
 type Picked = { processes: LegacyFile[]; projects: LegacyFile[]; skipped: number };
@@ -35,6 +36,9 @@ export function LegacyImportPage() {
     }
     return set;
   }, [procs.data, projs.data, level, meId]);
+
+  // 读不到现有工艺、工程就判断不了重名，不问就导会撞名，先不让开始。
+  const namesUnknown = readFailed(procs) || readFailed(projs);
 
   const onFiles = async (list: FileList | null) => {
     if (!list || list.length === 0) return;
@@ -109,6 +113,8 @@ export function LegacyImportPage() {
         title="旧文件导入"
         description="选示教器上的 processes / projects 目录（或整份 ShiJiaoQi）。默认导进自己的个人文件夹；超管或管理员可选导进厂级。缺路径的工程整份拒绝，已入工艺保留。同名会问覆盖、按路径重命名还是跳过。"
       />
+      <QueryErrorAlert query={procs} what="现有工艺（判断重名要用）" />
+      <QueryErrorAlert query={projs} what="现有工程（判断重名要用）" />
       <Card style={{ maxWidth: 880 }}>
         <input
           ref={inputRef}
@@ -141,7 +147,7 @@ export function LegacyImportPage() {
         <Button
           type="primary"
           style={{ marginTop: 8 }}
-          disabled={reading || !picked || (picked.processes.length === 0 && picked.projects.length === 0)}
+          disabled={reading || namesUnknown || !picked || (picked.processes.length === 0 && picked.projects.length === 0)}
           loading={imp.isPending}
           onClick={() => void start()}
         >

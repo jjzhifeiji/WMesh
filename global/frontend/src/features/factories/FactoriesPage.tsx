@@ -1,10 +1,11 @@
 import { PlusOutlined, ReloadOutlined } from "@ant-design/icons";
-import { Alert, App, Button, Card, Popconfirm, Space, Table, Tag, type TableColumnsType } from "antd";
+import { App, Button, Card, Popconfirm, Space, Table, Tag, type TableColumnsType } from "antd";
 import { useState } from "react";
 import { errorMessage } from "@/shared/api/client";
 import { formatDateTime, formatRelease, formatTime } from "@/shared/format";
 import { CodeText } from "@/shared/ui/CodeText";
 import { PageHeader } from "@/shared/ui/PageHeader";
+import { QueryErrorAlert, readFailed } from "@/shared/ui/QueryErrorAlert";
 import { CreateFactoryModal } from "./CreateFactoryModal";
 import {
   useDeleteFactory,
@@ -111,17 +112,20 @@ export function FactoriesPage() {
           </>
         }
       />
-      {dir.isError ? <Alert type="error" showIcon message={errorMessage(dir.error)} style={{ marginBottom: 16 }} /> : null}
-      <Card>
-        <Table<Factory>
-          rowKey="id"
-          columns={columns}
-          dataSource={dir.data?.factories ?? []}
-          loading={dir.isLoading}
-          pagination={{ pageSize: 20, hideOnSinglePage: true }}
-          scroll={{ x: 1250 }}
-        />
-      </Card>
+      <QueryErrorAlert query={dir} what="工厂名录" />
+      {/* 读失败不画表：空表会被当成真没工厂。 */}
+      {readFailed(dir) ? null : (
+        <Card>
+          <Table<Factory>
+            rowKey="id"
+            columns={columns}
+            dataSource={dir.data?.factories ?? []}
+            loading={dir.isLoading}
+            pagination={{ pageSize: 20, hideOnSinglePage: true }}
+            scroll={{ x: 1250 }}
+          />
+        </Card>
+      )}
       <CreateFactoryModal open={creating} onClose={() => setCreating(false)} />
     </>
   );

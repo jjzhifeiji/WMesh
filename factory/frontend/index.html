@@ -7,6 +7,20 @@
   </head>
   <body>
     <div id="root"></div>
+    <!-- 不是模块、只用老语法：老内核解析不了主包时页面全白，这里照实提示。主包晚些渲染出来会把这段盖掉。 -->
+    <script>
+      window.onload = function () {
+        setTimeout(function () {
+          var root = document.getElementById("root");
+          if (root && !root.firstChild) {
+            root.innerHTML =
+              '<div style="max-width:560px;margin:80px auto;padding:0 16px;font:14px/1.8 sans-serif;color:#333">' +
+              '<h2 style="font-size:18px">页面没能打开</h2>' +
+              "<p>这个浏览器的版本可能太低，请换用新版 Chrome 或 Edge（360、QQ 等浏览器请切到极速模式）。也可以先刷新一次试试。</p></div>";
+          }
+        }, 4000);
+      };
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

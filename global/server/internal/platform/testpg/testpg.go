@@ -45,6 +45,11 @@ func Open(t *testing.T) *gorm.DB {
 		// 拿失败就中止并带上原因。
 		t.Fatalf("sql db: %v", err)
 	}
+	// 用例结束关掉维护连接（排在删临时库之后），否则用例一多就撑满测试库的连接上限。
+	t.Cleanup(func() {
+		// 关不上也不影响结果，进程退出时一样释放。
+		_ = sqlDB.Close()
+	})
 	// 探活最多等五秒，避免用例挂死。
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	// 探完就取消，放开超时计时。

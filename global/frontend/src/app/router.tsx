@@ -14,14 +14,17 @@ import { AdminLayout } from "@/layouts/AdminLayout";
 import { AuthLayout } from "@/layouts/AuthLayout";
 import { RequireAuth } from "@/shared/auth/RequireAuth";
 import { NotFoundPage } from "@/shared/ui/NotFoundPage";
+import { RouteErrorPage } from "@/shared/ui/RouteErrorPage";
 import { PlaceholderPage } from "@/shared/ui/PlaceholderPage";
 import { placeholderPaths } from "./navigation";
 import { paths } from "./routes";
 
 // 两棵路由树：公开的登录区，和需要会话的后台区（侧栏 + 顶栏布局）。
+// 后台区的页面出错只换内容区，侧栏还在；布局自己出错才整页兜底。
 export const router = createBrowserRouter([
   {
     element: <AuthLayout />,
+    errorElement: <RouteErrorPage />,
     children: [{ path: paths.login, element: <LoginPage /> }],
   },
   {
@@ -30,20 +33,26 @@ export const router = createBrowserRouter([
         <AdminLayout />
       </RequireAuth>
     ),
+    errorElement: <RouteErrorPage />,
     children: [
-      { index: true, element: <DashboardPage /> },
-      { path: paths.factories, element: <FactoriesPage /> },
-      { path: paths.clients, element: <ClientsPage /> },
-      { path: paths.processes, element: <AssetsPage key="process" kind="process" /> },
-      { path: paths.projects, element: <AssetsPage key="project" kind="project" /> },
-      { path: paths.templates, element: <TemplatesPage /> },
-      { path: paths.projectTemplates, element: <ProjectTemplatesPage /> },
-      { path: paths.legacyImport, element: <LegacyImportPage /> },
-      { path: paths.updates, element: <UpdatesPage /> },
-      { path: paths.reports, element: <ReportsPage /> },
-      { path: paths.account, element: <AccountPage /> },
-      ...placeholderPaths.map((path) => ({ path, element: <PlaceholderPage /> })),
-      { path: "*", element: <NotFoundPage /> },
+      {
+        errorElement: <RouteErrorPage />,
+        children: [
+          { index: true, element: <DashboardPage /> },
+          { path: paths.factories, element: <FactoriesPage /> },
+          { path: paths.clients, element: <ClientsPage /> },
+          { path: paths.processes, element: <AssetsPage key="process" kind="process" /> },
+          { path: paths.projects, element: <AssetsPage key="project" kind="project" /> },
+          { path: paths.templates, element: <TemplatesPage /> },
+          { path: paths.projectTemplates, element: <ProjectTemplatesPage /> },
+          { path: paths.legacyImport, element: <LegacyImportPage /> },
+          { path: paths.updates, element: <UpdatesPage /> },
+          { path: paths.reports, element: <ReportsPage /> },
+          { path: paths.account, element: <AccountPage /> },
+          ...placeholderPaths.map((path) => ({ path, element: <PlaceholderPage /> })),
+          { path: "*", element: <NotFoundPage /> },
+        ],
+      },
     ],
   },
 ]);

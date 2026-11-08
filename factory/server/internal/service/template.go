@@ -235,6 +235,7 @@ func (s *Templates) ListProjectTemplates(ctx context.Context, token string) ([]C
 }
 
 // HasTemplateDelivery 本厂已收下这一修订的模版；工程模版还要已有名称才算收齐。
+// 已撤下的不算收下：WAN 删了又按原身份重建时修订号相同，得照常拉一次把它恢复。
 func (s *Closure) HasTemplateDelivery(ctx context.Context, id uuid.UUID, revision int64) (bool, error) {
 	// 按身份和修订读已收模版
 	t, err := s.store.TemplateReplicaByIDRev(ctx, id, revision)
@@ -245,6 +246,10 @@ func (s *Closure) HasTemplateDelivery(ctx context.Context, id uuid.UUID, revisio
 	// 读失败交回，通道照常去拉
 	if err != nil {
 		return false, err
+	}
+	// 撤下过的要重收，收下时恢复成在用
+	if t.RetiredAt != nil {
+		return false, nil
 	}
 	// 工程模版旧行可能缺名称，要重收补上；工艺模版本来不带名称
 	return t.Kind != KindProject || t.Name != "", nil

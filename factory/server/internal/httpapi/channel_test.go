@@ -87,8 +87,13 @@ func TestClientChannelHTTP(t *testing.T) {
 		// 与预期不符就停测，避免后面连环误判。
 		t.Fatalf("bind: %v", err)
 	}
-	// 示教器走厂网登录，令牌后面拉清单和连通道都用它。
-	code, body = do(t, srv, "POST", base+"/pad/login", "", `{"loginName":"sa","password":"secret"}`)
+	// 给这台钉上机械臂号，示教器登录带着它才能把会话钉到这台（D-59）。
+	if _, err := svc.Store().PinDeviceSerial(context.Background(), uuid.MustParse(cid), "ARM-CH", false); err != nil {
+		// 与预期不符就停测，避免后面连环误判。
+		t.Fatalf("pin serial: %v", err)
+	}
+	// 示教器走厂网登录并带上臂号，令牌后面拉清单和连通道都用它。
+	code, body = do(t, srv, "POST", base+"/pad/login", "", `{"loginName":"sa","password":"secret","deviceSerial":"ARM-CH"}`)
 	// 不是成功则本测失败。
 	if code != http.StatusOK {
 		// 与预期不符就停测，避免后面连环误判。

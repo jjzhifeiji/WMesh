@@ -525,20 +525,34 @@ func TestWeldFlushRejectsOutOfRange(t *testing.T) {
 		// 断言没通过就停，结果和这条用例的预期不一致。
 		t.Fatalf("long stored: %v", err)
 	}
-	// 焊完时间远在未来的一条，应当按钟错拒收。
+	// 焊完时间远在未来的一条：时钟只做监控，照样收下。
 	future := mk(1, 1, "工程A")
 	// 改成 2099 年，模拟示教器钟错。
 	future.OccurredAt = time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC)
-	// 只超前几分钟的一条，在容差内应收下。
+	// 只超前几分钟的一条，同样收下。
 	nearly := mk(1, 1, "工程A")
-	// 比现在超前五分钟，小于十分钟容差。
+	// 比现在超前五分钟。
 	nearly.OccurredAt = time.Now().Add(5 * time.Minute)
-	// 一批送上去，看未来那条有没有被拦。
+	// 一批送上去，两条都该收下，钟不准不拒收。
 	out, err = fac.FlushWeldFacts(ctx, saTok, []factory.WeldFact{future, nearly})
-	// 收下的不是容差内那条，或未来那条没被拒，就停。
-	if err != nil || len(out.Accepted) != 1 || out.Accepted[0] != nearly.ID || len(out.Rejected) != 1 || out.Rejected[0].ID != future.ID {
-		// 未来时间混进报表，日期会被污染。
+	// 有一条被拒或报错就停。
+	if err != nil || len(out.Accepted) != 2 || len(out.Rejected) != 0 {
+		// 钟不准被拒收，示教器会一直留着不汇聚。
 		t.Fatalf("future flush: %+v %v", out, err)
+	}
+	// 落库的焊完时间原样保留，不按厂端钟改。
+	got, err := fac.Store().WeldFactByID(ctx, future.ID)
+	// 没落库或时间被改就停。
+	if err != nil || !got.OccurredAt.Equal(future.OccurredAt) {
+		// 焊次内容被改动，监控之外不该有任何影响。
+		t.Fatalf("future stored: %+v %v", got, err)
+	}
+	// 示教器没收到回包又重发同一批：按身份幂等，照样回收下，不另起一行。
+	out, err = fac.FlushWeldFacts(ctx, saTok, []factory.WeldFact{future, nearly})
+	// 重发被拒或报错，示教器会一直留着重发。
+	if err != nil || len(out.Accepted) != 2 || len(out.Rejected) != 0 {
+		// 断言没通过就停，重发不该被拒。
+		t.Fatalf("future resend: %+v %v", out, err)
 	}
 }
 

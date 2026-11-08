@@ -463,6 +463,10 @@ type SiteFactory struct {
 	ShortCode string    `json:"shortCode,omitempty"` // 本厂短码，给人认厂
 	SALogin   string    `json:"saLogin"`             // 初始超管登录名，方便认领后登录
 	Status    string    `json:"status"`              // 本厂治理状态：active / disabled / retired
+	// 内容租约眼下是否有效；没领到或已到期为 false，登录页打开就提示，不等点了登录才报
+	LeaseReady bool `json:"leaseReady"`
+	// 配了平台地址时与云端的通道是否连着；没配平台地址按 true 交回，不提示断开
+	WANConnected bool `json:"wanConnected"`
 }
 
 // ListSite 列出本机已有厂库；没有 WAN 名录。
@@ -505,8 +509,12 @@ func (h *Hub) ListSite(ctx context.Context) ([]SiteFactory, error) {
 			// 用已落地的短码，方便人认厂。
 			shortCode = lc.ShortCode
 		}
-		// 把这家厂放进登录页列表。
-		out = append(out, SiteFactory{ID: id, Name: name, ShortCode: shortCode, SALogin: login, Status: status})
+		// 内存租约在才算有效；没领到和到期同路，登录页都提示
+		leaseReady := svc.Store().RequireContentLease() == nil
+		// 取这家厂的通道现状，给登录页说明为什么领不到租约
+		wan := h.WANStatus(id)
+		// 把这家厂放进登录页列表；没配平台地址不算断开。
+		out = append(out, SiteFactory{ID: id, Name: name, ShortCode: shortCode, SALogin: login, Status: status, LeaseReady: leaseReady, WANConnected: wan.Connected || !wan.Configured})
 	}
 	return out, nil
 }

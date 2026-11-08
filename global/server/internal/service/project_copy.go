@@ -12,7 +12,7 @@ import (
 	"wmesh/global/internal/platform/domain"
 )
 
-// copyPlatformProject 平台工程另存为新草稿：加密工艺保持原身份和钉死修订，普通工艺复制成新的可用平台工艺并改指新身份。
+// copyPlatformProject 平台工程另存为新草稿：加密工艺保持原身份、修订记当前版，普通工艺复制成新的可用平台工艺并改指新身份。
 // 普通工艺副本直接落可用：草稿工程发布时依赖须是可用工艺，副本落草稿会让新工程的依赖不成立。
 func (s *Assets) copyPlatformProject(ctx context.Context, token string, admin Admin, src Asset, name string) (Asset, error) {
 	// 逐条依赖决定保留原引用还是复制一份，记下新建的工艺好回收。
@@ -48,7 +48,7 @@ func (s *Assets) copyPlatformProject(ctx context.Context, token string, admin Ad
 	return Asset{}, err
 }
 
-// copyPlatformProjectDeps 加密工艺原样保留，普通工艺复制一份；交回新依赖、旧到新身份对照和本次新建的工艺。
+// copyPlatformProjectDeps 加密工艺保持原身份、修订记当前版，普通工艺复制一份；交回新依赖、旧到新身份对照和本次新建的工艺。
 func (s *Assets) copyPlatformProjectDeps(ctx context.Context, admin Admin, deps []AssetDep) ([]AssetDep, map[uuid.UUID]uuid.UUID, []Asset, error) {
 	// 新依赖按原顺序排。
 	out := make([]AssetDep, 0, len(deps))
@@ -76,10 +76,16 @@ func (s *Assets) copyPlatformProjectDeps(ctx context.Context, admin Admin, deps 
 		if p.Kind != KindProcess {
 			return nil, nil, made, domain.ErrAssetDependency
 		}
-		// 加密工艺保持原身份和钉死修订，不复制。
+		// 加密工艺保持原身份，不复制；另存是一次新声明，修订记当前版，当前版停用或草稿就拒绝。
 		if !p.Copyable {
-			// 原样留下这条依赖。
-			out = append(out, d)
+			// 钉到当前可用修订，不看源工程声明的旧修订。
+			pin, err := s.pinPlatformProcess(ctx, d.ID)
+			// 钉不上则整次拒绝。
+			if err != nil {
+				return nil, nil, made, err
+			}
+			// 留下这条依赖。
+			out = append(out, pin)
 			// 对照里指回自己，正文引用不改。
 			idMap[d.ID] = d.ID
 			continue

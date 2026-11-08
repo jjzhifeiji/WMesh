@@ -60,6 +60,16 @@ type templateSeedRow struct {
 // 种子标记落这张表，有行就不再按代码补种子。
 func (templateSeedRow) TableName() string { return "content_template_seeds" }
 
+// 已删工程模版的修订墓碑，每个身份至多一行。
+type templateTombstoneRow struct {
+	ID        uuid.UUID `gorm:"type:uuid;primaryKey"` // 已删工程模版的身份
+	Revision  int64     `gorm:"not null"`             // 删除前用到的最高修订
+	DeletedAt time.Time `gorm:"not null"`             // 最近一次删除时刻
+}
+
+// 墓碑落这张表，按原身份补建时修订从这里往上接。
+func (templateTombstoneRow) TableName() string { return "content_template_tombstones" }
+
 // 库行收成当前模版视图。
 func templateFromRow(row contentTemplateRow) ContentTemplate {
 	return ContentTemplate{
@@ -143,11 +153,17 @@ func (s *Store) InsertTemplate(ctx context.Context, in ContentTemplate) (Content
 	if err := assertAssetDigest(in.Digest); err != nil {
 		return ContentTemplate{}, err
 	}
+	// 新模版修订从一开始；按原身份补建的工程模版从删除前的修订往上接。
+	revision, err := s.nextTemplateRevision(ctx, in)
+	// 墓碑读不出就停，不能用可能撞上旧副本的修订。
+	if err != nil {
+		return ContentTemplate{}, err
+	}
 	// 记下当前时刻，这一笔里的时间都用它。
 	now := time.Now().UTC()
-	// 组一份新模版，修订从一开始。
+	// 组一份新模版。
 	row := contentTemplateRow{
-		ID: valueOrNew(in.ID), Kind: in.Kind, Name: in.Name, Revision: 1,
+		ID: valueOrNew(in.ID), Kind: in.Kind, Name: in.Name, Revision: revision,
 		Schema: json.RawMessage(nonempty(in.Schema)), Digest: in.Digest,
 		CreatedAt: now, UpdatedAt: now,
 	}
@@ -175,6 +191,28 @@ func (s *Store) InsertTemplate(ctx context.Context, in ContentTemplate) (Content
 	}
 	// 库行收成当前模版再交回。
 	return templateFromRow(row), nil
+}
+
+// nextTemplateRevision 定新模版的起始修订：带身份的工程模版删过就接在墓碑修订之后，否则从一开始。
+// 厂端按身份加修订判断收没收过，补建若仍从一开始会被当成撤下的旧副本跳过。
+func (s *Store) nextTemplateRevision(ctx context.Context, in ContentTemplate) (int64, error) {
+	// 没带身份或不是工程模版，不会有墓碑。
+	if in.ID == uuid.Nil || in.Kind != KindProject {
+		return 1, nil
+	}
+	// 准备接住墓碑。
+	var tomb templateTombstoneRow
+	// 按身份读墓碑。
+	err := s.db.WithContext(ctx).First(&tomb, "id = ?", in.ID).Error
+	// 没删过就从一开始。
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return 1, nil
+	}
+	// 读库报错就停，交给上层拒绝。
+	if err != nil {
+		return 0, err
+	}
+	return tomb.Revision + 1, nil
 }
 
 // SeedProjectTemplatesOnce 工程从未落过种子才写入这批；没抢到标记只读当前各份。
@@ -293,17 +331,39 @@ func (s *Store) UpdateTemplateByID(ctx context.Context, id uuid.UUID, expected i
 
 // DeleteTemplate 删掉一份当前工程模版。
 func (s *Store) DeleteTemplate(ctx context.Context, id uuid.UUID) error {
-	// 只删工程模版，工艺那一行不走这里。
-	res := s.db.WithContext(ctx).Where("id = ? AND kind = ?", id, KindProject).Delete(&contentTemplateRow{})
-	// 写库报错就停，不能当成已经改成。
-	if res.Error != nil {
-		return res.Error
-	}
-	// 一行都没碰到，按不存在拒绝。
-	if res.RowsAffected == 0 {
-		return domain.ErrNotFound
-	}
-	return nil
+	// 删行和记墓碑在同一事务里，免得补建时拿不到删除前的修订。
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// 准备接住要删的这一行，墓碑要用它的修订。
+		var row contentTemplateRow
+		// 只删工程模版，工艺那一行不走这里；锁住免得并发改修订。
+		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&row, "id = ? AND kind = ?", id, KindProject).Error
+		// 没有这一行按不存在拒绝。
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return domain.ErrNotFound
+		}
+		// 读库报错就停，不能当成已经删掉。
+		if err != nil {
+			return err
+		}
+		// 删掉这一行。
+		res := tx.Where("id = ? AND kind = ?", id, KindProject).Delete(&contentTemplateRow{})
+		// 写库报错就停，不能当成已经改成。
+		if res.Error != nil {
+			return res.Error
+		}
+		// 一行都没碰到，按不存在拒绝。
+		if res.RowsAffected == 0 {
+			return domain.ErrNotFound
+		}
+		// 记墓碑；删过又补建再删时取两次里较大的修订。
+		return tx.Clauses(clause.OnConflict{
+			Columns: []clause.Column{{Name: "id"}},
+			DoUpdates: clause.Assignments(map[string]any{
+				"revision":   gorm.Expr("GREATEST(content_template_tombstones.revision, EXCLUDED.revision)"),
+				"deleted_at": gorm.Expr("EXCLUDED.deleted_at"),
+			}),
+		}).Create(&templateTombstoneRow{ID: id, Revision: row.Revision, DeletedAt: time.Now().UTC()}).Error
+	})
 }
 
 // AssetsByKind 列出该类型当前行，含正文。

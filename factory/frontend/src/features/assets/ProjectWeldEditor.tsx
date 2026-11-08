@@ -1,7 +1,7 @@
 import { HolderOutlined } from "@ant-design/icons";
-import { Button, Input, InputNumber, Popconfirm, Space, Switch, Typography } from "antd";
+import { Button, Input, InputNumber, Popconfirm, Select, Space, Switch, Typography } from "antd";
 import { useRef, useState, type DragEvent } from "react";
-import { defaultItemFromFields, type ContentSchema, type TemplateField } from "@/features/templates/schema";
+import { defaultItemFromFields, enumOptions, kindOf, type ContentSchema, type TemplateField } from "@/features/templates/schema";
 import {
   ITEM_MULTI,
   ITEM_SINGLE,
@@ -9,6 +9,8 @@ import {
   SEED_TPL_MULTI,
   SEED_TPL_SINGLE,
   SEED_TPL_TBAR,
+  TEACH_FOUR_POINT,
+  TEACH_LASER,
   WELD_MULTI,
   WELD_SINGLE,
   WELD_TBAR,
@@ -83,6 +85,9 @@ const POINT_NAMES: Record<string, string> = {
   GROOVE_B_LOWER: "B下",
   GROOVE_A_UPPER: "A上",
   GROOVE_B_UPPER: "B上",
+  // 激光示教的下面板两点，叫法与示教器一致（D-98）
+  LASER_BASE_1: "底1",
+  LASER_BASE_2: "底2",
 };
 
 const POINT_COLORS: Record<string, string> = {
@@ -96,7 +101,54 @@ const POINT_COLORS: Record<string, string> = {
   GROOVE_B_LOWER: "#00897b",
   GROOVE_A_UPPER: "#00897b",
   GROOVE_B_UPPER: "#00897b",
+  LASER_BASE_1: "#6a1b9a",
+  LASER_BASE_2: "#6a1b9a",
 };
+
+const LASER_BASE = new Set(["LASER_BASE_1", "LASER_BASE_2"]);
+
+// tbarPoints 照示教器 TBarWeldViewModel.addWeldPath 建 T 排焊道占位点：底1/底2 一开始就带上，四点示教时界面不列（D-69、D-98）。
+function tbarPoints() {
+  return [
+    emptyPoint("START_SAFE"),
+    emptyPoint("GROOVE_A_LOWER"),
+    emptyPoint("GROOVE_B_LOWER"),
+    emptyPoint("GROOVE_A_UPPER"),
+    emptyPoint("GROOVE_B_UPPER"),
+    emptyPoint("LASER_BASE_1"),
+    emptyPoint("LASER_BASE_2"),
+    emptyPoint("START"),
+    emptyPoint("END"),
+    emptyPoint("END_SAFE"),
+  ];
+}
+
+function isLaserTeach(weld: Weld) {
+  return str(weld.teachMode) === TEACH_LASER;
+}
+
+// tbarPointShown 四点示教不列底1、底2，激光示教全列；与示教器 isTBarCollectable(teachMode) 同口径。
+function tbarPointShown(weld: Weld, type: string) {
+  return isLaserTeach(weld) || !LASER_BASE.has(type);
+}
+
+// withLaserBase 切到激光示教时补齐底1、底2（老焊道可能没有），位置同示教器 ensureLaserBasePoints：插在终安前，底2 紧跟底1。
+function withLaserBase(weld: Weld): Weld {
+  if (!isLaserTeach(weld)) return weld;
+  const points = asArr(weld.points).map(asObj);
+  let selected = num(weld.selectedPointIndex);
+  let changed = false;
+  for (const type of ["LASER_BASE_1", "LASER_BASE_2"]) {
+    if (points.some((p) => str(p.type) === type)) continue;
+    const endSafe = points.findIndex((p) => str(p.type) === "END_SAFE");
+    const base1 = points.findIndex((p) => str(p.type) === "LASER_BASE_1");
+    const at = type === "LASER_BASE_2" && base1 >= 0 ? base1 + 1 : endSafe >= 0 ? endSafe : points.length;
+    points.splice(at, 0, emptyPoint(type));
+    if (selected >= at) selected += 1;
+    changed = true;
+  }
+  return changed ? { ...weld, points, selectedPointIndex: selected } : weld;
+}
 
 const POSE_FIELDS: { key: string; label: string }[] = [
   { key: "x", label: "X" },
@@ -154,6 +206,45 @@ function tplFields(weldKind: string, templates: ProjectTpl[]): TemplateField[] {
   return tpl?.schema?.fields ?? itemFields(seedKind(weldKind), weldKind === WELD_SINGLE);
 }
 
+// 编辑器自己有专门控件的键（身份、点列、工艺槽、间隙带等），参数区不再重复出。
+const OWN_KEYS = new Set([
+  "id",
+  "name",
+  "kind",
+  "templateId",
+  "points",
+  "processId",
+  "selectedPointIndex",
+  "isEnabled",
+  "gapBands",
+  "extraProcesses",
+  "cornerGroupParams",
+  "basePath",
+  "passes",
+  "isBaseCompleted",
+]);
+
+const OPTION_NAMES: Record<string, string> = {
+  [TEACH_FOUR_POINT]: "四点示教",
+  [TEACH_LASER]: "激光示教",
+};
+
+// paramFields 按内容模版取焊道上的标量参数（T 排示教方式、板厚、坡口角、延伸、焊长、顶宽，单层延伸长度等）；字段名与示教器正文一致。
+export function paramFields(weldKind: string, templates: ProjectTpl[]): TemplateField[] {
+  const fields = tplFields(weldKind, templates).filter((f) => {
+    if (OWN_KEYS.has(f.key) || f.key.startsWith("refPoint")) return false;
+    const k = kindOf(f);
+    return k === "string" || k === "enum";
+  });
+  // 枚举（如示教方式）放前面，决定后面哪些参数有用。
+  return [...fields.filter((f) => kindOf(f) === "enum"), ...fields.filter((f) => kindOf(f) !== "enum")];
+}
+
+// isNumField 模版里数值参数按文本存类型，靠缺省值是数或带单位认出来。
+function isNumField(f: TemplateField) {
+  return f.type === "number" || typeof f.default === "number" || Boolean(f.unit);
+}
+
 // emptyWeld 按 App 新建焊道：名称 + 占位点，工艺空着；固定挂本作业类型的种子模版。
 export function emptyWeld(weldKind: string, templates: ProjectTpl[], index: number, arc = false): Weld {
   const item = defaultItemFromFields(tplFields(weldKind, templates), seedId(weldKind));
@@ -188,16 +279,7 @@ export function emptyWeld(weldKind: string, templates: ProjectTpl[], index: numb
     item.name = `焊道 ${index + 1}`;
     item.kind = ITEM_TBAR;
     item.isEnabled = true;
-    item.points = [
-      emptyPoint("START_SAFE"),
-      emptyPoint("GROOVE_A_LOWER"),
-      emptyPoint("GROOVE_B_LOWER"),
-      emptyPoint("GROOVE_A_UPPER"),
-      emptyPoint("GROOVE_B_UPPER"),
-      emptyPoint("START"),
-      emptyPoint("END"),
-      emptyPoint("END_SAFE"),
-    ];
+    item.points = tbarPoints();
     item.processId = "";
   } else {
     item.name = `焊道 ${index + 1}`;
@@ -247,6 +329,13 @@ function withWeldProcess(welds: Weld[], i: number, id: string): Weld[] {
 
 function isObj(v: unknown) {
   return Boolean(v) && typeof v === "object" && !Array.isArray(v);
+}
+
+// dropIndex 拖到第 hover 行的上/下半，算出拿掉 from 后要插入的位置。
+function dropIndex(hover: number, after: boolean, from: number) {
+  let to = after ? hover + 1 : hover;
+  if (from < to) to -= 1;
+  return to;
 }
 
 // ProjectWeldEditor 工程改正文：焊道、工艺、点坐标；坐标 App 采集、后台手填。
@@ -299,11 +388,6 @@ export function ProjectWeldEditor({
   const skipClick = useRef(false);
   const dragFromRef = useRef<number | null>(null);
   const canDrag = !disabled && welds.length > 1;
-  const dropIndex = (hover: number, after: boolean, from: number) => {
-    let to = after ? hover + 1 : hover;
-    if (from < to) to -= 1;
-    return to;
-  };
   const beginDrag = (i: number, e: DragEvent) => {
     dragFromRef.current = i;
     setDragFrom(i);
@@ -441,7 +525,20 @@ export function ProjectWeldEditor({
                     {processSelect(str(current.processId), processOptions, disabled, (id) => emit(withWeldProcess(welds, idx, id)))}
                   </div>
                 )}
-                <PointSlots key={str(current.id)} kind={kind} weld={current} disabled={disabled} onChange={(next) => patch(idx, next)} />
+                <ParamSlots
+                  fields={paramFields(kind, templates)}
+                  weld={current}
+                  disabled={disabled}
+                  onChange={(next) => patch(idx, kind === WELD_TBAR ? withLaserBase(next) : next)}
+                />
+                {/* 点数变了（如切激光示教补底1/底2、补占位点）就按正文里已顺延的 selectedPointIndex 重建，免得选中框挪到别的点上 */}
+                <PointSlots
+                  key={`${str(current.id)}:${readPoints(kind, current).length}`}
+                  kind={kind}
+                  weld={current}
+                  disabled={disabled}
+                  onChange={(next) => patch(idx, next)}
+                />
                 {kind === WELD_SINGLE ? (
                   <ExtraSlots
                     rows={asArr(current.extraProcesses).map(asObj)}
@@ -463,6 +560,85 @@ export function ProjectWeldEditor({
           </Space>
         )}
       </div>
+    </div>
+  );
+}
+
+// ParamSlots 焊道标量参数：按模版字段出控件，数值用数字框、枚举用下拉、开关用开关；没填过的显示模版缺省值。
+function ParamSlots({
+  fields,
+  weld,
+  disabled,
+  onChange,
+}: {
+  fields: TemplateField[];
+  weld: Weld;
+  disabled?: boolean;
+  onChange: (next: Weld) => void;
+}) {
+  if (fields.length === 0) return null;
+  const valueOf = (f: TemplateField) => (weld[f.key] === undefined ? f.default : weld[f.key]);
+  // 清空数字框给 null：不回写，失焦后显示回原值，和间隙带一致。
+  const setNum = (f: TemplateField, v: number | null) => {
+    if (v == null) return;
+    onChange({ ...weld, [f.key]: v });
+  };
+  return (
+    <div>
+      <Typography.Text type="secondary">参数</Typography.Text>
+      <Space wrap size={4} style={{ display: "flex", marginTop: 4 }}>
+        {fields.map((f) => {
+          const label = f.unit ? `${f.label}（${f.unit}）` : f.label;
+          if (f.type === "bool") {
+            return (
+              <Space key={f.key} size={4}>
+                <span>{f.label}</span>
+                <Switch size="small" checked={isOn(valueOf(f))} disabled={disabled} onChange={(on) => onChange({ ...weld, [f.key]: on })} />
+              </Space>
+            );
+          }
+          if (kindOf(f) === "enum") {
+            return (
+              <Space key={f.key} size={4}>
+                <span>{label}</span>
+                <Select
+                  size="small"
+                  style={{ minWidth: 120 }}
+                  value={str(valueOf(f))}
+                  options={enumOptions(f).map((o) => ({ value: o, label: OPTION_NAMES[o] ?? o }))}
+                  disabled={disabled}
+                  onChange={(v: string) => onChange({ ...weld, [f.key]: v })}
+                />
+              </Space>
+            );
+          }
+          if (isNumField(f)) {
+            return (
+              <InputNumber
+                key={f.key}
+                size="small"
+                style={{ width: 200 }}
+                addonBefore={label}
+                step={0.1}
+                value={num(valueOf(f))}
+                disabled={disabled}
+                onChange={(v) => setNum(f, v)}
+              />
+            );
+          }
+          return (
+            <Input
+              key={f.key}
+              size="small"
+              style={{ width: 200 }}
+              addonBefore={label}
+              value={str(valueOf(f))}
+              disabled={disabled}
+              onChange={(e) => onChange({ ...weld, [f.key]: e.target.value })}
+            />
+          );
+        })}
+      </Space>
     </div>
   );
 }
@@ -652,9 +828,13 @@ function PointSlots({
   onChange: (next: Weld) => void;
 }) {
   const points = readPoints(kind, weld);
+  // T 排四点示教不列底1、底2；点仍留在正文里，切回激光示教就回来。
+  const shown = (pt: Weld) => kind !== WELD_TBAR || tbarPointShown(weld, str(pt.type));
   const stored = points.length === 0 ? 0 : Math.min(Math.max(0, num(pointHost(kind, weld).selectedPointIndex)), points.length - 1);
   const [pick, setPick] = useState(stored);
-  const sel = points.length === 0 ? 0 : Math.min(pick, points.length - 1);
+  const clamped = points.length === 0 ? 0 : Math.min(pick, points.length - 1);
+  // 选中的点被藏起来时落到第一个看得见的点，免得停在看不见的按钮上。
+  const sel = points[clamped] && !shown(points[clamped]) ? Math.max(0, points.findIndex(shown)) : clamped;
   const current = points[sel];
   const pose = asObj(current?.pose);
   const filled = current ? hasPose(current) : false;
@@ -688,19 +868,7 @@ function PointSlots({
       return;
     }
     if (kind === WELD_TBAR) {
-      setPts(
-        [
-          emptyPoint("START_SAFE"),
-          emptyPoint("GROOVE_A_LOWER"),
-          emptyPoint("GROOVE_B_LOWER"),
-          emptyPoint("GROOVE_A_UPPER"),
-          emptyPoint("GROOVE_B_UPPER"),
-          emptyPoint("START"),
-          emptyPoint("END"),
-          emptyPoint("END_SAFE"),
-        ],
-        0,
-      );
+      setPts(tbarPoints(), 0);
       return;
     }
     setPts([emptyPoint("START_SAFE"), emptyPoint("START"), emptyPoint("END"), emptyPoint("END_SAFE")], 0);
@@ -722,6 +890,7 @@ function PointSlots({
         <>
           <div className="weld-editor-points">
             {points.map((pt, i) => {
+              if (!shown(pt)) return null;
               const color = POINT_COLORS[str(pt.type)] || "#607d8b";
               const on = i === sel;
               return (

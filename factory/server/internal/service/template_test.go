@@ -436,10 +436,30 @@ func TestSyncTemplateSetRetires(t *testing.T) {
 		// WAN 删掉的模版仍在厂端，D-04 没修好。
 		t.Fatalf("retired %+v %v", rows, err)
 	}
-	// 撤下后同修订仍算已收，通道不必为它再拉。
-	if ok, err := fac.HasTemplateDelivery(ctx, goneID, 2); err != nil || !ok {
-		// 撤下变成物理删除会让通道反复去拉。
+	// 撤下的不算已收：WAN 按原身份重建时修订号相同，得照常拉一次（D-43）。
+	if ok, err := fac.HasTemplateDelivery(ctx, goneID, 2); err != nil || ok {
+		// 撤下的仍算已收，重建后通道就跳过拉取，厂端一直缺这份。
 		t.Fatalf("have retired %v %v", ok, err)
+	}
+	// WAN 按原身份、同修订、同摘要重建后送达，只发小指令不发全集。
+	if err := fac.AcceptTemplateDelivery(ctx, factory.TemplateSnapshot{ID: goneID, Kind: factory.KindProject, Name: "删掉", Revision: 2, Schema: raw, Digest: digest.Sum(raw), TargetFactoryID: &fid}); err != nil {
+		// 收不下就停住。
+		t.Fatalf("redeliver retired: %v", err)
+	}
+	// 收下即恢复，列表又是两份。
+	if rows, err := fac.ListProjectTemplates(ctx, sa); err != nil || len(rows) != 2 {
+		// 重建后不恢复，要手动同步才回来。
+		t.Fatalf("redelivered %+v %v", rows, err)
+	}
+	// 恢复后同修订算已收，不再反复拉。
+	if ok, err := fac.HasTemplateDelivery(ctx, goneID, 2); err != nil || !ok {
+		// 恢复后还要拉说明撤下时刻没清。
+		t.Fatalf("have restored %v %v", ok, err)
+	}
+	// 再撤下一次，后面验名单恢复。
+	if err := fac.SyncTemplateSet(ctx, factory.KindProject, true, []uuid.UUID{keepID}); err != nil {
+		// 对齐失败就停。
+		t.Fatal(err)
 	}
 	// 名单里又出现它就恢复。
 	if err := fac.SyncTemplateSet(ctx, factory.KindProject, true, []uuid.UUID{keepID, goneID}); err != nil {

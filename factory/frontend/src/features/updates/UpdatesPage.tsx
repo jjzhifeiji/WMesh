@@ -3,6 +3,7 @@ import { useState } from "react";
 import { errorMessage } from "@/shared/api/client";
 import { formatBytes, formatTime } from "@/shared/format";
 import { HashText } from "@/shared/ui/HashText";
+import { QueryErrorAlert, readFailed } from "@/shared/ui/QueryErrorAlert";
 import {
   softwareKindLabel,
   useCurrentFactorySoftware,
@@ -61,7 +62,7 @@ export function UpdatesPanel() {
   const images = storage.data?.images;
   const imageItems = images?.items ?? [];
   const imageOld = imageItems.filter((row) => !row.keep).length;
-  const imageText = images?.kind ? `${images.count} 个　${formatBytes(images.used)}` : "还没有回报";
+  const imageText = readFailed(storage) ? "读不到" : images?.kind ? `${images.count} 个　${formatBytes(images.used)}` : "还没有回报";
 
   const rows = list.data ?? [];
   const summaries: KindSummary[] = kinds.map((kind) => {
@@ -114,7 +115,9 @@ export function UpdatesPanel() {
             ? `${row.installed.versionName}（${row.installed.version}）`
             : current.data?.version
               ? `${current.data.versionName}（${current.data.version}）`
-              : "未装",
+              : readFailed(current)
+                ? "读不到"
+                : "未装",
     },
     { title: "本厂已收", dataIndex: "total", width: 90, render: (n: number) => `${n} 份` },
     {
@@ -202,31 +205,39 @@ export function UpdatesPanel() {
   return (
     <>
       <Space direction="vertical" size={16} style={{ width: "100%" }}>
-        <Card title="软件更新">
-          <Table<KindSummary>
-            rowKey="kind"
-            columns={summaryCols}
-            dataSource={summaries}
-            loading={list.isLoading}
-            pagination={false}
-          />
-        </Card>
-        <Card title="本机存储" loading={storage.isLoading}>
-          <Space direction="vertical" size={12} style={{ width: "100%" }}>
-            <div>
+        <QueryErrorAlert query={list} what="软件更新记录" style={{ marginBottom: 0 }} />
+        {/* 读失败不画表：每行都会写成「还没有收到这个种类的包」。 */}
+        {readFailed(list) ? null : (
+          <Card title="软件更新">
+            <Table<KindSummary>
+              rowKey="kind"
+              columns={summaryCols}
+              dataSource={summaries}
+              loading={list.isLoading}
+              pagination={false}
+            />
+          </Card>
+        )}
+        <QueryErrorAlert query={storage} what="本机存储" style={{ marginBottom: 0 }} />
+        {/* 读失败不画卡片：磁盘、对象存储都会写成已用 0。 */}
+        {readFailed(storage) ? null : (
+          <Card title="本机存储" loading={storage.isLoading}>
+            <Space direction="vertical" size={12} style={{ width: "100%" }}>
               <div>
-                本机磁盘　已用 {formatBytes(disk?.used ?? 0)} / 共 {formatBytes(disk?.total ?? 0)}，可用 {formatBytes(disk?.avail ?? 0)}
+                <div>
+                  本机磁盘　已用 {formatBytes(disk?.used ?? 0)} / 共 {formatBytes(disk?.total ?? 0)}，可用 {formatBytes(disk?.avail ?? 0)}
+                </div>
+                <Progress percent={diskPct} size="small" status={diskPct >= 90 ? "exception" : undefined} />
               </div>
-              <Progress percent={diskPct} size="small" status={diskPct >= 90 ? "exception" : undefined} />
-            </div>
-            <div>
-              对象存储　已用 {formatBytes(storage.data?.oss.used ?? 0)}（{storage.data?.oss.objects ?? 0} 个对象）
-              {storage.data?.oss.bucket ? `　${storage.data.oss.bucket}` : ""}
-            </div>
-            <div>本厂库　已用 {formatBytes(storage.data?.database ?? 0)}</div>
-            <div>本机镜像　{images?.kind ? `已用 ${formatBytes(images.used)}（${images.count} 个）` : "还没有回报"}</div>
-          </Space>
-        </Card>
+              <div>
+                对象存储　已用 {formatBytes(storage.data?.oss.used ?? 0)}（{storage.data?.oss.objects ?? 0} 个对象）
+                {storage.data?.oss.bucket ? `　${storage.data.oss.bucket}` : ""}
+              </div>
+              <div>本厂库　已用 {formatBytes(storage.data?.database ?? 0)}</div>
+              <div>本机镜像　{images?.kind ? `已用 ${formatBytes(images.used)}（${images.count} 个）` : "还没有回报"}</div>
+            </Space>
+          </Card>
+        )}
       </Space>
       <Modal
         title={detail ? `${softwareKindLabel[detail]}全部版本` : "全部版本"}

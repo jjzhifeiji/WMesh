@@ -69,8 +69,9 @@ type (
 	ClosureSnapshot = store.ClosureSnapshot // 一次组包钉死的闭包快照
 	ClientPolicy    = store.ClientPolicy    // 对本厂全部本机生效的策略
 
-	WeldFact   = store.WeldFact   // 一次焊接起停的事实
-	WeldTotals = store.WeldTotals // 焊长和时长的合计
+	WeldFact       = store.WeldFact       // 一次焊接起停的事实
+	WeldProcessUse = store.WeldProcessUse // 一次焊接用到的一条工艺
+	WeldTotals     = store.WeldTotals     // 焊长和时长的合计
 
 	SoftwareReplica = store.SoftwareReplica // 厂端收到的软件包副本
 	WANTrust        = store.WANTrust        // 本厂信任广域侧的材料

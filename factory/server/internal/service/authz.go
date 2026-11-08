@@ -5,6 +5,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"wmesh/factory/internal/platform/audit"
 	"wmesh/factory/internal/platform/domain"
 	"wmesh/factory/internal/store"
 )
@@ -60,6 +61,40 @@ func permRoles(p perm) []string {
 	default:
 		return nil
 	}
+}
+
+// requirePadActor 示教器入口：会话有效且至少还握着一种整厂角色（超管、管理员、操作员）。
+// 角色全被收回的旧会话按未登录拒绝，示教器据此登出；收回后同步、拉包、焊次上报都不再放行。
+func (s *kernel) requirePadActor(ctx context.Context, token string) (Account, error) {
+	// 先确认会话仍有效，过期或停用直接拒绝
+	acc, err := s.RequireActive(ctx, token)
+	// 会话无效或账号已停用，拒绝继续
+	if err != nil {
+		return Account{}, err
+	}
+	// 只取当前有效角色，收回的不算
+	grants, err := s.grantsOf(ctx, acc.ID)
+	// 角色读失败就无法判定，照实交回，不当成没角色把人踢下线
+	if err != nil {
+		return Account{}, err
+	}
+	// 一种角色都没有了，按未登录拒绝
+	if len(grants) == 0 {
+		// 记下没角色还来用示教器被拒绝，写失败不改变结果
+		_ = s.audit(ctx, &acc.ID, &acc.LoginName, "protect", acc.ID.String(), audit.Deny)
+		return Account{}, domain.ErrUnauthorized
+	}
+	return acc, nil
+}
+
+// dropApp 断开这个人在线的示教器连接；会话已作废，示教器重连被拒即登出。没接下行通道就不做。
+func (s *kernel) dropApp(personID uuid.UUID) {
+	// 没接厂到本机的通道就没有连接可断
+	if s.clientDown == nil {
+		return
+	}
+	// 按人断开本厂的示教器连接
+	s.clientDown.DropPerson(s.store.FactoryID(), personID)
 }
 
 // can 按角色并集判断；超管拥有全部权限。

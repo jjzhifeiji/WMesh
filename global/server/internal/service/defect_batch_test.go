@@ -237,3 +237,89 @@ func TestTemplateSetAfterDelete(t *testing.T) {
 		t.Fatalf("index sets %d", found)
 	}
 }
+
+// 按原身份补建删掉的工程模版：修订接在删除前之后，并补发含它的全集，厂端才会恢复（D-43）。
+func TestTemplateRecreateBumpsRevisionAndSendsSet(t *testing.T) {
+	// 准备本测上下文，没有它库和服务都开不了。
+	ctx := context.Background()
+	// 起服务并登录，拿到夹具和会话票。
+	h, tok := projectTplAdmin(t, ctx)
+	// 登记一家有效厂，推送只发给有效厂。
+	f, err := h.WAN.CreateFactory(ctx, tok, "厂A", "sa-a", "超管A")
+	// 登记失败就停。
+	if err != nil {
+		// 不符即停：登记工厂失败。
+		t.Fatal(err)
+	}
+	// 列出空库首次落下的种子。
+	list, err := h.WAN.ListProjectTemplates(ctx, tok)
+	// 列失败或没有种子就停。
+	if err != nil || len(list) == 0 {
+		// 不符即停：种子不齐。
+		t.Fatalf("seed %d %v", len(list), err)
+	}
+	// 取第一份种子来删再补建。
+	old := list[0]
+	// 删一份。
+	if err := h.WAN.DeleteProjectTemplate(ctx, tok, old.ID); err != nil {
+		// 不符即停：删工程模版失败。
+		t.Fatal(err)
+	}
+	// 换上记录总线，只看补建推了什么。
+	bus := &syncBus{}
+	// 换上记录总线。
+	h.WAN.SetBus(bus)
+	// 按原身份、原字段表补建。
+	row, err := h.WAN.CreateProjectTemplate(ctx, tok, old.ID, old.Name, old.Schema)
+	// 补建失败就停。
+	if err != nil {
+		// 不符即停：补建失败。
+		t.Fatal(err)
+	}
+	// 修订要比删除前高，厂端才不会当已收过跳过。
+	if row.Revision <= old.Revision {
+		// 不符即停：补建修订没往上走。
+		t.Fatalf("recreate revision %d, old %d", row.Revision, old.Revision)
+	}
+	// 应推一条带新修订的模版指令。
+	tpls := bus.byType(global.CmdTemplate)
+	// 没有或修订不对都不行。
+	if len(tpls) != 1 || tpls[0].cmd.TemplateID != old.ID.String() || tpls[0].cmd.Revision != row.Revision {
+		// 不符即停：模版指令不对。
+		t.Fatalf("template cmds %+v", tpls)
+	}
+	// 还应推一条工程模版全集。
+	sets := bus.byType(global.CmdTemplateSet)
+	// 应正好一条，投给这家厂、标全集、种类是工程，份数和删除前一样。
+	if len(sets) != 1 || sets[0].factory != f.Factory.ID || !sets[0].cmd.Full || sets[0].cmd.Kind != global.KindProject || len(sets[0].cmd.TemplateIDs) != len(list) {
+		// 不符即停：补建后没推全集或全集不对。
+		t.Fatalf("sets %+v", sets)
+	}
+	// 准备找补建的这份在不在全集里。
+	found := false
+	// 逐个核对全集身份。
+	for _, id := range sets[0].cmd.TemplateIDs {
+		// 找到补建的身份就记下。
+		if id == old.ID.String() {
+			// 记下找到。
+			found = true
+		}
+	}
+	// 补建的那份必须在全集里，厂端才会清掉撤下标记。
+	if !found {
+		// 不符即停：补建的模版不在全集里。
+		t.Fatalf("recreated %s not in set %v", old.ID, sets[0].cmd.TemplateIDs)
+	}
+	// 再删一次再补建，修订继续往上走，不回落。
+	if err := h.WAN.DeleteProjectTemplate(ctx, tok, old.ID); err != nil {
+		// 不符即停：第二次删除失败。
+		t.Fatal(err)
+	}
+	// 第二次按原身份补建。
+	again, err := h.WAN.CreateProjectTemplate(ctx, tok, old.ID, old.Name, old.Schema)
+	// 补建失败或修订没再升都不对。
+	if err != nil || again.Revision <= row.Revision {
+		// 不符即停：第二次补建修订回落。
+		t.Fatalf("second recreate %d (prev %d) %v", again.Revision, row.Revision, err)
+	}
+}

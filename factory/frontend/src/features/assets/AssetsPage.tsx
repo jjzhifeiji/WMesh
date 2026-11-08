@@ -9,6 +9,7 @@ import { statusColor, statusLabel } from "@/shared/labels";
 import { IdText } from "@/shared/ui/IdText";
 import { useConfirmDiscard } from "@/shared/ui/confirmDiscard";
 import { PageHeader } from "@/shared/ui/PageHeader";
+import { QueryErrorAlert } from "@/shared/ui/QueryErrorAlert";
 import { ContentEditor } from "@/features/templates/ContentFields";
 import { badContentJSON, collectProcessIds, defaultValue, projectContentSchema } from "@/features/templates/schema";
 import { useProjectTemplates, useTemplate, syncTemplates, templateKeys } from "@/features/templates/api";
@@ -33,6 +34,7 @@ import {
   syncAssets,
   assetKeys,
   type Asset,
+  type PersonalCopy,
   type AssetDep,
   type AssetKind,
   type CreateAssetInput,
@@ -58,6 +60,10 @@ type EditBase = {
   deps: AssetDep[]; // 已生效的依赖
   content: string | null; // 已生效的正文；null 为还没新取到
 };
+
+// 工艺、工程名字数上限，和厂端、焊次能收的工程名上限一致（200 字）。
+const ASSET_NAME_MAX = 200;
+const nameMaxRule = { max: ASSET_NAME_MAX, message: `名字最多 ${ASSET_NAME_MAX} 个字` };
 
 function baseOf(row: Asset, content: string | null): EditBase {
   return { id: row.id, revision: row.revision, name: row.name, weldKind: row.weldKind || WELD_SINGLE, deps: row.deps ?? [], content };
@@ -85,6 +91,19 @@ function jsonRule(schema: ContentSchema | null, original: string) {
     validator: (_: unknown, v: string | undefined) =>
       badContentJSON(v, schema) && v !== original ? Promise.reject(new Error("JSON 格式不对，不能保存")) : Promise.resolve(),
   };
+}
+
+// 工艺正文的名称空着就用显示名：厂端不收改成空名称的正文，网页这个框本来就可以不填（D-110）。
+function withBodyName(content: string, name: string) {
+  try {
+    const obj: unknown = JSON.parse(content);
+    if (!obj || typeof obj !== "object" || Array.isArray(obj) || !("name" in obj)) return content;
+    const cur = (obj as { name?: unknown }).name;
+    if (cur !== null && (typeof cur !== "string" || cur.trim() !== "")) return content;
+    return JSON.stringify({ ...obj, name: name.trim() });
+  } catch {
+    return content;
+  }
 }
 
 function levelLabel(level: string) {
@@ -218,6 +237,11 @@ function AssetsBody({ kind }: { kind: AssetKind }) {
   });
   const factoryFolderOpts = fsFolderOptions(fs.data ?? [], (n) => n.treeLevel === "factory");
   const openCreate = (parent?: FSNode) => {
+    // 模版没读到时表单只有裸 JSON 框和默认内容，建出来是空壳，先不让开。模版 404 回 null，仍照常走。
+    if ((isProcess ? processTpl.data : projectTpls.data) === undefined) {
+      message.error(`${isProcess ? "工艺" : "工程"}模版还没读到，暂时不能新建，请稍后重试`);
+      return;
+    }
     const folder = parent ?? (fs.data ?? []).find((n) => n.id === folderOpts[0]?.value);
     form.setFieldsValue({
       content: isProcess && schema ? JSON.stringify(defaultValue(schema)) : "[]",
@@ -246,8 +270,9 @@ function AssetsBody({ kind }: { kind: AssetKind }) {
   // fillBaseContent 正文首次新取成功才并入基准，之后的重取不再改它。
   const fillBaseContent = (id: string, content: string) =>
     setEditBase((b) => (b && b.id === id && b.content === null ? { ...b, content } : b));
-  const finishEdit = (done: string[]) => {
-    if (done.length) message.success("已保存");
+  const finishEdit = (done: string[], copies: PersonalCopy[] = []) => {
+    if (copies.length) message.success(`已保存；个人工艺已复制成厂级工艺并改为引用：${copies.map((c) => c.name).join("、")}`);
+    else if (done.length) message.success("已保存");
     else message.info("没有改动");
     closeEdit();
   };
@@ -329,6 +354,9 @@ function AssetsBody({ kind }: { kind: AssetKind }) {
           </Space>
         }
       />
+      {isProcess ? <QueryErrorAlert query={processTpl} what="工艺模版" /> : <QueryErrorAlert query={projectTpls} what="工程模版" />}
+      {/* 工艺列表读不到时工程详情会写「未知工艺」、绑工艺的下拉是空的，要说清楚。 */}
+      {isProcess ? null : <QueryErrorAlert query={processes} what="工艺列表" />}
       {isProcess ? (
         <Card styles={{ body: { padding: 0 } }}>
           <ProcessExplorer
@@ -424,7 +452,7 @@ function AssetsBody({ kind }: { kind: AssetKind }) {
                             content: "删除后不能恢复。若已被工程依赖会拒绝。",
                             okButtonProps: { danger: true },
                             onOk: () =>
-                              remove.mutate(detailing.id, {
+                              remove.mutate({ id: detailing.id, expected: detailing.revision }, {
                                 onSuccess: () => {
                                   message.success("已删除");
                                   setDetailFor(null);
@@ -542,7 +570,7 @@ function AssetsBody({ kind }: { kind: AssetKind }) {
                             content: "删除后不能恢复。",
                             okButtonProps: { danger: true },
                             onOk: () =>
-                              remove.mutate(detailing.id, {
+                              remove.mutate({ id: detailing.id, expected: detailing.revision }, {
                                 onSuccess: () => {
                                   message.success("已删除");
                                   setDetailFor(null);
@@ -574,7 +602,7 @@ function AssetsBody({ kind }: { kind: AssetKind }) {
           initialValues={{ content: "", weldKind: WELD_SINGLE }}
           onFinish={(values) => {
             const weld = values.weldKind || WELD_SINGLE;
-            const content = isProcess ? values.content : JSON.stringify([emptyWeld(weld, projectTpls.data ?? [], 0)]);
+            const content = isProcess ? withBodyName(values.content, values.name) : JSON.stringify([emptyWeld(weld, projectTpls.data ?? [], 0)]);
             const input: CreateAssetInput = {
               kind,
               name: values.name,
@@ -606,7 +634,7 @@ function AssetsBody({ kind }: { kind: AssetKind }) {
             <Form.Item
               name="name"
               label={<Tooltip title="显示名不是身份，改名也不换编号。">{isProcess ? "显示名" : "工程名称"}</Tooltip>}
-              rules={[{ required: true, message: isProcess ? "请输入显示名" : "请输入工程名称" }]}
+              rules={[{ required: true, message: isProcess ? "请输入显示名" : "请输入工程名称" }, nameMaxRule]}
             >
               <Input autoComplete="off" autoFocus />
             </Form.Item>
@@ -718,7 +746,7 @@ function AssetsBody({ kind }: { kind: AssetKind }) {
                 ? "另存为新草稿，原件不动；加密工艺保持原引用，普通工艺各复制一份。"
                 : "另存为新草稿，原件不动；之后同新建。"
             }
-            rules={[{ required: true, message: "请输入新名称" }]}
+            rules={[{ required: true, message: "请输入新名称" }, nameMaxRule]}
           >
             <Input autoComplete="off" autoFocus />
           </Form.Item>
@@ -756,8 +784,9 @@ function AssetsBody({ kind }: { kind: AssetKind }) {
             }
             if (content !== null && content !== base.content) {
               step = "参数";
-              const next = await updateContent.mutateAsync({ id: base.id, expected, content });
-              advanceBase(next, content);
+              const body = withBodyName(content, name);
+              const next = await updateContent.mutateAsync({ id: base.id, expected, content: body });
+              advanceBase(next, body);
               done.push("参数");
             }
             finishEdit(done);
@@ -820,11 +849,18 @@ function AssetsBody({ kind }: { kind: AssetKind }) {
               const rows = projectTemplatesForWeld(projectTpls.data, nextKind);
               return rows.length ? projectContentSchema(rows) : editSchema;
             })();
+            // 厂级工程引用个人工艺时，厂端保存会复制成厂级工艺并改写正文（D-101）；以回包的正文和依赖为准。
+            let saved = content;
+            const copies: PersonalCopy[] = [];
+            const took = (next: Asset) => {
+              copies.push(...(next.personalCopies ?? []));
+              if (next.content !== undefined) saved = next.content;
+            };
             const nextIds = uniqueIds(processIdsFromContent(content, kindSchema));
             const added = nextIds.filter((id) => !depIds.includes(id));
-            const catalog = processes.data ?? [];
+            const procList = processes.data ?? [];
             const toDep = (id: string): AssetDep => {
-              const p = catalog.find((x) => x.id === id && x.status === "available");
+              const p = procList.find((x) => x.id === id && x.status === "available");
               if (p) return { id: p.id, revision: p.revision, digest: p.digest };
               const pinned = base.deps.find((d) => d.id === id);
               if (pinned) return pinned;
@@ -838,23 +874,27 @@ function AssetsBody({ kind }: { kind: AssetKind }) {
                 deps: [...depIds, ...added].map(toDep),
               });
               expected = next.revision;
-              advanceBase(next);
+              took(next);
+              advanceBase(next, next.content);
               done.push("依赖");
             }
             if (content !== base.content) {
               step = "焊道";
               const next = await updateContent.mutateAsync({ id: base.id, expected, content });
               expected = next.revision;
-              advanceBase(next, content);
+              took(next);
+              advanceBase(next, next.content ?? content);
               done.push("焊道");
             }
-            if (nextIds.join("\0") !== depIds.join("\0") || added.length) {
+            const finalIds = uniqueIds(processIdsFromContent(saved, kindSchema));
+            if (finalIds.join("\0") !== depIds.join("\0") || added.length) {
               step = "依赖";
-              const next = await setAssetDeps.mutateAsync({ id: base.id, expected, deps: nextIds.map(toDep) });
-              advanceBase(next);
+              const next = await setAssetDeps.mutateAsync({ id: base.id, expected, deps: finalIds.map(toDep) });
+              took(next);
+              advanceBase(next, next.content);
               if (!done.includes("依赖")) done.push("依赖");
             }
-            finishEdit(done);
+            finishEdit(done, copies);
           } catch (e) {
             editFail(e, done, step);
           }
@@ -1168,7 +1208,7 @@ function EditModal({
           <Form.Item
             name="name"
             label={<Tooltip title="显示名不是身份，改名也不换编号。">显示名</Tooltip>}
-            rules={[{ required: true, message: "请输入显示名" }]}
+            rules={[{ required: true, message: "请输入显示名" }, nameMaxRule]}
           >
             <Input autoComplete="off" disabled={locked} />
           </Form.Item>
@@ -1293,7 +1333,7 @@ function ProjectEditModal({
           <Form.Item
             name="name"
             label={<Tooltip title="显示名不是身份，改名也不换编号。">工程名称</Tooltip>}
-            rules={[{ required: true, message: "请输入工程名称" }]}
+            rules={[{ required: true, message: "请输入工程名称" }, nameMaxRule]}
           >
             <Input autoComplete="off" disabled={locked} />
           </Form.Item>
@@ -1310,7 +1350,11 @@ function ProjectEditModal({
             <ContentPending failed={failed} canRead={canRead} error={q.error} retrying={q.isFetching} onRetry={() => void q.refetch()} />
           </Form.Item>
         ) : (
-          <Form.Item name="content" label="焊道">
+          <Form.Item
+            name="content"
+            label="焊道"
+            extra={row?.level === "factory" ? "选个人工艺时，保存后会复制成一条新的厂级工艺，工程改为引用它；个人工艺本身不变。" : undefined}
+          >
             <ProjectWeldEditor
               key={row?.id}
               disabled={locked}

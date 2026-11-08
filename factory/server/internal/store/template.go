@@ -15,13 +15,14 @@ import (
 
 // ContentTemplate 是本厂已收的一份模版修订。
 type ContentTemplate struct {
-	ID         uuid.UUID `json:"id"`         // 与 WAN 原件相同
-	Kind       string    `json:"kind"`       // process / project
-	Name       string    `json:"name"`       // 工程模版名称；工艺为空
-	Revision   int64     `json:"revision"`   // 送达修订
-	Schema     []byte    `json:"schema"`     // 字段表 JSON
-	Digest     []byte    `json:"digest"`     // SHA-256
-	ReceivedAt time.Time `json:"receivedAt"` // 本厂收到时间
+	ID         uuid.UUID  `json:"id"`                  // 与 WAN 原件相同
+	Kind       string     `json:"kind"`                // process / project
+	Name       string     `json:"name"`                // 工程模版名称；工艺为空
+	Revision   int64      `json:"revision"`            // 送达修订
+	Schema     []byte     `json:"schema"`              // 字段表 JSON
+	Digest     []byte     `json:"digest"`              // SHA-256
+	ReceivedAt time.Time  `json:"receivedAt"`          // 本厂收到时间
+	RetiredAt  *time.Time `json:"retiredAt,omitempty"` // WAN 已删除、本厂撤下的时刻；空表示仍在用
 }
 
 // TemplateSnapshot 是 WAN 推来的一份模版修订。
@@ -55,11 +56,13 @@ func templateFromRow(row contentTemplateReplicaRow) ContentTemplate {
 	return ContentTemplate{
 		ID: row.ID, Kind: row.Kind, Name: row.Name, Revision: row.Revision,
 		Schema: []byte(row.Schema), Digest: row.Digest, ReceivedAt: row.ReceivedAt,
+		RetiredAt: row.RetiredAt,
 	}
 }
 
-// InsertTemplateReplica 写入一份模版修订；同身份修订且摘要相同则补名称后返回，
-// 第二个返回值标明这次是否新建了一行，重复送达为假，调用方据此省掉重复审计。
+// InsertTemplateReplica 写入一份模版修订；同身份修订且摘要相同则补名称后返回。
+// 这份身份曾被撤下（WAN 删了又按原身份重建）就一并恢复成在用。
+// 第二个返回值标明这次是否新建了一行或恢复了撤下的身份，纯重复送达为假，调用方据此省掉重复审计。
 func (s *Store) InsertTemplateReplica(ctx context.Context, in ContentTemplate) (ContentTemplate, bool, error) {
 	// 摘要必须是三十二字节，否则拒绝写入。
 	if err := assertAssetDigest(in.Digest); err != nil {
@@ -96,13 +99,36 @@ func (s *Store) InsertTemplateReplica(ctx context.Context, in ContentTemplate) (
 				// 把改好的值放进内存行，随后随保存写入。
 				got.Name = in.Name
 			}
+			// 曾被撤下的同身份重新送达，恢复成在用，列表和新建又能用上。
+			if got.RetiredAt != nil {
+				// 恢复不了就交回，通道下一轮再补。
+				if err := s.restoreTemplateReplica(ctx, in.ID); err != nil {
+					return ContentTemplate{}, false, err
+				}
+				// 内存行也清掉撤下时刻，和库里一致。
+				got.RetiredAt = nil
+				// 恢复算这次有变化，调用方照常记审计。
+				return got, true, nil
+			}
 			// 同修订同摘要是重复送达，标成未新建。
 			return got, false, nil
 		}
 		return ContentTemplate{}, false, err
 	}
+	// 同身份旧修订曾被撤下的一并恢复，WAN 既然又送来了就是还在。
+	if err := s.restoreTemplateReplica(ctx, in.ID); err != nil {
+		return ContentTemplate{}, false, err
+	}
 	// 库行收成对外结果再交回，标成这次新建。
 	return templateFromRow(row), true, nil
+}
+
+// restoreTemplateReplica 把这份身份所有被撤下的修订恢复成在用；没有撤下的不动。
+func (s *Store) restoreTemplateReplica(ctx context.Context, id uuid.UUID) error {
+	// 只清撤下时刻一列，库错误原样交回。
+	return s.db.WithContext(ctx).Model(&contentTemplateReplicaRow{}).
+		Where("id = ? AND retired_at IS NOT NULL", id).
+		Update("retired_at", nil).Error
 }
 
 // TemplateReplicaByIDRev 按身份和修订读模版副本。

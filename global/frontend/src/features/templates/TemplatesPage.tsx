@@ -1,5 +1,6 @@
 import { App, Button, Card, Input, Modal, Segmented, Space, Spin, Typography, Upload } from "antd";
 import { useState } from "react";
+import { copyText } from "@/shared/clipboard";
 import { errorMessage } from "@/shared/api/client";
 import { PageHeader } from "@/shared/ui/PageHeader";
 import { useTemplate, useUpdateTemplate } from "./api";
@@ -235,10 +236,10 @@ export function TemplatesPage() {
           <Space>
             <Button
               onClick={() => {
-                void navigator.clipboard.writeText(exportJSON).then(
-                  () => message.success("已复制"),
-                  () => message.error("复制失败"),
-                );
+                void copyText(exportJSON).then((ok) => {
+                  if (ok) message.success("已复制");
+                  else message.error("复制失败，请手动选中上面的内容复制，或点「下载」");
+                });
               }}
             >
               复制

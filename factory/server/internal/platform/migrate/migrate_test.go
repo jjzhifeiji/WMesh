@@ -759,3 +759,77 @@ func TestAdoptLockWaitHasLimit(t *testing.T) {
 		t.Fatal("up still waiting on the migration lock")
 	}
 }
+
+// TestSessionClientBackfill 升级前已登录的示教器会话：按会话建立后最近一条对上臂的登录记录补钉设备（D-59），
+// 更早那次登录的记录、mqtt 回连记录、臂号对不上的记录、网页会话都不钉。
+func TestSessionClientBackfill(t *testing.T) {
+	// 打开一个测完就删的临时库。
+	db := openTemp(t)
+	// 先迁到 0053，模拟升级前的旧库。
+	mustUp(t, db, embeddedFirst(t, 53))
+	// 本用例用到的几个人和两台设备。
+	const (
+		a  = "11111111-1111-1111-1111-111111111111" // 会话后先 X 再 Y 的人
+		b  = "22222222-2222-2222-2222-222222222222" // 只有更早登录和 mqtt 回连记录的人
+		c  = "33333333-3333-3333-3333-333333333333" // 记录臂号对不上设备的人
+		w  = "44444444-4444-4444-4444-444444444444" // 网页会话的人
+		x  = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa" // 设备 X
+		y  = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb" // 设备 Y
+		sa = "a0000000-0000-0000-0000-000000000001" // a 的示教器会话
+		sb = "a0000000-0000-0000-0000-000000000002" // b 的示教器会话
+		sc = "a0000000-0000-0000-0000-000000000003" // c 的示教器会话
+		sw = "a0000000-0000-0000-0000-000000000004" // w 的网页会话
+	)
+	// 逐个建人。
+	for i, p := range []string{a, b, c, w} {
+		// 登录名各不相同。
+		mustExec(t, db, `INSERT INTO people (id, login_name, display_name, status) VALUES (?, ?, '旧账号', 'active')`, p, "p"+strconv.Itoa(i))
+	}
+	// 两台未作废设备，臂号各一。
+	for i, cl := range []string{x, y} {
+		// 公钥随便给 32 字节。
+		mustExec(t, db, `INSERT INTO clients (id, name, public_key, binding_revision, status, bound_at, device_serial) VALUES (?, ?, decode(repeat('00', 32), 'hex'), 1, 'bound', now(), ?)`, cl, "臂"+strconv.Itoa(i), "FA:KE:0"+strconv.Itoa(i))
+	}
+	// 四条会话：a、b、c 是示教器，w 是网页；都在一小时前建立。
+	for _, s := range [][3]string{{sa, a, "app"}, {sb, b, "app"}, {sc, c, "app"}, {sw, w, "web"}} {
+		// 令牌摘要用会话号代替，过期在一天后。
+		mustExec(t, db, `INSERT INTO sessions (id, person_id, token_hash, kind, created_at, expires_at) VALUES (?, ?, ?, ?, now() - interval '1 hour', now() + interval '1 day')`, s[0], s[1], s[0], s[2])
+	}
+	// 登录记录：a 会话前在 Y、会话后先 X 再 Y，补钉最近的 Y；
+	// b 只有更早那次登录和 mqtt 回连；c 的记录臂号和设备对不上；w 是网页会话。
+	logs := []struct {
+		person, kind, serial, client, at string // 人、记录种类、臂号、设备、距今多久
+	}{
+		{a, "pad", "fa:ke:01", y, "2 hours"},
+		{a, "pad", "FA:KE:00", x, "50 minutes"},
+		{a, "pad", "FA:KE:01", y, "40 minutes"},
+		{b, "pad", "FA:KE:00", x, "2 hours"},
+		{b, "mqtt", "FA:KE:00", x, "10 minutes"},
+		{c, "pad", "FA:KE:09", x, "10 minutes"},
+		{w, "pad", "FA:KE:00", x, "10 minutes"},
+	}
+	// 逐条写登录记录。
+	for _, l := range logs {
+		// 时刻按距今多久给。
+		mustExec(t, db, `INSERT INTO person_login_logs (id, person_id, kind, occurred_at, device_serial, client_id) VALUES (gen_random_uuid(), ?, ?, now() - ?::interval, ?, ?)`, l.person, l.kind, l.at, l.serial, l.client)
+	}
+	// 迁到最新，补钉在 0054 里做。
+	mustUp(t, db, migrations.FS)
+	// 期望：a 钉 Y，其余都空。
+	want := map[string]string{sa: y, sb: "", sc: "", sw: ""}
+	// 逐条核对。
+	for id, cl := range want {
+		// 读出补钉结果，空的读成空串。
+		var got string
+		// 读不出就停。
+		if err := db.Raw(`SELECT coalesce(client_id::text, '') FROM sessions WHERE id = ?`, id).Scan(&got).Error; err != nil {
+			// 把读库错误打出来并停住。
+			t.Fatal(err)
+		}
+		// 对不上说明补钉口径错了。
+		if got != cl {
+			// 打出哪条会话钉错了。
+			t.Fatalf("session %s client %q, want %q", id, got, cl)
+		}
+	}
+}

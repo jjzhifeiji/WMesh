@@ -10,6 +10,7 @@ import (
 
 	"wmesh/factory/internal/platform/clientmqtt"
 	"wmesh/factory/internal/platform/domain"
+	"wmesh/factory/internal/platform/secret"
 	"wmesh/factory/internal/store"
 )
 
@@ -149,8 +150,8 @@ func (s *Node) fillLoginDevice(ctx context.Context, snap *LoginSnap) {
 
 // RecordOwnAppLogin 本会话人员补记一次现场（匹配设备号后回厂网）。
 func (s *Node) RecordOwnAppLogin(ctx context.Context, token string, snap LoginSnap) error {
-	// 先确认会话仍有效，过期或停用直接拒绝
-	acc, err := s.RequireActive(ctx, token)
+	// 先确认会话仍有效且还握着角色，角色全收回的人不再补记现场
+	acc, err := s.requirePadActor(ctx, token)
 	// 会话无效或账号已停用，拒绝继续
 	if err != nil {
 		return err
@@ -160,8 +161,88 @@ func (s *Node) RecordOwnAppLogin(ctx context.Context, token string, snap LoginSn
 		// 标成厂网或回连，两种登录分开记
 		snap.Kind = LoginKindPad
 	}
-	// 记下示教器登录，回连没变则跳过，再交回调用方
-	return s.RecordAppLogin(ctx, acc.ID, snap)
+	// 留一份原样自报现场，钉设备只认示教器自己报的臂号和身份，不认名录补出来的
+	reported := snap
+	// 同一次登录已记过同一现场（或那条还没对上臂）就并进那条，不另起一条
+	merged, err := s.mergeSessionLogin(ctx, token, acc.ID, &snap)
+	// 读记录失败就交回，示教器下一轮再补报
+	if err != nil {
+		return err
+	}
+	// 并进去了只刷新最近见到，否则另记一条
+	if merged {
+		// 刷新示教器版本和最近见到
+		err = s.store.NotePersonApp(ctx, acc.ID, snap.AppVersion, snap.AppVersionName)
+		// 没并进去就另记一条示教器登录
+	} else {
+		// 记下示教器登录，回连没变则跳过
+		err = s.RecordAppLogin(ctx, acc.ID, snap)
+	}
+	// 记失败照实交回，示教器下一轮再补报
+	if err != nil {
+		return err
+	}
+	// 记完再把本次会话钉到这台臂（D-59）；已钉在别台交回冲突，现场照样留痕
+	return s.BindPadClient(ctx, token, reported)
+}
+
+// mergeSessionLogin 同一次登录只记一条：最近那条记在本次会话建立之后，且是同一台臂或那条还没对上臂，
+// 就把这次现场补进那条空着的列，交回真；换了臂或那条是更早的登录就交回假，照常另记。
+func (s *Node) mergeSessionLogin(ctx context.Context, token string, personID uuid.UUID, snap *LoginSnap) (bool, error) {
+	// 取本次会话，看它什么时候建立的
+	sess, err := s.store.SessionByTokenHash(ctx, secret.TokenHash(token))
+	// 刚核过的会话读不到就不并，照常另记
+	if err != nil {
+		return false, nil
+	}
+	// 补报的原时刻早于本次会话，是更早那次登录的现场，照常另记
+	if snap.OccurredAt != nil && snap.OccurredAt.Before(sess.CreatedAt) {
+		return false, nil
+	}
+	// 取这人最近一条登录记录
+	prev, err := s.store.LatestPersonLogin(ctx, personID)
+	// 还没有记录就照常另记
+	if errors.Is(err, domain.ErrNotFound) {
+		return false, nil
+	}
+	// 读取真失败必须停住
+	if err != nil {
+		return false, err
+	}
+	// 最近那条早于本次会话，是上一次登录的，照常另记
+	if prev.OccurredAt.Before(sess.CreatedAt) {
+		return false, nil
+	}
+	// 用本厂名录补设备名和识别号，好比对是不是同一台臂
+	s.fillLoginDevice(ctx, snap)
+	// 那条已经对上了臂：同一台就是重复上报，换了臂照常另记
+	if loginHasDevice(prev) {
+		// 同一台就并掉，不同台照常另记
+		return sameLoginDevice(prev, *snap), nil
+	}
+	// 那条还没对上臂（登录时没连臂），这次补上设备，仍算同一次登录
+	if err := s.store.FillPersonLoginBlanks(ctx, prev.ID, *snap); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// loginHasDevice 这条记录已对上本机或记下了臂号。
+func loginHasDevice(l store.PersonLoginLog) bool {
+	// 有本机身份或臂号才算对上
+	return l.ClientID != nil || strings.TrimSpace(l.DeviceSerial) != ""
+}
+
+// sameLoginDevice 记录和这次现场是同一台臂：本机身份相同，或都没有本机时臂号相同。
+func sameLoginDevice(l store.PersonLoginLog, snap LoginSnap) bool {
+	// 两边都有本机身份就按身份比
+	if l.ClientID != nil && snap.ClientID != nil {
+		return *l.ClientID == *snap.ClientID
+	}
+	// 否则按臂号比，大小写和首尾空白不算差别
+	a, b := strings.TrimSpace(l.DeviceSerial), strings.TrimSpace(snap.DeviceSerial)
+	// 两边都有臂号且相同才算同一台
+	return a != "" && strings.EqualFold(a, b)
 }
 
 // NoteAppMQTT 示教器 MQTT 连上或断开；同一人多条连接要都断才离线。

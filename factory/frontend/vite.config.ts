@@ -16,6 +16,9 @@ export default defineConfig({
     },
   },
   build: {
+    // 语法目标对齐样式里用到的 :has()（Chromium 105）；Win7/8 上最后的 Chrome 109 也在内。
+    // Vite 只转语法不补 API，源码别用更新的 API（tsconfig 的 lib 卡在 ES2022）。
+    target: ["chrome105", "edge105", "firefox121", "safari16"],
     chunkSizeWarningLimit: 1500,
   },
 });

@@ -70,7 +70,7 @@ func validateClosure(snap ClosureSnapshot) error {
 	if !bytes.Equal(digest.ClosureSum(parts), snap.Digest) {
 		return domain.ErrIntegrity
 	}
-	// 第一条当根，后面的是钉住的成员。
+	// 第一条当根，后面的是依赖成员。
 	root := snap.Members[0]
 	// 不是当前可用的平台级工艺就不能当依赖。
 	if snap.AssetID != root.ID || snap.Revision != root.Revision || snap.Kind != root.Kind {
@@ -96,15 +96,15 @@ func validateClosure(snap ClosureSnapshot) error {
 		}
 		return domain.ErrClosureMismatch
 	}
-	// 逐条核对根上的依赖，修订必须对齐。
+	// 逐条核对快照根上的依赖和成员对得上；这里的修订是组包时改写的当前版，不是工程行声明的。
 	for i, d := range root.Deps {
 		// 按依赖顺序取下一个成员来核对。
 		m := snap.Members[i+1]
-		// 条件不满足则拒绝，避免把错状态写进去。
+		// 快照根 deps 和成员的身份或修订对不上就拒绝。
 		if m.ID != d.ID || m.Revision != d.Revision {
 			return domain.ErrClosureMismatch
 		}
-		// 摘要相同就不必覆盖，避免无谓升高修订。
+		// 快照根 deps 和成员的摘要对不上就拒绝。
 		if !bytes.Equal(m.Digest, d.Digest) {
 			return domain.ErrClosureMismatch
 		}
@@ -133,7 +133,7 @@ func closureTarget(snap ClosureSnapshot) string {
 	return t
 }
 
-// packPlatform 组可用或停用平台级闭包；草稿不能组。
+// packPlatform 组可用或停用平台级闭包；草稿不能组。依赖按身份取当前版，同修订工程再组时总摘要可能变化，厂端按工程修订判重，不因此重推。
 func (s *Closure) packPlatform(ctx context.Context, root Asset) (ClosureSnapshot, error) {
 	// 草稿不能组包；停用条仍可补送。
 	if root.Status != AssetAvailable && root.Status != AssetDisabled {
@@ -141,7 +141,9 @@ func (s *Closure) packPlatform(ctx context.Context, root Asset) (ClosureSnapshot
 	}
 	// 按数量先准备容器。
 	rest := make([]ClosureMember, 0, len(root.Deps))
-	// 逐条核对根上的依赖，修订必须对齐。
+	// 这份快照里根的依赖，按成员当前版改写。
+	deps := make([]AssetDep, 0, len(root.Deps))
+	// 工程 deps 只定用哪几条工艺，修订一律取当前行，工艺升版不用改工程。
 	for _, d := range root.Deps {
 		// 装入并核对摘要。
 		p, err := s.loadChecked(ctx, d.ID)
@@ -157,19 +159,24 @@ func (s *Closure) packPlatform(ctx context.Context, root Asset) (ClosureSnapshot
 		if p.Kind != KindProcess {
 			return ClosureSnapshot{}, domain.ErrClosureMismatch
 		}
-		// 不是当前可用的平台级工艺就不能当依赖。
-		if p.Revision != d.Revision {
-			return ClosureSnapshot{}, domain.ErrClosureIncomplete
-		}
-		// 摘要相同就不必覆盖，避免无谓升高修订。
-		if !bytes.Equal(p.Digest, d.Digest) {
-			return ClosureSnapshot{}, domain.ErrClosureMismatch
+		// 当前行是草稿就拒绝：重新升档覆盖的正文没发布，不能跟着工程外发；停用的已发布过，照给。
+		if p.Status != AssetAvailable && p.Status != AssetDisabled {
+			return ClosureSnapshot{}, domain.ErrAssetNotAvailable
 		}
 		// 把这一项接进结果。
 		rest = append(rest, memberFromAsset(p))
+		// 快照里的依赖写成这次实际带上的修订和摘要。
+		deps = append(deps, AssetDep{ID: p.ID, Revision: p.Revision, Digest: p.Digest})
+	}
+	// 先收成根成员，只改快照这份，库里的工程行和修订不动。
+	head := memberFromAsset(root)
+	// 工艺没有依赖，别把空切片写成新值。
+	if len(deps) > 0 {
+		// 根的依赖换成当前版，厂端验收按它对成员。
+		head.Deps = deps
 	}
 	// 收成封闭包并算总摘要。
-	snap := sealClosure(memberFromAsset(root), rest, uuid.Nil)
+	snap := sealClosure(head, rest, uuid.Nil)
 	// 平台包先不指定厂，授权时再填上。
 	snap.TargetFactoryID = nil
 	// 不齐全就拒绝，残包不能下发。
@@ -497,7 +504,7 @@ func (s *Closure) SetPlatformProjectDeps(ctx context.Context, token string, asse
 			return store.AssetWrite{}, domain.ErrAssetNotAvailable
 		}
 		// 做完这一步再继续。
-		deps, err := s.resolvePlatformProjectDeps(ctx, deps)
+		deps, err := s.resolvePlatformProjectDeps(ctx, cur.Deps, deps)
 		// 这一步失败就停，避免留下半截。
 		if err != nil {
 			return store.AssetWrite{}, err

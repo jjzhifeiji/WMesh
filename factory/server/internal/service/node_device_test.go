@@ -117,6 +117,11 @@ func TestPadLoginListsDevicesWithoutSerial(t *testing.T) {
 		// 人员身份走通道没通过就失败
 		t.Fatalf("pad person mqtt: %v", err)
 	}
+	// 示教器对上焊机A后补报臂号，本次会话钉到焊机A（D-59）
+	if err := fac.RecordOwnAppLogin(ctx, sess.Token, factory.LoginSnap{DeviceSerial: "ARM-A"}); err != nil {
+		// 钉不上就停，后面的通道校验没意义
+		t.Fatalf("bind ARM-A: %v", err)
+	}
 	// 校验通道身份失败就停，避免带着错误继续验
 	if _, err := fac.AuthClientMQTT(ctx, cidA, sess.Token); err != nil {
 		// 焊机身份走通道没通过就失败
@@ -648,6 +653,11 @@ func TestSecondPadLoginRevokesOldAppToken(t *testing.T) {
 		// 接受焊机绑定失败就把原因打出并停掉本例
 		t.Fatal(err)
 	}
+	// 登记机械臂号失败就停，示教器要凭臂号把会话钉到这台（D-59）
+	if _, err := fac.Store().PinDeviceSerial(ctx, cid, "ARM-1", false); err != nil {
+		// 登记机械臂号失败就把原因打出并停掉本例
+		t.Fatal(err)
+	}
 
 	// 别人先在厂网登录，用来验只删本人的令牌
 	other, err := fac.LoginPad(ctx, "sa", "sa-pass")
@@ -693,6 +703,11 @@ func TestSecondPadLoginRevokesOldAppToken(t *testing.T) {
 	if _, err := fac.RequireActive(ctx, second); err != nil {
 		// 新令牌被误删就失败
 		t.Fatalf("new token: %v", err)
+	}
+	// 第二台登录带着焊机臂号，本次会话钉到这台焊机（D-59）
+	if err := fac.BindPadClient(ctx, second, factory.LoginSnap{DeviceSerial: "ARM-1"}); err != nil {
+		// 钉不上就停，后面的通道校验没意义
+		t.Fatalf("bind: %v", err)
 	}
 	// 新令牌连通道失败即失败，第二台应当能连
 	if _, err := fac.AuthClientMQTT(ctx, cid, second); err != nil {

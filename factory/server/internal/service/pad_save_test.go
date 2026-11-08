@@ -132,12 +132,17 @@ func TestPadSaveLandsAvailable(t *testing.T) {
 	}
 	// 装上这条依赖，修订或摘要错了工程会对不上。
 	dep := factory.AssetDep{ID: got.ID, Revision: got.Revision, Digest: got.Digest}
-	// 超管改写厂级工程依赖钉上操作员的个人工艺，失败说明工艺还不齐。
+	// 超管改写厂级工程依赖引用操作员的个人工艺，保存时复制成厂级工艺再钉（D-101）。
 	pinned, err := fac.SetProjectDeps(ctx, sa, proj.ID, proj.Revision, []factory.AssetDep{dep})
 	// 改依赖失败就停，否则后面没有可靠结果。
 	if err != nil {
 		// 把改依赖的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
+	}
+	// 依赖应是新复制的厂级工艺，不是个人工艺本身。
+	if len(pinned.Deps) != 1 || pinned.Deps[0].ID == got.ID || len(pinned.PersonalCopies) != 1 {
+		// 断言没通过就停，结果和这条用例的预期不一致。
+		t.Fatalf("pinned %+v", pinned)
 	}
 	// 改写资产正文，失败说明修订冲突或越权。
 	updated, err := fac.UpdateAssetContent(ctx, sa, pinned.ID, pinned.Revision, projBody)
@@ -146,8 +151,8 @@ func TestPadSaveLandsAvailable(t *testing.T) {
 		// 把改正文的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
-	// 修订号应按这次保存前进，没变说明写没落库。
-	if updated.Revision <= pinned.Revision || !bytes.Equal(updated.Digest, digest.Sum(projBody)) {
+	// 正文手里还写着个人工艺，保存时对回副本：修订前进，摘要按改写后的正文算。
+	if updated.Revision <= pinned.Revision || updated.SavedContent == nil || !bytes.Equal(updated.Digest, digest.Sum([]byte(*updated.SavedContent))) {
 		// 断言没通过就停，结果和这条用例的预期不一致。
 		t.Fatalf("update %+v", updated)
 	}
@@ -229,8 +234,13 @@ func TestPadCreateProjectDepsByLevel(t *testing.T) {
 		// 把读回的工程打出来并停住。
 		t.Fatalf("factory project meta %+v %v", got, err)
 	}
+	// 同事的个人工艺保存时复制成厂级（D-101），依赖钉副本，摘要和原件一样。
+	if len(proj.PersonalCopies) != 1 || proj.PersonalCopies[0].SourceID != mine.ID {
+		// 把回包打出来并停住。
+		t.Fatalf("factory project copies %+v", proj.PersonalCopies)
+	}
 	// 按身份收好期望的依赖，逐条比对修订和摘要。
-	want := map[uuid.UUID]factory.AssetDep{platDep.ID: platDep, mineDep.ID: mineDep}
+	want := map[uuid.UUID]factory.AssetDep{platDep.ID: platDep, proj.PersonalCopies[0].ID: {ID: proj.PersonalCopies[0].ID, Revision: proj.PersonalCopies[0].Revision, Digest: mineDep.Digest}}
 	// 逐条核对读回的依赖，钉错修订或摘要都算失败。
 	for _, d := range got.Deps {
 		// 按身份找期望依赖，找不到说明钉进了别的工艺。

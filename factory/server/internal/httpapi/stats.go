@@ -43,6 +43,16 @@ type weldFactReq struct {
 	LengthMM    int64        `json:"lengthMm"`    // 本段焊长毫米
 	DurationSec int64        `json:"durationSec"` // 本段时长秒
 	OccurredAt  string       `json:"occurredAt"`  // RFC3339 焊完时间
+	// 下面两项老示教器和老焊次不带（D-109）。
+	ProjectRevision int64            `json:"projectRevision"` // 开焊时工程修订；没记为零
+	Processes       []weldProcessReq `json:"processes"`       // 这次用到的工艺；没记为空
+}
+
+// 焊次带的一条工艺：身份、本机修订和正文摘要，不含参数值。
+type weldProcessReq struct {
+	ProcessID string `json:"processId"` // 工艺身份
+	Revision  int64  `json:"revision"`  // 开焊时本机修订
+	Digest    []byte `json:"digest"`    // 正文 SHA-256，标准 Base64
 }
 
 // 示教器旧版焊事实里带的一级组织，只为能解开，不收。
@@ -222,12 +232,24 @@ func parseWeldFact(row weldFactReq) (service.WeldFact, error) {
 	}
 	// 先收必填的焊事实，可选身份后面再补。
 	item := service.WeldFact{
-		ID:          id,
-		CreatorID:   creator,
-		ProjectName: row.ProjectName,
-		WeldKind:    row.WeldKind,
-		LengthMM:    row.LengthMM,
-		DurationSec: row.DurationSec,
+		ID:              id,
+		CreatorID:       creator,
+		ProjectName:     row.ProjectName,
+		WeldKind:        row.WeldKind,
+		LengthMM:        row.LengthMM,
+		DurationSec:     row.DurationSec,
+		ProjectRevision: row.ProjectRevision,
+	}
+	// 工艺清单逐条解析，身份不合法和别的编号一样整批拒绝。
+	for _, p := range row.Processes {
+		// 工艺身份必须合法。
+		pid, err := uuid.Parse(p.ProcessID)
+		// 解析失败则拒绝，不用这个残缺的值继续。
+		if err != nil {
+			return service.WeldFact{}, errInvalidID
+		}
+		// 收下这一条；工艺认不认识不在这里管。
+		item.Processes = append(item.Processes, service.WeldProcessUse{ProcessID: pid, Revision: p.Revision, Digest: p.Digest})
 	}
 	// 带了设备才解析，空着则不记设备。
 	if row.ClientID != "" {

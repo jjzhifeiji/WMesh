@@ -77,7 +77,7 @@ func (s *Closure) AcceptPlatformDelivery(ctx context.Context, snap ClosureSnapsh
 	return nil
 }
 
-// HasPlatformDelivery 本厂已收下这一修订的闭包：根在且未撤回，依赖各修订也都在。
+// HasPlatformDelivery 本厂已收下这一修订的闭包：根在且未撤回，依赖都收到了不低于声明的修订。
 func (s *Closure) HasPlatformDelivery(ctx context.Context, assetID uuid.UUID, revision int64) (bool, error) {
 	// 读根这一修订的副本元数据，不解正文
 	root, err := s.store.ReplicaMetaByIDRev(ctx, assetID, revision)
@@ -93,25 +93,29 @@ func (s *Closure) HasPlatformDelivery(ctx context.Context, assetID uuid.UUID, re
 	if root.Retracted {
 		return false, nil
 	}
-	// 逐个依赖核对钉住的修订在不在
+	// 逐个依赖核对已收到不低于声明修订的副本。
 	for _, d := range root.Deps {
-		// 读依赖这一修订的元数据，缺了就要整包重收
-		_, err := s.store.ReplicaMetaByIDRev(ctx, d.ID, d.Revision)
-		// 依赖修订没收过就算没有
+		// 读该身份已收的最高修订，不解正文。
+		dep, err := s.store.HighestReplicaMeta(ctx, d.ID)
+		// 这条依赖一份都没收过就算没有。
 		if errors.Is(err, domain.ErrNotFound) {
 			return false, nil
 		}
-		// 读失败交回，通道照常去拉
+		// 读失败交回，通道照常去拉。
 		if err != nil {
 			return false, err
+		}
+		// 比声明的还旧才算缺；更高的算收齐，否则同修订工程旧 deps 对不上新包会被循环重拉。
+		if dep.Revision < d.Revision {
+			return false, nil
 		}
 	}
 	return true, nil
 }
 
-// RetractPlatformDelivery 云端删除后撤回展示；没有副本也算成功，已钉修订仍可读。
+// RetractPlatformDelivery 云端删除后撤回展示；没有副本也算成功，被工程依赖的仍可读。
 func (s *Closure) RetractPlatformDelivery(ctx context.Context, assetID uuid.UUID) error {
-	// 撤回展示；没有副本也算成功，已钉修订仍可读。
+	// 撤回展示；没有副本也算成功，被工程依赖的仍可读。
 	changed, err := s.store.RetractReplicas(ctx, assetID)
 	// 撤不下就记拒绝并交回，通道会补拉
 	if err != nil {

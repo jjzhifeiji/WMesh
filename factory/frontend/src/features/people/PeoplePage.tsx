@@ -8,6 +8,7 @@ import { formatAppRelease, formatDateTime, formatTime } from "@/shared/format";
 import { ROLES, roleLabel } from "@/shared/labels";
 import { IdText } from "@/shared/ui/IdText";
 import { PageHeader } from "@/shared/ui/PageHeader";
+import { QueryErrorAlert, readFailed } from "@/shared/ui/QueryErrorAlert";
 import { StatusTag } from "@/shared/ui/StatusTag";
 import {
   useCreatePerson,
@@ -292,6 +293,7 @@ export function PeoplePage() {
           </Space>
         }
       />
+      <QueryErrorAlert query={catalog} what="本厂名册" />
       <Card>
         <Table<Account> rowKey="id" columns={columns} dataSource={c?.people ?? []} loading={catalog.isLoading} pagination={{ pageSize: 20, hideOnSinglePage: true }} scroll={{ x: "max-content" }} />
       </Card>
@@ -393,22 +395,25 @@ export function PeoplePage() {
         width={960}
         destroyOnHidden
       >
-        <Table<PersonLoginLog>
-          rowKey="id"
-          size="small"
-          loading={logins.isLoading}
-          dataSource={logins.data ?? []}
-          pagination={{ pageSize: 10, hideOnSinglePage: true }}
-          columns={[
-            { title: "时间", dataIndex: "occurredAt", width: 170, render: (v: string) => formatDateTime(v) },
-            { title: "方式", dataIndex: "kind", width: 100, render: (k: string) => loginKindLabel(k) },
-            { title: "APP 版本", key: "app", width: 140, render: (_, r) => formatAppRelease(r.appVersion, r.appVersionName) },
-            { title: "设备", key: "device", width: 180, render: (_, r) => deviceLabel(r.clientName, r.deviceSerial) },
-            { title: "型号", dataIndex: "deviceModel", width: 140, render: dash },
-            { title: "系统", dataIndex: "androidRelease", width: 80, render: dash },
-            { title: "网络", dataIndex: "networkName", width: 140, render: dash },
-          ]}
-        />
+        <QueryErrorAlert query={logins} what="登录日志" />
+        {readFailed(logins) ? null : (
+          <Table<PersonLoginLog>
+            rowKey="id"
+            size="small"
+            loading={logins.isLoading}
+            dataSource={logins.data ?? []}
+            pagination={{ pageSize: 10, hideOnSinglePage: true }}
+            columns={[
+              { title: "时间", dataIndex: "occurredAt", width: 170, render: (v: string) => formatDateTime(v) },
+              { title: "方式", dataIndex: "kind", width: 100, render: (k: string) => loginKindLabel(k) },
+              { title: "APP 版本", key: "app", width: 140, render: (_, r) => formatAppRelease(r.appVersion, r.appVersionName) },
+              { title: "设备", key: "device", width: 180, render: (_, r) => deviceLabel(r.clientName, r.deviceSerial) },
+              { title: "型号", dataIndex: "deviceModel", width: 140, render: dash },
+              { title: "系统", dataIndex: "androidRelease", width: 80, render: dash },
+              { title: "网络", dataIndex: "networkName", width: 140, render: dash },
+            ]}
+          />
+        )}
       </Modal>
     </>
   );

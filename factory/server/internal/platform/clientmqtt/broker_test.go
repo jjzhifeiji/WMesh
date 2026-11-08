@@ -2,12 +2,15 @@ package clientmqtt
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
+	"github.com/eclipse/paho.mqtt.golang/packets"
 	"github.com/google/uuid"
 	mochi "github.com/mochi-mqtt/server/v2"
 
@@ -322,7 +325,7 @@ func (l *presenceLog) waitUpAtLeast(t *testing.T, up int) {
 	}
 }
 
-// 同一台机器换人重连抢占，旧连接断开不能删掉新人。
+// 同一台机器换人：旧人断开后新人接上，上下线和上行各记各的人。
 func TestBrokerTakeoverKeepsNewPerson(t *testing.T) {
 	// 新建厂、机器和两位登录人。
 	fid, cid, p1, p2 := id.New(), id.New(), id.New(), id.New()
@@ -339,12 +342,16 @@ func TestBrokerTakeoverKeepsNewPerson(t *testing.T) {
 	t.Cleanup(func() { _ = bus.Close() })
 
 	// 人 1 先用这台机器连上。
-	connect(t, bus.Addr(), fid, cid, "tok1")
+	old := connect(t, bus.Addr(), fid, cid, "tok1")
 	// 等人 1 报上线。
 	rec.waitCounts(t, 1, 0, 0)
-	// 人 2 用同一个机器号连上，把旧连接挤掉。
+	// 人 1 退出登录，示教器先断开自己的连接。
+	old.Disconnect(250)
+	// 等人 1 的离线报到。
+	rec.waitCounts(t, 1, 1, 0)
+	// 人 2 用同一个机器号连上。
 	fresh := connect(t, bus.Addr(), fid, cid, "tok2")
-	// 等人 2 上线、旧连接离线都报完。
+	// 等人 2 上线报到。
 	rec.waitCounts(t, 2, 1, 0)
 	// 拷出当前记录来核对是谁。
 	on, off, _ := rec.snapshot()
@@ -387,6 +394,260 @@ func TestBrokerTakeoverKeepsNewPerson(t *testing.T) {
 		// 离线记错人就停住。
 		t.Fatalf("offline = %v, want second %v", off, p2)
 	}
+}
+
+// 别人的令牌报这台的机器号，正主还连着时不能把正主顶掉，也收不到正主的下行（D-59）。
+func TestBrokerRefusesTakeoverByOtherPerson(t *testing.T) {
+	// 新建厂、机器和两位登录人。
+	fid, cid, p1, p2 := id.New(), id.New(), id.New(), id.New()
+	// 准备记录上下线的日志。
+	rec := &presenceLog{}
+	// 占住端口，两张令牌分别认两个人。
+	bus, err := Listen("127.0.0.1:0", rec.hooks(fid, cid, map[string]uuid.UUID{"tok1": p1, "tok2": p2}))
+	// 代理起不来就停住本用例。
+	if err != nil {
+		// 代理起不来就停住本用例。
+		t.Fatal(err)
+	}
+	// 用例结束关掉代理，避免占着端口。
+	t.Cleanup(func() { _ = bus.Close() })
+	// 正主连上并订自己的下行。
+	victim := connect(t, bus.Addr(), fid, cid, "tok1")
+	// 准备收正主的下行。
+	got := make(chan string, 4)
+	// 正主订自己的下行。
+	sub(t, victim, DownTopic(fid, cid), got)
+	// 等正主上线报到。
+	rec.waitCounts(t, 1, 0, 0)
+	// 别人拿自己的令牌报正主的机器号来连。
+	err = connectErr(bus.Addr(), fid, cid, "tok2")
+	// 冒充应回服务不可用：不让顶，也不当令牌失效。
+	if !errors.Is(err, packets.ErrorRefusedServerUnavailable) {
+		// 冒充连上了或拒绝码不对就停住。
+		t.Fatalf("spoof connect err = %v", err)
+	}
+	// 正主连接不能被挤掉。
+	if !victim.IsConnectionOpen() {
+		// 正主被踢就停住。
+		t.Fatal("victim kicked")
+	}
+	// 下行照常投给正主。
+	if err := bus.Publish(fid, cid, []byte(`{"typ":"policy","revision":2}`)); err != nil {
+		// 投不出去就停住。
+		t.Fatal(err)
+	}
+	// 等正主收到下行。
+	select {
+	// 收到就算过。
+	case <-got:
+	// 等太久还没有就当成失败。
+	case <-time.After(3 * time.Second):
+		// 正主收不到下行就停住。
+		t.Fatal("victim missed down")
+	}
+	// 只报过正主一次上线，没有离线。
+	rec.waitCounts(t, 1, 0, 0)
+}
+
+// 厂暂不可用（租约没领到、库连不上）回服务不可用，令牌失效才回认证失败；示教器只在后者登出（D-89）。
+func TestBrokerUnavailableIsNotAuthFailure(t *testing.T) {
+	// 新建厂和机器。
+	fid, cid := id.New(), id.New()
+	// 占住端口，按令牌给出两种失败。
+	bus, err := Listen("127.0.0.1:0", Hooks{
+		// lease 当厂暂不可用，其余当令牌失效。
+		Auth: func(_, _ uuid.UUID, token string) (uuid.UUID, error) {
+			// 租约没了包成暂不可用。
+			if token == "lease" {
+				// 交回暂不可用。
+				return uuid.Nil, fmt.Errorf("%w: content lease expired", ErrUnavailable)
+			}
+			// 其余当令牌失效。
+			return uuid.Nil, errIntent("token")
+		},
+	})
+	// 代理起不来就停住本用例。
+	if err != nil {
+		// 代理起不来就停住本用例。
+		t.Fatal(err)
+	}
+	// 用例结束关掉代理，避免占着端口。
+	t.Cleanup(func() { _ = bus.Close() })
+	// 厂暂不可用要回服务不可用。
+	if err := connectErr(bus.Addr(), fid, cid, "lease"); !errors.Is(err, packets.ErrorRefusedServerUnavailable) {
+		// 拒绝码不对就停住。
+		t.Fatalf("lease err = %v", err)
+	}
+	// 令牌失效照旧回认证失败（3.1.1 上是未授权），示教器据此登出。
+	if err := connectErr(bus.Addr(), fid, cid, "bad"); !errors.Is(err, packets.ErrorRefusedNotAuthorised) {
+		// 拒绝码不对就停住。
+		t.Fatalf("bad token err = %v", err)
+	}
+}
+
+// 令牌钉着设备 X（D-59）：报 X 照常连上、只能订 X 的下行；同一张令牌报 Y 回服务不可用，Y 无人在线也连不上、收不到 Y 的下行。
+func TestBrokerRefusesTokenBoundToOtherClient(t *testing.T) {
+	// 新建厂、两台设备和登录人。
+	fid, cx, cy, p1 := id.New(), id.New(), id.New(), id.New()
+	// 占住端口，按令牌钉的设备核对 clientId。
+	bus, err := Listen("127.0.0.1:0", Hooks{
+		// 令牌 tokX 只钉着设备 X。
+		Auth: func(_, clientID uuid.UUID, token string) (uuid.UUID, error) {
+			// 别的令牌一律当失效。
+			if token != "tokX" {
+				// 交回令牌不对。
+				return uuid.Nil, errIntent("token")
+			}
+			// 报的不是钉住的那台，按设备不符交回。
+			if clientID != cx {
+				// 交回设备不符。
+				return uuid.Nil, fmt.Errorf("%w: bound elsewhere", ErrClientMismatch)
+			}
+			return p1, nil
+		},
+	})
+	// 代理起不来就停住本用例。
+	if err != nil {
+		// 代理起不来就停住本用例。
+		t.Fatal(err)
+	}
+	// 用例结束关掉代理，避免占着端口。
+	t.Cleanup(func() { _ = bus.Close() })
+	// Y 无人在线时拿 X 的令牌报 Y，要回服务不可用，不当令牌失效。
+	if err := connectErr(bus.Addr(), fid, cy, "tokX"); !errors.Is(err, packets.ErrorRefusedServerUnavailable) {
+		// 拒绝码不对或放行了就停住。
+		t.Fatalf("spoof Y err = %v", err)
+	}
+	// 报 X 照常连上。
+	x := connect(t, bus.Addr(), fid, cx, "tokX")
+	// 准备收 X 的下行。
+	got := make(chan string, 4)
+	// 订 X 自己的下行。
+	sub(t, x, DownTopic(fid, cx), got)
+	// 往 Y 投一条，X 不该收到。
+	if err := bus.Publish(fid, cy, []byte("y")); err != nil {
+		// 投不出去就停住。
+		t.Fatal(err)
+	}
+	// 往 X 投一条，X 该收到。
+	if err := bus.Publish(fid, cx, []byte("x")); err != nil {
+		// 投不出去就停住。
+		t.Fatal(err)
+	}
+	// 等 X 的下行。
+	select {
+	// 收到的必须是 X 的那条。
+	case m := <-got:
+		// 收到 Y 的就停住。
+		if m != "x" {
+			// 串到别台的下行就停住。
+			t.Fatalf("got %q", m)
+		}
+	// 等太久还没有就当成失败。
+	case <-time.After(3 * time.Second):
+		// X 收不到自己的下行就停住。
+		t.Fatal("X missed down")
+	}
+}
+
+// 停用、重置密码后按人断开：这个人的连接都断，别人的不动（D-73）。
+func TestBrokerDropPerson(t *testing.T) {
+	// 新建厂、两台机器和两位登录人。
+	fid, c1, c2, p1, p2 := id.New(), id.New(), id.New(), id.New(), id.New()
+	// 占住端口，按令牌认人，机器号不限。
+	bus, err := Listen("127.0.0.1:0", Hooks{
+		// 按令牌认人。
+		Auth: func(factoryID, _ uuid.UUID, token string) (uuid.UUID, error) {
+			// 别的厂一律拒绝。
+			if factoryID != fid {
+				// 交回令牌不对。
+				return uuid.Nil, errIntent("factory")
+			}
+			// 按令牌认人。
+			switch token {
+			// 人 1 的令牌。
+			case "tok1":
+				return p1, nil
+			// 人 2 的令牌。
+			case "tok2":
+				return p2, nil
+			}
+			// 其余当令牌失效。
+			return uuid.Nil, errIntent("token")
+		},
+	})
+	// 代理起不来就停住本用例。
+	if err != nil {
+		// 代理起不来就停住本用例。
+		t.Fatal(err)
+	}
+	// 用例结束关掉代理，避免占着端口。
+	t.Cleanup(func() { _ = bus.Close() })
+	// 人 1 连机器 1。
+	a := connect(t, bus.Addr(), fid, c1, "tok1")
+	// 人 2 连机器 2。
+	b := connect(t, bus.Addr(), fid, c2, "tok2")
+	// 别的厂断人 1，一条都不该断。
+	if n := bus.DropPerson(id.New(), p1); n != 0 {
+		// 断了别厂的连接就停住。
+		t.Fatalf("drop other factory = %d", n)
+	}
+	// 断人 1 的连接。
+	if n := bus.DropPerson(fid, p1); n != 1 {
+		// 条数不对就停住。
+		t.Fatalf("drop = %d", n)
+	}
+	// 定下最晚等到什么时候。
+	deadline := time.Now().Add(3 * time.Second)
+	// 等人 1 的连接断开。
+	for a.IsConnectionOpen() && time.Now().Before(deadline) {
+		// 稍等一下再看。
+		time.Sleep(20 * time.Millisecond)
+	}
+	// 人 1 还连着就停住。
+	if a.IsConnectionOpen() {
+		// 没断就停住。
+		t.Fatal("person 1 still connected")
+	}
+	// 人 2 不能被连带断开。
+	if !b.IsConnectionOpen() {
+		// 误断就停住。
+		t.Fatal("person 2 dropped")
+	}
+}
+
+// connectErr 连一次并交回 CONNACK 拒绝原因，连上就断开交回空。
+func connectErr(addr string, fid, cid uuid.UUID, token string) error {
+	// 准备这条测试连接的参数。
+	opts := mqtt.NewClientOptions()
+	// 填上要连的代理地址。
+	opts.AddBroker("tcp://" + addr)
+	// 填上机器号。
+	opts.SetClientID(cid.String())
+	// 填上工厂身份。
+	opts.SetUsername(fid.String())
+	// 把口令填进连接参数。
+	opts.SetPassword(token)
+	// 关掉自动重连，只试这一次。
+	opts.SetAutoReconnect(false)
+	// 限制这次连接最多等多久。
+	opts.SetConnectTimeout(2 * time.Second)
+	// 按参数建一个消息客户端。
+	cli := mqtt.NewClient(opts)
+	// 按这些参数真正连上去。
+	tok := cli.Connect()
+	// 等不到结果就当超时。
+	if !tok.WaitTimeout(3 * time.Second) {
+		// 交回超时，调用方按失败判。
+		return errors.New("connect timeout")
+	}
+	// 连上了就断开，交回空。
+	if tok.Error() == nil {
+		// 断开这条试连。
+		cli.Disconnect(100)
+	}
+	// 交回拒绝原因，连上则为空。
+	return tok.Error()
 }
 
 // 同一人同一台重连，上线和离线次数要配平。

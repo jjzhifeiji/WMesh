@@ -120,6 +120,55 @@ func (s *Store) InsertPersonLogin(ctx context.Context, personID uuid.UUID, snap 
 	return row, nil
 }
 
+// FillPersonLoginBlanks 把这次现场补进已有那条登录记录里空着的列，已有的值不改；同一次登录不另起一条。
+func (s *Store) FillPersonLoginBlanks(ctx context.Context, logID uuid.UUID, snap LoginSnap) error {
+	// 准备承接要补的那一条。
+	var row PersonLoginLog
+	// 读不到就交回，调用方照常另记一条。
+	if err := s.db.WithContext(ctx).First(&row, "id = ?", logID).Error; err != nil {
+		// 没有这一行就当成不存在。
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return domain.ErrNotFound
+		}
+		return err
+	}
+	// 只收集原来空着、这次有值的列。
+	updates := map[string]any{}
+	// 文本列逐个看：原来空、这次有才补。
+	for col, pair := range map[string][2]string{
+		// 列名对上原值和这次的值。
+		"app_version_name":    {row.AppVersionName, clipLoginText(snap.AppVersionName, 80)},
+		"device_serial":       {row.DeviceSerial, clipLoginText(snap.DeviceSerial, 80)},
+		"device_model":        {row.DeviceModel, clipLoginText(snap.DeviceModel, 80)},
+		"device_manufacturer": {row.DeviceManufacturer, clipLoginText(snap.DeviceManufacturer, 80)},
+		"android_release":     {row.AndroidRelease, clipLoginText(snap.AndroidRelease, 40)},
+		"network_name":        {row.NetworkName, clipLoginText(snap.NetworkName, 80)},
+		"client_name":         {row.ClientName, clipLoginText(snap.ClientName, 80)},
+	} {
+		// 原来空、这次有值才补。
+		if pair[0] == "" && pair[1] != "" {
+			// 记下要补的这一列。
+			updates[col] = pair[1]
+		}
+	}
+	// 版本号原来没报、这次报了才补。
+	if row.AppVersion == 0 && snap.AppVersion != 0 {
+		// 记下要补的版本号。
+		updates["app_version"] = snap.AppVersion
+	}
+	// 本机原来没对上、这次对上了才补。
+	if row.ClientID == nil && snap.ClientID != nil {
+		// 记下要补的本机身份。
+		updates["client_id"] = *snap.ClientID
+	}
+	// 没有要补的就不写库。
+	if len(updates) == 0 {
+		return nil
+	}
+	// 只改要补的列，库错误原样交回。
+	return s.db.WithContext(ctx).Model(&PersonLoginLog{}).Where("id = ?", logID).Updates(updates).Error
+}
+
 // LatestPersonLogin 取该人最近一条登录快照；没有则 not found。
 func (s *Store) LatestPersonLogin(ctx context.Context, personID uuid.UUID) (PersonLoginLog, error) {
 	// 准备承接查到的登录现场。

@@ -112,8 +112,8 @@ func (h *Handler) logout(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) me(w http.ResponseWriter, r *http.Request) {
 	// 返回当前登录人，未登录则拒绝。
 	h.withFactory(w, r, func(svc *service.Service) {
-		// 先确认会话仍有效，过期或停用则拒绝。
-		acc, err := svc.Auth.RequireActive(r.Context(), bearer(r))
+		// 先确认会话仍有效，过期、停用或厂停用注销则拒绝；本人信息不含正文，租约没领到也照给（D-91）。
+		acc, err := svc.Auth.RequireSignedIn(r.Context(), bearer(r))
 		// 上一步没通过则停止，不把失败写成成功。
 		if err != nil {
 			// 把失败译成状态回给调用方，不写成功。

@@ -14,6 +14,13 @@ export function selectableFactories(factories: SiteFactory[]) {
   return factories.filter((f) => f.status !== "retired");
 }
 
+// 登录页下拉：可选的厂，加上被退回登录页时会话所在、已注销的那一家（显示厂名和「已注销」，选中时不能登录）。
+export function loginFactories(factories: SiteFactory[], sessionId: string) {
+  const listed = selectableFactories(factories);
+  const mine = factories.find((f) => f.id === sessionId && f.status === "retired");
+  return mine ? [...listed, mine] : listed;
+}
+
 // 下拉不展示已注销厂；刚认领时清单可能还没刷出来，沿用会话里的工厂 ID。
 export function pickFactoryId(listed: SiteFactory[], sessionId: string) {
   if (listed.some((f) => f.id === sessionId)) return sessionId;
@@ -26,6 +33,7 @@ export function factoryOptionLabel(f: SiteFactory) {
   const code = f.shortCode?.trim();
   const title = name && code ? `${name}（${code}）` : name || (code ? `工厂 ${code}` : "未命名工厂");
   if (f.status === "disabled") return `${title}（已停用）`;
+  if (f.status === "retired") return `${title}（已注销）`;
   return title;
 }
 
@@ -54,6 +62,18 @@ export function FactoryClosedNotice({
       : closedMessage(selected?.status, action);
   if (!msg) return null;
   return <Alert type={selected?.status === "disabled" && !allRetired ? "warning" : "error"} showIcon message={msg} style={{ marginBottom: 16 }} />;
+}
+
+// 租约没领到或已到期时登录不进（服务端回「解包租约已过期或尚未从云端领到」），登录页一打开就说明原因，不等点了登录才报（D-91）。
+// 停用、注销已由 FactoryClosedNotice 提示，这里不重复。
+export function FactoryLeaseNotice({ factories, factoryId }: { factories: SiteFactory[]; factoryId?: string }) {
+  const selected = factories.find((f) => f.id === factoryId) ?? (factories.length === 1 ? factories[0] : undefined);
+  if (!selected || factoryClosed(selected.status) || selected.leaseReady !== false) return null;
+  const msg =
+    selected.wanConnected === false
+      ? "本厂与云端的连接未建立，还没领到内容租约（或租约已到期），暂时登录不了。请先确认厂端能连上云端，连上后会自动领到租约。"
+      : "本厂内容租约无效（还没从云端领到或已到期），暂时登录不了；已连上云端，正在等待领取，请稍后刷新再试。";
+  return <Alert type="warning" showIcon message={msg} style={{ marginBottom: 16 }} />;
 }
 
 export function FactoryStatusTag({ status }: { status?: string }) {

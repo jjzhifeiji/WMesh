@@ -2,6 +2,7 @@ package clientmqtt
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
@@ -23,9 +24,17 @@ const (
 	upDropLogEvery = 100         // 限速丢掉的条数每满这么多再打一条日志。
 )
 
+// ErrUnavailable 厂暂时不能服务（租约没领到、库连不上），不是令牌失效；
+// Auth 包着它交回时回「服务不可用」，示教器照常重试，不当会话作废登出。
+var ErrUnavailable = errors.New("client mqtt temporarily unavailable")
+
+// ErrClientMismatch 令牌有效，但本次登录钉的不是 CONNECT 报的这台设备（D-59）；
+// Auth 包着它交回时回「服务不可用」：拿自己的令牌报别台的 clientId 连不上，正主换设备要重新登录，不当令牌失效登出。
+var ErrClientMismatch = errors.New("client mqtt session not bound to this client")
+
 // Hooks 把鉴权和回执交给应用服务；Broker 自己不查库。
 type Hooks struct {
-	Auth    func(factoryID, clientID uuid.UUID, token string) (uuid.UUID, error) // CONNECT 验本机会话，回登录人
+	Auth    func(factoryID, clientID uuid.UUID, token string) (uuid.UUID, error) // CONNECT 验本机会话，回登录人；暂不可用包 ErrUnavailable
 	Online  func(factoryID, personID uuid.UUID)                                  // 会话已建立
 	Offline func(factoryID, personID uuid.UUID)                                  // 会话断开
 	Up      func(factoryID, clientID, personID uuid.UUID, payload []byte)        // 本机上行回执
@@ -142,6 +151,7 @@ func (h *clientHook) ID() string { return "wmesh-client-auth" }
 func (h *clientHook) Provides(b byte) bool {
 	// 交回看文本里有没有这段的结果。
 	return bytes.Contains([]byte{
+		mqtt.OnConnect,
 		mqtt.OnConnectAuthenticate,
 		mqtt.OnSessionEstablished,
 		mqtt.OnDisconnect,
@@ -150,39 +160,80 @@ func (h *clientHook) Provides(b byte) bool {
 	}, []byte{b})
 }
 
-// OnConnectAuthenticate 验工厂身份、本机身份和人员会话令牌。
-func (h *clientHook) OnConnectAuthenticate(cl *mqtt.Client, pk packets.Packet) bool {
+// OnConnect 验工厂身份、本机身份和人员会话令牌，并自己回 CONNACK 拒绝码：
+// 令牌失效回认证失败（3.1.1 上译成未授权），示教器据此登出；厂暂不可用、这台正被别人连着、
+// 或令牌钉的不是这台设备（D-59）回「服务不可用」，示教器只重试。
+func (h *clientHook) OnConnect(cl *mqtt.Client, pk packets.Packet) error {
 	// 引擎自己的内联连接不按外部客户端拦。
 	if cl.Net.Inline {
-		return true
+		return nil
 	}
-	// 是空的就换一路，避免空着往下用。
+	// 先当令牌不对，暂不可用时再改。
+	code := packets.ErrBadUsernameOrPassword
+	// 验身份和令牌，认下登录人。
+	personID, err := h.authenticate(pk)
+	// 厂暂不可用、令牌没钉这台设备都不是令牌失效，改回服务不可用，免得示教器登出。
+	if errors.Is(err, ErrUnavailable) || errors.Is(err, ErrClientMismatch) {
+		// 改成服务不可用，示教器按断线重试。
+		code = packets.ErrServerUnavailable
+	}
+	// 同号已有别人的连接活着就不让顶，免得拿自己的令牌冒充别台把人家挤下线。
+	if err == nil && h.broker.heldByOther(cl, personID) {
+		// 记下谁想顶哪台，便于排查冒充。
+		slog.Warn("client mqtt takeover refused", "client", cl.ID, "person", personID)
+		// 回服务不可用，正主不受影响，真换人的等旧连接断开再连上。
+		code, err = packets.ErrServerUnavailable, errTakeover
+	}
+	// 没通过就自己回拒绝码再断开，引擎不再往下走。
+	if err != nil {
+		// 回拒绝码，写失败也照样断开。
+		_ = h.broker.server.SendConnack(cl, code, false, nil)
+		return code
+	}
+	// 按这条连接记下登录人，同号旧连接各记各的。
+	h.broker.rememberPerson(cl, personID)
+	return nil
+}
+
+// errTakeover 同号已有别人的连接活着，这次不让顶替。
+var errTakeover = errors.New("client id held by another person")
+
+// authenticate 解出工厂和本机身份后交给应用服务验令牌，回登录人。
+func (h *clientHook) authenticate(pk packets.Packet) (uuid.UUID, error) {
+	// 没接鉴权就一律拒绝。
 	if h.broker.hooks.Auth == nil {
-		return false
+		return uuid.Nil, errNoAuth
 	}
 	// 把文本收成稳定身份。
 	fid, err := uuid.Parse(string(pk.Connect.Username))
 	// 没能把文本收成稳定身份就停，避免带着残缺继续。
 	if err != nil {
-		return false
+		return uuid.Nil, err
 	}
 	// 把文本收成稳定身份。
 	cid, err := uuid.Parse(pk.Connect.ClientIdentifier)
 	// 没能把文本收成稳定身份就停，避免带着残缺继续。
 	if err != nil {
-		return false
+		return uuid.Nil, err
 	}
-	// 鉴权，再交给后面，再交给后面。
+	// 交给应用服务验令牌，认下登录人。
 	personID, err := h.broker.hooks.Auth(fid, cid, string(pk.Connect.Password))
-	// 没能鉴权，再交给后面就停，避免带着残缺继续。
+	// 没能鉴权就停，原因只进日志。
 	if err != nil {
-		// 警告，再交给后面，再交给后面。
+		// 记下哪台被拒和原因，日志里不写令牌。
 		slog.Warn("client mqtt auth failed", "factory", fid, "client", cid, "err", err)
-		return false
+		return uuid.Nil, err
 	}
-	// 按这条连接记下登录人，同号旧连接各记各的。
-	h.broker.rememberPerson(cl, personID)
-	return true
+	return personID, nil
+}
+
+// errNoAuth 没接鉴权钩子，谁都不让连。
+var errNoAuth = errors.New("client mqtt auth hook missing")
+
+// OnConnectAuthenticate 鉴权已在 OnConnect 做完，这里只认已记下登录人的连接。
+func (h *clientHook) OnConnectAuthenticate(cl *mqtt.Client, _ packets.Packet) bool {
+	// 内联连接放行，外部连接要在 OnConnect 里记下过登录人。
+	return cl.Net.Inline || h.broker.hasPerson(cl)
 }
 
 // OnSessionEstablished 记下本机上线，不写令牌。
@@ -327,6 +378,78 @@ func (b *Broker) markOnline(cl *mqtt.Client) uuid.UUID {
 	// 写回表里，让上线标记生效。
 	b.persons[cl] = p
 	return p.person
+}
+
+// 这条连接在 OnConnect 里认下过登录人才算鉴权通过。
+func (b *Broker) hasPerson(cl *mqtt.Client) bool {
+	// 对象还是空的就当没认下。
+	if b == nil || cl == nil {
+		return false
+	}
+	// 先占住锁，避免和断开同时改表。
+	b.mu.Lock()
+	// 离开时放开锁，免得把别人堵住。
+	defer b.mu.Unlock()
+	// 按连接查有没有记下的项。
+	_, ok := b.persons[cl]
+	return ok
+}
+
+// heldByOther 同号已有另一个人的连接上线且没断，这次换人不能顶掉它；同一个人重连照常顶。
+func (b *Broker) heldByOther(cl *mqtt.Client, personID uuid.UUID) bool {
+	// 对象还是空的就当没人占着。
+	if b == nil || cl == nil {
+		return false
+	}
+	// 先占住锁，避免和断开同时改表。
+	b.mu.Lock()
+	// 离开时放开锁，免得把别人堵住。
+	defer b.mu.Unlock()
+	// 逐条看同号的旧连接。
+	for old, p := range b.persons {
+		// 同号、已上线、还没断、不是同一个人，才算被别人占着。
+		if old != cl && old.ID == cl.ID && p.online && !old.Closed() && p.person != personID {
+			return true
+		}
+	}
+	return false
+}
+
+// DropPerson 断开这个人在本厂的全部连接，交回断了几条；账号停用、重置密码、收回角色后叫它，
+// 示教器重连时令牌已作废会被拒并登出，不用等下一次访问厂服。
+func (b *Broker) DropPerson(factoryID, personID uuid.UUID) int {
+	// 代理还没起来或没给人，就没什么可断。
+	if b == nil || b.server == nil || personID == uuid.Nil {
+		return 0
+	}
+	// 先占住锁，只抄出要断的连接。
+	b.mu.Lock()
+	// 准备收下要断的连接。
+	var drop []*mqtt.Client
+	// 逐条看已认下的连接。
+	for cl, p := range b.persons {
+		// 只断这个人的，别人的不动。
+		if p.person != personID {
+			continue
+		}
+		// 取出这条连接的工厂身份。
+		fid, _, ok := sessionIDs(cl)
+		// 别的厂或身份读不出的不动。
+		if !ok || fid != factoryID {
+			continue
+		}
+		// 收下这条，锁外再断。
+		drop = append(drop, cl)
+	}
+	// 抄完就放开，断开回调还要拿这把锁。
+	b.mu.Unlock()
+	// 逐条断开，示教器重连时再按令牌判。
+	for _, cl := range drop {
+		// 按未授权断开，断失败也不影响别的。
+		_ = b.server.DisconnectClient(cl, packets.ErrNotAuthorized)
+	}
+	// 交回断了几条，调用方可记日志。
+	return len(drop)
 }
 
 // 取出这条连接对应的登录人。

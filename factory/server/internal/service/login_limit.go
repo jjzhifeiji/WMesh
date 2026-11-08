@@ -55,8 +55,10 @@ func loginKey(ctx context.Context, loginName string) string {
 func (l *loginLimiter) clock() time.Time {
 	// 测试换了钟就用测试的
 	if l.now != nil {
+		// 交回测试钟的时刻
 		return l.now()
 	}
+	// 没换钟就取墙钟
 	return time.Now()
 }
 

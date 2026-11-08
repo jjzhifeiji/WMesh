@@ -301,8 +301,34 @@ func (s *Org) RevokeRole(ctx context.Context, token string, grantID uuid.UUID) e
 		_ = s.audit(ctx, &acc.ID, nil, "revoke_role", grantID.String(), audit.Deny)
 		return err
 	}
+	// 收完一种角色都不剩了，示教器上这人就不能再作业，立刻让他下线
+	if err := s.dropRolelessApp(ctx, g.PersonID); err != nil {
+		return err
+	}
 	// 收回角色成功后记审计，再把结果交回
 	return s.audit(ctx, &acc.ID, nil, "revoke_role", grantID.String(), audit.Allow)
+}
+
+// dropRolelessApp 这人一种整厂角色都不剩时，作废他的示教器会话并断开在线连接；还有角色就不动。
+// 网页会话保留，网页上的新操作照样按新角色判定。
+func (s *Org) dropRolelessApp(ctx context.Context, personID uuid.UUID) error {
+	// 只取当前有效角色，刚收回的不算
+	grants, err := s.grantsOf(ctx, personID)
+	// 角色读失败就交回，收回本身已落库
+	if err != nil {
+		return err
+	}
+	// 还有别的角色，示教器照常用
+	if len(grants) > 0 {
+		return nil
+	}
+	// 作废示教器会话，旧令牌下一次请求就是未登录
+	if err := s.store.DeleteAppSessionsForPerson(ctx, personID); err != nil {
+		return err
+	}
+	// 断开在线的示教器，重连被拒即登出
+	s.dropApp(personID)
+	return nil
 }
 
 // DeleteOrgUnit 没有下级节点、也没有人归在这里才删；否则拒绝。

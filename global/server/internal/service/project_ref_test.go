@@ -958,8 +958,8 @@ func TestSeedTemplatesStayDeleted(t *testing.T) {
 	}
 	// 带种子身份手动补建单层，空名空字段按种子填。
 	rebuilt, err := h.WAN.CreateProjectTemplate(ctx, tok, seedID, "", nil)
-	// 补建失败或身份变了就停，不能当通过。
-	if err != nil || rebuilt.ID != seedID || rebuilt.Revision != 1 {
+	// 补建失败或身份变了就停；修订要接在删除前之后（种子删前是 1），厂端才不会当已收过（D-43）。
+	if err != nil || rebuilt.ID != seedID || rebuilt.Revision != 2 {
 		// 不符即停：带种子身份补建失败。
 		t.Fatalf("rebuild %+v %v", rebuilt, err)
 	}

@@ -229,10 +229,10 @@ func TestProjectProcessRefs(t *testing.T) {
 		// 把建工程的错误打出来并停住，避免继续往下验。
 		t.Fatal(err)
 	}
-	// 条数或长度应符合预期，为空或超长说明不全。
-	if len(pinnedPersonal.Deps) != 1 || pinnedPersonal.Deps[0].ID != own.ID {
-		// 个人稿串到了别人名下，说明归属没保住。
-		t.Fatalf("personal pin %+v", pinnedPersonal.Deps)
+	// 个人工艺复制成厂级再钉（D-101）：依赖是副本，来源记着这条个人工艺。
+	if len(pinnedPersonal.Deps) != 1 || pinnedPersonal.Deps[0].ID == own.ID || len(pinnedPersonal.PersonalCopies) != 1 || pinnedPersonal.PersonalCopies[0].SourceID != own.ID {
+		// 依赖还是个人工艺，或副本没复制。
+		t.Fatalf("personal pin %+v %+v", pinnedPersonal.Deps, pinnedPersonal.PersonalCopies)
 	}
 }
 

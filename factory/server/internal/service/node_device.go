@@ -78,6 +78,18 @@ func (s *Node) LoginPad(ctx context.Context, loginName, password string) (PadSes
 	}
 	// 口令对了就清掉前面的失败记账
 	s.logins.ok(key)
+	// 示教器只给握着整厂角色的人用；角色全被收回的人口令对也不发令牌
+	grants, err := s.grantsOf(ctx, p.ID)
+	// 角色读失败就无法判定，照实交回
+	if err != nil {
+		return PadSession{}, err
+	}
+	// 一种角色都没有，拒绝示教器登录
+	if len(grants) == 0 {
+		// 没有角色，记下厂网登录被拒绝，写失败不改变结果
+		_ = s.audit(ctx, &p.ID, &loginName, "pad_login", s.store.FactoryID().String(), audit.Deny)
+		return PadSession{}, domain.ErrForbidden
+	}
 	// 解封钥跟人走，焊机不持钥。
 	who, err := s.store.EnsurePersonUnwrapKey(ctx, p.ID)
 	// 解封钥读不到或长度不对，拒绝继续
@@ -126,8 +138,8 @@ func (s *Node) LoginPad(ctx context.Context, loginName, password string) (PadSes
 		_ = s.store.DeleteSessionByTokenHash(ctx, secret.TokenHash(token))
 		return PadSession{}, err
 	}
-	// 只取仍有效的角色
-	grants, err := s.store.ActiveGrants(ctx, p.ID)
+	// 只取仍有效的角色，登录到现在可能又变过
+	grants, err = s.store.ActiveGrants(ctx, p.ID)
 	// 角色读失败，不能判定许可
 	if err != nil {
 		// 只拿令牌摘要对会话，原文不入库，失败不打断当前返回

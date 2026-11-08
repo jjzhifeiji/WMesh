@@ -153,16 +153,15 @@ export function useImagePruneJob() {
   const [job, setJob] = useState<ImagePruneJob | null>(null);
   const [nonce, setNonce] = useState(0);
   const [posted, setPosted] = useState(false);
-  const [stale, setStale] = useState(false);
+  // 记下哪一次清理等超时了；换一次清理（nonce 变）或已完成就不算超时。
+  const [staleNonce, setStaleNonce] = useState<number | null>(null);
   const progress = useImagePrune(job !== null && posted, nonce);
+  const stale = posted && !progress.data?.ready && staleNonce === nonce;
   const waiting = job !== null && !progress.data?.ready && !stale;
 
   useEffect(() => {
-    if (!posted || progress.data?.ready) {
-      setStale(false);
-      return;
-    }
-    const t = window.setTimeout(() => setStale(true), 30_000);
+    if (!posted || progress.data?.ready) return;
+    const t = window.setTimeout(() => setStaleNonce(nonce), 30_000);
     return () => window.clearTimeout(t);
   }, [posted, nonce, progress.data?.ready]);
 

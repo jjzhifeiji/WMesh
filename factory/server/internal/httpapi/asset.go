@@ -500,12 +500,12 @@ func (h *Handler) enableAsset(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// 未被工程依赖则可删。
+// 未被工程依赖则可删；带期望修订，别人刚改过的回冲突。
 func (h *Handler) deleteAsset(w http.ResponseWriter, r *http.Request) {
-	// 未被依赖才删除，仍被引用则拒绝。
-	h.withAsset(w, r, func(svc *service.Service, assetID uuid.UUID) {
+	// 未被依赖且修订对得上才删除，仍被引用或修订对不上则拒绝。
+	h.withExpected(w, r, func(svc *service.Service, assetID uuid.UUID, expected int64) {
 		// 被拒绝则停止，不继续写成功响应。
-		if err := svc.Assets.DeleteAsset(r.Context(), bearer(r), assetID); err != nil {
+		if err := svc.Assets.DeleteAssetAt(r.Context(), bearer(r), assetID, expected); err != nil {
 			// 把失败译成状态回给调用方，不写成功。
 			writeErr(w, err)
 			return

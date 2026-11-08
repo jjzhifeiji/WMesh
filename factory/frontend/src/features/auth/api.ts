@@ -6,7 +6,8 @@ import { http } from "@/shared/api/client";
 import { fpath, session } from "@/shared/auth/session";
 
 export type LoginInput = { factoryId: string; loginName: string; password: string };
-export type SiteFactory = { id: string; name?: string; shortCode?: string; saLogin: string; status?: string };
+// leaseReady：内容租约眼下有效；wanConnected：与云端的通道连着（没配平台地址也为 true）。旧服务端不带这两个字段，按有效处理。
+export type SiteFactory = { id: string; name?: string; shortCode?: string; saLogin: string; status?: string; leaseReady?: boolean; wanConnected?: boolean };
 export type Site = { wanConfigured: boolean; factories: SiteFactory[] };
 export type ClaimInput = { enrollmentCode: string; password: string };
 export type Claimed = { factoryId: string; saLogin: string };
@@ -15,6 +16,8 @@ export function useSite() {
   return useQuery({
     queryKey: ["site"],
     queryFn: ({ signal }) => http.get<Site>("/v1/site", signal),
+    // 有厂租约没领到时每 5 秒再取一次，连上云端领到租约后登录页的租约提示自己消失，不用手动刷新（D-91）。
+    refetchInterval: (q) => (q.state.data?.factories.some((f) => f.leaseReady === false) ? 5000 : false),
   });
 }
 

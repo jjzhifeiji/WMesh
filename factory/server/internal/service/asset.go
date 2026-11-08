@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 
@@ -167,8 +169,27 @@ func (s *kernel) opCovers(ctx context.Context, acc Account) error {
 	return s.can(ctx, acc, permOperate)
 }
 
+// MaxAssetName 工艺、工程名去首尾空白后的字数上限；和焊次能收的工程名上限一致，
+// 免得建得出的工程焊完后焊次因名太长永远收不下。
+const MaxAssetName = store.WeldMaxProjectName
+
+// checkAssetNameLen 名字超过上限就拒，原因明说太长。
+func checkAssetNameLen(name string) error {
+	// 按字数算，多字节字不按字节算多
+	if utf8.RuneCountInString(strings.TrimSpace(name)) > MaxAssetName {
+		return domain.ErrNameTooLong
+	}
+	return nil
+}
+
 // insertAuthored 套模版后落草稿；工程依赖从参数补齐。
 func (s *Assets) insertAuthored(ctx context.Context, acc Account, wc WorkContext, kind, level, name string, content []byte, deps []AssetDep, copyable bool, weldKind ...string) (Asset, error) {
+	// 名字太长焊次收不下，建件时就拒
+	if err := checkAssetNameLen(name); err != nil {
+		// 创建被拒时补记审计，写失败仍维持拒绝。
+		_ = s.auditAt(ctx, &acc.ID, "create_asset", kind, audit.Deny)
+		return Asset{}, err
+	}
 	// 按级别核制作权，没有则拒绝。
 	if err := s.canAuthorLevel(ctx, acc, level); err != nil {
 		// 创建被拒时补记审计，写失败仍维持拒绝。
@@ -247,8 +268,31 @@ func (s *Assets) insertAuthored(ctx context.Context, acc Account, wc WorkContext
 			return Asset{}, err
 		}
 	}
-	// 校验都过了才落成一条资产，并在同一笔里挂进目标文件夹。
-	return s.insertGovernedAt(ctx, acc, assetPlace{ParentID: wc.FolderID}, kind, level, name, content, deps, copyable, weld)
+	// 校验都过了，厂级工程引用的个人工艺复制成厂级再落；别的都不走这步。
+	var adopted adoptResult
+	// 只有厂级工程要换。
+	if kind == KindProject && level == AssetLevelFactory {
+		// 新建没有旧依赖，引用的个人工艺都要复制。
+		adopted, err = s.copyPersonalDeps(ctx, acc, nil, content, deps)
+		// 复制不了就整份拒绝，已复制的里面回收过了。
+		if err != nil {
+			// 创建被拒时补记审计，写失败仍维持拒绝。
+			_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny)
+			return Asset{}, err
+		}
+		// 后面落的是改写过的正文和依赖。
+		content, deps = adopted.content, adopted.deps
+	}
+	// 落成一条资产，并在同一笔里挂进目标文件夹。
+	row, err := s.insertGovernedAt(ctx, acc, assetPlace{ParentID: wc.FolderID}, kind, level, name, content, deps, copyable, weld)
+	// 工程没落成就回收刚复制的工艺，免得留下没人用的厂级工艺。
+	if err != nil {
+		// 回收失败不盖住真因。
+		s.recyclePersonalCopies(ctx, acc, adopted.made)
+		return Asset{}, err
+	}
+	// 把改写后的正文和新工艺告诉调用方。
+	return adopted.stamp(row), nil
 }
 
 // insertGoverned 落一条草稿并挂到对应树根；调用方已决定是否套过模版。
@@ -309,8 +353,8 @@ func (s *Assets) CreatePad(ctx context.Context, token, level, kind, name string,
 // CreatePadIn 示教器新建并挂进指定文件夹；空父级挂树根。
 // 目录不在、不是文件夹、种类树或主人不对、无写权限都改挂该资产所属树根，只有库错误才报错。
 func (s *Assets) CreatePadIn(ctx context.Context, token, level, kind, name string, content []byte, id uuid.UUID, code string, deps []AssetDep, parentID uuid.UUID, weldKind ...string) (Asset, error) {
-	// 核对登录仍有效，后面的操作都靠这次会话。
-	acc, err := s.RequireActive(ctx, token)
+	// 核对登录仍有效且还握着角色，角色全收回的人不再从示教器建件。
+	acc, err := s.requirePadActor(ctx, token)
 	// 登录已失效则拒绝，避免未登录的人继续。
 	if err != nil {
 		return Asset{}, err
@@ -322,6 +366,12 @@ func (s *Assets) CreatePadIn(ctx context.Context, token, level, kind, name strin
 		// 创建被拒时补记审计，写失败仍维持拒绝。
 		_ = s.audit(ctx, &acc.ID, nil, "create_asset", kind, audit.Deny)
 		return Asset{}, domain.ErrInvalidName
+	}
+	// 名字太长焊次收不下，建件时就拒
+	if err := checkAssetNameLen(name); err != nil {
+		// 创建被拒时补记审计，写失败仍维持拒绝。
+		_ = s.audit(ctx, &acc.ID, nil, "create_asset", kind, audit.Deny)
+		return Asset{}, err
 	}
 	// 只接受工艺或工程，别的种类拒绝。
 	if kind != KindProcess && kind != KindProject {
@@ -372,6 +422,8 @@ func (s *Assets) CreatePadIn(ctx context.Context, token, level, kind, name strin
 		_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny)
 		return Asset{}, err
 	}
+	// 按已收内容模版补缺的键，示教器写了的键和值原样留着，和网页新建一样落全字段
+	content = s.padFillTemplate(ctx, kind, weld, content)
 	// 工程要先去掉路径、补依赖并核对焊道。
 	if kind == KindProject {
 		// 仍带工艺路径则记拒绝，避免把参数拆出去。
@@ -428,12 +480,55 @@ func (s *Assets) CreatePadIn(ctx context.Context, token, level, kind, name strin
 			return Asset{}, err
 		}
 	}
+	// 示教器另存厂级工程和网页同一规则：引用的个人工艺复制成厂级。
+	var adopted adoptResult
+	// 只有厂级工程要换。
+	if kind == KindProject && level == AssetLevelFactory {
+		// 新建没有旧依赖，引用的个人工艺都要复制。
+		adopted, err = s.copyPersonalDeps(ctx, acc, nil, content, deps)
+		// 复制不了就整份拒绝，已复制的里面回收过了。
+		if err != nil {
+			// 创建被拒时补记审计，写失败仍维持拒绝。
+			_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny)
+			return Asset{}, err
+		}
+		// 后面落的是改写过的正文和依赖。
+		content, deps = adopted.content, adopted.deps
+	}
 	// 写入本厂原件并挂目录，事务里挂不上也退回树根。
-	return s.putGoverned(ctx, acc, assetPlace{ParentID: parentID, OrRoot: true}, Asset{
+	row, err := s.putGoverned(ctx, acc, assetPlace{ParentID: parentID, OrRoot: true}, Asset{
 		ID: id, Kind: kind, Level: level, Name: name, Code: strings.TrimSpace(code),
 		Status: AssetAvailable, Copyable: true, WeldKind: weld, Content: content, Digest: digest.Sum(content),
 		CreatorID: acc.ID, Deps: deps,
 	})
+	// 工程没落成（比如号冲突）就回收刚复制的工艺；示教器换号重试时会重新复制。
+	if err != nil {
+		// 回收失败不盖住真因。
+		s.recyclePersonalCopies(ctx, acc, adopted.made)
+		return Asset{}, err
+	}
+	// 把改写后的正文和新工艺告诉调用方；示教器按回包摘要发现正文变了会重拉。
+	return adopted.stamp(row), nil
+}
+
+// padFillTemplate 示教器新建时按已收模版补键：只补正文里没有的键（含工程焊道的模版身份），
+// 不删示教器自己的键、不改已写的值；模版套不上就原样留着，免得示教器上传从此被拒。
+func (s *Assets) padFillTemplate(ctx context.Context, kind, weld string, content []byte) []byte {
+	// 先按网页新建同一口径套一遍模版
+	applied, err := s.normalizeContent(ctx, kind, weld, content)
+	// 套不上就原样留着，后面的校验照常判
+	if err != nil {
+		// 记下哪类正文没套上，日志里不写正文
+		slog.Warn("pad content template not applied", "kind", kind, "weld", weld, "err", err)
+		return content
+	}
+	// 以原正文为准补缺的键
+	out, err := contenttpl.FillMissing(content, applied)
+	// 补不了就原样留着
+	if err != nil {
+		return content
+	}
+	return out
 }
 
 // CopyProcess 可复制工艺另存为新草稿，原件正文原样拷贝，不套模版；平台级副本落成本厂厂级。
@@ -451,6 +546,12 @@ func (s *Assets) CopyProcess(ctx context.Context, token string, assetID uuid.UUI
 		// 创建被拒时补记审计，写失败仍维持拒绝。
 		_ = s.audit(ctx, &acc.ID, nil, "create_asset", assetID.String(), audit.Deny)
 		return Asset{}, domain.ErrInvalidName
+	}
+	// 名字太长焊次收不下，另存时就拒
+	if err := checkAssetNameLen(name); err != nil {
+		// 创建被拒时补记审计，写失败仍维持拒绝。
+		_ = s.audit(ctx, &acc.ID, nil, "create_asset", assetID.String(), audit.Deny)
+		return Asset{}, err
 	}
 	// 先读原件元数据，没有再看副本。
 	src, err := s.loadAnyMeta(ctx, assetID)
@@ -562,7 +663,7 @@ func (s *kernel) assertPersonalProjectDeps(ctx context.Context, acc Account, dep
 	for _, d := range deps {
 		// 只读本厂原件元数据，先不解开正文。
 		p, err := s.loadCheckedMeta(ctx, d.ID)
-		// 本厂没有原件，再按钉死修订核加密平台工艺。
+		// 本厂没有原件，再按声明的修订核加密平台工艺。
 		if errors.Is(err, domain.ErrNotFound) {
 			// 加密平台工艺按原身份引用，不合格就整份拒绝。
 			if err := s.assertPlatformDep(ctx, d, personalPlatformDep); err != nil {
@@ -600,7 +701,7 @@ func (s *kernel) assertPersonalProjectDeps(ctx context.Context, acc Account, dep
 	return nil
 }
 
-// assertPlatformDep 按钉死修订核已收平台副本：种类级别由 ok 判，修订摘要对上且可用。
+// assertPlatformDep 核写入时声明的已收平台副本：种类级别由 ok 判，修订摘要对上且可用。
 func (s *kernel) assertPlatformDep(ctx context.Context, d AssetDep, ok func(AssetReplica) bool) error {
 	// 按修订取副本元数据，用来核依赖。
 	r, err := s.store.ReplicaMetaByIDRev(ctx, d.ID, d.Revision)
@@ -822,8 +923,8 @@ func personalPlatformDep(r AssetReplica) bool {
 	return r.Kind == KindProcess && r.Level == AssetLevelPlatform && !r.Copyable
 }
 
-// resolveProjectDeps 改依赖时按身份重钉当前可用修订，跟上工艺升版。
-func (s *kernel) resolveProjectDeps(ctx context.Context, acc Account, level string, deps []AssetDep) ([]AssetDep, error) {
+// resolveProjectDeps 改依赖时按身份重钉当前可用修订，跟上工艺升版；工程已声明、后来停用或被云端删除的原样留着，只有新加的才拒。
+func (s *kernel) resolveProjectDeps(ctx context.Context, acc Account, level string, declared, deps []AssetDep) ([]AssetDep, error) {
 	// 按依赖条数准备结果，重钉后逐条放进来。
 	out := make([]AssetDep, 0, len(deps))
 	// 记下已经重钉的身份，避免同一工艺钉两次。
@@ -851,14 +952,50 @@ func (s *kernel) resolveProjectDeps(ctx context.Context, acc Account, level stri
 			// 把引用钉到当前可用的厂级或已收工艺。
 			pin, err = s.pinFactoryProcess(ctx, d.ID)
 		}
-		// 钉不住则这条依赖不成立。
+		// 钉不住先看是不是工程早已声明的，是就留原样；否则这条依赖不成立。
 		if err != nil {
-			return nil, err
+			// 已声明的工艺只是后来不可用，不该挡住改别的依赖。
+			kept, ok := s.keepDeclaredDep(ctx, declared, d.ID, err)
+			// 不是已声明或不是这类原因就拒绝。
+			if !ok {
+				return nil, err
+			}
+			// 记录保持声明时的修订，工程照常按身份用它。
+			pin = kept
 		}
 		// 把重钉后的修订放进结果。
 		out = append(out, pin)
 	}
 	return out, nil
+}
+
+// keepDeclaredDep 工程已声明的工艺钉不上当前版时，判断能否原样留下：停用的和云端已删的留，别的原因（无权、不是工艺）不留。
+func (s *kernel) keepDeclaredDep(ctx context.Context, declared []AssetDep, id uuid.UUID, pinErr error) (AssetDep, bool) {
+	// 逐条找这个身份是不是已声明过。
+	for _, d := range declared {
+		// 身份对不上就看下一条。
+		if d.ID != id {
+			continue
+		}
+		// 停用的工程仍按身份用，留着。
+		if errors.Is(pinErr, domain.ErrAssetNotAvailable) {
+			return d, true
+		}
+		// 其余原因只放过云端已删：未撤回的读不到、已收的还在。
+		if !errors.Is(pinErr, domain.ErrAssetDependency) {
+			return AssetDep{}, false
+		}
+		// 还有未撤回的副本，说明不是删除，是不许依赖。
+		if _, err := s.store.LatestReplicaMeta(ctx, id); !errors.Is(err, domain.ErrNotFound) {
+			return AssetDep{}, false
+		}
+		// 收过任一修订才算云端已删，一份没有就是真缺。
+		if _, err := s.store.HighestReplicaMeta(ctx, id); err != nil {
+			return AssetDep{}, false
+		}
+		return d, true
+	}
+	return AssetDep{}, false
 }
 
 // mergeProjectDeps 保留已声明依赖，再按参数引用补缺。
@@ -956,11 +1093,23 @@ func (s *Assets) RenameAsset(ctx context.Context, token string, assetID uuid.UUI
 	if err != nil {
 		return Asset{}, err
 	}
-	// 只改显示名；已停用的拒绝，正文保持不动。
+	// 名字两端空白不要，和新建同一口径。
+	name = strings.TrimSpace(name)
+	// 示教器盖正文时停用的也照盖（ApplyAppContent），改名同步要跟上，否则这件每轮都报没收下。
+	fromApp := s.isAppSession(ctx, token)
+	// 只改显示名；网页改已停用的拒绝，正文保持不动。
 	return s.mutateAsset(ctx, acc, assetID, expected, "rename_asset", func(cur Asset) (store.AssetWrite, error) {
-		// 停用后不能改名。
-		if cur.Status == AssetDisabled {
+		// 网页上停用后不能改名。
+		if cur.Status == AssetDisabled && !fromApp {
 			return store.AssetWrite{}, domain.ErrAssetNotAvailable
+		}
+		// 空名字拒绝；已有的空名资产读和用都不受影响。
+		if name == "" {
+			return store.AssetWrite{}, domain.ErrInvalidName
+		}
+		// 名字太长焊次收不下，改名时就拒
+		if err := checkAssetNameLen(name); err != nil {
+			return store.AssetWrite{}, err
 		}
 		return store.AssetWrite{Name: name, Digest: cur.Digest, Copyable: cur.Copyable, Status: cur.Status, Deps: cur.Deps, KeepContent: true}, nil
 	})
@@ -974,36 +1123,99 @@ func (s *Assets) UpdateAssetContent(ctx context.Context, token string, assetID u
 	if err != nil {
 		return Asset{}, err
 	}
+	// 这次把个人工艺换成厂级的结果，写完告诉调用方，写失败要回收。
+	var adopted adoptResult
+	// 网页读到的工程遮过包角几何，写的时候要盖回；示教器送来的是全的，不盖。
+	fromApp := s.isAppSession(ctx, token)
 	// 改正文并重算摘要；停用拒绝，工程还要核引用。
-	return s.mutateAsset(ctx, acc, assetID, expected, "update_asset", func(cur Asset) (store.AssetWrite, error) {
+	row, err := s.mutateAsset(ctx, acc, assetID, expected, "update_asset", func(cur Asset) (store.AssetWrite, error) {
 		// 停用后不能改正文。
 		if cur.Status == AssetDisabled {
 			return store.AssetWrite{}, domain.ErrAssetNotAvailable
 		}
+		// 工艺正文名字改成空的拒绝，免得资产名和正文名对不上还查不出来（D-110）。
+		if err := assertProcessBodyName(cur.Kind, content); err != nil {
+			return store.AssetWrite{}, err
+		}
+		// 接下来写入的正文和依赖，工程可能换掉个人工艺。
+		body, deps := content, cur.Deps
 		// 工程焊道引用必须落在已声明依赖里。
 		if cur.Kind == KindProject {
+			// 页面手里的正文还写着已换走的个人工艺时，先对回已有的厂级副本，不再复制。
+			if cur.Level == AssetLevelFactory {
+				// 只查依赖里已有的副本，这一步不新建。
+				var err error
+				// 正文和依赖都换成已有副本。
+				body, deps, err = s.applyAdoptedCopies(ctx, acc, cur.Deps, body, deps)
+				// 换不了就拒绝保存。
+				if err != nil {
+					return store.AssetWrite{}, err
+				}
+			}
 			// 有引用对不上依赖则拒绝保存。
-			if err := s.assertProjectProcessIDs(ctx, content, cur.Deps); err != nil {
+			if err := s.assertProjectProcessIDs(ctx, body, deps); err != nil {
 				return store.AssetWrite{}, err
 			}
 			// 焊道对不上则拒绝保存。
-			if err := assertProjectWeldKind(cur.WeldKind, content); err != nil {
+			if err := assertProjectWeldKind(cur.WeldKind, body); err != nil {
 				return store.AssetWrite{}, err
 			}
 			// 工艺槽挂了包角工艺则拒绝保存。
-			if err := s.assertCornerSlots(ctx, content); err != nil {
+			if err := s.assertCornerSlots(ctx, body); err != nil {
 				return store.AssetWrite{}, err
 			}
+			// 校验都过了，厂级工程还钉着的个人工艺复制成厂级再写。
+			if cur.Level == AssetLevelFactory {
+				// 修订已经对不上就别复制了，写也写不进去。
+				if cur.Revision != expected {
+					return store.AssetWrite{}, domain.ErrRevisionConflict
+				}
+				// 复制并改写，复制不了就拒绝保存。
+				var err error
+				// 记下结果，写失败要回收。
+				adopted, err = s.copyPersonalDeps(ctx, acc, cur.Deps, body, deps)
+				// 复制不了就拒绝保存，已复制的里面回收过了。
+				if err != nil {
+					return store.AssetWrite{}, err
+				}
+				// 写入的是改写过的正文和依赖。
+				body, deps = adopted.content, adopted.deps
+			}
+		}
+		// 服务端改写过正文就要告诉调用方，这里记下来；回包给的还是遮着的这份。
+		adopted.content = body
+		// 和收到的不一样才算改写过。
+		adopted.rewritten = !bytes.Equal(body, content)
+		// 真正落库的正文，工程要把遮掉的包角几何盖回。
+		final := body
+		// 只有网页改工程才要盖回。
+		if cur.Kind == KindProject && !fromApp {
+			// 读现存正文当底。
+			stored, err := s.loadChecked(ctx, cur.ID)
+			// 读不到不能写，否则几何会丢。
+			if err != nil {
+				return store.AssetWrite{}, err
+			}
+			// 按焊道身份盖回几何和点列。
+			final = contenttpl.RestoreCornerGeometry(stored.Content, body)
 		}
 		// 拼出本次要写入的内容，没通过的字段不改。
-		return store.AssetWrite{Name: cur.Name, Content: content, Digest: digest.Sum(content), Copyable: cur.Copyable, Status: cur.Status, Deps: cur.Deps}, nil
+		return store.AssetWrite{Name: cur.Name, Content: final, Digest: digest.Sum(final), Copyable: cur.Copyable, Status: cur.Status, Deps: deps}, nil
 	})
+	// 没写成就回收刚复制的工艺。
+	if err != nil {
+		// 回收失败不盖住真因。
+		s.recyclePersonalCopies(ctx, acc, adopted.made)
+		return Asset{}, err
+	}
+	// 把改写后的正文和新工艺告诉调用方。
+	return adopted.stamp(row), nil
 }
 
 // ApplyAppContent 示教器连上后用本机正文盖当前行，不跟网页对版本号。
 func (s *Assets) ApplyAppContent(ctx context.Context, token string, assetID uuid.UUID, content []byte) (Asset, error) {
-	// 核对登录仍有效，后面的操作都靠这次会话。
-	acc, err := s.RequireActive(ctx, token)
+	// 核对登录仍有效且还握着角色，角色全收回的人不再从示教器改件。
+	acc, err := s.requirePadActor(ctx, token)
 	// 登录已失效则拒绝，避免未登录的人继续。
 	if err != nil {
 		return Asset{}, err
@@ -1058,8 +1270,18 @@ func (s *Assets) applyAppOnce(ctx context.Context, acc Account, assetID uuid.UUI
 		_ = s.audit(ctx, &acc.ID, nil, "apply_app", assetTarget(cur.ID, cur.Revision), audit.Deny)
 		return Asset{}, cur.Revision, err
 	}
+	// 工艺正文名字改成空的拒绝（D-110）；示教器每轮同步最多再试一次，不会连着重发。
+	if err := assertProcessBodyName(cur.Kind, content); err != nil {
+		// 盖写被拒时补记审计，写失败仍维持拒绝。
+		_ = s.audit(ctx, &acc.ID, nil, "apply_app", assetTarget(cur.ID, cur.Revision), audit.Deny)
+		return Asset{}, cur.Revision, err
+	}
 	// 停用仍盖正文，状态保持停用。
 	deps := cur.Deps
+	// 这一轮要写的正文；外层重试时收到的正文不能被改掉。
+	body := content
+	// 把个人工艺换成厂级的结果，写完告诉调用方，写失败要回收。
+	var adopted adoptResult
 	// 工程要先核焊道并补新引用，工艺直接盖。
 	if cur.Kind == KindProject {
 		// 仍带工艺路径则记拒绝，避免把参数拆出去。
@@ -1069,13 +1291,24 @@ func (s *Assets) applyAppOnce(ctx context.Context, acc Account, assetID uuid.UUI
 			return Asset{}, cur.Revision, domain.ErrForbidden
 		}
 		// 焊道对不上则拒绝，并补记审计。
-		if err := assertProjectWeldKind(cur.WeldKind, content); err != nil {
+		if err := assertProjectWeldKind(cur.WeldKind, body); err != nil {
 			// 盖写被拒时补记审计，写失败仍维持拒绝。
 			_ = s.audit(ctx, &acc.ID, nil, "apply_app", assetTarget(cur.ID, cur.Revision), audit.Deny)
 			return Asset{}, cur.Revision, err
 		}
+		// 示教器手里的旧正文还写着已换走的个人工艺时，先对回已有的厂级副本，不再复制。
+		if cur.Level == AssetLevelFactory {
+			// 只查依赖里已有的副本，这一步不新建。
+			body, deps, err = s.applyAdoptedCopies(ctx, acc, cur.Deps, body, deps)
+			// 换不了就拒绝。
+			if err != nil {
+				// 盖写被拒时补记审计，写失败仍维持拒绝。
+				_ = s.audit(ctx, &acc.ID, nil, "apply_app", assetTarget(cur.ID, cur.Revision), audit.Deny)
+				return Asset{}, cur.Revision, err
+			}
+		}
 		// 先有工艺再盖工程：正文里新引用钉到当前可用修订。
-		deps, err = s.fillProjectDeps(ctx, acc, cur.Level, content, cur.Deps)
+		deps, err = s.fillProjectDeps(ctx, acc, cur.Level, body, deps)
 		// 依赖钉不到当前可用工艺则记拒绝。
 		if err != nil {
 			// 盖写被拒时补记审计，写失败仍维持拒绝。
@@ -1089,25 +1322,44 @@ func (s *Assets) applyAppOnce(ctx context.Context, acc Account, assetID uuid.UUI
 			return Asset{}, cur.Revision, err
 		}
 		// 有引用对不上依赖则拒绝，并补记审计。
-		if err := s.assertProjectProcessIDs(ctx, content, deps); err != nil {
+		if err := s.assertProjectProcessIDs(ctx, body, deps); err != nil {
 			// 盖写被拒时补记审计，写失败仍维持拒绝。
 			_ = s.audit(ctx, &acc.ID, nil, "apply_app", assetTarget(cur.ID, cur.Revision), audit.Deny)
 			return Asset{}, cur.Revision, err
 		}
 		// 工艺槽挂了包角工艺则拒绝盖写，和网页改正文同一口径。
-		if err := s.assertCornerSlots(ctx, content); err != nil {
+		if err := s.assertCornerSlots(ctx, body); err != nil {
 			// 盖写被拒时补记审计，写失败仍维持拒绝。
 			_ = s.audit(ctx, &acc.ID, nil, "apply_app", assetTarget(cur.ID, cur.Revision), audit.Deny)
 			return Asset{}, cur.Revision, err
 		}
+		// 校验都过了，厂级工程还钉着的个人工艺复制成厂级再写。
+		if cur.Level == AssetLevelFactory {
+			// 复制并改写，记下结果，写失败要回收。
+			adopted, err = s.copyPersonalDeps(ctx, acc, cur.Deps, body, deps)
+			// 复制不了就拒绝，已复制的里面回收过了。
+			if err != nil {
+				// 盖写被拒时补记审计，写失败仍维持拒绝。
+				_ = s.audit(ctx, &acc.ID, nil, "apply_app", assetTarget(cur.ID, cur.Revision), audit.Deny)
+				return Asset{}, cur.Revision, err
+			}
+			// 写入的是改写过的正文和依赖。
+			body, deps = adopted.content, adopted.deps
+		}
 	}
+	// 服务端改写过正文就要告诉调用方，这里记下来。
+	adopted.content = body
+	// 和收到的不一样才算改写过。
+	adopted.rewritten = !bytes.Equal(body, content)
 	// 按期望修订写入，冲突就拒绝覆盖。
 	row, err := s.store.UpdateGovernedAsset(ctx, assetID, cur.Revision, store.AssetWrite{
-		Name: cur.Name, Content: content, Digest: digest.Sum(content),
+		Name: cur.Name, Content: body, Digest: digest.Sum(body),
 		Copyable: cur.Copyable, Status: cur.Status, Deps: deps,
 	})
 	// 失败则记拒绝并停下，不继续往下改。
 	if err != nil {
+		// 没写成就回收刚复制的工艺；并发重试时外层会再走一遍。
+		s.recyclePersonalCopies(ctx, acc, adopted.made)
 		// 不是并发冲突就记拒绝，冲突留给外层重试。
 		if !errors.Is(err, domain.ErrRevisionConflict) {
 			// 盖写被拒时补记审计，写失败仍维持拒绝。
@@ -1119,8 +1371,8 @@ func (s *Assets) applyAppOnce(ctx context.Context, acc Account, assetID uuid.UUI
 	if err := s.audit(ctx, &acc.ID, nil, "apply_app", assetTarget(row.ID, row.Revision), audit.Allow); err != nil {
 		return Asset{}, row.Revision, err
 	}
-	// 去掉正文再返回，避免工艺参数外泄。
-	return stripContent(row), row.Revision, nil
+	// 去掉正文再返回，避免工艺参数外泄；改写过的工程正文另带。
+	return adopted.stamp(stripContent(row)), row.Revision, nil
 }
 
 // newlyPinnedDeps 挑出合并后身份不在原依赖里的条目，即这次新钉的工艺。
@@ -1369,6 +1621,39 @@ func (s *Assets) ReenableAsset(ctx context.Context, token string, assetID uuid.U
 
 // DeleteAsset 未被工程依赖则可删；仍被引用则拒绝。
 func (s *Assets) DeleteAsset(ctx context.Context, token string, assetID uuid.UUID) error {
+	// 内部回收和整夹删除不核修订
+	return s.deleteAsset(ctx, token, assetID, 0)
+}
+
+// DeleteAssetAt 网页删除：带期望修订，持旧页面删别人刚改过的件回修订冲突，原件不变。
+// 示教器同步删件不跟网页对版本号（同 ApplyAppContent），没带修订照旧删。
+func (s *Assets) DeleteAssetAt(ctx context.Context, token string, assetID uuid.UUID, expected int64) error {
+	// 示教器会话没带修订，按本机清单删，不核修订
+	if expected < 1 && s.isAppSession(ctx, token) {
+		// 按零修订删，跳过核对
+		return s.deleteAsset(ctx, token, assetID, 0)
+	}
+	// 期望修订从 1 起，网页没带就当对不上，免得绕开冲突检查
+	if expected < 1 {
+		// 记下删除被拒，写失败仍不删
+		s.auditDeleteDenied(ctx, token, assetID, expected)
+		return domain.ErrRevisionConflict
+	}
+	// 带上期望修订去删
+	return s.deleteAsset(ctx, token, assetID, expected)
+}
+
+// auditDeleteDenied 期望修订缺失时补记一条删除拒绝；会话无效就只交回错误不记人。
+func (s *Assets) auditDeleteDenied(ctx context.Context, token string, assetID uuid.UUID, expected int64) {
+	// 会话还在才记到人头上
+	if acc, err := s.RequireActive(ctx, token); err == nil {
+		// 删除被拒时补记审计，写失败仍不删。
+		_ = s.audit(ctx, &acc.ID, nil, "delete_asset", assetTarget(assetID, expected), audit.Deny)
+	}
+}
+
+// deleteAsset 删本厂原件；expected 大于零时还要核期望修订。
+func (s *Assets) deleteAsset(ctx context.Context, token string, assetID uuid.UUID, expected int64) error {
 	// 核对登录仍有效，后面的操作都靠这次会话。
 	acc, err := s.RequireActive(ctx, token)
 	// 登录已失效则拒绝，避免未登录的人继续。
@@ -1395,6 +1680,12 @@ func (s *Assets) DeleteAsset(ctx context.Context, token string, assetID uuid.UUI
 		_ = s.audit(ctx, &acc.ID, nil, "delete_asset", assetTarget(assetID, cur.Revision), audit.Deny)
 		return err
 	}
+	// 带了期望修订就先比一次，别人刚改过就不删，提示刷新
+	if expected > 0 && cur.Revision != expected {
+		// 删除被拒时补记审计，写失败仍不删。
+		_ = s.audit(ctx, &acc.ID, nil, "delete_asset", assetTarget(assetID, cur.Revision), audit.Deny)
+		return domain.ErrRevisionConflict
+	}
 	// 仍被工程钉着则拒绝。
 	used, err := s.store.AssetIsReferenced(ctx, assetID)
 	// 引用关系查不清则先不删。
@@ -1407,14 +1698,25 @@ func (s *Assets) DeleteAsset(ctx context.Context, token string, assetID uuid.UUI
 		_ = s.audit(ctx, &acc.ID, nil, "delete_asset", assetTarget(assetID, cur.Revision), audit.Deny)
 		return domain.ErrReferenced
 	}
-	// 无引用才删本厂原件。
-	if err := s.store.DeleteGovernedAsset(ctx, assetID); err != nil {
+	// 无引用才删本厂原件；带了期望修订的在删的那一刻再核一次，挡住比完之后又被改的。
+	if err := s.deleteGovernedRow(ctx, assetID, expected); err != nil {
 		// 删除被拒时补记审计，写失败仍不删。
 		_ = s.audit(ctx, &acc.ID, nil, "delete_asset", assetTarget(assetID, cur.Revision), audit.Deny)
 		return err
 	}
 	// 删掉之后记成功；审计失败则调用方当没删成。
 	return s.audit(ctx, &acc.ID, nil, "delete_asset", assetTarget(assetID, cur.Revision), audit.Allow)
+}
+
+// deleteGovernedRow 按是否带期望修订选删法。
+func (s *Assets) deleteGovernedRow(ctx context.Context, assetID uuid.UUID, expected int64) error {
+	// 没带期望修订就直接删
+	if expected == 0 {
+		// 按身份删，不核修订
+		return s.store.DeleteGovernedAsset(ctx, assetID)
+	}
+	// 带了就只删这一修订
+	return s.store.DeleteGovernedAssetAt(ctx, assetID, expected)
 }
 
 // mutateAsset 按期望修订改本厂原件；个人级须创建人或整厂管理员。
@@ -1655,6 +1957,11 @@ func (s *Assets) ReadAssetContent(ctx context.Context, token string, assetID uui
 	if err := s.audit(ctx, &acc.ID, nil, "read_asset_content", assetTarget(a.ID, a.Revision), audit.Allow); err != nil {
 		return nil, err
 	}
+	// 工程正文遮掉包角几何：加密包角的层参数也写在里面，给人读的入口不交；示教器走闭包，不走这里。
+	if a.Kind == KindProject {
+		// 没有包角几何的工程字节不动。
+		return contenttpl.MaskCornerGeometry(a.Content), nil
+	}
 	return a.Content, nil
 }
 
@@ -1744,8 +2051,8 @@ func (s *Assets) assertPromoteToFactoryDeps(ctx context.Context, src Asset) erro
 		p, err := s.loadCheckedMeta(ctx, d.ID)
 		// 本厂没有原件，加密平台工艺按原身份跟着升。
 		if errors.Is(err, domain.ErrNotFound) {
-			// 平台副本按钉死修订核，不合格就拒绝升档。
-			if err := s.assertPlatformDep(ctx, d, platformProcessDep); err != nil {
+			// 平台副本按身份核当前版：声明的旧修订在不在、旧行什么状态都不算数，不合格就拒绝升档。
+			if _, err := s.pinFactoryProcess(ctx, d.ID); err != nil {
 				return err
 			}
 			continue
@@ -1795,6 +2102,12 @@ func (s *Assets) ExportAssetSnapshot(ctx context.Context, token string, assetID 
 		// 外送被拒时补记审计，写失败仍不外送。
 		_ = s.audit(ctx, &acc.ID, nil, "export_asset", assetTarget(src.ID, src.Revision), audit.Deny)
 		return AssetSnapshot{}, domain.ErrAssetNotAvailable
+	}
+	// 带包角几何的工程不从这里交给人：加密包角的层参数也写在里面；真升档走通道（SnapshotForChannel），到 WAN 才解开。
+	if src.Kind == KindProject && contenttpl.HasCornerGeometry(src.Content) {
+		// 外送被拒时补记审计，写失败仍不外送。
+		_ = s.audit(ctx, &acc.ID, nil, "export_asset", assetTarget(src.ID, src.Revision), audit.Deny)
+		return AssetSnapshot{}, domain.ErrForbidden
 	}
 	// 导出明文快照给 WAN 升档。
 	snap, err := s.store.ExportAssetSnapshot(ctx, assetID)

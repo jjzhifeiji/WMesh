@@ -6,6 +6,7 @@ import { statusColor, statusLabel } from "@/shared/labels";
 import { AgoText } from "@/shared/ui/AgoText";
 import { CodeText } from "@/shared/ui/CodeText";
 import { PageHeader } from "@/shared/ui/PageHeader";
+import { QueryErrorAlert, readFailed } from "@/shared/ui/QueryErrorAlert";
 import { useClients, useRenameClient, type Client } from "./api";
 
 function userLabel(row: Client) {
@@ -63,9 +64,13 @@ export function ClientsPage() {
   return (
     <>
       <PageHeader title="设备" description="云端把设备分到本厂后会自动出现，设备名和识别号由云端定，这里只能起昵称。最近使用人、累计焊长按焊次统计。" />
-      <Card>
-        <Table<Client> rowKey="id" columns={columns} dataSource={clients.data ?? []} loading={clients.isLoading} pagination={{ pageSize: 20, hideOnSinglePage: true }} scroll={{ x: "max-content" }} />
-      </Card>
+      <QueryErrorAlert query={clients} what="设备列表" />
+      {/* 读失败不画表：空表会被当成真没设备。 */}
+      {readFailed(clients) ? null : (
+        <Card>
+          <Table<Client> rowKey="id" columns={columns} dataSource={clients.data ?? []} loading={clients.isLoading} pagination={{ pageSize: 20, hideOnSinglePage: true }} scroll={{ x: "max-content" }} />
+        </Card>
+      )}
     </>
   );
 }

@@ -3,7 +3,7 @@ import type { Dayjs } from "dayjs";
 import dayjs from "dayjs";
 import { useMemo, useState } from "react";
 import { PageHeader } from "@/shared/ui/PageHeader";
-import { errorMessage } from "@/shared/api/client";
+import { QueryErrorAlert, readFailed } from "@/shared/ui/QueryErrorAlert";
 import { useDirectory } from "@/features/factories/api";
 import {
   avg,
@@ -99,29 +99,33 @@ export function ReportsPage() {
           </>
         }
       />
-      {listed.error ? <p>{errorMessage(listed.error)}</p> : null}
-      <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
-        <Col xs={24} sm={6}>
-          <Card>
-            <Statistic title="起停次数" value={totals.runCount} loading={listed.isLoading} />
-          </Card>
-        </Col>
-        <Col xs={24} sm={6}>
-          <Card>
-            <Statistic title="总焊长" value={formatLengthM(totals.lengthMm)} loading={listed.isLoading} />
-          </Card>
-        </Col>
-        <Col xs={24} sm={6}>
-          <Card>
-            <Statistic title="总时长" value={formatDuration(totals.durationSec)} loading={listed.isLoading} />
-          </Card>
-        </Col>
-        <Col xs={24} sm={6}>
-          <Card>
-            <Statistic title="次均时长" value={formatDuration(avg(totals.durationSec, totals.runCount))} loading={listed.isLoading} />
-          </Card>
-        </Col>
-      </Row>
+      <QueryErrorAlert query={listed} what="焊长汇总" />
+      <QueryErrorAlert query={dir} what="工厂名录" />
+      {/* 读失败不画统计卡：全是 0 会被当成真没焊过。 */}
+      {readFailed(listed) ? null : (
+        <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
+          <Col xs={24} sm={6}>
+            <Card>
+              <Statistic title="起停次数" value={totals.runCount} loading={listed.isLoading} />
+            </Card>
+          </Col>
+          <Col xs={24} sm={6}>
+            <Card>
+              <Statistic title="总焊长" value={formatLengthM(totals.lengthMm)} loading={listed.isLoading} />
+            </Card>
+          </Col>
+          <Col xs={24} sm={6}>
+            <Card>
+              <Statistic title="总时长" value={formatDuration(totals.durationSec)} loading={listed.isLoading} />
+            </Card>
+          </Col>
+          <Col xs={24} sm={6}>
+            <Card>
+              <Statistic title="次均时长" value={formatDuration(avg(totals.durationSec, totals.runCount))} loading={listed.isLoading} />
+            </Card>
+          </Col>
+        </Row>
+      )}
       <Tabs
         activeKey={tab}
         onChange={(k) => setTab(k as WeldGroup)}
@@ -132,7 +136,7 @@ export function ReportsPage() {
           { key: "grain", label: "明细" },
         ]}
       />
-      {tab === "grain" ? (
+      {readFailed(listed) ? null : tab === "grain" ? (
         <Table
           rowKey={(r, i) => `${r.factoryId}-${r.day}-${r.projectName}-${r.weldKind}-${i}`}
           columns={grainColumns()}

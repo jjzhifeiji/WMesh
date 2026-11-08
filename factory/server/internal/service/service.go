@@ -62,6 +62,8 @@ type PendingSink interface {
 type ClientDown interface {
 	// 向这台本机投控制面信封，不含正文
 	PublishDown(factoryID, clientID uuid.UUID, payload []byte)
+	// 断开这个人的示教器连接；会话已作废，示教器重连被拒即登出
+	DropPerson(factoryID, personID uuid.UUID)
 }
 
 // Auth 管登录、激活、会话、停用和密码重置。

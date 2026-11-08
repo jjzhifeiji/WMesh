@@ -36,6 +36,17 @@ export type WeldRunRow = {
   lengthMm: number; // 本段焊长毫米
   durationSec: number; // 本段时长秒
   occurredAt: string; // RFC3339
+  projectRevision?: number; // 开焊时工程修订；旧焊次没有
+  processes?: WeldRunProcess[]; // 这次用到的工艺；旧焊次没有
+};
+
+// 焊次用到的一条工艺：只有身份、修订和摘要，名字和编号按当前资产补，不含参数。
+export type WeldRunProcess = {
+  processId: string; // 工艺身份
+  revision: number; // 开焊时本机修订，可能落后，以摘要为准
+  digest: string; // 正文摘要
+  name?: string; // 现在的显示名；已删或无权看就没有
+  code?: string; // 只读编号；已删或无权看就没有
 };
 
 export type WeldRunPage = {

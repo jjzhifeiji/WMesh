@@ -34,8 +34,8 @@ func (s *kernel) assertDepsWeldKind(ctx context.Context, weldKind string, deps [
 		p, err := s.store.GovernedAssetMetaByID(ctx, d.ID)
 		// 没有治理行，改查已收副本再对类型
 		if errors.Is(err, domain.ErrNotFound) {
-			// 治理行没有就改查已收副本
-			r, rerr := s.store.LatestReplicaMeta(ctx, d.ID)
+			// 治理行没有就改查已收副本；云端已删的已撤回副本也算，工程仍按身份用它
+			r, rerr := s.store.HighestReplicaMeta(ctx, d.ID)
 			// 查副本也失败则停住，不把缺失当对上
 			if rerr != nil {
 				// 副本也没有，按依赖缺失拒绝
