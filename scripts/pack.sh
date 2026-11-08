@@ -10,6 +10,11 @@ DO_PULL=0
 DO_BUMP=1
 KINDS=()
 BACKUP_DIR=""
+# 厂包带的 WAN CA：默认取 global/tls/ca.pem；没有就按 --wan-host 现生成。--no-tls 打明文包。
+WAN_TLS_DIR="${WAN_TLS_DIR:-}"
+WAN_HOSTS=()
+DO_TLS=1
+PACK_CA=""
 # 一份服务包打这两个 Linux 架构；Windows 用 Docker Desktop 的 Linux 引擎跑。
 PACK_PLATFORMS="${PACK_PLATFORMS:-linux/amd64 linux/arm64}"
 
@@ -28,6 +33,10 @@ usage() {
   --test              打包前跑对应工程测试
   --pull              构建镜像时拉取新的基础镜像
   --no-bump           不改版本，按源码现有号打包
+  --wan-tls DIR       WAN 证书目录，默认仓库根 global/tls（不入库）
+  --wan-host HOST     目录里还没有 CA 时，按这些地址现生成 CA 和 WAN 证书；可写多次
+                      （WAN 对厂可见的 IP 或域名；同机部署再加 host.docker.internal）
+  --no-tls            厂包不带 WAN CA，厂端照 .env 原样连 WAN
   -h, --help
 
 每次打包把该种类版本号 +1、版本名末位 +1，并写回源码（服务端与前端对齐）。
@@ -35,6 +44,8 @@ usage() {
 Linux 和 Windows（Docker Linux 引擎）按本机架构选用。文件名:
   dist/<kind>-v<version>-<versionName>.tar.gz|apk
   同名 .json 记种类、版本、SHA-256、platforms，供上传。
+厂包默认带 WAN 的 CA 公钥，厂端更新后自动改连 WAN 的 TLS 端口；
+WAN 的服务端证书和私钥不进任何包，第一次生成后按提示在 WAN 宿主机配一次。
 EOF
 }
 
@@ -102,10 +113,43 @@ on_exit() {
   if [[ $ec -ne 0 ]]; then
     restore_backup
   fi
+  drop_pack_ca
   clear_backup
   exit "$ec"
 }
 trap on_exit EXIT
+
+# 删掉临时放进厂构建目录的 CA，免得开发构建也带上。
+drop_pack_ca() {
+  [[ -n "${PACK_CA:-}" ]] && rm -f "$PACK_CA"
+  PACK_CA=""
+}
+
+# 把 WAN CA 放进厂构建目录；目录里没有 CA 就按 --wan-host 生成，并提示 WAN 端一次性配置。
+stage_pack_ca() {
+  local dir="${WAN_TLS_DIR:-${ROOT}/global/tls}"
+  if [[ ! -f "${dir}/ca.pem" ]]; then
+    [[ ${#WAN_HOSTS[@]} -gt 0 ]] || die "${dir}/ca.pem 不存在：第一次打包用 --wan-host <WAN地址> 生成证书，或 --no-tls 打明文包"
+    echo ">> 生成 WAN 证书：${dir}（${WAN_HOSTS[*]}）"
+    "${ROOT}/scripts/gen-wan-tls.sh" "$dir" "${WAN_HOSTS[@]}"
+    cat <<EOF
+>> WAN 宿主机一次性配置（私钥不进包）：
+   1. 把 ${dir}/wan/ 拷到 WAN 宿主机，如 /opt/wmesh/global/tls/wan
+   2. 在 WAN 上：chown 10001:10001 server.key && chmod 0400 server.key
+   3. WAN 的 .env 加：
+        WMESH_TLS_DIR=/opt/wmesh/global/tls/wan
+        WMESH_TLS_CERT_FILE=/etc/wmesh/tls/server.pem
+        WMESH_TLS_KEY_FILE=/etc/wmesh/tls/server.key
+      再 docker compose up -d app；放行 52443、52883 端口
+   4. ${dir}/ca.key 移走离线保存；续签用 scripts/gen-wan-tls.sh --renew
+   WAN 开好 TLS 后再发厂包，厂端更新后自动改连 TLS。
+EOF
+  fi
+  openssl x509 -in "${dir}/ca.pem" -noout >/dev/null 2>&1 || die "${dir}/ca.pem 不是证书"
+  PACK_CA="${ROOT}/factory/pack-ca/wan-ca.pem"
+  cp "${dir}/ca.pem" "$PACK_CA"
+  echo ">> 厂包带 WAN CA：$(openssl x509 -in "$PACK_CA" -noout -subject -enddate | tr '\n' ' ')"
+}
 
 # 备份即将改写的版本文件。
 backup_files() {
@@ -273,6 +317,9 @@ pack_app_image() {
   need_cmd docker
   docker buildx version >/dev/null 2>&1 || die "需要 docker buildx 才能交叉打 amd64/arm64"
   ensure_env "${ROOT}/${side}"
+  if [[ "$kind" == factory_service && "$DO_TLS" -eq 1 ]]; then
+    stage_pack_ca
+  fi
   build_ver="$(git -C "$ROOT" describe --tags --always --dirty 2>/dev/null || echo dev)"
   echo ">> 构建 ${repo}（linux/amd64 + linux/arm64，只打 app）"
   export DOCKER_BUILDKIT=1
@@ -293,6 +340,7 @@ pack_app_image() {
     plats+=("$plat")
   done
   [[ ${#tags[@]} -gt 0 ]] || die "没有打出任何架构"
+  drop_pack_ca
   mkdir -p "$OUT"
   out="${OUT}/${kind}-v${code}-${name}.tar.gz"
   tmp="${out}.tmp"
@@ -371,6 +419,20 @@ while [[ $# -gt 0 ]]; do
       ;;
     --no-bump)
       DO_BUMP=0
+      shift
+      ;;
+    --wan-tls)
+      [[ $# -ge 2 ]] || die "--wan-tls 需要目录"
+      WAN_TLS_DIR="$2"
+      shift 2
+      ;;
+    --wan-host)
+      [[ $# -ge 2 ]] || die "--wan-host 需要地址"
+      WAN_HOSTS+=("$2")
+      shift 2
+      ;;
+    --no-tls)
+      DO_TLS=0
       shift
       ;;
     --)

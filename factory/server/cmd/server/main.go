@@ -94,6 +94,11 @@ func run(ctx context.Context, log *slog.Logger) error {
 		// 认领、拉索引、拉包和 MQTT 都按这份 CA 校验。
 		wanchannel.UseRootCAs(cfg.WANRootCAs)
 	}
+	// 用的是打包带进镜像的 CA，记一笔改连后的地址，方便对照 WAN 端口。
+	if cfg.WANPackTLS {
+		// 只记地址，不含密钥。
+		log.Info("wan tls from packaged ca", "wan", cfg.WANURL, "mqtt", cfg.WANMQTT)
+	}
 	// WAN 地址还是 http 就提醒链路明文，能被抓包和伪造。
 	if strings.HasPrefix(strings.ToLower(cfg.WANURL), "http://") {
 		// 只警告不拦，开发和过渡期还在走明文。

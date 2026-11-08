@@ -5,6 +5,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"strings"
@@ -20,6 +21,7 @@ type Config struct {
 	WANMQTT         string         // WAN MQTT 地址，空则按 HTTP 主机拼端口
 	WANCAFile       string         // 校验 WAN 证书的 CA 文件；空则用系统根证书
 	WANRootCAs      *x509.CertPool // 从 WANCAFile 读出的 CA 池；nil 用系统根证书
+	WANPackTLS      bool           // 用了打包带进镜像的 WAN CA，并自动改连 TLS 端口
 	ClientMQTTAddr  string         // 本厂 Client MQTT 监听；空则 :1884
 	ClientMQTTURL   string         // 回给平板的 MQTT URL；空则按请求主机拼端口
 	ClientMQTTPort  string         // 登录回包 MQTT 端口；空则 52184
@@ -82,10 +84,69 @@ func Load() (Config, error) {
 		// 环境里的退出等待合法就改用它。
 		c.ShutdownTimeout = d
 	}
+	// 镜像里带了打包时放进的 WAN CA，且没另配 CA，就自动改连 WAN 的 TLS 端口。
+	c.applyPackTLS()
 	// 配了 CA 就当场读成池，读不出不带着坏配置去连 WAN。
 	caErr := c.loadWANCA()
 	// 交回半套配置直接拒绝，和 CA 错误一起交回。
 	return c, errors.Join(c.validate(), caErr)
+}
+
+// packCAFile 是 scripts/pack.sh 打进厂镜像的 WAN CA；测试里改成临时文件。
+var packCAFile = "/etc/wmesh/pack-ca/wan-ca.pem"
+
+// applyPackTLS 镜像里有打包带的 WAN CA 时，用它校验 WAN，并把明文地址改成 TLS 端口。
+// 显式配了 WMESH_WAN_CA_FILE 以环境为准；WMESH_WAN_TLS=off 可退回明文（WAN 还没开 TLS 时用）。
+func (c *Config) applyPackTLS() {
+	// 显式关掉自动 TLS 就照环境原样走。
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("WMESH_WAN_TLS"))) {
+	// 这些写法都当成关掉。
+	case "0", "false", "no", "off":
+		return
+	}
+	// 自己配了 CA 就不动，以环境为准。
+	if c.WANCAFile != "" {
+		return
+	}
+	// 镜像里没带 CA（开发构建）就照旧。
+	if st, err := os.Stat(packCAFile); err != nil || st.IsDir() {
+		return
+	}
+	// 用打包带的 CA 校验 WAN 证书。
+	c.WANCAFile = packCAFile
+	// 记下是自动切的，启动日志里说明。
+	c.WANPackTLS = true
+	// 取 WAN 网页地址，下面按它改协议和端口。
+	u, err := url.Parse(c.WANURL)
+	// 地址解析不了就只换 CA，交给后面的校验报错。
+	if err != nil {
+		return
+	}
+	// 明文网页地址改成同主机的 HTTPS 端口。
+	if strings.EqualFold(u.Scheme, "http") && u.Hostname() != "" {
+		// 协议换成 https。
+		u.Scheme = "https"
+		// 端口换成 WAN 的 HTTPS 端口，默认 52443。
+		u.Host = net.JoinHostPort(u.Hostname(), envOr("WMESH_WAN_HTTPS_PORT", "52443"))
+		// 改好的地址写回。
+		c.WANURL = u.String()
+	}
+	// MQTT 留空或是明文，就改成 ssl:// 和 WAN 的 MQTTS 端口。
+	if c.WANMQTT == "" || plainMQTT(c.WANMQTT) {
+		// 主机先取 MQTT 地址自己的，没有再用网页地址的。
+		host := u.Hostname()
+		// MQTT 地址里写了主机就用它。
+		if m, err := url.Parse(c.WANMQTT); err == nil && m.Hostname() != "" {
+			// 沿用 MQTT 原来的主机。
+			host = m.Hostname()
+		}
+		// 两处都没主机就不拼，留空按网页地址自动拼。
+		if host == "" {
+			return
+		}
+		// 拼成 ssl://主机:端口，端口默认 52883。
+		c.WANMQTT = "ssl://" + net.JoinHostPort(host, envOr("WMESH_WAN_MQTTS_PORT", "52883"))
+	}
 }
 
 // loadWANCA 把 WMESH_WAN_CA_FILE 读成 CA 池；没配就留空，走系统根证书。

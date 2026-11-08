@@ -35,3 +35,6 @@ scripts/testenv/loki/data/
 
 # 第二轮测试报告（截图、脚本输出、测试包），只留本机
 docs/测试/报告-第二轮/
+
+# pack.sh 打厂包时临时放进的 WAN CA
+factory/pack-ca/*.pem

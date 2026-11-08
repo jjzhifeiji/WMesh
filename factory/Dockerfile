@@ -26,6 +26,8 @@ RUN apk add --no-cache ca-certificates tzdata \
     && adduser -D -H -u 10001 wmesh
 COPY --from=server /out/wmesh /usr/local/bin/wmesh
 COPY --from=web /src/dist /srv/web
+# scripts/pack.sh 打包时放进 WAN CA（pack-ca/wan-ca.pem），厂端据此自动改连 WAN 的 TLS 端口；开发构建这里只有说明文件。
+COPY pack-ca/ /etc/wmesh/pack-ca/
 USER wmesh
 ENV WMESH_HTTP_ADDR=:8080 \
     WMESH_WEB_DIR=/srv/web \
