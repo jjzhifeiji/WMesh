@@ -1,0 +1,47 @@
+# 本机测试用的单机 Loki：数据落本目录 data/，只收本机 WAN、厂端 alloy 推来的日志。
+# 不往外发任何东西（关掉匿名统计上报）。
+auth_enabled: false
+
+server:
+  http_listen_port: 3100
+  grpc_listen_port: 9096
+  log_level: warn
+
+common:
+  instance_addr: 127.0.0.1
+  path_prefix: /loki
+  storage:
+    filesystem:
+      chunks_directory: /loki/chunks
+      rules_directory: /loki/rules
+  replication_factor: 1
+  ring:
+    kvstore:
+      store: inmemory
+
+schema_config:
+  configs:
+    - from: 2024-01-01
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+
+limits_config:
+  # 示教器日志按平板钟打时间、离线攒着晚推，不拒旧日志。
+  reject_old_samples: false
+  allow_structured_metadata: true
+  ingestion_rate_mb: 32
+  ingestion_burst_size_mb: 64
+  max_entries_limit_per_query: 50000
+  retention_period: 720h
+
+compactor:
+  working_directory: /loki/compactor
+  retention_enabled: true
+  delete_request_store: filesystem
+
+analytics:
+  reporting_enabled: false

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 一键把本机测试环境重置并灌好初始数据，核对后写基线。
+# 一键把本机测试环境重置并灌好初始数据，核对后写基线，最后确认日志只进本机 Loki。
 #   scripts/testenv/init.sh                  # 重置 + 基础数据
 #   scripts/testenv/init.sh --with-history   # 再加过去 30 天的焊次
 #   scripts/testenv/init.sh --build          # 两端按当前源码重建镜像
@@ -19,3 +19,4 @@ done
 "$HERE/reset.sh" "${RESET_ARGS[@]+"${RESET_ARGS[@]}"}"
 python3 "$HERE/seed.py" "${SEED_ARGS[@]+"${SEED_ARGS[@]}"}"
 python3 "$HERE/verify.py"
+python3 "$HERE/logs.py" check

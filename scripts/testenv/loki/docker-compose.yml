@@ -1,0 +1,25 @@
+# 本机测试日志库：WAN、厂端 alloy（含示教器经厂端 :3500 推来的日志）都推到这里，不推共享环境。
+# 由 scripts/testenv/reset.sh 拉起；两端 docker compose down -v 不影响它，数据留在本目录 data/（不进仓库）。
+#   docker compose -f scripts/testenv/loki/docker-compose.yml up -d    # 手动起
+#   docker compose -f scripts/testenv/loki/docker-compose.yml down     # 停（数据保留；清空再删 data/）
+name: wmesh-testlog
+
+services:
+  loki:
+    image: grafana/loki:3.1.1
+    # 以 root 跑，Linux 上绑定挂载的 data/ 不用先改属主。
+    user: "0:0"
+    command: ["-config.file=/etc/loki/loki.yaml"]
+    volumes:
+      - ./loki.yaml:/etc/loki/loki.yaml:ro
+      - ./data:/loki
+    # 默认只开本机回环；两端 alloy 经 host.docker.internal 访问。Linux 上要设 TESTLOG_LOKI_BIND=0.0.0.0。
+    ports:
+      - "${TESTLOG_LOKI_BIND:-127.0.0.1}:${TESTLOG_LOKI_PORT:-3100}:3100"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3100/ready | grep -q ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
