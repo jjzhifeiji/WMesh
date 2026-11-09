@@ -3,7 +3,7 @@ import { TreeSelect, type TreeSelectProps } from "antd";
 import { useMemo } from "react";
 import { errorMessage } from "@/shared/api/client";
 import { useFS, type FSNode } from "./api";
-import { fsNodeTitle } from "./ProcessExplorer";
+import { byPersonalRootName, byRootLevel, fsNodeTitle, fsPersonalRootName, isPersonalRoot } from "./ProcessExplorer";
 
 export type ProcessOption = { value: string; label: string; disabled?: boolean; corner?: boolean }; // corner 包角工艺，工程工艺槽都不给选
 
@@ -53,18 +53,33 @@ export function processTreeData(nodes: FSNode[], options: ProcessOption[], selec
     if (!children.length) return null;
     return {
       value: `folder:${n.id}`,
-      title: fsNodeTitle(n),
+      title: isPersonalRoot(n) ? fsPersonalRootName(n) : fsNodeTitle(n),
       icon: <FolderOutlined />,
       selectable: false,
       children,
     };
   };
 
-  const roots = nodes
-    .filter((n) => !n.parentId && n.nodeKind === "folder")
-    .sort(sortKids)
+  const tops = nodes.filter((n) => !n.parentId && n.nodeKind === "folder").sort(byRootLevel);
+  const roots = tops
+    .filter((n) => !isPersonalRoot(n))
     .map(walk)
     .filter((x): x is TreeNode => Boolean(x));
+  // 各人的个人根收进一个「个人级」分组，和文件树一致；分组不可选。
+  const people = tops
+    .filter(isPersonalRoot)
+    .sort(byPersonalRootName)
+    .map(walk)
+    .filter((x): x is TreeNode => Boolean(x));
+  if (people.length) {
+    roots.push({
+      value: "folder:personal",
+      title: "个人级",
+      icon: <FolderOutlined />,
+      selectable: false,
+      children: people,
+    });
+  }
   const orphans = [...byOpt.values()].filter((o) => !placed.has(o.value));
   if (orphans.length) {
     roots.push({

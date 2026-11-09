@@ -4,7 +4,7 @@ import { useMemo, useState } from "react";
 import { errorMessage } from "@/shared/api/client";
 import { weldKindLabel, WELD_SINGLE } from "@/features/templates/projectKinds";
 import { useFactoryFS, type Asset, type AssetKind, type FSNode } from "./api";
-import { fsFolderPath, fsNodeTitle, innerCounts } from "./ProcessExplorer";
+import { byPersonalRootName, byRootLevel, folderPathKeys, fsFolderPath, fsNodeTitle, fsPersonalRootName, innerCounts, isPersonalRoot, PERSONAL_GROUP_KEY } from "./ProcessExplorer";
 
 const none: FSNode[] = [];
 
@@ -57,10 +57,11 @@ export function PromotePicker({
   const [touchedKeys, setExpandedKeys] = useState<string[] | null>(null);
   const byId = useMemo(() => new Map(nodes.map((n) => [n.id, n])), [nodes]);
   const counts = useMemo(() => innerCounts(nodes), [nodes]);
-  const roots = useMemo(() => nodes.filter((n) => !n.parentId && n.nodeKind === "folder"), [nodes]);
+  const roots = useMemo(() => nodes.filter((n) => !n.parentId && n.nodeKind === "folder").sort(byRootLevel), [nodes]);
   const current = (pickedId && byId.get(pickedId)?.nodeKind === "folder" ? byId.get(pickedId) : null) ?? roots[0] ?? null;
 
-  const expandedKeys = touchedKeys ?? roots.map((r) => r.id);
+  const defaultKeys = [...roots.map((r) => r.id), PERSONAL_GROUP_KEY];
+  const expandedKeys = touchedKeys ?? defaultKeys;
 
   const needle = query.trim().toLowerCase();
   const exact = query.trim();
@@ -109,27 +110,35 @@ export function PromotePicker({
         title: (
           <span className="fs-tree-title">
             <FolderOutlined />
-            <span className="fs-tree-name">{n ? fsNodeTitle(n) : id}</span>
+            <span className="fs-tree-name">{n ? (isPersonalRoot(n) ? fsPersonalRootName(n) : fsNodeTitle(n)) : id}</span>
             <span className="fs-tree-count">{counts.get(id) ?? 0}</span>
           </span>
         ),
         children: folders.map((f) => walk(f.id)),
       };
     };
-    return roots.map((r) => walk(r.id));
+    const top = roots.filter((r) => !isPersonalRoot(r)).map((r) => walk(r.id));
+    const personal = roots.filter(isPersonalRoot).sort(byPersonalRootName);
+    if (personal.length) {
+      top.push({
+        key: PERSONAL_GROUP_KEY,
+        title: (
+          <span className="fs-tree-title">
+            <FolderOutlined />
+            <span className="fs-tree-name">个人级</span>
+            <span className="fs-tree-count">{personal.reduce((sum, r) => sum + (counts.get(r.id) ?? 0), 0)}</span>
+          </span>
+        ),
+        children: personal.map((r) => walk(r.id)),
+      });
+    }
+    return top;
   }, [roots, nodes, byId, counts]);
 
   const openFolder = (id: string) => {
     setPickedId(id);
-    const ids: string[] = [];
-    const seen = new Set<string>();
-    let cur = byId.get(id);
-    while (cur && !seen.has(cur.id)) {
-      seen.add(cur.id);
-      ids.push(cur.id);
-      cur = cur.parentId ? byId.get(cur.parentId) : undefined;
-    }
-    setExpandedKeys((keys) => [...new Set([...(keys ?? roots.map((r) => r.id)), ...ids])]);
+    const ids = folderPathKeys(id, byId);
+    setExpandedKeys((keys) => [...new Set([...(keys ?? defaultKeys), ...ids])]);
   };
 
   return (
@@ -173,7 +182,14 @@ export function PromotePicker({
                 expandedKeys={expandedKeys}
                 treeData={treeData}
                 onExpand={(keys) => setExpandedKeys(keys.map(String))}
-                onSelect={(_, info) => openFolder(String(info.node.key))}
+                onSelect={(_, info) => {
+                  const id = String(info.node.key);
+                  if (id === PERSONAL_GROUP_KEY) {
+                    setExpandedKeys((keys) => [...new Set([...(keys ?? defaultKeys), id])]);
+                    return;
+                  }
+                  openFolder(id);
+                }}
               />
             )}
           </div>

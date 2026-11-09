@@ -19,6 +19,43 @@ export function fsNodeTitle(n: FSNode) {
   return n.name || "未命名";
 }
 
+/** 树上把各人的个人根收进这个分组；只是显示，不是真实目录，不能选中或放东西。 */
+const PERSONAL_GROUP_KEY = "group:personal";
+
+export function isPersonalRoot(n: FSNode) {
+  return !n.parentId && n.nodeKind === "folder" && n.treeLevel === "personal";
+}
+
+/** 分组下面的用户节点只写名字；路径和文件夹下拉仍用 fsNodeTitle。 */
+export function fsPersonalRootName(n: FSNode) {
+  return n.ownerName || "未命名";
+}
+
+const ROOT_ORDER: Record<FSNode["treeLevel"], number> = { platform: 0, factory: 1, personal: 2 };
+
+/** 一级目录固定平台级、厂级、个人级，不依赖接口返回顺序。 */
+export function byRootLevel(a: FSNode, b: FSNode) {
+  return ROOT_ORDER[a.treeLevel] - ROOT_ORDER[b.treeLevel];
+}
+
+export function byPersonalRootName(a: FSNode, b: FSNode) {
+  return fsPersonalRootName(a).localeCompare(fsPersonalRootName(b), "zh");
+}
+
+/** 展开到某文件夹要打开的树节点：自身、各级上级，个人树再加分组。 */
+function folderPathKeys(id: string, byId: Map<string, FSNode>) {
+  const ids: string[] = [];
+  const seen = new Set<string>();
+  let cur = byId.get(id);
+  while (cur && !seen.has(cur.id)) {
+    seen.add(cur.id);
+    ids.push(cur.id);
+    if (isPersonalRoot(cur)) ids.push(PERSONAL_GROUP_KEY);
+    cur = cur.parentId ? byId.get(cur.parentId) : undefined;
+  }
+  return ids;
+}
+
 /** 每个文件夹内部的节点数，下级文件夹和文件都算，含更深一层。 */
 function innerCounts(nodes: FSNode[]) {
   const byParent = new Map<string, FSNode[]>();
@@ -130,6 +167,7 @@ function saveTreeWidth(w: number | null) {
 
 function TreeTitle({
   n,
+  label,
   count,
   dragging,
   over,
@@ -139,6 +177,7 @@ function TreeTitle({
   onDrop,
 }: {
   n: FSNode;
+  label?: string;
   count: number;
   dragging: boolean;
   over: boolean;
@@ -157,7 +196,7 @@ function TreeTitle({
       onDrop={onDrop}
     >
       <FolderOutlined />
-      <span className="fs-tree-name">{fsNodeTitle(n)}</span>
+      <span className="fs-tree-name">{label ?? fsNodeTitle(n)}</span>
       <span className="fs-tree-count">{count}</span>
     </span>
   );
@@ -215,19 +254,12 @@ export function ProcessExplorer({
 
   const byId = useMemo(() => new Map(nodes.map((n) => [n.id, n])), [nodes]);
   const folderCounts = useMemo(() => innerCounts(nodes), [nodes]);
-  const roots = useMemo(() => nodes.filter((n) => !n.parentId && n.nodeKind === "folder"), [nodes]);
+  const roots = useMemo(() => nodes.filter((n) => !n.parentId && n.nodeKind === "folder").sort(byRootLevel), [nodes]);
   const current = (pickedId && byId.get(pickedId)) || roots[0] || null;
   const dragSrc = dragId ? (byId.get(dragId) ?? null) : null;
 
   const expandPath = (id: string) => {
-    const ids: string[] = [];
-    const seen = new Set<string>();
-    let cur = byId.get(id);
-    while (cur && !seen.has(cur.id)) {
-      seen.add(cur.id);
-      ids.push(cur.id);
-      cur = cur.parentId ? byId.get(cur.parentId) : undefined;
-    }
+    const ids = folderPathKeys(id, byId);
     setExpandedKeys((keys) => [...new Set([...keys, ...ids])]);
   };
 
@@ -253,22 +285,15 @@ export function ProcessExplorer({
   useEffect(() => {
     if (expandInited.current || !roots.length) return;
     expandInited.current = true;
-    setExpandedKeys(roots.map((r) => r.id));
+    setExpandedKeys([...roots.map((r) => r.id), PERSONAL_GROUP_KEY]);
   }, [roots]);
 
   useEffect(() => {
     if (!overId || !dragSrc) return;
     const dest = byId.get(overId);
-    if (!dest || dest.nodeKind !== "folder") return;
+    if (overId !== PERSONAL_GROUP_KEY && dest?.nodeKind !== "folder") return;
     const t = window.setTimeout(() => {
-      const ids: string[] = [];
-      const seen = new Set<string>();
-      let cur = byId.get(overId);
-      while (cur && !seen.has(cur.id)) {
-        seen.add(cur.id);
-        ids.push(cur.id);
-        cur = cur.parentId ? byId.get(cur.parentId) : undefined;
-      }
+      const ids = overId === PERSONAL_GROUP_KEY ? [PERSONAL_GROUP_KEY] : folderPathKeys(overId, byId);
       setExpandedKeys((keys) => [...new Set([...keys, ...ids])]);
     }, 450);
     return () => window.clearTimeout(t);
@@ -513,6 +538,14 @@ export function ProcessExplorer({
     setOverId(null);
   };
 
+  // 分组不收文件，只在拖个人树内容悬停时展开，好把目标目录露出来。
+  const hoverGroup = (e: DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    e.dataTransfer.dropEffect = "none";
+    setOverId(dragSrc?.treeLevel === "personal" ? PERSONAL_GROUP_KEY : null);
+  };
+
   const dropInto = (dest: FSNode, e: DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
@@ -645,6 +678,7 @@ export function ProcessExplorer({
         title: n ? (
           <TreeTitle
             n={n}
+            label={isPersonalRoot(n) ? fsPersonalRootName(n) : undefined}
             count={folderCounts.get(n.id) ?? 0}
             dragging={dragId === n.id}
             over={overId === n.id}
@@ -659,7 +693,22 @@ export function ProcessExplorer({
         children: folders.map((f) => walk(f.id)),
       };
     };
-    return roots.map((r) => walk(r.id));
+    const top = roots.filter((r) => !isPersonalRoot(r)).map((r) => walk(r.id));
+    const personal = roots.filter(isPersonalRoot).sort(byPersonalRootName);
+    if (personal.length) {
+      top.push({
+        key: PERSONAL_GROUP_KEY,
+        title: (
+          <span className="fs-tree-title" onDragOver={hoverGroup}>
+            <FolderOutlined />
+            <span className="fs-tree-name">个人级</span>
+            <span className="fs-tree-count">{personal.reduce((sum, r) => sum + (folderCounts.get(r.id) ?? 0), 0)}</span>
+          </span>
+        ),
+        children: personal.map((r) => walk(r.id)),
+      });
+    }
+    return top;
   })();
 
   const listDropClass = current && overId === current.id && !children.some((n) => n.id === overId && n.nodeKind === "folder") ? " is-drop" : "";
@@ -717,6 +766,10 @@ export function ProcessExplorer({
                 onExpand={(keys) => setExpandedKeys(keys.map(String))}
                 onSelect={(_, info) => {
                   const id = String(info.node.key);
+                  if (id === PERSONAL_GROUP_KEY) {
+                    setExpandedKeys((keys) => (keys.includes(id) ? keys : [...keys, id]));
+                    return;
+                  }
                   const n = byId.get(id);
                   if (n?.nodeKind !== "folder") return;
                   setPickedId(id);
