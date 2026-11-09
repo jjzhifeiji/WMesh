@@ -16,6 +16,8 @@ const (
 	gateSweepEvery = time.Minute      // 至多每分钟清一次空闲来源
 	gateIdle       = 10 * time.Minute // 空闲超过十分钟就清掉，名额早已补满
 	gateMaxPeers   = 10000            // 来源条目封顶，超出的新来源共用一个闸
+	pollEvery      = 2 * time.Second  // 等批准轮询每两秒补一次名额
+	pollBurst      = 30               // 等批准轮询最多连发三十次
 )
 
 // ipGate 按来源地址限速；不起后台协程，在放行时顺手清理空闲来源。

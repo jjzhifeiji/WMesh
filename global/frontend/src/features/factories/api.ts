@@ -18,25 +18,30 @@ export type Factory = {
   serviceVersion: number; // 厂端服务版本号；离线为 0
   serviceVersionName: string; // 厂端服务版本名
   shortCode: string; // 本厂短码 F01…F99，创建后不改
+  saLogin: string; // 初始超管登录名
+  saDisplay: string; // 初始超管显示名
 };
 
 export type Directory = {
   factories: Factory[]; // WAN 工厂名录
 };
 
-export type CreateFactoryInput = {
-  name: string; // 工厂显示名
+export type OnboardingRequest = {
+  id: string; // 申请稳定身份
+  kind: "enroll" | "reset_sa"; // 新厂接入 / 找回初始超管密码
+  status: string; // 列表里都是 pending
+  verifyCode: string; // 六位核对码，和现场比对
+  factoryId?: string; // 找回时对应的工厂
+  factoryName: string; // 工厂显示名
   saLogin: string; // 初始超管登录名
   saDisplay: string; // 初始超管显示名
+  sourceAddr: string; // 发起申请的来源地址
+  serviceVersionName: string; // 发起方厂端服务版本名
+  createdAt: string; // 申请时间
+  expiresAt: string; // 到期时间
 };
 
-export type CreatedFactory = {
-  factory: Factory; // 刚写入名录的工厂
-  superAdminId: string; // 约定落在厂库的初始超管身份
-  enrollmentToken: string; // 一次性建厂码，只在这次响应里出现
-};
-
-export const factoryKeys = { directory: ["directory"] as const };
+export const factoryKeys = { directory: ["directory"] as const, onboarding: ["onboarding"] as const };
 
 export function useDirectory() {
   return useQuery({
@@ -47,12 +52,29 @@ export function useDirectory() {
   });
 }
 
-// 建厂成功后名录会变，直接让缓存失效重拉。
-export function useCreateFactory() {
+export function usePendingOnboarding() {
+  return useQuery({
+    queryKey: factoryKeys.onboarding,
+    queryFn: ({ signal }) => http.get<{ requests: OnboardingRequest[] }>("/v1/onboarding", signal),
+    refetchInterval: 5000,
+    placeholderData: keepPreviousData,
+  });
+}
+
+// 批准后新厂才进名录，两边一起刷新。
+export function useApproveOnboarding() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (input: CreateFactoryInput) => http.post<CreatedFactory>("/v1/factories", input),
-    onSuccess: () => qc.invalidateQueries({ queryKey: factoryKeys.directory }),
+    mutationFn: ({ id, name }: { id: string; name: string }) => http.post<OnboardingRequest>(`/v1/onboarding/${id}/approve`, { name }),
+    onSuccess: () => Promise.all([qc.invalidateQueries({ queryKey: factoryKeys.onboarding }), qc.invalidateQueries({ queryKey: factoryKeys.directory })]),
+  });
+}
+
+export function useRejectOnboarding() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => http.post<OnboardingRequest>(`/v1/onboarding/${id}/reject`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: factoryKeys.onboarding }),
   });
 }
 

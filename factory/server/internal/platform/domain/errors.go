@@ -49,6 +49,7 @@ var (
 	ErrClientCacheFull       = errors.New("client cache is full")                   // 工程份已达缓存上限
 	ErrSyncRetry             = errors.New("sync retry required")                    // 弱网汇聚失败，队列保留可再试
 	ErrInvalidEnrollment     = errors.New("invalid enrollment")                     // 建厂码不对或已用完
+	ErrOnboardingClosed      = errors.New("onboarding request closed")              // 申请已处理或已过期
 	ErrWANUnreachable        = errors.New("wan channel unreachable")                // 厂端连不上 WAN 通道
 	ErrFactoryDisabled       = errors.New("factory is disabled")                    // WAN 停用后不得登录或新开操作
 	ErrFactoryRetired        = errors.New("factory is retired")                     // 已注销，通道不再重连
@@ -79,7 +80,7 @@ var known = []error{
 	ErrDeviceSerialMismatch, ErrStaleRevision, ErrBindingVoid, ErrInvalidGrantDays, ErrRevisionConflict,
 	ErrIntegrity, ErrContentLeaseExpired, ErrAssetNotAvailable, ErrAssetNotCopyable, ErrAssetDependency,
 	ErrInvalidWeldKind, ErrWeldKindMismatch, ErrCornerSlotMismatch, ErrWeldKindInUse, ErrClosureIncomplete, ErrClosureMismatch,
-	ErrClientCacheFull, ErrSyncRetry, ErrInvalidEnrollment, ErrWANUnreachable, ErrFactoryDisabled,
+	ErrClientCacheFull, ErrSyncRetry, ErrInvalidEnrollment, ErrOnboardingClosed, ErrWANUnreachable, ErrFactoryDisabled,
 	ErrFactoryRetired, ErrTemplateInvalid, ErrProjectItemTemplate, ErrAssetCodeMissing, ErrAssetCodeConflict,
 	ErrOriginCodeExhausted, ErrSoftwareInstallFailed, ErrSoftwareApplying, ErrTooManyAttempts, ErrTooManyRequests,
 	ErrWANSignatureRejected, ErrWrongCurrentPassword, ErrWeakPassword, ErrNameTooLong, ErrSessionClientMismatch,

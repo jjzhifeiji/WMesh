@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/google/uuid"
+
 	"wmesh/factory/internal/hub"
 )
 
@@ -13,6 +15,14 @@ func (h *Handler) mountSite(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/site", h.site)
 	// 用建厂码认领工厂，并自设日常口令。
 	mux.HandleFunc("POST /v1/site/claim", h.claim)
+	// 现场申请接入新厂，等云端批准。
+	mux.HandleFunc("POST /v1/site/onboarding", h.applyOnboarding)
+	// 凭申请密钥查进度，接入和找回共用。
+	mux.HandleFunc("POST /v1/site/onboarding/status", h.onboardingStatus)
+	// 申请找回初始超管密码。
+	mux.HandleFunc("POST /v1/site/sa-reset", h.requestSAReset)
+	// 云端批准后设新密码。
+	mux.HandleFunc("POST /v1/site/sa-reset/complete", h.completeSAReset)
 	// 给现场探活，并看设备号是否属于本厂。
 	mux.HandleFunc("GET /v1/discover", h.discover)
 }
@@ -69,6 +79,139 @@ func (h *Handler) claim(w http.ResponseWriter, r *http.Request) {
 	}
 	// 创建成功，把新记录回给调用方。
 	writeJSON(w, http.StatusCreated, claimResp{FactoryID: out.ID.String(), SALogin: out.SALogin})
+}
+
+// 现场申请接入填的内容，不含密码。
+type applyOnboardingReq struct {
+	FactoryName string `json:"factoryName"` // 工厂显示名
+	SALogin     string `json:"saLogin"`     // 初始超管登录名
+	SADisplay   string `json:"saDisplay"`   // 初始超管显示名
+}
+
+// 查进度只带申请密钥。
+type onboardingStatusReq struct {
+	Secret string `json:"secret"` // 申请密钥原文
+}
+
+// 申请找回时选的工厂。
+type saResetReq struct {
+	FactoryID string `json:"factoryId"` // 要找回的工厂
+}
+
+// 设新密码时带上批准过的申请。
+type saResetCompleteReq struct {
+	FactoryID string `json:"factoryId"` // 要找回的工厂
+	Secret    string `json:"secret"`    // 申请密钥原文
+	Password  string `json:"password"`  // 新的日常密码
+}
+
+// 找回完成后回登录名，登录页直接带上。
+type saResetCompleteResp struct {
+	LoginName string `json:"loginName"` // 初始超管登录名
+}
+
+// 现场申请接入新厂；批准前本机不建厂库。
+func (h *Handler) applyOnboarding(w http.ResponseWriter, r *http.Request) {
+	// 承接现场填的内容。
+	var req applyOnboardingReq
+	// 正文无法解析则拒绝。
+	if err := decodeJSON(r, &req); err != nil {
+		// 请求不合法，回非法请求。
+		writeBadRequest(w, err)
+		return
+	}
+	// 转给 WAN，本机版本一起带上给管理员看。
+	out, err := h.Hub.ApplyOnboarding(r.Context(), h.WANURL, req.FactoryName, req.SALogin, req.SADisplay, h.VersionName)
+	// 上一步没通过则停止。
+	if err != nil {
+		// 把失败译成状态回给调用方。
+		writeErr(w, err)
+		return
+	}
+	// 创建成功，把凭据回给现场。
+	writeJSON(w, http.StatusCreated, out)
+}
+
+// 凭申请密钥查进度。
+func (h *Handler) onboardingStatus(w http.ResponseWriter, r *http.Request) {
+	// 承接申请密钥。
+	var req onboardingStatusReq
+	// 正文无法解析则拒绝。
+	if err := decodeJSON(r, &req); err != nil {
+		// 请求不合法，回非法请求。
+		writeBadRequest(w, err)
+		return
+	}
+	// 转给 WAN 查进度。
+	out, err := h.Hub.OnboardingStatus(r.Context(), h.WANURL, req.Secret)
+	// 上一步没通过则停止。
+	if err != nil {
+		// 把失败译成状态回给调用方。
+		writeErr(w, err)
+		return
+	}
+	// 把进度回给现场。
+	writeJSON(w, http.StatusOK, out)
+}
+
+// 申请找回初始超管密码。
+func (h *Handler) requestSAReset(w http.ResponseWriter, r *http.Request) {
+	// 承接要找回的工厂。
+	var req saResetReq
+	// 正文无法解析则拒绝。
+	if err := decodeJSON(r, &req); err != nil {
+		// 请求不合法，回非法请求。
+		writeBadRequest(w, err)
+		return
+	}
+	// 工厂身份必须合法。
+	factoryID, err := uuid.Parse(req.FactoryID)
+	// 不合法就拒绝。
+	if err != nil {
+		// 请求不合法，回非法请求。
+		writeBadRequest(w, err)
+		return
+	}
+	// 用厂钥签名向 WAN 申请。
+	out, err := h.Hub.RequestSAReset(r.Context(), h.WANURL, factoryID, h.VersionName)
+	// 上一步没通过则停止。
+	if err != nil {
+		// 把失败译成状态回给调用方。
+		writeErr(w, err)
+		return
+	}
+	// 创建成功，把凭据回给现场。
+	writeJSON(w, http.StatusCreated, out)
+}
+
+// 云端批准后设新密码。
+func (h *Handler) completeSAReset(w http.ResponseWriter, r *http.Request) {
+	// 承接找回单和新密码。
+	var req saResetCompleteReq
+	// 正文无法解析则拒绝。
+	if err := decodeJSON(r, &req); err != nil {
+		// 请求不合法，回非法请求。
+		writeBadRequest(w, err)
+		return
+	}
+	// 工厂身份必须合法。
+	factoryID, err := uuid.Parse(req.FactoryID)
+	// 不合法就拒绝。
+	if err != nil {
+		// 请求不合法，回非法请求。
+		writeBadRequest(w, err)
+		return
+	}
+	// 用掉找回单并设新密码。
+	login, err := h.Hub.CompleteSAReset(r.Context(), h.WANURL, factoryID, req.Secret, req.Password)
+	// 上一步没通过则停止。
+	if err != nil {
+		// 把失败译成状态回给调用方。
+		writeErr(w, err)
+		return
+	}
+	// 把登录名回给现场。
+	writeJSON(w, http.StatusOK, saResetCompleteResp{LoginName: login})
 }
 
 // 给现场的厂址，以及这台设备是否本厂。

@@ -1,12 +1,11 @@
-import { PlusOutlined, ReloadOutlined } from "@ant-design/icons";
-import { App, Button, Card, Popconfirm, Space, Table, Tag, type TableColumnsType } from "antd";
-import { useState } from "react";
+import { ReloadOutlined } from "@ant-design/icons";
+import { App, Button, Card, Popconfirm, Space, Table, Tag, Typography, type TableColumnsType } from "antd";
 import { errorMessage } from "@/shared/api/client";
 import { formatDateTime, formatRelease, formatTime } from "@/shared/format";
 import { CodeText } from "@/shared/ui/CodeText";
 import { PageHeader } from "@/shared/ui/PageHeader";
 import { QueryErrorAlert, readFailed } from "@/shared/ui/QueryErrorAlert";
-import { CreateFactoryModal } from "./CreateFactoryModal";
+import { PendingOnboardingCard } from "./PendingOnboardingCard";
 import {
   useDeleteFactory,
   useDirectory,
@@ -30,14 +29,14 @@ export function FactoriesPage() {
   const enable = useEnableFactory();
   const remove = useDeleteFactory();
   const { message } = App.useApp();
-  const [creating, setCreating] = useState(false);
-
 
   const onErr = (err: unknown) => message.error(errorMessage(err));
 
   const columns: TableColumnsType<Factory> = [
     { title: "短码", dataIndex: "shortCode", width: 90, render: (_, row) => <CodeText code={row.shortCode} id={row.id} /> },
     { title: "工厂名称", dataIndex: "name", width: 180 },
+    { title: "工厂 ID", dataIndex: "id", width: 150, render: (v: string) => <Typography.Text copyable={{ text: v }}>{v.slice(0, 8)}…</Typography.Text> },
+    { title: "初始超管", width: 180, render: (_, row) => (row.saLogin ? `${row.saDisplay}（${row.saLogin}）` : "—") },
     { title: "状态", width: 100, render: (_, row) => channelStatus(row) },
     { title: "前端版本", width: 140, render: (_, row) => formatRelease(row.channelOnline, row.webVersion, row.webVersionName) },
     { title: "服务版本", width: 140, render: (_, row) => formatRelease(row.channelOnline, row.serviceVersion, row.serviceVersionName) },
@@ -100,18 +99,16 @@ export function FactoriesPage() {
     <>
       <PageHeader
         title="工厂名录"
-        description="停用、启用、删除由这里控制厂端；在线时立刻生效，离线则回连后收敛。"
+        description="新厂由现场在厂端发起接入，这里核对后批准；停用、启用、删除在线时立刻生效，离线则回连后收敛。"
         extra={
           <>
             <Button icon={<ReloadOutlined />} onClick={() => void dir.refetch()} loading={dir.isFetching}>
               刷新
             </Button>
-            <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreating(true)}>
-              创建工厂
-            </Button>
           </>
         }
       />
+      <PendingOnboardingCard />
       <QueryErrorAlert query={dir} what="工厂名录" />
       {/* 读失败不画表：空表会被当成真没工厂。 */}
       {readFailed(dir) ? null : (
@@ -122,11 +119,10 @@ export function FactoriesPage() {
             dataSource={dir.data?.factories ?? []}
             loading={dir.isLoading}
             pagination={{ pageSize: 20, hideOnSinglePage: true }}
-            scroll={{ x: 1250 }}
+            scroll={{ x: 1600 }}
           />
         </Card>
       )}
-      <CreateFactoryModal open={creating} onClose={() => setCreating(false)} />
     </>
   );
 }

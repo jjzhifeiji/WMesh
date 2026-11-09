@@ -37,6 +37,8 @@ type Factory struct {
 	ServiceVersionName    string     `json:"serviceVersionName"`                // 厂端服务版本名
 	ShortCode             string     `gorm:"not null" json:"shortCode"`         // 本厂短码 F01…F99，创建后不改
 	CreatedAt             time.Time  `gorm:"not null" json:"createdAt"`         // 名录入库时间
+	SALogin               string     `gorm:"-" json:"saLogin"`                  // 初始超管登录名，名录列表时补上
+	SADisplay             string     `gorm:"-" json:"saDisplay"`                // 初始超管显示名，名录列表时补上
 }
 
 // fillPresence 有当前连接时间才算在线，不另存列；离线不把上次版本当正在跑。
@@ -72,31 +74,45 @@ func (InitialSuperAdmin) TableName() string { return "initial_super_admins" }
 
 // RegisterFactory 用调用方给的稳定身份写入名录，并在同一事务绑定初始超管与建厂码哈希，不存密码。
 func (s *Store) RegisterFactory(ctx context.Context, factoryID uuid.UUID, name string, personID uuid.UUID, saLogin, saDisplay, enrollHash string) (Factory, error) {
-	// 记下当前时刻，这一笔里的时间都用它。
-	now := time.Now().UTC()
-	// 建厂码只留哈希，原文不进名录。
-	hash := enrollHash
-	// 先留出名录行，短码和超管在同一事务里写。
+	// 先留出名录行，事务提交后才交回。
 	var fac Factory
 	// 名录、短码和初始超管在同一事务里写入。
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// 行锁取出下一个短码，避免并发发出重号。
-		short, err := nextOriginCode(tx, originKindFactory)
-		// 短码发不出来就停，避免空号落库。
+		// 写名录，拿到带短码的行。
+		row, err := registerFactory(tx, factoryID, name, personID, saLogin, saDisplay, enrollHash, time.Now().UTC())
+		// 名录没写成就停，整笔回滚。
 		if err != nil {
 			return err
 		}
-		// 名录行和短码一起组好，认领前带着建厂码哈希。
-		fac = Factory{ID: factoryID, Name: name, Status: FactoryActive, EnrollmentTokenHash: &hash, ShortCode: short, CreatedAt: now}
-		// 这一行没写进去就停，不能当成已经落库。
-		if err := tx.Create(&fac).Error; err != nil {
-			return err
-		}
-		// 名录写好后绑上初始超管，失败则整笔回滚。
-		return bindInitialSuperAdmin(tx, factoryID, personID, saLogin, saDisplay, now)
+		// 交回事务外。
+		fac = row
+		return nil
 	})
 	// 事务没提交就停，名录和超管不能只留一半。
 	if err != nil {
+		return Factory{}, err
+	}
+	return fac, nil
+}
+
+// registerFactory 在给定事务里发短码、写名录并绑定初始超管。
+func registerFactory(tx *gorm.DB, factoryID uuid.UUID, name string, personID uuid.UUID, saLogin, saDisplay, enrollHash string, now time.Time) (Factory, error) {
+	// 建厂码只留哈希，原文不进名录。
+	hash := enrollHash
+	// 行锁取出下一个短码，避免并发发出重号。
+	short, err := nextOriginCode(tx, originKindFactory)
+	// 短码发不出来就停，避免空号落库。
+	if err != nil {
+		return Factory{}, err
+	}
+	// 名录行和短码一起组好，认领前带着建厂码哈希。
+	fac := Factory{ID: factoryID, Name: name, Status: FactoryActive, EnrollmentTokenHash: &hash, ShortCode: short, CreatedAt: now}
+	// 这一行没写进去就停，不能当成已经落库。
+	if err := tx.Create(&fac).Error; err != nil {
+		return Factory{}, err
+	}
+	// 名录写好后绑上初始超管，失败则整笔回滚。
+	if err := bindInitialSuperAdmin(tx, factoryID, personID, saLogin, saDisplay, now); err != nil {
 		return Factory{}, err
 	}
 	return fac, nil
@@ -146,12 +162,31 @@ func (s *Store) ListFactories(ctx context.Context) ([]Factory, error) {
 	rows := []Factory{}
 	// 按创建时间从新到旧读出名录。
 	err := s.db.WithContext(ctx).Order("created_at DESC").Find(&rows).Error
-	// 每家厂补上是否在线，离线就把版本清掉。
+	// 名录没读到就停，不再查超管。
+	if err != nil {
+		return rows, err
+	}
+	// 先给空表，没有初始超管也能照常列名录。
+	admins := []InitialSuperAdmin{}
+	// 一次读出全部初始超管，免得每家厂查一次。
+	if err := s.db.WithContext(ctx).Find(&admins).Error; err != nil {
+		return rows, err
+	}
+	// 按工厂身份建索引。
+	byFactory := make(map[uuid.UUID]InitialSuperAdmin, len(admins))
+	// 逐条收进索引。
+	for _, a := range admins {
+		// 一厂只有一名初始超管。
+		byFactory[a.FactoryID] = a
+	}
+	// 每家厂补上是否在线和初始超管。
 	for i := range rows {
 		// 按连接时间补是否在线，离线清掉版本。
 		rows[i].fillPresence()
+		// 补上初始超管，名录才看得到谁是超管。
+		rows[i].SALogin, rows[i].SADisplay = byFactory[rows[i].ID].LoginName, byFactory[rows[i].ID].DisplayName
 	}
-	return rows, err
+	return rows, nil
 }
 
 // SetFactoryStatus 写入治理状态并升高修订；相同状态不升修订。另交回行锁下读到的原状态。

@@ -411,6 +411,61 @@ func (s *Auth) ResetPassword(ctx context.Context, token string, targetID uuid.UU
 	return accountOf(p), nil
 }
 
+// RequireInitialActive 初始超管必须存在且有效，停用的不靠找回复活。
+func (s *Auth) RequireInitialActive(ctx context.Context) error {
+	// 读本厂唯一的初始超管。
+	p, err := s.store.InitialPerson(ctx)
+	// 读不到就停。
+	if err != nil {
+		return err
+	}
+	// 已停用就拒绝。
+	if p.Status != StatusActive {
+		return domain.ErrAccountDisabled
+	}
+	return nil
+}
+
+// ResetInitialPassword 云端批准的找回用掉后设新密码；旧密码立刻失效，会话作废。调用方须已用掉找回单。
+func (s *Auth) ResetInitialPassword(ctx context.Context, password string) (Account, error) {
+	// 口令太短就拒绝。
+	if err := CheckPassword(password); err != nil {
+		return Account{}, err
+	}
+	// 读本厂唯一的初始超管。
+	p, err := s.store.InitialPerson(ctx)
+	// 读不到就停。
+	if err != nil {
+		return Account{}, err
+	}
+	// 已停用就拒绝，失败记审计。
+	if p.Status != StatusActive {
+		// 写失败不改变结果。
+		_ = s.audit(ctx, &p.ID, &p.LoginName, "reset_initial_password", p.ID.String(), audit.Deny)
+		return Account{}, domain.ErrAccountDisabled
+	}
+	// 只存哈希。
+	hash, err := secret.HashPassword(password)
+	// 摘要失败就停。
+	if err != nil {
+		return Account{}, err
+	}
+	// 同一事务换密码并作废全部会话，不会只成功一半。
+	if err := s.store.ReplacePasswordDropSessions(ctx, p.ID, hash); err != nil {
+		// 写失败不改变结果。
+		_ = s.audit(ctx, &p.ID, &p.LoginName, "reset_initial_password", p.ID.String(), audit.Deny)
+		return Account{}, err
+	}
+	// 立刻断开在线的示教器，重连被拒即登出。
+	s.dropApp(p.ID)
+	// 审计没写下则整次不算完成。
+	if err := s.audit(ctx, &p.ID, &p.LoginName, "reset_initial_password", p.ID.String(), audit.Allow); err != nil {
+		return Account{}, err
+	}
+	// 收成不含口令的对外账号。
+	return accountOf(p), nil
+}
+
 // EnableAccount 恢复已停用账号；有日常密码的回到有效，否则回到待启用。不删账号。
 func (s *Auth) EnableAccount(ctx context.Context, token string, targetID uuid.UUID) error {
 	// 先确认会话仍有效，过期或停用直接拒绝

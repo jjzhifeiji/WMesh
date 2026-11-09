@@ -128,8 +128,14 @@ type SyncRequest struct {
 	Kind string // process / project；空则该类型全量补送
 }
 
-// 无厂钥签名的 JSON POST，只给认领两步用。
+// 无厂钥签名的 JSON POST，给认领和现场申请用。
 func postJSON(ctx context.Context, wanURL, path string, body, dst any) error {
+	// 不用签名，发送前不改请求。
+	return postJSONWith(ctx, wanURL, path, body, dst, nil)
+}
+
+// JSON POST；decorate 非空时在发送前改请求，比如写签名头。
+func postJSONWith(ctx context.Context, wanURL, path string, body, dst any, decorate func(*http.Request)) error {
 	// 先规范化平台根地址，空的或非网页就拒绝。
 	root, err := wanRoot(wanURL)
 	// 地址不可用就交回，这次认领不做。
@@ -150,6 +156,11 @@ func postJSON(ctx context.Context, wanURL, path string, body, dst any) error {
 	}
 	// 标明是结构化正文，平台才按字段解析。
 	req.Header.Set("Content-Type", "application/json")
+	// 需要签名的请求在这里写上签名头。
+	if decorate != nil {
+		// 写上调用方要的请求头。
+		decorate(req)
+	}
 	// 送出认领请求，网络失败就当平台不可达。
 	res, err := enrollClient.Do(req)
 	// 送不出去就当不可达，调用方可以再试。
@@ -219,6 +230,12 @@ func mapChannelError(msg string) error {
 	// 建厂码无效收成认领错误，可以换码再试。
 	case domain.ErrInvalidEnrollment.Error():
 		return domain.ErrInvalidEnrollment
+	// 申请已处理或已过期，现场要重新申请。
+	case domain.ErrOnboardingClosed.Error():
+		return domain.ErrOnboardingClosed
+	// 名字不合格，现场改了再提交。
+	case domain.ErrInvalidName.Error():
+		return domain.ErrInvalidName
 	// 厂已停用就拒绝认领，不要当成网络故障。
 	case domain.ErrFactoryDisabled.Error():
 		return domain.ErrFactoryDisabled

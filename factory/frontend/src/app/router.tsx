@@ -1,7 +1,8 @@
 import { Navigate, createBrowserRouter } from "react-router";
 import { AssetsPage } from "@/features/assets/AssetsPage";
 import { AccountPage } from "@/features/account/AccountPage";
-import { ClaimPage } from "@/features/auth/ClaimPage";
+import { ForgotPage } from "@/features/auth/ForgotPage";
+import { OnboardingPage } from "@/features/auth/OnboardingPage";
 import { LoginPage } from "@/features/auth/LoginPage";
 import { ClientPolicyPage } from "@/features/client-policy/ClientPolicyPage";
 import { ClientsPage } from "@/features/clients/ClientsPage";
@@ -30,7 +31,8 @@ export const router = createBrowserRouter([
     errorElement: <RouteErrorPage />,
     children: [
       { path: paths.login, element: <LoginPage /> },
-      { path: paths.claim, element: <ClaimPage /> },
+      { path: paths.claim, element: <OnboardingPage /> },
+      { path: paths.forgot, element: <ForgotPage /> },
     ],
   },
   {

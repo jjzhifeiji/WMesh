@@ -2,6 +2,7 @@
 export const paths = {
   login: "/login",
   claim: "/claim",
+  forgot: "/forgot-password",
   dashboard: "/",
   updates: "/updates",
   orgUnits: "/org/units",

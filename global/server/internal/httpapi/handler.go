@@ -22,6 +22,7 @@ type Handler struct {
 	OSSProbe    func(context.Context) error // 探对象存储是否在线；空表示未接 OSS
 	loginGate   *ipGate                     // 登录按来源限速，读正文前就挡
 	anonGate    *ipGate                     // 匿名拒绝与认领入口按来源限速
+	pollGate    *ipGate                     // 现场等批准时轮询进度，比匿名入口宽松
 }
 
 // New 组装 WAN HTTP 适配器。
@@ -30,6 +31,7 @@ func New(svc *service.Service, version string) *Handler {
 		svc: svc, version: version, versionCode: release.Code, versionName: release.Name,
 		loginGate: newIPGate(gateEvery, gateBurst),
 		anonGate:  newIPGate(gateEvery, gateBurst),
+		pollGate:  newIPGate(pollEvery, pollBurst),
 	}
 }
 
@@ -45,6 +47,8 @@ func (h *Handler) Router() http.Handler {
 	h.mountAuth(mux)
 	// 挂上名录和建厂，代管入口一律拒绝。
 	h.mountDirectory(mux)
+	// 挂上现场申请和云端审批。
+	h.mountOnboarding(mux)
 	// 挂上认领，以及按厂钥拉正文。
 	h.mountChannel(mux)
 	// 挂上现场设备，离线授权一律拒绝。

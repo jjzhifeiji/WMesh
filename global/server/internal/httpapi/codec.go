@@ -144,6 +144,7 @@ func statusOf(err error) int {
 		return http.StatusNotFound
 	// 重名、冲突或仍被引用，一律拒绝覆盖。
 	case errors.Is(err, domain.ErrWANAdminExists), errors.Is(err, domain.ErrLoginNameTaken),
+		errors.Is(err, domain.ErrOnboardingClosed),
 		errors.Is(err, domain.ErrAlreadyActivated), errors.Is(err, domain.ErrDuplicateAssignment),
 		errors.Is(err, domain.ErrDuplicateRoleGrant), errors.Is(err, domain.ErrDuplicateSession),
 		errors.Is(err, domain.ErrClientBound), errors.Is(err, domain.ErrClientKeyTaken),

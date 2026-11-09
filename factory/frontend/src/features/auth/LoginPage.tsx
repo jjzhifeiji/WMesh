@@ -30,6 +30,8 @@ export function LoginPage() {
   const blocked = factoriesBlocked(factories, selected);
 
   if (token && factoryId) return <Navigate to={from} replace />;
+  // 这台机器还没有任何工厂时，登录没有意义，直接进接入向导。
+  if (site.data?.wanConfigured && site.data.factories.length === 0) return <Navigate to={paths.claim} replace />;
 
   return (
     <Card>
@@ -39,7 +41,7 @@ export function LoginPage() {
         </Typography.Title>
         <FactoryStatusTag status={selected?.status ?? (factories.length > 0 && factories.every((f) => f.status === "retired") ? "retired" : undefined)} />
       </Space>
-      <Typography.Paragraph type="secondary">用本厂账号登录。第一次开厂请用云端建厂码认领。</Typography.Paragraph>
+      <Typography.Paragraph type="secondary">用本厂账号登录。新工厂请先申请接入。</Typography.Paragraph>
       <FactoryClosedNotice factories={factories} factoryId={watchedId || only?.id} />
       <FactoryLeaseNotice factories={listed} factoryId={watchedId || presetId || only?.id} />
       <Form<LoginInput>
@@ -80,7 +82,9 @@ export function LoginPage() {
       <Typography.Paragraph style={{ marginTop: 16, marginBottom: 0, textAlign: "center" }}>
         {site.data?.wanConfigured ? (
           <>
-            拿到建厂码？<Link to={paths.claim}>认领工厂</Link>
+            新工厂？<Link to={paths.claim}>申请接入</Link>
+            <br />
+            超管忘了密码？<Link to={paths.forgot}>找回密码</Link>
             <br />
           </>
         ) : null}

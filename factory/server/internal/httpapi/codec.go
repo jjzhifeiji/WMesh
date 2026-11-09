@@ -156,6 +156,9 @@ func statusOf(err error) int {
 		errors.Is(err, domain.ErrInvalidActivation), errors.Is(err, domain.ErrSessionExpired),
 		errors.Is(err, domain.ErrInvalidEnrollment):
 		return http.StatusUnauthorized
+	// 申请已处理或已过期，回冲突。
+	case errors.Is(err, domain.ErrOnboardingClosed):
+		return http.StatusConflict
 	// 平台暂时不可达，回上游故障。
 	case errors.Is(err, domain.ErrWANUnreachable):
 		return http.StatusBadGateway
