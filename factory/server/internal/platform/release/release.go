@@ -2,8 +2,8 @@
 package release
 
 const (
-	Code    int64 = 38       // 服务版本号，只向前比较
-	Name          = "1.1.36" // 服务版本名
-	WebCode int64 = 38       // 前端版本号，与 frontend/src/shared/version.ts 对齐
-	WebName       = "1.1.36" // 前端版本名
+	Code    int64 = 39       // 服务版本号，只向前比较
+	Name          = "1.1.37" // 服务版本名
+	WebCode int64 = 39       // 前端版本号，与 frontend/src/shared/version.ts 对齐
+	WebName       = "1.1.37" // 前端版本名
 )
