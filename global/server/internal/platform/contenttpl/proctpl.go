@@ -64,7 +64,8 @@ func cornerProcessFields() []Field {
 	}
 }
 
-// ProcessTemplateOf 工艺正文属于哪份模版：顶层写了 templateId 用它；没写的包角归预置包角，其余归预置焊接参数。
+// ProcessTemplateOf 工艺正文属于哪份模版：有包角标记的一定是预置包角；写了自建模版身份的归那份；其余归预置焊接参数。
+// 示教器只看 kind 认包角，所以 kind 说了算：templateId 写成预置两份的身份不认，免得两个键互相矛盾、绕过种类约束。
 // 示教器上送、升档、老数据导入都只带正文，所以归属只能从正文算。
 func ProcessTemplateOf(content []byte) string {
 	// 只取顶层两个键，别的不看。
@@ -76,14 +77,18 @@ func ProcessTemplateOf(content []byte) string {
 	if err := json.Unmarshal(bytes.TrimSpace(content), &head); err != nil {
 		return SeedTplWeld
 	}
-	// 写了合法的模版身份就用它。
-	if s, ok := head.TemplateID.(string); ok && tplIDRe.MatchString(s) {
-		// 身份统一小写，和库里记的一致。
-		return strings.ToLower(s)
-	}
-	// 没写身份的包角归预置包角。
+	// 有包角标记就是包角，不管 templateId 写了什么。
 	if s, ok := head.Kind.(string); ok && s == CornerKind {
 		return SeedTplCorner
+	}
+	// 没有包角标记时，只认自建模版的身份。
+	if s, ok := head.TemplateID.(string); ok && tplIDRe.MatchString(s) {
+		// 身份统一小写，和库里记的一致。
+		id := strings.ToLower(s)
+		// 预置两份靠有没有包角标记区分，不靠这个键。
+		if id != SeedTplWeld && id != SeedTplCorner {
+			return id
+		}
 	}
 	return SeedTplWeld
 }

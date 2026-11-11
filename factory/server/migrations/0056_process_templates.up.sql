@@ -2,10 +2,19 @@
 -- 已收的那一份改成预置「焊接参数」的固定身份，和云端迁移后的身份对上；工艺记下自己属于哪份模版。
 -- +goose Up
 
--- 已收的工艺模版副本换成预置「焊接参数」的身份和名称，修订不变，云端重推同修订时算已收。
+-- 以前云端的工艺模版身份是随机的，云端每重置一次就换一个；本厂副本只增不删，可能留着几个旧身份、修订相同的副本。
+-- 只把最近收到的那个身份换成预置「焊接参数」的身份和名称，修订不变，云端重推同修订时算已收；
+-- 其余旧身份的副本标成已撤下，不改身份，免得同修订撞主键。
 UPDATE content_template_replicas
 SET id = '55555555-5555-4555-8555-555555555555', name = '焊接参数'
-WHERE kind = 'process';
+WHERE kind = 'process'
+  AND id = (SELECT id FROM content_template_replicas WHERE kind = 'process' ORDER BY received_at DESC, revision DESC, id LIMIT 1);
+
+UPDATE content_template_replicas
+SET retired_at = now()
+WHERE kind = 'process'
+  AND id <> '55555555-5555-4555-8555-555555555555'
+  AND retired_at IS NULL;
 
 COMMENT ON TABLE content_template_replicas IS '云端内容模版的只读副本：工艺、工程都是多份，按身份加修订各自一行';
 COMMENT ON COLUMN content_template_replicas.name IS '模版名称；与云端相同';

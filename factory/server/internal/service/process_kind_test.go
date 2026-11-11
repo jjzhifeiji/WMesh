@@ -170,6 +170,16 @@ func TestProcessKinds(t *testing.T) {
 		// 没拦住。
 		t.Fatalf("corner to weld: %v", err)
 	}
+	// 在正文里显式写预置焊接参数的身份再加包角标记，想瞒过种类判定：包角标记说了算，照样被拒。
+	if _, err := fac.UpdateAssetContent(ctx, op.tok, weld.ID, weld.Revision, []byte(`{"templateId":"`+contenttpl.SeedTplWeld+`","kind":"cornerGeometry","name":"焊接一号","passes":[{"length":5}]}`)); !errors.Is(err, domain.ErrProcessKindFixed) {
+		// 没拦住。
+		t.Fatalf("weld to corner by templateId: %v", err)
+	}
+	// 包角去掉标记、改写预置包角的身份也不行：没有标记就不是包角。
+	if _, err := fac.UpdateAssetContent(ctx, op.tok, corner.ID, corner.Revision, []byte(`{"templateId":"`+contenttpl.SeedTplCorner+`","name":"包角一号","passes":[{"length":5}]}`)); !errors.Is(err, domain.ErrProcessKindFixed) {
+		// 没拦住。
+		t.Fatalf("corner to weld by templateId: %v", err)
+	}
 	// 示教器盖正文同样不许换种类。
 	if _, err := fac.ApplyAppContent(ctx, op.tok, padCorner.ID, []byte(`{"name":"平板包角","current":180}`)); !errors.Is(err, domain.ErrProcessKindFixed) {
 		// 没拦住。

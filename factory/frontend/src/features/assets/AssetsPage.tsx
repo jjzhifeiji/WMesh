@@ -256,10 +256,12 @@ function AssetsBody({ kind }: { kind: AssetKind }) {
       message.error(`${isProcess ? "工艺" : "工程"}模版还没读到，暂时不能新建，请稍后重试`);
       return;
     }
+    // 默认种类先找焊接参数，没有才用列表第一项；不能直接取第一项，自建种类可能排在前面。
+    const firstKind = createKindOpts.find((o) => o.value === SEED_TPL_WELD)?.value ?? createKindOpts[0]?.value ?? SEED_TPL_WELD;
     const folder = parent ?? (fs.data ?? []).find((n) => n.id === folderOpts[0]?.value);
     form.setFieldsValue({
-      content: isProcess ? newProcessContent(createKindOpts[0]?.value ?? SEED_TPL_WELD, processTpls.data) : "[]",
-      processKind: createKindOpts[0]?.value ?? SEED_TPL_WELD,
+      content: isProcess ? newProcessContent(firstKind, processTpls.data) : "[]",
+      processKind: firstKind,
       weldKind: WELD_SINGLE,
       parentId: folder?.id,
     });

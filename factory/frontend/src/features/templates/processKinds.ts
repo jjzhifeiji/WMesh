@@ -29,7 +29,11 @@ export function processKindLabel(templateId: string | undefined, templates: Cont
 
 // processKindOptions 筛选和新建用的种类清单：当前各份模版，再补上列表里出现过但模版已删的种类。
 export function processKindOptions(templates: ContentTemplate[] | undefined, usedIds: (string | undefined)[] = []): { value: string; label: string }[] {
-  const out = (templates ?? []).map((t) => ({ value: t.id, label: t.name || processKindLabel(t.id, templates) }));
+  // 预置的焊接参数、包角排最前，其余按名称；两端列表原始顺序不同，这里统一。
+  const rank = (id: string) => (id === SEED_TPL_WELD ? 0 : id === SEED_TPL_CORNER ? 1 : 2);
+  const out = (templates ?? [])
+    .map((t) => ({ value: t.id, label: t.name || processKindLabel(t.id, templates) }))
+    .sort((a, b) => rank(a.value) - rank(b.value) || a.label.localeCompare(b.label, "zh"));
   const seen = new Set(out.map((o) => o.value));
   for (const id of usedIds) {
     if (!id || seen.has(id)) continue;

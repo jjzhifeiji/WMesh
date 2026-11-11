@@ -154,6 +154,16 @@ func TestProcessTemplates(t *testing.T) {
 		// 没拦住。
 		t.Fatalf("corner to weld: %v", err)
 	}
+	// 在正文里显式写预置焊接参数的身份再加包角标记，想瞒过种类判定：包角标记说了算，照样被拒。
+	if _, err := h.WAN.UpdatePlatformAssetContent(ctx, tok, weld.ID, weld.Revision, []byte(`{"templateId":"`+contenttpl.SeedTplWeld+`","kind":"cornerGeometry","name":"w","passes":[{"length":5}]}`)); !errors.Is(err, domain.ErrProcessKindFixed) {
+		// 没拦住。
+		t.Fatalf("weld to corner by templateId: %v", err)
+	}
+	// 包角去掉标记、改写预置包角的身份也不行：没有标记就不是包角。
+	if _, err := h.WAN.UpdatePlatformAssetContent(ctx, tok, corner.ID, corner.Revision, []byte(`{"templateId":"`+contenttpl.SeedTplCorner+`","name":"c","passes":[{"length":5}]}`)); !errors.Is(err, domain.ErrProcessKindFixed) {
+		// 没拦住。
+		t.Fatalf("corner to weld by templateId: %v", err)
+	}
 	// 包角和自建种类不许改适用作业。
 	for _, a := range []global.Asset{corner, proc} {
 		// 改成 T 排应被拒。
