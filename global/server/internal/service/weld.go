@@ -46,8 +46,34 @@ func (s *kernel) assertDepsWeldKind(ctx context.Context, weldKind string, deps [
 		if err != nil || got != want {
 			return domain.ErrWeldKindMismatch
 		}
+		// 工程只能依赖焊接参数：包角、自建种类和还没判出种类的工艺都不许钉。
+		if p.Kind == KindProcess && p.TemplateID != contenttpl.SeedTplWeld {
+			return domain.ErrCornerSlotMismatch
+		}
 	}
 	return nil
+}
+
+// assertProcessKindKept 工艺种类随正文算，改正文不许把它换成另一种；还没判出种类的旧行不拦。
+func assertProcessKindKept(cur Asset, content []byte) error {
+	// 工程没有种类；没判过的工艺先放行，写入后按新正文记下。
+	if cur.Kind != KindProcess || cur.TemplateID == "" {
+		return nil
+	}
+	// 新正文算出的种类和现在的不同就拒绝。
+	if contenttpl.ProcessTemplateOf(content) != cur.TemplateID {
+		return domain.ErrProcessKindFixed
+	}
+	return nil
+}
+
+// singleUnlessWeld 只有焊接参数才分适用作业；包角和自建种类一律记单层。
+func singleUnlessWeld(kind, weldKind string, content []byte) string {
+	// 工程和焊接参数照传入的作业类型。
+	if kind != KindProcess || contenttpl.IsWeldProcess(content) {
+		return weldKind
+	}
+	return store.WeldKindSingle
 }
 
 // depsMatchingWeldKind 只留下与作业类型相同的工艺依赖。
@@ -88,9 +114,9 @@ func assertProjectWeldKind(weldKind string, content []byte) error {
 	return nil
 }
 
-// assertCornerSlots 工程里任何工艺槽都不挂包角工艺，包角组 processId 也一样挂焊接参数；和示教器一样包角几何只在本机选。
+// assertWeldSlots 工程里任何工艺槽都不挂包角工艺，包角组 processId 也一样挂焊接参数；和示教器一样包角几何只在本机选。
 // 认不出的身份不在这里拦，缺依赖由依赖核对去报。
-func (s *kernel) assertCornerSlots(ctx context.Context, content []byte) error {
+func (s *kernel) assertWeldSlots(ctx context.Context, content []byte) error {
 	// 按当前工程模版收引用。
 	items, err := s.projectItemSchemas(ctx)
 	// 模版读不出就停，不能当没挂错。
@@ -125,7 +151,7 @@ func (s *kernel) assertCornerSlots(ctx context.Context, content []byte) error {
 		p, err := s.store.AssetByID(ctx, id)
 		// 查到就看包角标记。
 		if err == nil {
-			return p.Kind == KindProcess && p.Corner, true
+			return p.Kind == KindProcess && p.TemplateID != contenttpl.SeedTplWeld, true
 		}
 		// 不是没有记录就记下库错误。
 		if !errors.Is(err, domain.ErrNotFound) {

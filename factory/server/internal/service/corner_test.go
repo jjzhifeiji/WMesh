@@ -92,7 +92,13 @@ func TestCornerSlotBinding(t *testing.T) {
 	// 两条工艺都钉上，改正文时引用才落在依赖里。
 	deps := []factory.AssetDep{{ID: weld.ID, Revision: weld.Revision, Digest: weld.Digest}, {ID: corner.ID, Revision: corner.Revision, Digest: corner.Digest}}
 	// 示教器存法：包角组和焊道挂同一条焊接参数，能建。
-	proj, err := fac.CreateFactoryProject(ctx, op.tok, direct, "挂对", body(weld.ID, weld.ID), deps, store.WeldKindSingle)
+	// 正文没引用包角，但把包角声明成额外依赖也不行：工程只能依赖焊接参数。
+	if _, err := fac.CreateFactoryProject(ctx, op.tok, direct, "多钉包角", body(weld.ID, weld.ID), deps, store.WeldKindSingle); !errors.Is(err, domain.ErrCornerSlotMismatch) {
+		// 额外依赖里的包角没拦住。
+		t.Fatalf("extra corner dep: %v", err)
+	}
+	// 只依赖焊接参数的工程能建。
+	proj, err := fac.CreateFactoryProject(ctx, op.tok, direct, "挂对", body(weld.ID, weld.ID), deps[:1], store.WeldKindSingle)
 	// 建不成就停。
 	if err != nil {
 		// 示教器存法的工程被拒了。

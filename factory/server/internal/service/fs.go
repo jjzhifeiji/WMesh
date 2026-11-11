@@ -69,8 +69,28 @@ func (s *Assets) ListFS(ctx context.Context, token, kind string) ([]FSNodeView, 
 		// 当前人能看见的节点放进结果。
 		visible = append(visible, n)
 	}
-	// 补主人名和文件元数据，不含正文；目录页每 8 秒轮询，成功不记允许。
-	return s.decorateFS(ctx, visible)
+	// 补上各文件节点的资产信息。
+	views, err := s.decorateFS(ctx, visible)
+	// 补不上就停。
+	if err != nil {
+		return nil, err
+	}
+	// 网页会话原样交回；示教器只认识焊接参数和包角，自建种类的工艺节点不给它。
+	if !s.isAppSession(ctx, token) {
+		return views, nil
+	}
+	// 按数量先准备容器。
+	out := make([]FSNodeView, 0, len(views))
+	// 逐个节点筛掉示教器不认识的工艺。
+	for _, v := range views {
+		// 这个节点挂的是示教器不认识的种类就跳过。
+		if v.Asset != nil && padHidesProcess(v.Asset.Kind, v.Asset.TemplateID) {
+			continue
+		}
+		// 其余照给。
+		out = append(out, v)
+	}
+	return out, nil
 }
 
 // ListFSForChannel 给云端看本厂全部目录结构，不含正文，也不带主人和创建人。

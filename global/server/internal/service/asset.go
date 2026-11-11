@@ -132,6 +132,8 @@ func (s *Assets) CreatePlatformProcessIn(ctx context.Context, token, name string
 		_ = s.audit(ctx, &admin.ID, nil, nil, "create_asset", name, audit.Deny)
 		return Asset{}, err
 	}
+	// 只有焊接参数才分适用作业，包角和自建种类一律记单层。
+	kind = singleUnlessWeld(KindProcess, kind, content)
 	// 资产和文件节点同一事务写入，挂不上目录就一起回滚。
 	row, err := s.store.InsertAssetInto(ctx, Asset{
 		Kind: KindProcess, Name: name, Status: AssetDraft, Copyable: copyable, WeldKind: kind,
@@ -265,18 +267,22 @@ func (s *Assets) UpdatePlatformAssetContent(ctx context.Context, token string, a
 		if cur.Status == AssetDisabled {
 			return store.AssetWrite{}, domain.ErrAssetNotAvailable
 		}
+		// 工艺种类定了不能换，在 JSON 里加减包角标记或所属身份也不行。
+		if err := assertProcessKindKept(cur, content); err != nil {
+			return store.AssetWrite{}, err
+		}
 		// 工程焊道引用必须落在已声明依赖里，且作业类型一致。
 		if cur.Kind == KindProject {
+			// 工艺槽只能挂焊接参数；先于依赖核对，挂错种类时给出的是这条提示。
+			if err := s.assertWeldSlots(ctx, content); err != nil {
+				return store.AssetWrite{}, err
+			}
 			// 对不上就拒绝，避免焊道和模式错配。
 			if err := s.assertProjectProcessIDs(ctx, content, cur.Deps); err != nil {
 				return store.AssetWrite{}, err
 			}
 			// 对不上就拒绝，避免焊道和模式错配。
 			if err := assertProjectWeldKind(cur.WeldKind, content); err != nil {
-				return store.AssetWrite{}, err
-			}
-			// 工艺槽挂了包角工艺则拒绝保存。
-			if err := s.assertCornerSlots(ctx, content); err != nil {
 				return store.AssetWrite{}, err
 			}
 		}
@@ -389,6 +395,10 @@ func (s *Assets) SetPlatformWeldKind(ctx context.Context, token string, assetID 
 		// 别的写法一律拒绝。
 		if err != nil {
 			return store.AssetWrite{}, err
+		}
+		// 只有焊接参数才分适用作业，包角和自建种类不许改。
+		if cur.Kind == KindProcess && kind != cur.WeldKind && cur.TemplateID != contenttpl.SeedTplWeld {
+			return store.AssetWrite{}, domain.ErrProcessKindFixed
 		}
 		// 工艺真要换类型时，先看有没有平台工程还钉着它。
 		if cur.Kind == KindProcess && kind != cur.WeldKind {
@@ -845,7 +855,7 @@ func (s *Assets) CreatePlatformProjectIn(ctx context.Context, token, name string
 		return Asset{}, err
 	}
 	// 工艺槽（含包角组）不挂包角工艺，免得示教器焊接时缺工艺。
-	if err := s.assertCornerSlots(ctx, content); err != nil {
+	if err := s.assertWeldSlots(ctx, content); err != nil {
 		// 建资产被拒就留审计，不写正文。
 		_ = s.audit(ctx, &admin.ID, nil, nil, "create_asset", name, audit.Deny)
 		return Asset{}, err

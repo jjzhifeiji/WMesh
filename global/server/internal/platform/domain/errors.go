@@ -56,6 +56,7 @@ var (
 	ErrInvalidWeldKind       = errors.New("invalid weld kind")                      // 作业类型只能是单层/多层/T排
 	ErrWeldKindMismatch      = errors.New("weld kind mismatch")                     // 工程与工艺作业类型必须相同
 	ErrCornerSlotMismatch    = errors.New("corner process slot mismatch")           // 工程工艺槽（含包角组）只挂焊接参数，不挂包角工艺
+	ErrProcessKindFixed      = errors.New("process kind is fixed")                  // 工艺种类定了不能换：改正文不许换成另一种，非焊接参数不许改适用作业
 	ErrWeldKindInUse         = errors.New("process weld kind in use")               // 工艺仍被平台工程钉着，不能改作业类型
 	ErrClosureIncomplete     = errors.New("closure is incomplete")                  // 组包缺成员或读不到钉死修订
 	ErrClosureMismatch       = errors.New("closure revision mismatch")              // 组包串版：身份或修订被顶替
@@ -85,7 +86,7 @@ var known = []error{
 	ErrInvalidName, ErrDuplicateName, ErrInvalidKey, ErrClientKeyTaken, ErrFactoryKeyExists,
 	ErrSigningKeyExists, ErrClientBound, ErrUnbound, ErrDeviceSerialRequired, ErrDeviceSerialTaken,
 	ErrDeviceSerialTooLong, ErrStaleRevision, ErrRevisionConflict, ErrIntegrity, ErrContentLeaseExpired, ErrAssetNotAvailable,
-	ErrAssetNotCopyable, ErrAssetDependency, ErrInvalidWeldKind, ErrWeldKindMismatch, ErrCornerSlotMismatch, ErrWeldKindInUse,
+	ErrAssetNotCopyable, ErrAssetDependency, ErrInvalidWeldKind, ErrWeldKindMismatch, ErrCornerSlotMismatch, ErrProcessKindFixed, ErrWeldKindInUse,
 	ErrClosureIncomplete, ErrClosureMismatch, ErrClientCacheFull, ErrTemplateInvalid, ErrProjectItemTemplate, ErrAssetCodeMissing,
 	ErrAssetCodeConflict, ErrAssetSourceTaken, ErrOriginCodeExhausted, ErrSoftwareInstallFailed, ErrSoftwareApplying,
 	ErrTooManyAttempts, ErrTooManyRequests, ErrWrongCurrentPassword, ErrPasswordTooShort,

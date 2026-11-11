@@ -46,7 +46,7 @@ func assetCopyable(kind string, copyable bool) bool {
 func replicaAsAsset(r AssetReplica) Asset {
 	return Asset{
 		ID: r.ID, Kind: r.Kind, Level: AssetLevelPlatform, Name: r.Name, Code: r.Code,
-		Status: r.Status, Copyable: r.Copyable, WeldKind: r.WeldKind, Corner: r.Corner, Revision: r.Revision,
+		Status: r.Status, Copyable: r.Copyable, WeldKind: r.WeldKind, Corner: r.Corner, TemplateID: r.TemplateID, Revision: r.Revision,
 		Content: r.Content, Digest: r.Digest, Deps: r.Deps,
 		CreatedAt: r.ReceivedAt, UpdatedAt: r.ReceivedAt,
 	}
@@ -218,6 +218,8 @@ func (s *Assets) insertAuthored(ctx context.Context, acc Account, wc WorkContext
 		_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny)
 		return Asset{}, err
 	}
+	// 只有焊接参数才分适用作业，包角和自建种类一律记单层。
+	weld = singleUnlessWeld(kind, weld, content)
 	// 工程要补依赖并核对焊道，工艺不走这段。
 	if kind == KindProject {
 		// 焊道对不上则拒绝，并补记审计。
@@ -262,7 +264,7 @@ func (s *Assets) insertAuthored(ctx context.Context, acc Account, wc WorkContext
 			return Asset{}, err
 		}
 		// 工艺槽（含包角组）不挂包角工艺，免得示教器焊接时缺工艺。
-		if err := s.assertCornerSlots(ctx, content); err != nil {
+		if err := s.assertWeldSlots(ctx, content); err != nil {
 			// 创建被拒时补记审计，写失败仍维持拒绝。
 			_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny)
 			return Asset{}, err
@@ -474,7 +476,7 @@ func (s *Assets) CreatePadIn(ctx context.Context, token, level, kind, name strin
 			return Asset{}, err
 		}
 		// 工艺槽（含包角组）不挂包角工艺，和网页新建同一口径。
-		if err := s.assertCornerSlots(ctx, content); err != nil {
+		if err := s.assertWeldSlots(ctx, content); err != nil {
 			// 创建被拒时补记审计，写失败仍维持拒绝。
 			_ = s.auditAt(ctx, &acc.ID, "create_asset", name, audit.Deny)
 			return Asset{}, err
@@ -1137,6 +1139,10 @@ func (s *Assets) UpdateAssetContent(ctx context.Context, token string, assetID u
 		if err := assertProcessBodyName(cur.Kind, content); err != nil {
 			return store.AssetWrite{}, err
 		}
+		// 工艺种类定了不能换，在 JSON 里加减包角标记或所属身份也不行。
+		if err := assertProcessKindKept(cur, content); err != nil {
+			return store.AssetWrite{}, err
+		}
 		// 接下来写入的正文和依赖，工程可能换掉个人工艺。
 		body, deps := content, cur.Deps
 		// 工程焊道引用必须落在已声明依赖里。
@@ -1152,16 +1158,16 @@ func (s *Assets) UpdateAssetContent(ctx context.Context, token string, assetID u
 					return store.AssetWrite{}, err
 				}
 			}
+			// 工艺槽只能挂焊接参数；先于依赖核对，挂错种类时给出的是这条提示。
+			if err := s.assertWeldSlots(ctx, body); err != nil {
+				return store.AssetWrite{}, err
+			}
 			// 有引用对不上依赖则拒绝保存。
 			if err := s.assertProjectProcessIDs(ctx, body, deps); err != nil {
 				return store.AssetWrite{}, err
 			}
 			// 焊道对不上则拒绝保存。
 			if err := assertProjectWeldKind(cur.WeldKind, body); err != nil {
-				return store.AssetWrite{}, err
-			}
-			// 工艺槽挂了包角工艺则拒绝保存。
-			if err := s.assertCornerSlots(ctx, body); err != nil {
 				return store.AssetWrite{}, err
 			}
 			// 校验都过了，厂级工程还钉着的个人工艺复制成厂级再写。
@@ -1276,6 +1282,12 @@ func (s *Assets) applyAppOnce(ctx context.Context, acc Account, assetID uuid.UUI
 		_ = s.audit(ctx, &acc.ID, nil, "apply_app", assetTarget(cur.ID, cur.Revision), audit.Deny)
 		return Asset{}, cur.Revision, err
 	}
+	// 示教器盖正文同样不许换工艺种类。
+	if err := assertProcessKindKept(cur, content); err != nil {
+		// 盖写被拒时补记审计，写失败仍维持拒绝。
+		_ = s.audit(ctx, &acc.ID, nil, "apply_app", assetTarget(cur.ID, cur.Revision), audit.Deny)
+		return Asset{}, cur.Revision, err
+	}
 	// 停用仍盖正文，状态保持停用。
 	deps := cur.Deps
 	// 这一轮要写的正文；外层重试时收到的正文不能被改掉。
@@ -1328,7 +1340,7 @@ func (s *Assets) applyAppOnce(ctx context.Context, acc Account, assetID uuid.UUI
 			return Asset{}, cur.Revision, err
 		}
 		// 工艺槽挂了包角工艺则拒绝盖写，和网页改正文同一口径。
-		if err := s.assertCornerSlots(ctx, body); err != nil {
+		if err := s.assertWeldSlots(ctx, body); err != nil {
 			// 盖写被拒时补记审计，写失败仍维持拒绝。
 			_ = s.audit(ctx, &acc.ID, nil, "apply_app", assetTarget(cur.ID, cur.Revision), audit.Deny)
 			return Asset{}, cur.Revision, err
@@ -1458,6 +1470,10 @@ func (s *Assets) SetAssetWeldKind(ctx context.Context, token string, assetID uui
 		// 作业类型不合法则拒绝保存。
 		if err != nil {
 			return store.AssetWrite{}, err
+		}
+		// 只有焊接参数才分适用作业，包角和自建种类不许改。
+		if cur.Kind == KindProcess && kind != cur.WeldKind && cur.TemplateID != contenttpl.SeedTplWeld {
+			return store.AssetWrite{}, domain.ErrProcessKindFixed
 		}
 		// 工艺真要换类型时，先看有没有工程还钉着它。
 		if cur.Kind == KindProcess && kind != cur.WeldKind {

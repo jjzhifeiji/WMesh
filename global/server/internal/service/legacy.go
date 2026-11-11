@@ -360,6 +360,10 @@ func (s *Assets) importLegacyProcess(ctx context.Context, token string, book *im
 	if cur, ok := book.find(KindProcess, raw, name); ok {
 		// 按作业类型、覆盖、另起名、跳过依次处理。
 		switch {
+		// 同名但种类不同（比如库里是焊接参数、这份是包角）就不是同一条：另起名新建，不覆盖也不沿用。
+		case cur.TemplateID != "" && contenttpl.ProcessTemplateOf(p.content) != cur.TemplateID:
+			// 换个不撞的名字再走新建。
+			name = uniqueImportName(book.names, KindProcess, name, raw, p.rel, p.suffix)
 		// 作业类型不同则不沿用不覆盖，另起名新建；没人引用的不限类型。
 		case p.kind != "" && !sameWeldKind(cur.WeldKind, p.kind):
 			// 找一个还不冲突的名字。

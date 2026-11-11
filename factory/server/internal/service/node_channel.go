@@ -11,6 +11,7 @@ import (
 	"wmesh/factory/internal/platform/audit"
 	"wmesh/factory/internal/platform/clientmqtt"
 	"wmesh/factory/internal/platform/contentcrypt"
+	"wmesh/factory/internal/platform/contenttpl"
 	"wmesh/factory/internal/platform/domain"
 )
 
@@ -394,6 +395,10 @@ func (s *Closure) padVisibleAssets(ctx context.Context, acc Account) ([]Asset, e
 		if a.Level == AssetLevelPersonal && a.CreatorID != acc.ID {
 			continue
 		}
+		// 示教器只认识焊接参数和包角；自建种类的工艺不发给它，免得被当成焊接参数列进选单。
+		if padHidesProcess(a.Kind, a.TemplateID) {
+			continue
+		}
 		// 本人个人级、厂级和平台级照旧收进来
 		out = append(out, a)
 	}
@@ -548,4 +553,14 @@ func OpenTransit(factoryID, boundID uuid.UUID, unwrap []byte, t TransitClosure) 
 	// 成员列表换成这一版，下发按它走
 	snap.Members = members
 	return snap, nil
+}
+
+// padHidesProcess 这条工艺要不要对示教器藏起来：种类是示教器不认识的自建模版就藏；还没判出种类的照发。
+func padHidesProcess(kind, templateID string) bool {
+	// 工程和没判过种类的工艺不藏。
+	if kind != KindProcess || templateID == "" {
+		return false
+	}
+	// 预置两份示教器都认得，其余藏起来。
+	return templateID != contenttpl.SeedTplWeld && templateID != contenttpl.SeedTplCorner
 }

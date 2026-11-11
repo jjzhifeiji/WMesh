@@ -144,6 +144,29 @@ func TestProcessTemplates(t *testing.T) {
 		// 把正文打出来。
 		t.Fatalf("weld body %v", body)
 	}
+	// 改正文不许换种类：焊接参数改成包角正文被拒。
+	if _, err := h.WAN.UpdatePlatformAssetContent(ctx, tok, weld.ID, weld.Revision, []byte(`{"kind":"cornerGeometry","name":"w","passes":[{"length":5}]}`)); !errors.Is(err, domain.ErrProcessKindFixed) {
+		// 没拦住。
+		t.Fatalf("weld to corner: %v", err)
+	}
+	// 包角去掉标记变成焊接参数也被拒。
+	if _, err := h.WAN.UpdatePlatformAssetContent(ctx, tok, corner.ID, corner.Revision, []byte(`{"name":"c","passes":[{"length":5}]}`)); !errors.Is(err, domain.ErrProcessKindFixed) {
+		// 没拦住。
+		t.Fatalf("corner to weld: %v", err)
+	}
+	// 包角和自建种类不许改适用作业。
+	for _, a := range []global.Asset{corner, proc} {
+		// 改成 T 排应被拒。
+		if _, err := h.WAN.SetPlatformWeldKind(ctx, tok, a.ID, a.Revision, "tbar"); !errors.Is(err, domain.ErrProcessKindFixed) {
+			// 没拦住。
+			t.Fatalf("weld kind of %s: %v", a.Name, err)
+		}
+	}
+	// 焊接参数可以改适用作业。
+	if _, err := h.WAN.SetPlatformWeldKind(ctx, tok, weld.ID, weld.Revision, "multilayer"); err != nil {
+		// 把错误打出来。
+		t.Fatalf("weld kind of weld: %v", err)
+	}
 	// 取预置包角当前修订。
 	var cornerTpl global.ContentTemplate
 	// 在预置两份里找包角。
