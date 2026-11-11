@@ -674,9 +674,10 @@ body,
   overflow: auto;
 }
 
+/* 占满容器：以前只用 61.8% 宽，行尾的「是否必填」和删除按钮会被挤出去。 */
 .schema-editor > .schema-node {
-  width: 61.8%;
-  min-width: min(100%, 38rem);
+  width: 100%;
+  min-width: 0;
   max-width: 100%;
 }
 
@@ -699,15 +700,19 @@ body,
   width: 100%;
   max-width: 100%;
   box-sizing: border-box;
-  margin: 0 0 8px 4px;
+  margin: 0 0 8px 0;
   padding: 8px 8px 8px 10px;
   border-left: 3px solid #1677ff;
   border-radius: 0 6px 6px 0;
   background: #f5f8fc;
 }
 
+/* 嵌套缩进收小：每嵌一层都要从行宽里扣，扣多了行尾就放不下。 */
 .schema-node .schema-node {
-  margin: 0 8px 8px 20px;
+  /* 宽度交给块布局自己算：写 100% 再加左右缩进会比父级宽出一截，逼出横向滚动条。 */
+  width: auto;
+  margin: 0 4px 8px 12px;
+  padding: 6px 6px 6px 8px;
   border-left-color: #69b1ff;
   background: #eef3f9;
 }
@@ -726,29 +731,39 @@ body,
   min-width: 0;
   border: 1px solid #e5e5e5;
   border-radius: 6px;
-  overflow: visible;
+  /* 实在放不下时表头和各行一起在表内横向滚，滚动条常显，不让行尾悄悄被切掉。 */
+  overflow-x: auto;
   background: #fff;
+}
+
+.schema-list::-webkit-scrollbar {
+  height: 8px;
+}
+
+.schema-list::-webkit-scrollbar-thumb {
+  border-radius: 4px;
+  background: #c8c8c8;
 }
 
 .schema-col-head,
 .schema-item {
   display: grid;
-  /* 键:名称 ≈ φ，在黄金分割宽内分配，不拉满整卡 */
+  /* 拖柄、键、名称、类型、单位、默认值、必填、删除。各列都能压缩，整行最小约 29rem，窄容器里行尾也在。 */
   grid-template-columns:
-    22px
-    minmax(5.5rem, 1.618fr)
-    minmax(5rem, 1fr)
-    minmax(5rem, 0.81fr)
-    4.5rem
+    18px
+    minmax(4.5rem, 1.6fr)
     minmax(4rem, 1fr)
-    3.4rem
-    36px;
-  column-gap: 14px;
+    minmax(4.5rem, 0.9fr)
+    minmax(3rem, 0.6fr)
+    minmax(3rem, 0.8fr)
+    3.2rem
+    24px;
+  column-gap: 8px;
   align-items: center;
   width: 100%;
-  min-width: 0;
+  min-width: 29rem;
   min-height: 28px;
-  padding: 4px 12px;
+  padding: 4px 8px;
   box-sizing: border-box;
 }
 
@@ -963,7 +978,8 @@ body,
 /* 工艺模版页：左清单、中间字段表、右边表单预览，三栏都在页面里，各自滚动。 */
 .tpl-page {
   display: grid;
-  grid-template-columns: 240px minmax(0, 1.35fr) minmax(0, 1fr);
+  /* 字段表要宽，预览只是看效果，给编辑区多留。 */
+  grid-template-columns: 220px minmax(0, 1.8fr) minmax(0, 1fr);
   height: calc(100vh - 200px);
   min-height: 520px;
   border: 1px solid #f0f0f0;
@@ -1087,6 +1103,12 @@ body,
   font-size: 12px;
 }
 
+/* 页面里编辑区自己会滚，字段表不再另外限高，免得套两层滚动。 */
+.tpl-edit-body .schema-editor {
+  max-height: none;
+  overflow: visible;
+}
+
 /* 预览里的表单不再自己限高滚动，跟着预览栏滚。 */
 .tpl-preview-body .content-fields-scroll {
   max-height: none;
@@ -1094,7 +1116,7 @@ body,
 }
 
 /* 窗口窄时三栏放不下：预览折到编辑区下面，整块不再定高。 */
-@media (max-width: 1280px) {
+@media (max-width: 1500px) {
   .tpl-page {
     grid-template-columns: 220px minmax(0, 1fr);
     height: auto;
