@@ -959,3 +959,163 @@ body,
   min-width: 360px;
   max-width: 560px;
 }
+
+/* 工艺模版页：左清单、中间字段表、右边表单预览，三栏都在页面里，各自滚动。 */
+.tpl-page {
+  display: grid;
+  grid-template-columns: 240px minmax(0, 1.35fr) minmax(0, 1fr);
+  height: calc(100vh - 200px);
+  min-height: 520px;
+  border: 1px solid #f0f0f0;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #fff;
+}
+
+.tpl-list,
+.tpl-edit,
+.tpl-preview {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.tpl-list,
+.tpl-edit {
+  border-right: 1px solid #f0f0f0;
+}
+
+.tpl-col-head {
+  flex: none;
+  padding: 10px 12px;
+  border-bottom: 1px solid #f0f0f0;
+  color: rgba(0, 0, 0, 0.65);
+  font-size: 13px;
+}
+
+.tpl-edit-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.tpl-list-body,
+.tpl-edit-body,
+.tpl-preview-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.tpl-list-body {
+  padding: 6px;
+}
+
+.tpl-edit-body,
+.tpl-preview-body {
+  padding: 12px;
+}
+
+.tpl-list-row {
+  padding: 8px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.tpl-list-row:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+
+.tpl-list-row-on,
+.tpl-list-row-on:hover {
+  background: rgba(0, 0, 0, 0.08);
+}
+
+.tpl-list-name {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  min-width: 0;
+}
+
+.tpl-list-name .ant-tag {
+  flex: none;
+  margin: 0;
+}
+
+.tpl-list-meta {
+  display: block;
+  font-size: 12px;
+}
+
+.tpl-list-empty {
+  display: block;
+  padding: 8px 10px;
+}
+
+.tpl-list-foot {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border-top: 1px solid #f0f0f0;
+}
+
+.tpl-name-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.tpl-name-label {
+  flex: none;
+  color: rgba(0, 0, 0, 0.65);
+}
+
+.tpl-hint {
+  margin-bottom: 12px;
+}
+
+.tpl-preview-note {
+  display: block;
+  margin-top: 12px;
+  font-size: 12px;
+}
+
+/* 预览里的表单不再自己限高滚动，跟着预览栏滚。 */
+.tpl-preview-body .content-fields-scroll {
+  max-height: none;
+  overflow: visible;
+}
+
+/* 窗口窄时三栏放不下：预览折到编辑区下面，整块不再定高。 */
+@media (max-width: 1280px) {
+  .tpl-page {
+    grid-template-columns: 220px minmax(0, 1fr);
+    height: auto;
+  }
+
+  .tpl-list {
+    grid-row: 1 / span 2;
+  }
+
+  .tpl-edit {
+    border-right: 0;
+  }
+
+  .tpl-preview {
+    grid-column: 2;
+    border-top: 1px solid #f0f0f0;
+  }
+
+  .tpl-list-body,
+  .tpl-edit-body,
+  .tpl-preview-body {
+    overflow: visible;
+  }
+}
