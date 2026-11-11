@@ -22,6 +22,7 @@ export type Asset = {
   copyable: boolean; // 平台级工艺是否可看可复制；厂端建的恒为是
   weldKind: string; // 作业类型：single / multilayer / tbar
   corner?: boolean; // 包角工艺：正文顶层 kind 为 cornerGeometry；工程恒为否
+  templateId?: string; // 工艺种类：所属工艺模版的身份，随正文算；工程为空，还没判出的工艺也为空
   revision: number; // 当前修订
   digest: string; // SHA-256
   creatorId: string; // 创建人

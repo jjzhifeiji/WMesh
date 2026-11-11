@@ -34,16 +34,17 @@ type FactoryFSNode struct {
 
 // FactoryFSAsset 是厂目录文件挂的资产元数据，和升档清单同一份字段。
 type FactoryFSAsset struct {
-	ID       uuid.UUID `json:"id"`       // 厂端资产稳定身份
-	Kind     string    `json:"kind"`     // process 或 project
-	Level    string    `json:"level"`    // factory / personal / platform
-	Name     string    `json:"name"`     // 资产显示名
-	Code     string    `json:"code"`     // 只读编号，创建后不改
-	Revision int64     `json:"revision"` // 厂端当前修订号
-	Digest   []byte    `json:"digest"`   // 内容摘要，用来比对是否最新
-	Status   string    `json:"status"`   // draft / available / disabled
-	Copyable bool      `json:"copyable"` // 工艺可否复制；工程恒为是
-	WeldKind string    `json:"weldKind"` // 作业类型
+	ID         uuid.UUID `json:"id"`         // 厂端资产稳定身份
+	Kind       string    `json:"kind"`       // process 或 project
+	Level      string    `json:"level"`      // factory / personal / platform
+	Name       string    `json:"name"`       // 资产显示名
+	Code       string    `json:"code"`       // 只读编号，创建后不改
+	Revision   int64     `json:"revision"`   // 厂端当前修订号
+	Digest     []byte    `json:"digest"`     // 内容摘要，用来比对是否最新
+	Status     string    `json:"status"`     // draft / available / disabled
+	Copyable   bool      `json:"copyable"`   // 工艺可否复制；工程恒为是
+	WeldKind   string    `json:"weldKind"`   // 作业类型
+	TemplateID string    `json:"templateId"` // 工艺所属模版身份；工程为空
 }
 
 // DecodeFactoryFS 按白名单解开厂端目录回包，旧厂端多带的人员字段一律丢掉。

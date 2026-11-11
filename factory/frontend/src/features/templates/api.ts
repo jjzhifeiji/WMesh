@@ -7,7 +7,7 @@ import type { ContentSchema } from "./schema";
 export type ContentTemplate = {
   id: string; // 与云端相同
   kind: AssetKind; // process / project
-  name?: string; // 工程模版名称；工艺为空
+  name?: string; // 模版名称
   revision: number; // 已收修订
   schema: ContentSchema; // 字段表
   digest: string; // SHA-256
@@ -15,18 +15,19 @@ export type ContentTemplate = {
 
 export const templateKeys = {
   all: ["factory-templates"] as const,
-  kind: (kind: AssetKind) => ["factory-templates", kind] as const,
+  processes: ["factory-templates", "processes"] as const,
   projects: ["factory-templates", "projects"] as const,
 };
 
-export function useTemplate(kind: AssetKind) {
+// 本厂已收的各份工艺模版；还没收到是空表。每份模版是一个工艺种类。
+export function useProcessTemplates() {
   return useQuery({
-    queryKey: templateKeys.kind(kind),
+    queryKey: templateKeys.processes,
     queryFn: async ({ signal }) => {
       try {
-        return await http.get<ContentTemplate>(fpath(`/templates?kind=${kind}`), signal);
+        return await http.get<ContentTemplate[]>(fpath("/process-templates"), signal);
       } catch (e) {
-        if (e instanceof ApiError && e.status === 404) return null;
+        if (e instanceof ApiError && e.status === 404) return [];
         throw e;
       }
     },

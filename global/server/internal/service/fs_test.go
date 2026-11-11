@@ -870,7 +870,7 @@ func TestDecodeFactoryFSWhitelist(t *testing.T) {
 	// 目录行允许出现的键。
 	nodeKeys := map[string]bool{"id": true, "name": true, "parentId": true, "nodeKind": true, "assetKind": true, "treeLevel": true, "assetId": true, "asset": true}
 	// 文件元数据允许出现的键。
-	assetKeys := map[string]bool{"id": true, "kind": true, "level": true, "name": true, "code": true, "revision": true, "digest": true, "status": true, "copyable": true, "weldKind": true}
+	assetKeys := map[string]bool{"id": true, "kind": true, "level": true, "name": true, "code": true, "revision": true, "digest": true, "status": true, "copyable": true, "weldKind": true, "templateId": true}
 	// 逐行核对键名，白名单外的一个都不许有。
 	for _, row := range back {
 		// 逐个键看是不是白名单里的。

@@ -7,6 +7,9 @@ import type { ContentSchema } from "./schema";
 
 export function ProjectTemplateEditor({
   rows,
+  kind = "project",
+  allowProcess = true,
+  deleteHint = "已有工程正文不变。此后新建不能再按这份添加。",
   emptySchema,
   busy,
   createRef,
@@ -15,6 +18,9 @@ export function ProjectTemplateEditor({
   onDelete,
 }: {
   rows: ContentTemplate[];
+  kind?: ContentTemplate["kind"]; // 这一页管的是工艺模版还是工程模版
+  allowProcess?: boolean; // 字段里能不能加「工艺引用」；工艺模版不能
+  deleteHint?: string; // 删除确认框里的说明
   emptySchema: ContentSchema;
   busy?: boolean;
   createRef?: MutableRefObject<(() => void) | null>;
@@ -28,8 +34,8 @@ export function ProjectTemplateEditor({
 
   const openNew = useCallback(() => {
     setIsNew(true);
-    setEditing({ id: "", kind: "project", name: "", revision: 0, schema: { ...emptySchema, fields: [] }, digest: "" });
-  }, [emptySchema]);
+    setEditing({ id: "", kind, name: "", revision: 0, schema: { ...emptySchema, fields: [] }, digest: "" });
+  }, [emptySchema, kind]);
 
   useEffect(() => {
     if (!createRef) return;
@@ -73,7 +79,7 @@ export function ProjectTemplateEditor({
                   onClick={() => {
                     modal.confirm({
                       title: `删除「${row.name}」？`,
-                      content: "已有工程正文不变。此后新建不能再按这份添加。",
+                      content: deleteHint,
                       onOk: () => onDelete(row),
                     });
                   }}
@@ -91,6 +97,7 @@ export function ProjectTemplateEditor({
           value={editing}
           isNew={isNew}
           busy={busy}
+          allowProcess={allowProcess}
           usedNames={new Set(rows.filter((t) => t.id !== editing.id).map((t) => (t.name ?? "").trim()))}
           onCancel={() => {
             setEditing(null);
@@ -113,6 +120,7 @@ function EditModal({
   value,
   isNew,
   busy,
+  allowProcess,
   usedNames,
   onCancel,
   onOk,
@@ -120,6 +128,7 @@ function EditModal({
   value: ContentTemplate;
   isNew: boolean;
   busy?: boolean;
+  allowProcess: boolean;
   usedNames: Set<string>;
   onCancel: () => void;
   onOk: (name: string, schema: ContentSchema) => Promise<void>;
@@ -169,7 +178,7 @@ function EditModal({
           setSchema(next);
           setSchemaTouched(true);
         }}
-        allowProcess
+        allowProcess={allowProcess}
       />
     </Modal>
   );

@@ -2,6 +2,8 @@ import { FileOutlined, FolderOutlined } from "@ant-design/icons";
 import { Button, Empty, Input, Select, Tag, Tree, Typography, type TreeDataNode } from "antd";
 import { useMemo, useState } from "react";
 import { errorMessage } from "@/shared/api/client";
+import { useProcessTemplates } from "@/features/templates/api";
+import { isWeldKind, processKindLabel } from "@/features/templates/processKinds";
 import { weldKindLabel, WELD_SINGLE } from "@/features/templates/projectKinds";
 import { useFactoryFS, type Asset, type AssetKind, type FSNode } from "./api";
 import { byPersonalRootName, byRootLevel, folderPathKeys, fsFolderPath, fsNodeTitle, fsPersonalRootName, innerCounts, isPersonalRoot, PERSONAL_GROUP_KEY } from "./ProcessExplorer";
@@ -250,6 +252,7 @@ function PromoteRow({
   onOpen: () => void;
   onPromote: (assetId: string, outcome: "same" | "cover" | "new") => void;
 }) {
+  const tpls = useProcessTemplates();
   if (n.nodeKind === "folder") {
     return (
       <div className="fs-row" onClick={onOpen}>
@@ -261,6 +264,9 @@ function PromoteRow({
     );
   }
   const asset = n.asset;
+  // 工艺显示种类，只有焊接参数再带适用作业；厂端没带种类的旧数据按作业显示。
+  const kindText = asset?.kind === "process" && asset.templateId ? processKindLabel(asset.templateId, tpls.data) : "";
+  const weldText = asset && (asset.kind !== "process" || isWeldKind(asset.templateId)) ? weldKindLabel(asset.weldKind || WELD_SINGLE) : "";
   const level = String(asset?.level ?? "");
   const plat = asset ? platformAssets.find((a) => a.id === asset.id || a.sourceId === asset.id) : undefined;
   const same = Boolean(plat && asset && plat.digest === asset.digest);
@@ -273,7 +279,7 @@ function PromoteRow({
         <Typography.Text strong>{asset?.name || n.name}</Typography.Text>
         {asset ? (
           <Typography.Text type="secondary" style={{ marginLeft: 8 }}>
-            {[asset.code, statusLabel(asset.status), weldKindLabel(asset.weldKind || WELD_SINGLE), `修订 ${asset.revision}`].filter(Boolean).join(" · ")}
+            {[asset.code, statusLabel(asset.status), kindText, weldText, `修订 ${asset.revision}`].filter(Boolean).join(" · ")}
           </Typography.Text>
         ) : null}
         {level ? (

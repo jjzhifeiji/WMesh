@@ -91,8 +91,9 @@ export function fsFolderPath(n: FSNode, byId: Map<string, FSNode>) {
   return parts.join(" / ");
 }
 
-function matchesFSSearch(n: FSNode, needle: string, weld: string) {
+function matchesFSSearch(n: FSNode, needle: string, weld: string, kind: string) {
   if (n.nodeKind !== "file") return false;
+  if (kind !== "all" && (n.asset?.templateId ?? "") !== kind) return false;
   if (weld !== "all" && (n.asset?.weldKind || WELD_SINGLE) !== weld) return false;
   if (!needle) return true;
   const hay = [fsNodeTitle(n), n.asset?.name ?? "", n.asset?.code ?? "", weldKindLabel(n.asset?.weldKind || "")].join("\n").toLowerCase();
@@ -214,6 +215,7 @@ export function ProcessExplorer({
   detail,
   query = "",
   weldFilter = "all",
+  kindFilter = "all",
 }: {
   kind?: AssetKind;
   noun?: string;
@@ -226,6 +228,7 @@ export function ProcessExplorer({
   detail: ReactNode;
   query?: string;
   weldFilter?: string;
+  kindFilter?: string; // 按工艺种类筛；all 不筛
 }) {
   const { message, modal } = App.useApp();
   const q = useFS(kind);
@@ -353,16 +356,16 @@ export function ProcessExplorer({
   }, [nodes, current]);
 
   const needle = query.trim().toLowerCase();
-  const searching = Boolean(needle || weldFilter !== "all");
+  const searching = Boolean(needle || weldFilter !== "all" || kindFilter !== "all");
   const hits = useMemo(() => {
     if (!searching) return none;
     return nodes
-      .filter((n) => matchesFSSearch(n, needle, weldFilter))
+      .filter((n) => matchesFSSearch(n, needle, weldFilter, kindFilter))
       .sort((a, b) => {
         if (a.nodeKind !== b.nodeKind) return a.nodeKind === "folder" ? -1 : 1;
         return fsNodeTitle(a).localeCompare(fsNodeTitle(b), "zh");
       });
-  }, [nodes, searching, needle, weldFilter]);
+  }, [nodes, searching, needle, weldFilter, kindFilter]);
   const shown = searching ? hits : children;
 
   const openHit = (n: FSNode) => {

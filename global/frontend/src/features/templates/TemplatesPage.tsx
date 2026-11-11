@@ -1,156 +1,87 @@
-import { App, Button, Card, Input, Modal, Segmented, Space, Spin, Typography, Upload } from "antd";
-import { useState } from "react";
-import { copyText } from "@/shared/clipboard";
+import { PlusOutlined } from "@ant-design/icons";
+import { App, Button, Card, Space, Spin, Typography } from "antd";
+import { useRef } from "react";
 import { errorMessage } from "@/shared/api/client";
 import { PageHeader } from "@/shared/ui/PageHeader";
-import { useTemplate, useUpdateTemplate } from "./api";
-import { SchemaEditor } from "./SchemaEditor";
-import { contentFromSchema, schemaFromJSON, adoptSchema, canonicalizeSchema, type ContentSchema } from "./schema";
+import { useCreateProcessTemplate, useDeleteProcessTemplate, useProcessTemplates, useUpdateProcessTemplate, type ContentTemplate } from "./api";
+import { PROCESS_SEEDS } from "./processKinds";
+import { ProjectTemplateEditor } from "./ProjectTemplateEditor";
+import { canonicalizeSchema, type ContentSchema } from "./schema";
 
-type View = "form" | "json";
+const emptyObject: ContentSchema = { root: "object", fields: [] };
 
-function schemaJSON(schema: ContentSchema): string {
-  return JSON.stringify(canonicalizeSchema(schema), null, 4);
-}
-
-function parseSchemaJSON(raw: string): ContentSchema {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    throw new Error("不是合法 JSON");
-  }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error("根必须是对象");
-  }
-  const root = (parsed as ContentSchema).root;
-  if (root !== "object" && root !== "array") {
-    throw new Error("root 须是 object 或 array");
-  }
-  return canonicalizeSchema(parsed as ContentSchema);
-}
-
+// 工艺模版页：每份模版就是一个工艺种类，可新建、编辑、删除；预置的焊接参数和包角删掉后能按原身份补建。
 export function TemplatesPage() {
-  const { message, modal } = App.useApp();
-  const q = useTemplate("process");
-  const save = useUpdateTemplate();
-  const [local, setLocal] = useState<{ revision: number; schema: ContentSchema } | null>(null);
-  const [importOpen, setImportOpen] = useState(false);
-  const [importText, setImportText] = useState("");
-  const [exportOpen, setExportOpen] = useState(false);
-  const [view, setView] = useState<View>("form");
-  const [jsonText, setJsonText] = useState("");
-  const [jsonErr, setJsonErr] = useState("");
+  const { message } = App.useApp();
+  const q = useProcessTemplates();
+  const create = useCreateProcessTemplate();
+  const update = useUpdateProcessTemplate();
+  const remove = useDeleteProcessTemplate();
+  const createRef = useRef<(() => void) | null>(null);
+  const busy = create.isPending || update.isPending || remove.isPending;
+  const rows = q.data ?? [];
+  const missingSeeds = q.isLoading || q.isError ? [] : PROCESS_SEEDS.filter((s) => !rows.some((r) => r.id === s.id));
 
-  const draft = local && q.data && local.revision === q.data.revision ? local.schema : (q.data?.schema ?? null);
-  const setDraft = (schema: ContentSchema) => {
-    if (!q.data) return;
-    setLocal({ revision: q.data.revision, schema });
-  };
-
-  const onErr = (e: unknown) => message.error(errorMessage(e));
-  const exportJSON = draft ? JSON.stringify(contentFromSchema(draft), null, 4) : "";
-
-  const applyImport = (raw: string) => {
+  const persistNew = async (name: string, schema: ContentSchema) => {
     try {
-      const schema = adoptSchema(schemaFromJSON(raw), draft);
-      if (!q.data) {
-        message.error("模版还没加载完");
-        return;
-      }
-      setLocal({ revision: q.data.revision, schema });
-      setImportOpen(false);
-      setImportText("");
-      message.success("已导入，尚未保存");
+      await create.mutateAsync({ name, schema: canonicalizeSchema({ root: "object", fields: schema.fields ?? [] }) });
+      message.success("已新建");
     } catch (e) {
-      message.error(e instanceof Error ? e.message : "导入失败");
+      message.error(errorMessage(e));
+      throw e;
     }
   };
 
-  const downloadExport = () => {
-    const blob = new Blob([exportJSON], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "工艺.json";
-    a.click();
-    URL.revokeObjectURL(url);
-  };
-
-  const applyJSON = (): ContentSchema | null => {
+  const persistEdit = async (row: ContentTemplate, name: string, schema: ContentSchema) => {
     try {
-      const schema = parseSchemaJSON(jsonText);
-      setJsonErr("");
-      return schema;
+      await update.mutateAsync({
+        id: row.id,
+        expected: row.revision,
+        name,
+        schema: canonicalizeSchema({ root: "object", fields: schema.fields ?? [] }),
+      });
+      message.success("已保存");
     } catch (e) {
-      setJsonErr(e instanceof Error ? e.message : "不是合法 JSON");
-      return null;
+      await q.refetch();
+      message.error(errorMessage(e));
+      throw e;
     }
   };
 
-  const switchView = (next: View) => {
-    if (next === view) return;
-    if (next === "json") {
-      if (!draft) return;
-      setJsonText(schemaJSON(draft));
-      setJsonErr("");
-      setView("json");
-      return;
+  const persistDelete = async (row: ContentTemplate) => {
+    try {
+      await remove.mutateAsync(row.id);
+      message.success("已删除");
+    } catch (e) {
+      message.error(errorMessage(e));
+      throw e;
     }
-    const schema = applyJSON();
-    if (!schema) return;
-    setDraft(schema);
-    setView("form");
   };
 
-  const persist = (schema: ContentSchema) => {
-    if (!q.data) return;
-    modal.confirm({
-      title: "保存工艺模版？",
-      content: "已有工艺正文不变。此后新建才按新字段。",
-      onOk: () =>
-        save.mutate(
-          { kind: "process", expected: q.data.revision, schema },
-          { onSuccess: () => message.success("已保存"), onError: onErr },
-        ),
-    });
+  // 名称和字段表留空，服务端按预置的补。
+  const rebuildSeed = async (seed: { id: string; name: string }) => {
+    try {
+      await create.mutateAsync({ id: seed.id, name: "" });
+      message.success(`已补建 ${seed.name}`);
+    } catch (e) {
+      message.error(errorMessage(e));
+    }
   };
 
   return (
     <>
       <PageHeader
         title="工艺模版"
-        description="全平台一份。保存后下发给在线工厂，不改已有工艺正文；只有新建才按模版套字段。"
+        description="每份模版是一个工艺种类：自己的名称、字段表、修订。新建工艺时先选种类再按它的字段填。新建、编辑、删除立刻生效，不改已有工艺正文。"
         extra={
-          <Space wrap>
-            <Button disabled={!draft} onClick={() => setExportOpen(true)}>
-              导出 JSON
-            </Button>
-            <Button
-              onClick={() => {
-                setImportText("");
-                setImportOpen(true);
-              }}
-            >
-              导入 JSON
-            </Button>
-            <Button
-              type="primary"
-              loading={save.isPending}
-              disabled={!draft || !q.data}
-              onClick={() => {
-                if (!draft || !q.data) return;
-                if (view === "form") {
-                  persist(draft);
-                  return;
-                }
-                const schema = applyJSON();
-                if (!schema) return;
-                setDraft(schema);
-                persist(schema);
-              }}
-            >
-              保存
+          <Space>
+            {missingSeeds.map((seed) => (
+              <Button key={seed.id} disabled={busy} onClick={() => void rebuildSeed(seed)}>
+                补建 {seed.name}
+              </Button>
+            ))}
+            <Button type="primary" icon={<PlusOutlined />} disabled={busy} onClick={() => createRef.current?.()}>
+              新建模版
             </Button>
           </Space>
         }
@@ -160,98 +91,21 @@ export function TemplatesPage() {
           <Spin />
         ) : q.isError ? (
           <Typography.Text type="danger">{errorMessage(q.error)}</Typography.Text>
-        ) : draft ? (
-          <>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 8 }}>
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                修订 {q.data?.revision ?? 1}
-              </Typography.Text>
-              <Segmented
-                value={view}
-                onChange={(v) => switchView(v as View)}
-                options={[
-                  { label: "表单", value: "form" },
-                  { label: "JSON", value: "json" },
-                ]}
-              />
-            </div>
-            {view === "form" ? (
-              <SchemaEditor value={draft} onChange={setDraft} />
-            ) : (
-              <>
-                {jsonErr ? (
-                  <Typography.Text type="danger" style={{ display: "block", marginBottom: 8 }}>
-                    {jsonErr}
-                  </Typography.Text>
-                ) : null}
-                <Input.TextArea
-                  className="schema-json"
-                  rows={22}
-                  value={jsonText}
-                  onChange={(e) => {
-                    setJsonText(e.target.value);
-                    setJsonErr("");
-                  }}
-                />
-              </>
-            )}
-          </>
         ) : (
-          <Typography.Text type="secondary">没有模版。</Typography.Text>
+          <ProjectTemplateEditor
+            rows={rows}
+            kind="process"
+            allowProcess={false}
+            deleteHint="已有工艺正文不变，照常能用；此后不能再按这个种类新建，示教器上送的这类工艺也不再套模版。"
+            emptySchema={emptyObject}
+            busy={busy}
+            createRef={createRef}
+            onCreate={persistNew}
+            onSave={persistEdit}
+            onDelete={persistDelete}
+          />
         )}
       </Card>
-      <Modal
-        title="导入 JSON"
-        open={importOpen}
-        onCancel={() => setImportOpen(false)}
-        okText="导入"
-        onOk={() => applyImport(importText)}
-        destroyOnHidden
-        width={720}
-      >
-        <Typography.Text type="secondary" style={{ display: "block", marginBottom: 8 }}>
-          贴工艺正文，和设备里的 JSON 一样。
-        </Typography.Text>
-        <Upload
-          accept="application/json,.json"
-          showUploadList={false}
-          beforeUpload={(file) => {
-            void file.text().then((text) => setImportText(text)).catch(() => message.error("读文件失败"));
-            return false;
-          }}
-        >
-          <Button size="small" style={{ marginBottom: 8 }}>
-            选择文件
-          </Button>
-        </Upload>
-        <Input.TextArea className="schema-json" rows={16} value={importText} onChange={(e) => setImportText(e.target.value)} placeholder={'{\n    "name": "示例",\n    "current": 170.5\n}'} />
-      </Modal>
-      <Modal
-        title="导出 JSON"
-        open={exportOpen}
-        onCancel={() => setExportOpen(false)}
-        width={720}
-        destroyOnHidden
-        footer={
-          <Space>
-            <Button
-              onClick={() => {
-                void copyText(exportJSON).then((ok) => {
-                  if (ok) message.success("已复制");
-                  else message.error("复制失败，请手动选中上面的内容复制，或点「下载」");
-                });
-              }}
-            >
-              复制
-            </Button>
-            <Button type="primary" onClick={downloadExport}>
-              下载
-            </Button>
-          </Space>
-        }
-      >
-        <Input.TextArea className="schema-json" rows={20} value={exportJSON} readOnly />
-      </Modal>
     </>
   );
 }

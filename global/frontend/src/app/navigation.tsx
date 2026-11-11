@@ -49,7 +49,7 @@ export const navTree: NavEntry[] = [
     children: [
       { key: paths.processes, label: "平台工艺", description: "平台级工艺的制作、维护与升档。" },
       { key: paths.projects, label: "平台工程", description: "平台级工程及其依赖工艺的治理。" },
-      { key: paths.templates, label: "工艺模版", description: "平台工艺当前字段表。" },
+      { key: paths.templates, label: "工艺模版", description: "每份是一个工艺种类，可新建编辑删除。" },
       { key: paths.projectTemplates, label: "工程模版", description: "独立命名模版，可新建编辑删除。" },
       { key: paths.legacyImport, label: "旧文件导入", description: "把示教器旧工艺/工程收成平台级资产，路径换成身份。" },
     ],

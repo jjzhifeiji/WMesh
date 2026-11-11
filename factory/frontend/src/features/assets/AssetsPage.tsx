@@ -11,8 +11,9 @@ import { useConfirmDiscard } from "@/shared/ui/confirmDiscard";
 import { PageHeader } from "@/shared/ui/PageHeader";
 import { QueryErrorAlert } from "@/shared/ui/QueryErrorAlert";
 import { ContentEditor } from "@/features/templates/ContentFields";
-import { badContentJSON, collectProcessIds, defaultValue, projectContentSchema } from "@/features/templates/schema";
-import { useProjectTemplates, useTemplate, syncTemplates, templateKeys } from "@/features/templates/api";
+import { badContentJSON, collectProcessIds, projectContentSchema } from "@/features/templates/schema";
+import { useProcessTemplates, useProjectTemplates, syncTemplates, templateKeys, type ContentTemplate } from "@/features/templates/api";
+import { isWeldKind, newProcessContent, processKindLabel, processKindOptions, processSchemaOf, PROCESS_SEEDS, SEED_TPL_WELD, stampProcessText } from "@/features/templates/processKinds";
 import { projectTemplatesForWeld, sameWeldKind, weldKindLabel, WELD_KINDS, WELD_SINGLE } from "@/features/templates/projectKinds";
 import type { ContentSchema } from "@/features/templates/schema";
 import {
@@ -47,6 +48,7 @@ type CreateForm = {
   name: string;
   content: string;
   weldKind: string;
+  processKind: string;
   parentId?: string;
 };
 type MkdirForm = { parentId: string; name: string };
@@ -113,7 +115,8 @@ function levelLabel(level: string) {
   return level;
 }
 
-function processListRow(n: FSNode) {
+// 文件行：工艺显示种类，只有焊接参数再带适用作业；工程显示作业。
+function processListRow(n: FSNode, templates?: ContentTemplate[]) {
   if (n.nodeKind === "folder") {
     return <Typography.Text>{n.name}</Typography.Text>;
   }
@@ -122,7 +125,9 @@ function processListRow(n: FSNode) {
       <Typography.Text strong>{n.asset?.name || n.name}</Typography.Text>
       {n.asset ? (
         <Typography.Text type="secondary" style={{ marginLeft: 8 }}>
-          {n.asset.code} · {statusLabel(n.asset.status)} · {levelLabel(n.asset.level)} · {weldKindLabel(n.asset.weldKind || WELD_SINGLE)}
+          {n.asset.code} · {statusLabel(n.asset.status)} · {levelLabel(n.asset.level)}
+          {n.asset.kind === "process" ? ` · ${processKindLabel(n.asset.templateId, templates)}` : ""}
+          {n.asset.kind !== "process" || isWeldKind(n.asset.templateId) ? ` · ${weldKindLabel(n.asset.weldKind || WELD_SINGLE)}` : ""}
         </Typography.Text>
       ) : null}
     </span>
@@ -153,9 +158,10 @@ function AssetsBody({ kind }: { kind: AssetKind }) {
   const catalog = useCatalog();
   const assets = useAssets(kind);
   const processes = useAssets("process");
-  const processTpl = useTemplate("process");
+  const processTpls = useProcessTemplates();
   const projectTpls = useProjectTemplates();
-  const schema = isProcess ? (processTpl.data?.schema ?? null) : projectTpls.data?.length ? projectContentSchema(projectTpls.data) : null;
+  // 工艺的字段表跟着每条工艺自己的种类走，这里只留工程的。
+  const schema = isProcess ? null : projectTpls.data?.length ? projectContentSchema(projectTpls.data) : null;
   const create = useCreateAsset();
   const mkdir = useCreateFSFolder();
   const fs = useFS(kind);
@@ -183,15 +189,23 @@ function AssetsBody({ kind }: { kind: AssetKind }) {
   const [editFor, setEditFor] = useState<Asset | null>(null);
   const [editBase, setEditBase] = useState<EditBase | null>(null);
   const [mkdirOpen, setMkdirOpen] = useState(false);
+  const [fsKind, setFsKind] = useState("all");
   const [form] = Form.useForm<CreateForm>();
   const [mkdirForm] = Form.useForm<MkdirForm>();
   const [copyForm] = Form.useForm<{ name: string }>();
   const createWeld = Form.useWatch("weldKind", form) ?? WELD_SINGLE;
+  const createKind = Form.useWatch("processKind", form) ?? SEED_TPL_WELD;
+  const kindOpts = useMemo(() => processKindOptions(processTpls.data, (processes.data ?? []).map((p) => p.templateId)), [processTpls.data, processes.data]);
+  // 新建能选的种类：已收到的各份模版；一份都没收到时先给预置两种，按裸 JSON 填。
+  const createKindOpts = useMemo(
+    () => (processTpls.data?.length ? processKindOptions(processTpls.data) : PROCESS_SEEDS.map((s) => ({ value: s.id, label: s.name }))),
+    [processTpls.data],
+  );
   const createSchema = useMemo(() => {
-    if (isProcess) return schema;
+    if (isProcess) return processSchemaOf(createKind, processTpls.data);
     const rows = projectTemplatesForWeld(projectTpls.data, createWeld);
     return rows.length ? projectContentSchema(rows) : schema;
-  }, [isProcess, schema, projectTpls.data, createWeld]);
+  }, [isProcess, schema, projectTpls.data, createWeld, createKind, processTpls.data]);
 
   useEffect(() => {
     let cancelled = false;
@@ -238,13 +252,14 @@ function AssetsBody({ kind }: { kind: AssetKind }) {
   const factoryFolderOpts = fsFolderOptions(fs.data ?? [], (n) => n.treeLevel === "factory");
   const openCreate = (parent?: FSNode) => {
     // 模版没读到时表单只有裸 JSON 框和默认内容，建出来是空壳，先不让开。模版 404 回 null，仍照常走。
-    if ((isProcess ? processTpl.data : projectTpls.data) === undefined) {
+    if ((isProcess ? processTpls.data : projectTpls.data) === undefined) {
       message.error(`${isProcess ? "工艺" : "工程"}模版还没读到，暂时不能新建，请稍后重试`);
       return;
     }
     const folder = parent ?? (fs.data ?? []).find((n) => n.id === folderOpts[0]?.value);
     form.setFieldsValue({
-      content: isProcess && schema ? JSON.stringify(defaultValue(schema)) : "[]",
+      content: isProcess ? newProcessContent(createKindOpts[0]?.value ?? SEED_TPL_WELD, processTpls.data) : "[]",
+      processKind: createKindOpts[0]?.value ?? SEED_TPL_WELD,
       weldKind: WELD_SINGLE,
       parentId: folder?.id,
     });
@@ -308,7 +323,7 @@ function AssetsBody({ kind }: { kind: AssetKind }) {
         description={
           isProcess
             ? "本厂账号都能制作；云端不可复制的不显示参数。管理员可把未停用且可复制的个人级升为厂级，草稿也可升。"
-            : "新建只填名称和类型，再按 App 那样加焊道、绑工艺；点列到平板上采集。"
+            : "新建只填名称和作业，再按 App 那样加焊道、绑工艺；点列到平板上采集。"
         }
         extra={
           <Space wrap>
@@ -322,10 +337,16 @@ function AssetsBody({ kind }: { kind: AssetKind }) {
                   style={{ width: 240 }}
                 />
                 <Select
+                  value={fsKind}
+                  onChange={setFsKind}
+                  style={{ width: 140 }}
+                  options={[{ value: "all", label: "全部种类" }, ...kindOpts]}
+                />
+                <Select
                   value={fsWeld}
                   onChange={setFsWeld}
                   style={{ width: 128 }}
-                  options={[{ value: "all", label: "全部类型" }, ...WELD_KINDS.map((k) => ({ value: k.value, label: k.label }))]}
+                  options={[{ value: "all", label: "全部作业" }, ...WELD_KINDS.map((k) => ({ value: k.value, label: k.label }))]}
                 />
               </>
             ) : (
@@ -341,7 +362,7 @@ function AssetsBody({ kind }: { kind: AssetKind }) {
                   value={fsWeld}
                   onChange={setFsWeld}
                   style={{ width: 128 }}
-                  options={[{ value: "all", label: "全部类型" }, ...WELD_KINDS.map((k) => ({ value: k.value, label: k.label }))]}
+                  options={[{ value: "all", label: "全部作业" }, ...WELD_KINDS.map((k) => ({ value: k.value, label: k.label }))]}
                 />
               </>
             )}
@@ -354,7 +375,7 @@ function AssetsBody({ kind }: { kind: AssetKind }) {
           </Space>
         }
       />
-      {isProcess ? <QueryErrorAlert query={processTpl} what="工艺模版" /> : <QueryErrorAlert query={projectTpls} what="工程模版" />}
+      {isProcess ? <QueryErrorAlert query={processTpls} what="工艺模版" /> : <QueryErrorAlert query={projectTpls} what="工程模版" />}
       {/* 工艺列表读不到时工程详情会写「未知工艺」、绑工艺的下拉是空的，要说清楚。 */}
       {isProcess ? null : <QueryErrorAlert query={processes} what="工艺列表" />}
       {isProcess ? (
@@ -369,12 +390,13 @@ function AssetsBody({ kind }: { kind: AssetKind }) {
             selectedAssetId={detailFor?.id ?? editFor?.id ?? null}
             query={fsQuery}
             weldFilter={fsWeld}
+            kindFilter={fsKind}
             onNewProcess={(folder) => openCreate(folder)}
             onSelectFile={(n) => setDetailFor(n?.asset ?? null)}
-            listRow={processListRow}
+            listRow={(n) => processListRow(n, processTpls.data)}
             detail={
               detailing ? (
-                <FileDetail row={detailing} catalog={catalog.data} canRead={canRead(detailing)} schema={schema}>
+                <FileDetail row={detailing} catalog={catalog.data} canRead={canRead(detailing)} schema={processSchemaOf(detailing.templateId, processTpls.data)} kindLabel={processKindLabel(detailing.templateId, processTpls.data)}>
                   <Space wrap>
                     {canCopy(detailing) ? (
                       <Button size="small" onClick={() => setCopyFor(detailing)}>
@@ -489,7 +511,7 @@ function AssetsBody({ kind }: { kind: AssetKind }) {
             weldFilter={fsWeld}
             onNewProcess={(folder) => openCreate(folder)}
             onSelectFile={(n) => setDetailFor(n?.asset ?? null)}
-            listRow={processListRow}
+            listRow={(n) => processListRow(n, processTpls.data)}
             detail={
               detailing ? (
                 <FileDetail row={detailing} catalog={catalog.data} canRead={canRead(detailing)} schema={detailSchema} processes={processes.data ?? []} templates={projectTpls.data ?? []}>
@@ -601,8 +623,10 @@ function AssetsBody({ kind }: { kind: AssetKind }) {
           requiredMark={false}
           initialValues={{ content: "", weldKind: WELD_SINGLE }}
           onFinish={(values) => {
-            const weld = values.weldKind || WELD_SINGLE;
-            const content = isProcess ? withBodyName(values.content, values.name) : JSON.stringify([emptyWeld(weld, projectTpls.data ?? [], 0)]);
+            // 只有焊接参数才分适用作业，包角和自建种类一律单层；种类标记提交前补回正文。
+            const pk = values.processKind || SEED_TPL_WELD;
+            const weld = isProcess && !isWeldKind(pk) ? WELD_SINGLE : values.weldKind || WELD_SINGLE;
+            const content = isProcess ? stampProcessText(withBodyName(values.content, values.name), pk) : JSON.stringify([emptyWeld(weld, projectTpls.data ?? [], 0)]);
             const input: CreateAssetInput = {
               kind,
               name: values.name,
@@ -638,13 +662,20 @@ function AssetsBody({ kind }: { kind: AssetKind }) {
             >
               <Input autoComplete="off" autoFocus />
             </Form.Item>
-            <Form.Item name="weldKind" label={<Tooltip title="App 同类型工作流才能打开。">类型</Tooltip>} rules={[{ required: true, message: "请选择类型" }]}>
-              <Select options={WELD_KINDS.map((k) => ({ value: k.value, label: k.label }))} />
-            </Form.Item>
+            {isProcess ? (
+              <Form.Item name="processKind" label={<Tooltip title="按哪份工艺模版建；建好后不能换。">工艺种类</Tooltip>} rules={[{ required: true, message: "请选择工艺种类" }]}>
+                <Select options={createKindOpts} onChange={(v: string) => form.setFieldValue("content", newProcessContent(v, processTpls.data))} />
+              </Form.Item>
+            ) : null}
+            {!isProcess || isWeldKind(createKind) ? (
+              <Form.Item name="weldKind" label={<Tooltip title="App 里同一种作业的页面才能用。">{isProcess ? "适用作业" : "作业"}</Tooltip>} rules={[{ required: true, message: "请选择作业" }]}>
+                <Select options={WELD_KINDS.map((k) => ({ value: k.value, label: k.label }))} />
+              </Form.Item>
+            ) : null}
           </div>
           {isProcess ? (
             <Form.Item name="content" label="参数" rules={[jsonRule(createSchema, "")]}>
-              <ContentEditor schema={createSchema} weldKind={createWeld} />
+              <ContentEditor key={createKind} schema={createSchema} weldKind={createWeld} />
             </Form.Item>
           ) : (
             <Typography.Text type="secondary">创建后按 App 那样加焊道、选工艺。点列到平板上采集。</Typography.Text>
@@ -756,7 +787,8 @@ function AssetsBody({ kind }: { kind: AssetKind }) {
         row={editing?.kind === "process" ? editing : null}
         base={editing?.kind === "process" ? editBase : null}
         canRead={editing?.kind === "process" ? canRead(editing) : false}
-        schema={schema}
+        schema={processSchemaOf(editing?.templateId, processTpls.data)}
+        kindLabel={processKindLabel(editing?.templateId, processTpls.data)}
         saving={rename.isPending || updateContent.isPending || setWeldKind.isPending}
         locked={editing ? !canMutate(editing) : true}
         onBaseContent={fillBaseContent}
@@ -776,15 +808,17 @@ function AssetsBody({ kind }: { kind: AssetKind }) {
               done.push("改名");
             }
             if (content !== null && weldKind && weldKind !== base.weldKind) {
-              step = "类型";
+              step = "适用作业";
               const next = await setWeldKind.mutateAsync({ id: base.id, expected, weldKind });
               expected = next.revision;
               advanceBase(next);
-              done.push("类型");
+              done.push("适用作业");
             }
             if (content !== null && content !== base.content) {
               step = "参数";
-              const body = withBodyName(content, name);
+              // 种类标记不在表单里，改过正文就按这条工艺的种类补回，免得被当成换种类。
+              const named = withBodyName(content, name);
+              const body = editing.templateId ? stampProcessText(named, editing.templateId) : named;
               const next = await updateContent.mutateAsync({ id: base.id, expected, content: body });
               advanceBase(next, body);
               done.push("参数");
@@ -838,12 +872,12 @@ function AssetsBody({ kind }: { kind: AssetKind }) {
             const nextKind = weldKind || base.weldKind;
             let depIds = base.deps.map((d) => d.id);
             if (nextKind !== base.weldKind) {
-              step = "类型";
+              step = "作业";
               const next = await setWeldKind.mutateAsync({ id: base.id, expected, weldKind: nextKind });
               expected = next.revision;
               depIds = (next.deps ?? []).map((d) => d.id);
               advanceBase(next);
-              done.push("类型");
+              done.push("作业");
             }
             const kindSchema = (() => {
               const rows = projectTemplatesForWeld(projectTpls.data, nextKind);
@@ -968,6 +1002,7 @@ function FileDetail({
   catalog,
   canRead,
   schema,
+  kindLabel,
   processes = [],
   templates = [],
   children,
@@ -976,6 +1011,7 @@ function FileDetail({
   catalog: Catalog | undefined;
   canRead: boolean;
   schema: ContentSchema | null;
+  kindLabel?: string; // 工艺种类的名字；工程不传
   processes?: Asset[];
   templates?: { id: string; name?: string; schema?: ContentSchema }[];
   children?: ReactNode;
@@ -1004,7 +1040,10 @@ function FileDetail({
         <Descriptions.Item label="状态">
           <Tag color={statusColor(row.status)}>{statusLabel(row.status)}</Tag>
         </Descriptions.Item>
-        <Descriptions.Item label="类型">{weldKindLabel(row.weldKind || WELD_SINGLE)}</Descriptions.Item>
+        {row.kind === "process" ? <Descriptions.Item label="工艺种类">{kindLabel ?? "未归类"}</Descriptions.Item> : null}
+        {row.kind !== "process" || isWeldKind(row.templateId) ? (
+          <Descriptions.Item label={row.kind === "process" ? "适用作业" : "作业"}>{weldKindLabel(row.weldKind || WELD_SINGLE)}</Descriptions.Item>
+        ) : null}
         {row.kind === "process" ? <Descriptions.Item label="可复制">{row.copyable ? "是" : "否"}</Descriptions.Item> : null}
         <Descriptions.Item label="修订">{row.revision}</Descriptions.Item>
         <Descriptions.Item label="级别">
@@ -1156,6 +1195,7 @@ function EditModal({
   base,
   canRead,
   schema,
+  kindLabel,
   saving,
   locked,
   extra,
@@ -1167,6 +1207,7 @@ function EditModal({
   base: EditBase | null;
   canRead: boolean;
   schema: ContentSchema | null;
+  kindLabel?: string; // 工艺种类的名字
   saving: boolean;
   locked: boolean;
   extra?: ReactNode;
@@ -1212,13 +1253,12 @@ function EditModal({
           >
             <Input autoComplete="off" disabled={locked} />
           </Form.Item>
-          {row?.kind === "process" ? (
-            <Form.Item name="weldKind" label="类型" rules={[{ required: true, message: "请选择类型" }]}>
+          <Form.Item label={<Tooltip title="建好后不能换。">工艺种类</Tooltip>}>{kindLabel ?? "未归类"}</Form.Item>
+          {isWeldKind(row?.templateId) ? (
+            <Form.Item name="weldKind" label="适用作业" rules={[{ required: true, message: "请选择作业" }]}>
               <Select disabled={locked || !ready} options={WELD_KINDS.map((k) => ({ value: k.value, label: k.label }))} />
             </Form.Item>
-          ) : (
-            <Form.Item label="类型">{weldKindLabel(row?.weldKind || WELD_SINGLE)}</Form.Item>
-          )}
+          ) : null}
         </div>
         {row?.kind === "process" ? (
           <div className="process-edit-id">
@@ -1254,7 +1294,7 @@ function WeldKindSwitch({ value, onChange, disabled }: { value?: string; onChang
         modal.confirm({
           title: `改成「${weldKindLabel(next)}」？`,
           content: "现有焊道、点位和工艺绑定会全部清空，换成一条空焊道；不保存就不生效。",
-          okText: "清空并改类型",
+          okText: "清空并改作业",
           okButtonProps: { danger: true },
           onOk: () => onChange?.(next),
         });
@@ -1339,8 +1379,8 @@ function ProjectEditModal({
           </Form.Item>
           <Form.Item
             name="weldKind"
-            label={<Tooltip title="焊道换成该类型空焊道。">类型</Tooltip>}
-            rules={[{ required: true, message: "请选择类型" }]}
+            label={<Tooltip title="焊道换成该作业的空焊道。">作业</Tooltip>}
+            rules={[{ required: true, message: "请选择作业" }]}
           >
             <WeldKindSwitch disabled={locked || !ready} />
           </Form.Item>

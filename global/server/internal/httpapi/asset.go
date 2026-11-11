@@ -571,16 +571,17 @@ func (h *Handler) promoteAsset(w http.ResponseWriter, r *http.Request) {
 
 // 升档清单元数据，不含正文。
 type promotableAsset struct {
-	ID       string `json:"id"`       // 稳定身份
-	Kind     string `json:"kind"`     // process / project
-	Level    string `json:"level"`    // factory / personal / platform
-	Name     string `json:"name"`     // 显示名
-	Code     string `json:"code"`     // 只读编号
-	Revision int64  `json:"revision"` // 当前修订
-	Digest   []byte `json:"digest"`   // 内容摘要
-	Status   string `json:"status"`   // draft / available / disabled
-	Copyable bool   `json:"copyable"` // 原样带回
-	WeldKind string `json:"weldKind"` // 作业类型
+	ID         string `json:"id"`         // 稳定身份
+	Kind       string `json:"kind"`       // process / project
+	Level      string `json:"level"`      // factory / personal / platform
+	Name       string `json:"name"`       // 显示名
+	Code       string `json:"code"`       // 只读编号
+	Revision   int64  `json:"revision"`   // 当前修订
+	Digest     []byte `json:"digest"`     // 内容摘要
+	Status     string `json:"status"`     // draft / available / disabled
+	Copyable   bool   `json:"copyable"`   // 原样带回
+	WeldKind   string `json:"weldKind"`   // 作业类型
+	TemplateID string `json:"templateId"` // 工艺所属模版身份；工程为空
 }
 
 // 经 MQTT 向该厂要升档列表，不含正文。

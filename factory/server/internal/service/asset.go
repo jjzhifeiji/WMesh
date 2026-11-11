@@ -2137,23 +2137,24 @@ func (s *Assets) ExportAssetSnapshot(ctx context.Context, token string, assetID 
 
 // PromotableAsset 是给 WAN 升档看的本厂资产元数据，不含正文。
 type PromotableAsset struct {
-	ID       uuid.UUID `json:"id"`       // 稳定身份
-	Kind     string    `json:"kind"`     // process / project
-	Level    string    `json:"level"`    // factory / personal / platform
-	Name     string    `json:"name"`     // 显示名
-	Code     string    `json:"code"`     // 只读编号
-	Revision int64     `json:"revision"` // 当前修订
-	Digest   []byte    `json:"digest"`   // 内容摘要
-	Status   string    `json:"status"`   // draft / available / disabled
-	Copyable bool      `json:"copyable"` // 工艺才有；工程恒为是
-	WeldKind string    `json:"weldKind"` // 作业类型
+	ID         uuid.UUID `json:"id"`         // 稳定身份
+	Kind       string    `json:"kind"`       // process / project
+	Level      string    `json:"level"`      // factory / personal / platform
+	Name       string    `json:"name"`       // 显示名
+	Code       string    `json:"code"`       // 只读编号
+	Revision   int64     `json:"revision"`   // 当前修订
+	Digest     []byte    `json:"digest"`     // 内容摘要
+	Status     string    `json:"status"`     // draft / available / disabled
+	Copyable   bool      `json:"copyable"`   // 工艺才有；工程恒为是
+	WeldKind   string    `json:"weldKind"`   // 作业类型
+	TemplateID string    `json:"templateId"` // 工艺所属模版身份；工程为空
 }
 
 // 升档列表只带元数据，不含正文。
 func toPromotable(a Asset) PromotableAsset {
 	return PromotableAsset{
 		ID: a.ID, Kind: a.Kind, Level: a.Level, Name: a.Name, Code: a.Code, Revision: a.Revision,
-		Digest: a.Digest, Status: a.Status, Copyable: a.Copyable, WeldKind: a.WeldKind,
+		Digest: a.Digest, Status: a.Status, Copyable: a.Copyable, WeldKind: a.WeldKind, TemplateID: a.TemplateID,
 	}
 }
 
