@@ -1,5 +1,5 @@
 import { PlusOutlined } from "@ant-design/icons";
-import { Alert, App, Button, Input, Modal, Segmented, Space, Spin, Tag, Typography, Upload } from "antd";
+import { Alert, App, Button, Input, Modal, Segmented, Space, Spin, Switch, Tag, Typography, Upload } from "antd";
 import { useMemo, useState } from "react";
 import { copyText } from "@/shared/clipboard";
 import { errorMessage } from "@/shared/api/client";
@@ -43,6 +43,25 @@ function parseSchemaJSON(raw: string): ContentSchema {
   return canonicalizeSchema(parsed as ContentSchema);
 }
 
+// 预览开关记在浏览器里，下次进页面保持上次的选择；默认收起，把宽度留给字段表。
+const PREVIEW_KEY = "wmesh.processTemplates.preview";
+
+function loadPreviewOn(): boolean {
+  try {
+    return localStorage.getItem(PREVIEW_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function savePreviewOn(on: boolean) {
+  try {
+    localStorage.setItem(PREVIEW_KEY, on ? "1" : "0");
+  } catch {
+    // 存不了就只在本次生效。
+  }
+}
+
 function isSeed(id: string) {
   return id === SEED_TPL_WELD || id === SEED_TPL_CORNER;
 }
@@ -72,6 +91,7 @@ export function TemplatesPage() {
   const [importOpen, setImportOpen] = useState(false);
   const [importText, setImportText] = useState("");
   const [exportOpen, setExportOpen] = useState(false);
+  const [previewOn, setPreviewOn] = useState(loadPreviewOn);
 
   const rows = useMemo(() => sortTemplates(q.data ?? []), [q.data]);
   const busy = create.isPending || update.isPending || remove.isPending;
@@ -285,7 +305,7 @@ export function TemplatesPage() {
       ) : q.isError ? (
         <Typography.Text type="danger">{errorMessage(q.error)}</Typography.Text>
       ) : (
-        <div className="tpl-page">
+        <div className={`tpl-page${previewOn ? " tpl-page-preview" : ""}`}>
           <div className="tpl-list">
             <div className="tpl-col-head">模版</div>
             <div className="tpl-list-body">
@@ -335,16 +355,29 @@ export function TemplatesPage() {
           <div className="tpl-edit">
             <div className="tpl-col-head tpl-edit-head">
               <span>字段表{row ? ` · 修订 ${row.revision}` : ""}</span>
-              <Segmented
-                size="small"
-                value={view}
-                disabled={!schema}
-                onChange={(v) => switchView(v as View)}
-                options={[
-                  { label: "表单", value: "form" },
-                  { label: "JSON", value: "json" },
-                ]}
-              />
+              <Space size={12}>
+                <label className="tpl-preview-switch">
+                  <Switch
+                    size="small"
+                    checked={previewOn}
+                    onChange={(on) => {
+                      setPreviewOn(on);
+                      savePreviewOn(on);
+                    }}
+                  />
+                  预览
+                </label>
+                <Segmented
+                  size="small"
+                  value={view}
+                  disabled={!schema}
+                  onChange={(v) => switchView(v as View)}
+                  options={[
+                    { label: "表单", value: "form" },
+                    { label: "JSON", value: "json" },
+                  ]}
+                />
+              </Space>
             </div>
             {schema ? (
               <div className="tpl-edit-body">
@@ -387,21 +420,23 @@ export function TemplatesPage() {
               </div>
             )}
           </div>
-          <div className="tpl-preview">
-            <div className="tpl-col-head">新建这种工艺时看到的表单</div>
-            <div className="tpl-preview-body">
-              {schema ? (
-                <>
-                  <Preview key={previewKey} schema={schema} />
-                  <Typography.Text type="secondary" className="tpl-preview-note">
-                    {view === "json" ? "切回「表单」后预览才会跟上 JSON 里的改动。" : "这里可以随便填，只是看效果，不会保存。"}
-                  </Typography.Text>
-                </>
-              ) : (
-                <Typography.Text type="secondary">没有可预览的模版。</Typography.Text>
-              )}
+          {previewOn ? (
+            <div className="tpl-preview">
+              <div className="tpl-col-head">新建这种工艺时看到的表单</div>
+              <div className="tpl-preview-body">
+                {schema ? (
+                  <>
+                    <Preview key={previewKey} schema={schema} />
+                    <Typography.Text type="secondary" className="tpl-preview-note">
+                      {view === "json" ? "切回「表单」后预览才会跟上 JSON 里的改动。" : "这里可以随便填，只是看效果，不会保存。"}
+                    </Typography.Text>
+                  </>
+                ) : (
+                  <Typography.Text type="secondary">没有可预览的模版。</Typography.Text>
+                )}
+              </div>
             </div>
-          </div>
+          ) : null}
         </div>
       )}
       <Modal title="导入 JSON" open={importOpen} onCancel={() => setImportOpen(false)} okText="导入" onOk={applyImport} destroyOnHidden width={720}>

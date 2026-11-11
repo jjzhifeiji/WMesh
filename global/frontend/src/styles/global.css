@@ -978,8 +978,8 @@ body,
 /* 工艺模版页：左清单、中间字段表、右边表单预览，三栏都在页面里，各自滚动。 */
 .tpl-page {
   display: grid;
-  /* 字段表要宽，预览只是看效果，给编辑区多留。 */
-  grid-template-columns: 220px minmax(0, 1.8fr) minmax(0, 1fr);
+  /* 预览默认收起，编辑区占满右侧；打开后预览是一条固定的窄栏。 */
+  grid-template-columns: 220px minmax(0, 1fr);
   height: calc(100vh - 200px);
   min-height: 520px;
   border: 1px solid #f0f0f0;
@@ -997,9 +997,23 @@ body,
   min-height: 0;
 }
 
-.tpl-list,
-.tpl-edit {
+.tpl-page-preview {
+  grid-template-columns: 220px minmax(0, 1fr) 320px;
+}
+
+.tpl-list {
   border-right: 1px solid #f0f0f0;
+}
+
+.tpl-page-preview .tpl-edit {
+  border-right: 1px solid #f0f0f0;
+}
+
+.tpl-preview-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
 }
 
 .tpl-col-head {
@@ -1117,16 +1131,16 @@ body,
 
 /* 窗口窄时三栏放不下：预览折到编辑区下面，整块不再定高。 */
 @media (max-width: 1500px) {
-  .tpl-page {
+  .tpl-page-preview {
     grid-template-columns: 220px minmax(0, 1fr);
     height: auto;
   }
 
-  .tpl-list {
+  .tpl-page-preview .tpl-list {
     grid-row: 1 / span 2;
   }
 
-  .tpl-edit {
+  .tpl-page-preview .tpl-edit {
     border-right: 0;
   }
 
@@ -1135,9 +1149,9 @@ body,
     border-top: 1px solid #f0f0f0;
   }
 
-  .tpl-list-body,
-  .tpl-edit-body,
-  .tpl-preview-body {
+  .tpl-page-preview .tpl-list-body,
+  .tpl-page-preview .tpl-edit-body,
+  .tpl-page-preview .tpl-preview-body {
     overflow: visible;
   }
 }
