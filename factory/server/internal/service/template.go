@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strconv"
+	"strings"
 
 	"github.com/google/uuid"
 
@@ -56,7 +57,7 @@ func openedProjectItem(t ContentTemplate) (ContentTemplate, bool) {
 // projectItems 已收的对象根工程模版；没有则空。
 func (s *kernel) projectItems(ctx context.Context) ([]contenttpl.ProjectItemSchema, error) {
 	// 取各份工程模版的最高修订
-	rows, err := s.store.LatestProjectTemplates(ctx)
+	rows, err := s.store.LatestTemplates(ctx, KindProject)
 	// 列表读失败则不返回残缺
 	if err != nil {
 		return nil, err
@@ -110,33 +111,67 @@ func (s *kernel) normalizeContent(ctx context.Context, kind, weldKind string, co
 		}
 		return out, nil
 	}
-	// 包角工艺正文是几何参数，不归焊接工艺模版管，原样保留。
-	if kind == KindProcess && contenttpl.IsCornerProcess(content) {
-		return content, nil
-	}
-	// 尚未收到模版副本则原样返回。
-	tpl, err := s.store.LatestTemplateByKind(ctx, kind)
-	// 还没收到这份模版，不把没有记录当成故障
-	if errors.Is(err, domain.ErrNotFound) {
-		return content, nil
-	}
-	// 分不清就按失败停住
+	// 工艺按正文所属的那份模版套：自建种类正文里写了身份，包角和焊接参数按预置身份。
+	tid := contenttpl.ProcessTemplateOf(content)
+	// 取已收的这份模版副本。
+	tpl, ok, err := s.processTemplate(ctx, tid)
+	// 副本读不出或摘要对不上就按失败停住。
 	if err != nil {
 		return nil, err
 	}
-	// 把字段表收成规范形并核对摘要
-	tpl, err = openTemplate(tpl)
-	// 摘要对不上则拒绝这份模版
-	if err != nil {
-		return nil, err
+	// 还没收到或云端已删这份模版，正文原样返回。
+	if !ok {
+		return content, nil
 	}
-	// 按已收模版套新建正文。
-	out, err := contenttpl.Apply(tpl.Schema, content)
-	// 写入失败则停住，避免留下半截状态
+	// 套完再写回包角标记或所属身份，免得被当成多余的键删掉。
+	out, err := contenttpl.ApplyProcess(tid, tpl.Schema, content)
+	// 套不上就拒绝，避免半新正文。
 	if err != nil {
 		return nil, domain.ErrTemplateInvalid
 	}
 	return out, nil
+}
+
+// processTemplates 已收的当前各份工艺模版；解不开或摘要对不上的那份按失败交回。
+func (s *kernel) processTemplates(ctx context.Context) ([]ContentTemplate, error) {
+	// 每个身份取最高修订，撤下的不算。
+	rows, err := s.store.LatestTemplates(ctx, KindProcess)
+	// 读副本失败就停。
+	if err != nil {
+		return nil, err
+	}
+	// 按行数先准备容器。
+	out := make([]ContentTemplate, 0, len(rows))
+	// 逐份收成规范形并核对摘要。
+	for _, row := range rows {
+		// 解开这一份。
+		opened, err := openTemplate(row)
+		// 坏的一份不能拿来套正文。
+		if err != nil {
+			return nil, err
+		}
+		// 接进结果。
+		out = append(out, opened)
+	}
+	return out, nil
+}
+
+// processTemplate 按身份取一份已收的工艺模版；没有交回否，不算错。
+func (s *kernel) processTemplate(ctx context.Context, id string) (ContentTemplate, bool, error) {
+	// 读当前各份。
+	rows, err := s.processTemplates(ctx)
+	// 读不到就停。
+	if err != nil {
+		return ContentTemplate{}, false, err
+	}
+	// 逐份比身份，大小写不计。
+	for _, t := range rows {
+		// 对上就交回这一份。
+		if strings.EqualFold(t.ID.String(), id) {
+			return t, true, nil
+		}
+	}
+	return ContentTemplate{}, false, nil
 }
 
 // collectProjectProcessIDs 有已收对象模版用各份字段；没有则用空库三份明细扫引用。
@@ -167,38 +202,23 @@ func templateTarget(kind string, rev int64) string {
 	return kind + " rev=" + strconv.FormatInt(rev, 10)
 }
 
-// GetTemplate 读本厂已收工艺最高修订模版。
-func (s *Templates) GetTemplate(ctx context.Context, token, kind string) (ContentTemplate, error) {
-	// 先确认会话仍有效，过期或停用直接拒绝
+// ListProcessTemplates 列出本厂已收的各份工艺模版；本厂有效账号可读，还没收到就是空表。
+func (s *Templates) ListProcessTemplates(ctx context.Context, token string) ([]ContentTemplate, error) {
+	// 核对登录仍有效。
 	acc, err := s.RequireActive(ctx, token)
-	// 会话无效或账号已停用，拒绝继续
+	// 无效就不能继续。
 	if err != nil {
-		return ContentTemplate{}, err
+		return nil, err
 	}
-	// 有效账号可读已收模版。失败记拒绝。
-	if kind != KindProcess {
-		// 记下读模版被拒绝，写失败不改变结果
-		_ = s.audit(ctx, &acc.ID, nil, "get_template", kind, audit.Deny)
-		return ContentTemplate{}, domain.ErrNotFound
-	}
-	// 取该类型最高修订模版
-	t, err := s.store.LatestTemplateByKind(ctx, kind)
-	// 模版读失败则不能套正文
+	// 读已收的当前各份；没收到只是空表，不记拒绝。
+	rows, err := s.processTemplates(ctx)
+	// 读库失败或副本坏了才记拒绝。
 	if err != nil {
-		// 记下读模版被拒绝，写失败不改变结果
-		_ = s.audit(ctx, &acc.ID, nil, "get_template", kind, audit.Deny)
-		return ContentTemplate{}, err
+		// 读模版失败留一笔审计，写失败不改变结果。
+		_ = s.audit(ctx, &acc.ID, nil, "get_template", KindProcess, audit.Deny)
+		return nil, err
 	}
-	// 把字段表收成规范形并核对摘要
-	t, err = openTemplate(t)
-	// 摘要对不上则拒绝这份模版
-	if err != nil {
-		// 记下读模版被拒绝，写失败不改变结果
-		_ = s.audit(ctx, &acc.ID, nil, "get_template", kind, audit.Deny)
-		return ContentTemplate{}, err
-	}
-	// 读成功不记允许：前端每 8 秒轮询，记了会把审计表撑大
-	return t, nil
+	return rows, nil
 }
 
 // ListProjectTemplates 列出本厂已收各份工程模版最高修订。
@@ -210,7 +230,7 @@ func (s *Templates) ListProjectTemplates(ctx context.Context, token string) ([]C
 		return nil, err
 	}
 	// 取各份工程模版的最高修订
-	rows, err := s.store.LatestProjectTemplates(ctx)
+	rows, err := s.store.LatestTemplates(ctx, KindProject)
 	// 列表读失败则不返回残缺
 	if err != nil {
 		// 记下读模版被拒绝，写失败不改变结果
@@ -310,7 +330,7 @@ func (s *Closure) AcceptTemplateDelivery(ctx context.Context, snap TemplateSnaps
 // full 为真且名单为空表示 WAN 已没有工程模版，全部撤下。
 func (s *Closure) SyncTemplateSet(ctx context.Context, kind string, full bool, keep []uuid.UUID) error {
 	// 工艺模版只有一份，不按名单撤
-	if kind != KindProject {
+	if kind != KindProject && kind != KindProcess {
 		return nil
 	}
 	// 名单不完整就不撤，免得把 WAN 仍有的当成删了

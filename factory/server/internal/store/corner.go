@@ -37,7 +37,7 @@ func (s *Store) fillCornerTable(ctx context.Context, table string) error {
 		var rows []cornerRow
 		// 只取包角还空着的行。
 		err := s.db.WithContext(ctx).Model(sealModel(table)).Select("id", "revision", "kind", "content").
-			Where("corner IS NULL AND (id, revision) > (?, ?)", afterID, afterRev).
+			Where("(corner IS NULL OR template_id IS NULL) AND (id, revision) > (?, ?)", afterID, afterRev).
 			Order("id").Order("revision").Limit(sealBatch).Find(&rows).Error
 		// 取这一批失败就停，避免带着错误继续。
 		if err != nil {
@@ -60,8 +60,8 @@ func (s *Store) fillCornerTable(ctx context.Context, table string) error {
 			}
 			// 只补仍空着的，并发写入已经判过的不动。
 			if err := s.db.WithContext(ctx).Model(sealModel(table)).
-				Where("id = ? AND revision = ? AND corner IS NULL", row.ID, row.Revision).
-				Update("corner", cornerOf(row.Kind, plain)).Error; err != nil {
+				Where("id = ? AND revision = ? AND (corner IS NULL OR template_id IS NULL)", row.ID, row.Revision).
+				Updates(map[string]any{"corner": cornerOf(row.Kind, plain), "template_id": templateOf(row.Kind, plain)}).Error; err != nil {
 				return err
 			}
 		}

@@ -70,7 +70,7 @@ func TestAcceptTemplateDelivery(t *testing.T) {
 	fid := seed.ID
 	// 填上这条记录的字段，填错会让后面的比对失败。
 	snap := factory.TemplateSnapshot{
-		ID: id.New(), Kind: factory.KindProcess, Revision: 1,
+		ID: weldTplID, Kind: factory.KindProcess, Name: "焊接参数", Revision: 1,
 		Schema: json.RawMessage(schema), Digest: digest.Sum(schema), TargetFactoryID: &fid,
 	}
 	// 复制一份快照再改坏，用来验证下发会被拒。
@@ -102,7 +102,7 @@ func TestAcceptTemplateDelivery(t *testing.T) {
 		t.Fatalf("rev %+v", still)
 	}
 	// 按编号取模版，失败说明没下发到本厂。
-	tpl, err := fac.GetTemplate(ctx, pe.tok, factory.KindProcess)
+	tpl, err := weldTemplate(ctx, fac, pe.tok)
 	// 取模版失败或修订不对就停，说明没达预期。
 	if err != nil || tpl.Revision != 1 {
 		// 断言没通过就停，结果和这条用例的预期不一致。
@@ -135,7 +135,7 @@ func TestAcceptTemplateDelivery(t *testing.T) {
 	arrayRoot := []byte(`{"root":"array","templates":[]}`)
 	// 摘要对得上的数组根工艺快照，只靠根类型拦下。
 	arraySnap := factory.TemplateSnapshot{
-		ID: snap.ID, Kind: factory.KindProcess, Revision: 2,
+		ID: snap.ID, Kind: factory.KindProcess, Name: "焊接参数", Revision: 2,
 		Schema: json.RawMessage(arrayRoot), Digest: digest.Sum(arrayRoot), TargetFactoryID: &fid,
 	}
 	// 数组根工艺应被拒为模版不合法，放行说明没拦住。
@@ -144,7 +144,7 @@ func TestAcceptTemplateDelivery(t *testing.T) {
 		t.Fatalf("array root process: %v", err)
 	}
 	// 再取工艺模版，被拒后应仍是第一版。
-	tpl, err = fac.GetTemplate(ctx, pe.tok, factory.KindProcess)
+	tpl, err = weldTemplate(ctx, fac, pe.tok)
 	// 取模版失败或修订变了就停，说明拒收前已写副本。
 	if err != nil || tpl.Revision != 1 {
 		// 断言没通过就停，被拒的快照仍落了库。
@@ -325,7 +325,7 @@ func TestTemplateReadAndRedeliveryAudit(t *testing.T) {
 	fid := seed.ID
 	// 拼一份工艺模版快照，两次送达用同一份。
 	snap := factory.TemplateSnapshot{
-		ID: id.New(), Kind: factory.KindProcess, Revision: 1,
+		ID: weldTplID, Kind: factory.KindProcess, Name: "焊接参数", Revision: 1,
 		Schema: json.RawMessage(schema), Digest: digest.Sum(schema), TargetFactoryID: &fid,
 	}
 	// 同一修订连送两次，模拟通道重推。
@@ -345,8 +345,8 @@ func TestTemplateReadAndRedeliveryAudit(t *testing.T) {
 	before := auditIDs(t, ctx, fac)
 	// 像前端轮询那样连读两轮工艺和工程模版。
 	for i := 0; i < 2; i++ {
-		// 读工艺模版失败就停，轮询读不该出错。
-		if _, err := fac.GetTemplate(ctx, sa, factory.KindProcess); err != nil {
+		// 列工艺模版失败就停，轮询读不该出错。
+		if _, err := fac.ListProcessTemplates(ctx, sa); err != nil {
 			// 把读工艺模版的错误打出来并停住。
 			t.Fatalf("get template #%d: %v", i+1, err)
 		}
@@ -360,16 +360,6 @@ func TestTemplateReadAndRedeliveryAudit(t *testing.T) {
 	if after := auditIDs(t, ctx, fac); len(after) != len(before) {
 		// 条数变了就停，把前后条数打出来。
 		t.Fatalf("audit rows %d -> %d after reads", len(before), len(after))
-	}
-	// 读不存在的模版种类应被拒。
-	if _, err := fac.GetTemplate(ctx, sa, "bogus"); !errors.Is(err, domain.ErrNotFound) {
-		// 没被拒就停，种类检查失效了。
-		t.Fatalf("bogus kind: %v", err)
-	}
-	// 被拒的读仍要留拒绝，少了说明把拒绝也一并去掉了。
-	if got := softwareAudit(t, ctx, fac, "get_template", audit.Deny); len(got) != 1 {
-		// 拒绝条数不对就停，把实际条数打出来。
-		t.Fatalf("get_template deny rows %d want 1", len(got))
 	}
 }
 
@@ -481,4 +471,25 @@ func TestSyncTemplateSetRetires(t *testing.T) {
 		// WAN 全删了厂端还留着。
 		t.Fatalf("all retired %+v %v", rows, err)
 	}
+}
+
+// weldTplID 预置「焊接参数」工艺模版的身份；没写所属模版的工艺正文都按它套。
+var weldTplID = uuid.MustParse(contenttpl.SeedTplWeld)
+
+// weldTemplate 从本厂已收的工艺模版里取出「焊接参数」那一份。
+func weldTemplate(ctx context.Context, fac *factory.Service, tok string) (factory.ContentTemplate, error) {
+	// 列出已收的各份工艺模版。
+	rows, err := fac.ListProcessTemplates(ctx, tok)
+	// 列不出就交回错误。
+	if err != nil {
+		return factory.ContentTemplate{}, err
+	}
+	// 逐份找焊接参数。
+	for _, t := range rows {
+		// 身份对上就交回。
+		if t.ID == weldTplID {
+			return t, nil
+		}
+	}
+	return factory.ContentTemplate{}, domain.ErrNotFound
 }

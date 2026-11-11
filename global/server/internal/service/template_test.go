@@ -8,6 +8,8 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/google/uuid"
+
 	"wmesh/global/internal/platform/contenttpl"
 	"wmesh/global/internal/platform/digest"
 	"wmesh/global/internal/platform/domain"
@@ -51,7 +53,7 @@ func TestContentTemplate(t *testing.T) {
 	}
 
 	// 读内容模版，模版读不到就无法套新正文。
-	tpl, err := h.WAN.GetTemplate(ctx, tok, global.KindProcess)
+	tpl, err := weldTemplate(ctx, h, tok)
 	// 读内容模版失败或修订不是1就停，不能当通过。
 	if err != nil || tpl.Revision != 1 {
 		// 不符即停：读内容模版失败或修订不是1。
@@ -74,7 +76,7 @@ func TestContentTemplate(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 改内容模版，改模版失败就分不清新旧正文。
-	next, err := h.WAN.UpdateTemplate(ctx, tok, global.KindProcess, tpl.Revision, raw)
+	next, err := h.WAN.UpdateProcessTemplate(ctx, tok, weldTemplateID, tpl.Revision, "焊接参数", raw)
 	// 改内容模版失败或修订不是2就停，不能当通过。
 	if err != nil || next.Revision != 2 {
 		// 不符即停：改内容模版失败或修订不是2。
@@ -136,19 +138,19 @@ func TestContentTemplate(t *testing.T) {
 	}
 
 	// 改内容模版应被拒为未登录，放行或错类都算没拦住。
-	if _, err := h.WAN.UpdateTemplate(ctx, "bad", global.KindProcess, next.Revision, raw); !errors.Is(err, domain.ErrUnauthorized) && !errors.Is(err, domain.ErrInvalidCredentials) {
+	if _, err := h.WAN.UpdateProcessTemplate(ctx, "bad", weldTemplateID, next.Revision, "焊接参数", raw); !errors.Is(err, domain.ErrUnauthorized) && !errors.Is(err, domain.ErrInvalidCredentials) {
 		// 不符即停：改内容模版应被拒为未登录。
 		t.Fatalf("anon: %v", err)
 	}
 	// 误导入的数组根字段表，工艺不该收。
 	arrayRoot := []byte(`{"root":"array","templates":[]}`)
 	// 数组根应被拒为模版不合法，放行就会下发到各厂。
-	if _, err := h.WAN.UpdateTemplate(ctx, tok, global.KindProcess, next.Revision, arrayRoot); !errors.Is(err, domain.ErrTemplateInvalid) {
+	if _, err := h.WAN.UpdateProcessTemplate(ctx, tok, weldTemplateID, next.Revision, "焊接参数", arrayRoot); !errors.Is(err, domain.ErrTemplateInvalid) {
 		// 不符即停：数组根没被拒为模版不合法。
 		t.Fatalf("array root: %v", err)
 	}
 	// 再读内容模版，被拒后修订应停在原处。
-	kept, err := h.WAN.GetTemplate(ctx, tok, global.KindProcess)
+	kept, err := weldTemplate(ctx, h, tok)
 	// 读内容模版失败或修订变了就停，说明拒绝前已写库。
 	if err != nil || kept.Revision != next.Revision || !bytes.Equal(kept.Schema, next.Schema) {
 		// 不符即停：被拒后模版仍被改动。
@@ -182,4 +184,25 @@ func TestContentTemplate(t *testing.T) {
 		// 不符即停：读平台正文失败或正文不一致。
 		t.Fatalf("promote apply %s", pbody)
 	}
+}
+
+// weldTemplateID 预置「焊接参数」工艺模版的身份。
+var weldTemplateID = uuid.MustParse(contenttpl.SeedTplWeld)
+
+// weldTemplate 从工艺模版列表里取出预置的「焊接参数」那一份。
+func weldTemplate(ctx context.Context, h *Harness, tok string) (global.ContentTemplate, error) {
+	// 列出当前各份工艺模版，空库首次会落预置两份。
+	rows, err := h.WAN.ListProcessTemplates(ctx, tok)
+	// 列不出就交回错误。
+	if err != nil {
+		return global.ContentTemplate{}, err
+	}
+	// 逐份找焊接参数。
+	for _, t := range rows {
+		// 身份对上就交回。
+		if t.ID == weldTemplateID {
+			return t, nil
+		}
+	}
+	return global.ContentTemplate{}, domain.ErrNotFound
 }

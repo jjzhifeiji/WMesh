@@ -115,14 +115,21 @@ func (s *Service) indexForFactory(ctx context.Context, factoryID uuid.UUID, kind
 		if err != nil {
 			return nil, err
 		}
-		// 先留空，工程模版身份收齐后组成全集。
-		var projects []ContentTemplate
+		// 先留空，两类模版身份各自收齐后组成全集。
+		var procs, projects []ContentTemplate
 		// 逐份模版下发，种类不符的跳过。
 		for _, t := range tpls {
-			// 工程模版身份另收一份，组全集用。
+			// 只要身份和种类，正文另走拉取。
+			ref := ContentTemplate{ID: t.ID, Kind: t.Kind}
+			// 工程模版身份收进工程全集。
 			if t.Kind == KindProject {
-				// 只要身份和种类，正文另走拉取。
-				projects = append(projects, ContentTemplate{ID: t.ID, Kind: t.Kind})
+				// 记进工程全集。
+				projects = append(projects, ref)
+			}
+			// 工艺模版身份收进工艺全集。
+			if t.Kind == KindProcess {
+				// 记进工艺全集。
+				procs = append(procs, ref)
 			}
 			// 空和有值走不同路，避免把空白写进名录。
 			if kind != "" && t.Kind != kind {
@@ -130,6 +137,11 @@ func (s *Service) indexForFactory(ctx context.Context, factoryID uuid.UUID, kind
 			}
 			// 把这一项接进结果。
 			out = append(out, Cmd{Typ: CmdTemplate, TemplateID: t.ID.String(), Kind: t.Kind, Revision: t.Revision})
+		}
+		// 涉及工艺时补一条全集，排在各份模版之后；删光了也发空集。
+		if kind == "" || kind == KindProcess {
+			// 把这一项接进结果。
+			out = append(out, templateSetCmd(KindProcess, procs))
 		}
 		// 涉及工程时补一条全集，排在各份模版之后；删光了也发空集。
 		if kind == "" || kind == KindProject {

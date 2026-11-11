@@ -185,8 +185,16 @@ func TestTemplateSetAfterDelete(t *testing.T) {
 			// 不符即停：删工程模版失败。
 			t.Fatal(err)
 		}
-		// 取最近一条全集。
-		sets := bus.byType(global.CmdTemplateSet)
+		// 准备接住工程这一类的全集；删模版时工艺全集也会一起推，这里不看。
+		var sets []busSent
+		// 逐条筛出工程全集。
+		for _, sent := range bus.byType(global.CmdTemplateSet) {
+			// 种类是工程才收下。
+			if sent.cmd.Kind == global.KindProject {
+				// 收下这一条。
+				sets = append(sets, sent)
+			}
+		}
 		// 每删一份都应有一条全集。
 		if len(sets) != i+1 {
 			// 不符即停：删除后没推全集。

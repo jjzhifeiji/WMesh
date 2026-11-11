@@ -61,6 +61,7 @@ type Asset struct {
 	Copyable       bool       `json:"copyable"`       // 可否升档
 	WeldKind       string     `json:"weldKind"`       // 作业类型：single / multilayer / tbar
 	Corner         bool       `json:"corner"`         // 包角工艺：正文顶层 kind 为 cornerGeometry；工程恒为否
+	TemplateID     string     `json:"templateId"`     // 工艺所属模版身份，随正文算；工程为空，还没判过的工艺也为空
 	Revision       int64      `json:"revision"`       // 当前修订
 	Content        []byte     `json:"-"`              // 不透明正文；不进列表/元数据
 	Digest         []byte     `json:"digest"`         // SHA-256 32 字节
@@ -109,6 +110,7 @@ type governedAssetRow struct {
 	Copyable       bool       `gorm:"not null"`                  // 可否升档
 	WeldKind       string     `gorm:"column:weld_kind;not null"` // 作业类型
 	Corner         *bool      `gorm:"column:corner"`             // 包角工艺；空表示还没按正文判过
+	TemplateID     *string    `gorm:"column:template_id"`        // 工艺所属模版身份；空表示还没按正文判过
 	Revision       int64      `gorm:"not null"`                  // 当前修订
 	Content        []byte     `gorm:"type:bytea;not null"`       // 正文
 	Digest         []byte     `gorm:"type:bytea;not null"`       // SHA-256
@@ -215,6 +217,7 @@ func (s *Store) InsertGovernedAssetInto(ctx context.Context, in Asset, parentID 
 			Copyable:       in.Copyable,
 			WeldKind:       weldKind,
 			Corner:         cornerOf(in.Kind, in.Content),
+			TemplateID:     templateOf(in.Kind, in.Content),
 			Revision:       1,
 			Content:        env,
 			Digest:         in.Digest,
@@ -330,6 +333,8 @@ func (s *Store) UpdateGovernedAsset(ctx context.Context, assetID uuid.UUID, expe
 			updates["content"] = env
 			// 包角与否随新正文重算，网页选工艺靠它分开。
 			updates["corner"] = cornerOf(row.Kind, w.Content)
+			// 所属模版也随新正文重算。
+			updates["template_id"] = templateOf(row.Kind, w.Content)
 			// 按新修订重封失败就回滚，不能留半截。
 		} else if env, changed, err := s.rewrapIfSealed(assetID, expected, expected+1, tableAssets, row.Content); err != nil {
 			return err
@@ -692,6 +697,27 @@ func cornerOf(kind string, plain []byte) *bool {
 	return &yes
 }
 
+// templateOf 按明文正文算工艺所属模版；工程没有所属模版，记空串。
+func templateOf(kind string, plain []byte) *string {
+	// 先当工程，空串。
+	id := ""
+	// 工艺按正文顶层的所属身份或包角标记归类。
+	if kind == KindProcess {
+		// 算出所属模版身份。
+		id = contenttpl.ProcessTemplateOf(plain)
+	}
+	return &id
+}
+
+// templateText 库里的所属模版收成文本；还没判过的交回空串，不当成焊接参数。
+func templateText(v *string) string {
+	// 没判过就是空。
+	if v == nil {
+		return ""
+	}
+	return *v
+}
+
 // valueOrNew 没给身份就现场发号。
 func valueOrNew(given uuid.UUID) uuid.UUID {
 	// 没有身份就不能当有效目标。
@@ -723,6 +749,7 @@ func assetFromGoverned(row governedAssetRow) Asset {
 		Copyable:       row.Copyable,
 		WeldKind:       row.WeldKind,
 		Corner:         row.Corner != nil && *row.Corner,
+		TemplateID:     templateText(row.TemplateID),
 		Revision:       row.Revision,
 		Content:        row.Content,
 		Digest:         row.Digest,

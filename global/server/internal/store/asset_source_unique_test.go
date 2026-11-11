@@ -83,6 +83,11 @@ func TestAssetSourceUniqueMigration(t *testing.T) {
 			// 把借列的错误打出来并停住。
 			t.Fatalf("borrow corner: %v", err)
 		}
+		// 所属模版列也是后来才加的，一样先借上。
+		if err := db.Exec("ALTER TABLE " + table + " ADD COLUMN template_id TEXT NOT NULL DEFAULT ''").Error; err != nil {
+			// 把借列的错误打出来并停住。
+			t.Fatalf("borrow template_id: %v", err)
+		}
 	}
 	// 用这块旧库打开云端存储。
 	s := store.Open(db)
@@ -150,6 +155,11 @@ func TestAssetSourceUniqueMigration(t *testing.T) {
 		if err := db.Exec("ALTER TABLE " + table + " DROP COLUMN corner").Error; err != nil {
 			// 把拿列的错误打出来并停住。
 			t.Fatalf("drop borrowed corner: %v", err)
+		}
+		// 借来的所属模版列也拿掉。
+		if err := db.Exec("ALTER TABLE " + table + " DROP COLUMN template_id").Error; err != nil {
+			// 把拿列的错误打出来并停住。
+			t.Fatalf("drop borrowed template_id: %v", err)
 		}
 	}
 	// 再整包套用，只会跑新迁移。

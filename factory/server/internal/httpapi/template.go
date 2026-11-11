@@ -13,7 +13,7 @@ import (
 // 本厂已收字段模版。
 func (h *Handler) mountTemplate(mux *http.ServeMux) {
 	// 读取本厂已经收到的工艺字段模版。
-	mux.HandleFunc("GET /v1/factories/{id}/templates", h.getTemplate)
+	mux.HandleFunc("GET /v1/factories/{id}/process-templates", h.listProcessTemplates)
 	// 列出本厂已经收到的各份工程模版。
 	mux.HandleFunc("GET /v1/factories/{id}/project-templates", h.listProjectTemplates)
 	// 向平台要模版，通道不在也先返回。
@@ -24,29 +24,36 @@ func (h *Handler) mountTemplate(mux *http.ServeMux) {
 type templateResp struct {
 	ID       string          `json:"id"`       // 与云端相同
 	Kind     string          `json:"kind"`     // process / project
-	Name     string          `json:"name"`     // 工程模版名称；工艺为空
+	Name     string          `json:"name"`     // 模版名称
 	Revision int64           `json:"revision"` // 已收修订
 	Schema   json.RawMessage `json:"schema"`   // 字段表
 	Digest   []byte          `json:"digest"`   // SHA-256
 }
 
-// 读本厂已收工艺字段模版。
-func (h *Handler) getTemplate(w http.ResponseWriter, r *http.Request) {
-	// 读取本厂已经收到的工艺字段模版。
+// 列出本厂已收的各份工艺模版；没收到是空表。
+func (h *Handler) listProcessTemplates(w http.ResponseWriter, r *http.Request) {
+	// 先核对路径里的工厂，再读模版。
 	h.withFactory(w, r, func(svc *service.Service) {
-		// 读取种类，空着表示不按种类限制。
-		row, err := svc.Templates.GetTemplate(r.Context(), bearer(r), r.URL.Query().Get("kind"))
-		// 上一步没通过则停止，不把失败写成成功。
+		// 读已收的各份工艺模版。
+		rows, err := svc.Templates.ListProcessTemplates(r.Context(), bearer(r))
+		// 没成功就按业务错误回写。
 		if err != nil {
-			// 把失败译成状态回给调用方，不写成功。
+			// 按业务错误回写，内部细节不出网。
 			writeErr(w, err)
 			return
 		}
-		// 通过之后把结果回给调用方。
-		writeJSON(w, http.StatusOK, templateResp{
-			ID: row.ID.String(), Kind: row.Kind, Name: row.Name, Revision: row.Revision,
-			Schema: json.RawMessage(row.Schema), Digest: row.Digest,
-		})
+		// 按数量先准备回包。
+		out := make([]templateResp, 0, len(rows))
+		// 逐份收成回包。
+		for _, row := range rows {
+			// 接进结果。
+			out = append(out, templateResp{
+				ID: row.ID.String(), Kind: row.Kind, Name: row.Name, Revision: row.Revision,
+				Schema: json.RawMessage(row.Schema), Digest: row.Digest,
+			})
+		}
+		// 把结果交回调用方。
+		writeJSON(w, http.StatusOK, out)
 	})
 }
 

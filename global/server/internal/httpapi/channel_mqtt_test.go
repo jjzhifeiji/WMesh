@@ -471,22 +471,39 @@ func TestChannelTemplate(t *testing.T) {
 	// 订阅该厂下行，收不到通知就无法断言。
 	cmds := subscribeDown(t, mqttAddr, fid, priv)
 	// 发出请求并记下状态，对不上就停测。
-	code, body := do(t, srv, "GET", "/v1/templates?kind=process", tok, "")
+	code, body := do(t, srv, "GET", "/v1/process-templates", tok, "")
 	// 这一步没成功就停测，避免误判通过。
 	if code != http.StatusOK {
 		// 结果和预期不一致，带上现场停测。
-		t.Fatalf("get tpl %d %s", code, body)
+		t.Fatalf("list tpl %d %s", code, body)
 	}
-	// 接住响应里要核对的那一段。
-	var tpl struct {
+	// 一份模版里要核对的那几项。
+	type tplRow struct {
 		ID       string          `json:"id"`       // 模版的稳定身份，拉正文时要对上。
 		Revision int64           `json:"revision"` // 当前修订，对不上就拒绝保存。
 		Schema   json.RawMessage `json:"schema"`   // 字段表原文，坏表由服务拒绝。
 	}
+	// 接住工艺模版列表。
+	var tpls []tplRow
 	// 解不开就停住，避免把坏包当成成功。
-	if err := json.Unmarshal([]byte(body), &tpl); err != nil {
+	if err := json.Unmarshal([]byte(body), &tpls); err != nil {
 		// 这一步失败就不能继续，以免误判通过。
 		t.Fatal(err)
+	}
+	// 准备接住预置的焊接参数那一份。
+	var tpl tplRow
+	// 在列表里找焊接参数。
+	for _, row := range tpls {
+		// 身份对上就用它。
+		if row.ID == contenttpl.SeedTplWeld {
+			// 记下这一份。
+			tpl = row
+		}
+	}
+	// 空库应该落下预置的焊接参数，没有就停。
+	if tpl.ID == "" {
+		// 把列表打出来便于排查。
+		t.Fatalf("no weld template in %s", body)
 	}
 	// 解开当前字段表，准备再加一个字段。
 	var sch contenttpl.Schema
@@ -505,7 +522,7 @@ func TestChannelTemplate(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 发出请求并记下状态，对不上就停测。
-	code, body = do(t, srv, "POST", "/v1/templates", tok, `{"kind":"process","expected":`+strconv.FormatInt(tpl.Revision, 10)+`,"schema":`+string(raw)+`}`)
+	code, body = do(t, srv, "POST", "/v1/process-templates/"+tpl.ID, tok, `{"expected":`+strconv.FormatInt(tpl.Revision, 10)+`,"name":"焊接参数","schema":`+string(raw)+`}`)
 	// 这一步没成功就停测，避免误判通过。
 	if code != http.StatusOK {
 		// 结果和预期不一致，带上现场停测。

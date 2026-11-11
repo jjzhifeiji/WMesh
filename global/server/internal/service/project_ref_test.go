@@ -942,10 +942,10 @@ func TestSeedTemplatesStayDeleted(t *testing.T) {
 		// 不符即停：删光后种子被自动补回。
 		t.Fatalf("after delete all %d %v", len(empty), err)
 	}
-	// 组给厂的模版快照，删光后只该剩工艺一份。
+	// 组给厂的模版快照，工程删光后只该剩工艺预置的两份。
 	snaps, err := h.WAN.SnapshotsForFactory(ctx, id.New())
-	// 组快照失败或不是只剩工艺就停，不能当通过。
-	if err != nil || len(snaps) != 1 || snaps[0].Kind != global.KindProcess {
+	// 组快照失败或不是只剩两份工艺就停，不能当通过。
+	if err != nil || len(snaps) != 2 || snaps[0].Kind != global.KindProcess || snaps[1].Kind != global.KindProcess {
 		// 不符即停：下发快照里又带上了工程种子。
 		t.Fatalf("snapshots %+v %v", snaps, err)
 	}

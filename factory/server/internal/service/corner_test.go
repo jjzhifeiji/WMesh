@@ -147,7 +147,7 @@ func TestCornerPadEntriesAndTemplate(t *testing.T) {
 	// 收下焊接工艺模版，之后新建工艺都会按它套。
 	if err := fac.AcceptTemplateDelivery(ctx, factory.TemplateSnapshot{
 		// 新取一个模版身份，套默认焊接字段表。
-		ID: uuid.New(), Kind: factory.KindProcess, Revision: 1, Schema: schema, Digest: digest.Sum(schema), TargetFactoryID: &fid,
+		ID: weldTplID, Kind: factory.KindProcess, Name: "焊接参数", Revision: 1, Schema: schema, Digest: digest.Sum(schema), TargetFactoryID: &fid,
 	}); err != nil {
 		// 收不下模版就停。
 		t.Fatal(err)

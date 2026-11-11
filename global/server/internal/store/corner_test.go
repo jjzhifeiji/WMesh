@@ -10,6 +10,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 
+	"wmesh/global/internal/platform/contenttpl"
 	"wmesh/global/internal/platform/digest"
 	"wmesh/global/internal/platform/migrate"
 	"wmesh/global/internal/platform/testpg"
@@ -41,6 +42,11 @@ func TestAssetCornerMigration(t *testing.T) {
 	if err := db.Exec("ALTER TABLE assets ADD COLUMN corner BOOLEAN NOT NULL DEFAULT false").Error; err != nil {
 		// 把借列的错误打出来并停住。
 		t.Fatalf("borrow corner: %v", err)
+	}
+	// 所属模版列也是后来才加的，一样先借上。
+	if err := db.Exec("ALTER TABLE assets ADD COLUMN template_id TEXT NOT NULL DEFAULT ''").Error; err != nil {
+		// 把借列的错误打出来并停住。
+		t.Fatalf("borrow template_id: %v", err)
 	}
 	// 用这块旧库打开云端存储。
 	s := store.Open(db)
@@ -81,6 +87,11 @@ func TestAssetCornerMigration(t *testing.T) {
 		// 把拿列的错误打出来并停住。
 		t.Fatalf("drop borrowed corner: %v", err)
 	}
+	// 借来的所属模版列也拿掉。
+	if err := db.Exec("ALTER TABLE assets DROP COLUMN template_id").Error; err != nil {
+		// 把拿列的错误打出来并停住。
+		t.Fatalf("drop borrowed template_id: %v", err)
+	}
 	// 整包套用，只会跑新迁移。
 	if err := migrate.Up(db, migrations.FS, "."); err != nil {
 		// 新迁移跑不过就停。
@@ -97,6 +108,13 @@ func TestAssetCornerMigration(t *testing.T) {
 		if err != nil || got.Corner != c.want {
 			// 迁移补的标记不对就停。
 			t.Fatalf("migrated %s %+v %v", c.id, got.Corner, err)
+		}
+		// 迁移还要补上所属模版：包角归预置包角，焊接归预置焊接参数，工程为空。
+		wantTpl := map[uuid.UUID]string{weld.ID: contenttpl.SeedTplWeld, corner.ID: contenttpl.SeedTplCorner, proj.ID: ""}[c.id]
+		// 所属模版不对就停。
+		if got.TemplateID != wantTpl {
+			// 把实得的所属模版打出来。
+			t.Fatalf("migrated template %s got %q want %q", c.id, got.TemplateID, wantTpl)
 		}
 	}
 	// 焊接工艺改成包角正文，标记跟着变。

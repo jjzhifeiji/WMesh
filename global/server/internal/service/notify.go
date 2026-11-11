@@ -269,40 +269,57 @@ func (k *kernel) notifyTemplate(ctx context.Context, id uuid.UUID, kind string, 
 	k.publishActive(ctx, Cmd{Typ: CmdTemplate, TemplateID: id.String(), Kind: kind, Revision: revision})
 }
 
-// 删除后把仍在的模版再通知一遍，并补发工程模版全集，厂端据此删掉已不在的副本。
+// notifyRemainingTemplates 删掉一份模版后把剩下的各份和两类全集再推一遍，厂端据此撤下已删的。
 func (k *kernel) notifyRemainingTemplates(ctx context.Context) {
-	// 没有这份模版就补上种子。
-	proc, err := k.ensureTemplate(ctx, KindProcess)
-	// 没有错误才继续，有错留在后面的分支。
+	// 读当前工艺各份，读不到就不推这一类。
+	procs, err := k.ensureProcessTemplates(ctx)
+	// 读到了才推，失败留给厂端重连补拉。
 	if err == nil {
-		// 通知厂端去拉模版。
-		k.notifyTemplate(ctx, proc.ID, proc.Kind, proc.Revision)
+		// 逐份通知厂端来拉当前修订。
+		for _, t := range procs {
+			// 推这一份的身份和修订。
+			k.notifyTemplate(ctx, t.ID, t.Kind, t.Revision)
+		}
+		// 再推工艺全集，厂端撤下不在里面的。
+		k.publishActive(ctx, templateSetCmd(KindProcess, procs))
 	}
-	// 工程项不齐就按种子补。
+	// 读当前工程各份，读不到就到此为止。
 	projects, err := k.ensureProjectItems(ctx)
-	// 读不出当前全集就不发，免得厂端按残缺名单误删。
+	// 读不到就不推工程这一类。
 	if err != nil {
 		return
 	}
-	// 逐个工程套上当前模版，套不上就拒绝。
+	// 逐份通知厂端来拉当前修订。
 	for _, t := range projects {
-		// 通知厂端去拉模版。
+		// 推这一份的身份和修订。
 		k.notifyTemplate(ctx, t.ID, t.Kind, t.Revision)
 	}
-	// 全集一定要发，删光了也发空集，厂端才知道该删哪些。
+	// 再推工程全集，厂端撤下不在里面的。
 	k.publishActive(ctx, templateSetCmd(KindProject, projects))
 }
 
-// 新建工程模版后补发工程模版全集；厂端名单里有、本厂已撤下的副本据此恢复。
+// notifyProjectTemplateSet 把当前工程模版全集推给各厂。
 func (k *kernel) notifyProjectTemplateSet(ctx context.Context) {
 	// 读当前工程各份。
 	projects, err := k.ensureProjectItems(ctx)
-	// 读不出当前全集就不发，免得厂端按残缺名单误删。
+	// 读不到就不推，留给厂端重连补拉。
 	if err != nil {
 		return
 	}
-	// 只推给仍有效的厂。
+	// 推全集。
 	k.publishActive(ctx, templateSetCmd(KindProject, projects))
+}
+
+// notifyProcessTemplateSet 把当前工艺模版全集推给各厂。
+func (k *kernel) notifyProcessTemplateSet(ctx context.Context) {
+	// 读当前工艺各份。
+	procs, err := k.ensureProcessTemplates(ctx)
+	// 读不到就不推，留给厂端重连补拉。
+	if err != nil {
+		return
+	}
+	// 推全集。
+	k.publishActive(ctx, templateSetCmd(KindProcess, procs))
 }
 
 // templateSetCmd 把某类当前全部模版收成一条全集指令；没有模版时 templateIds 为空、full 仍为真。

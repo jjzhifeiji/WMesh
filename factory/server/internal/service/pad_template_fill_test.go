@@ -10,7 +10,6 @@ import (
 
 	"wmesh/factory/internal/platform/contenttpl"
 	"wmesh/factory/internal/platform/digest"
-	"wmesh/factory/internal/platform/id"
 	factory "wmesh/factory/internal/service"
 )
 
@@ -37,7 +36,7 @@ func TestCreatePadFillsTemplateKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 收下工艺模版。
-	if err := fac.AcceptTemplateDelivery(ctx, factory.TemplateSnapshot{ID: id.New(), Kind: factory.KindProcess, Revision: 1, Schema: procRaw, Digest: digest.Sum(procRaw), TargetFactoryID: &fid}); err != nil {
+	if err := fac.AcceptTemplateDelivery(ctx, factory.TemplateSnapshot{ID: weldTplID, Kind: factory.KindProcess, Name: "焊接参数", Revision: 1, Schema: procRaw, Digest: digest.Sum(procRaw), TargetFactoryID: &fid}); err != nil {
 		// 收不下就停住。
 		t.Fatalf("accept process template: %v", err)
 	}

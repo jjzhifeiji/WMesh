@@ -17,7 +17,7 @@ import (
 type ContentTemplate struct {
 	ID        uuid.UUID `json:"id"`        // 稳定身份
 	Kind      string    `json:"kind"`      // process / project
-	Name      string    `json:"name"`      // 工程模版名称；工艺为空
+	Name      string    `json:"name"`      // 模版名称；同类不重复
 	Revision  int64     `json:"revision"`  // 当前修订
 	Schema    []byte    `json:"schema"`    // 字段表 JSON
 	Digest    []byte    `json:"digest"`    // SHA-256
@@ -29,7 +29,7 @@ type ContentTemplate struct {
 type TemplateSnapshot struct {
 	ID              uuid.UUID       `json:"id"`              // 与 WAN 原件相同
 	Kind            string          `json:"kind"`            // process / project
-	Name            string          `json:"name"`            // 工程模版名称；工艺为空
+	Name            string          `json:"name"`            // 模版名称
 	Revision        int64           `json:"revision"`        // 修订
 	Schema          json.RawMessage `json:"schema"`          // 字段表
 	Digest          []byte          `json:"digest"`          // SHA-256
@@ -40,7 +40,7 @@ type TemplateSnapshot struct {
 type contentTemplateRow struct {
 	ID        uuid.UUID       `gorm:"type:uuid;primaryKey"` // 稳定身份
 	Kind      string          `gorm:"not null"`             // process / project
-	Name      string          `gorm:"not null"`             // 工程模版名称；工艺为空
+	Name      string          `gorm:"not null"`             // 模版名称；同类不重复
 	Revision  int64           `gorm:"not null"`             // 当前修订
 	Schema    json.RawMessage `gorm:"type:jsonb;not null"`  // 字段表 JSON
 	Digest    []byte          `gorm:"type:bytea;not null"`  // SHA-256
@@ -60,7 +60,7 @@ type templateSeedRow struct {
 // 种子标记落这张表，有行就不再按代码补种子。
 func (templateSeedRow) TableName() string { return "content_template_seeds" }
 
-// 已删工程模版的修订墓碑，每个身份至多一行。
+// 已删模版的修订墓碑，每个身份至多一行。
 type templateTombstoneRow struct {
 	ID        uuid.UUID `gorm:"type:uuid;primaryKey"` // 已删工程模版的身份
 	Revision  int64     `gorm:"not null"`             // 删除前用到的最高修订
@@ -77,22 +77,6 @@ func templateFromRow(row contentTemplateRow) ContentTemplate {
 		Schema: []byte(row.Schema), Digest: row.Digest,
 		CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
 	}
-}
-
-// TemplateByKind 读该类型当前模版（工艺仍一行）。
-func (s *Store) TemplateByKind(ctx context.Context, kind string) (ContentTemplate, error) {
-	// 准备接住库里的那一行，没有再另作处理。
-	var row contentTemplateRow
-	// 取不到或库出错先停住，再区分没有还是故障。
-	if err := s.db.WithContext(ctx).Where("kind = ?", kind).First(&row).Error; err != nil {
-		// 没有这一行就按不存在交回，不当成库故障。
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return ContentTemplate{}, domain.ErrNotFound
-		}
-		return ContentTemplate{}, err
-	}
-	// 库行收成当前模版再交回。
-	return templateFromRow(row), nil
 }
 
 // TemplateByID 按身份读当前模版。
@@ -169,13 +153,8 @@ func (s *Store) InsertTemplate(ctx context.Context, in ContentTemplate) (Content
 	}
 	// 写入失败先停住，再看是重复还是约束没过。
 	if err := s.db.WithContext(ctx).Create(&row).Error; err != nil {
-		// 唯一撞了就不另插，工艺交回已有，名称冲突才拒绝。
+		// 唯一撞了就不另插：同身份交回已有，名称冲突才拒绝。
 		if domain.IsUniqueViolation(err) {
-			// 工艺模版全库只留一行，撞了就交回已有的。
-			if in.Kind == KindProcess {
-				// 工艺模版已经有一行，交回那一份。
-				return s.TemplateByKind(ctx, in.Kind)
-			}
 			// 身份已有则收回已有行；名称冲突仍拒绝。
 			if in.ID != uuid.Nil {
 				// 按身份再读一次，还在就当这次已经写过。
@@ -193,11 +172,11 @@ func (s *Store) InsertTemplate(ctx context.Context, in ContentTemplate) (Content
 	return templateFromRow(row), nil
 }
 
-// nextTemplateRevision 定新模版的起始修订：带身份的工程模版删过就接在墓碑修订之后，否则从一开始。
+// nextTemplateRevision 定新模版的起始修订：带身份的模版删过就接在墓碑修订之后，否则从一开始。
 // 厂端按身份加修订判断收没收过，补建若仍从一开始会被当成撤下的旧副本跳过。
 func (s *Store) nextTemplateRevision(ctx context.Context, in ContentTemplate) (int64, error) {
-	// 没带身份或不是工程模版，不会有墓碑。
-	if in.ID == uuid.Nil || in.Kind != KindProject {
+	// 没带身份就不会有墓碑。
+	if in.ID == uuid.Nil {
 		return 1, nil
 	}
 	// 准备接住墓碑。
@@ -215,8 +194,19 @@ func (s *Store) nextTemplateRevision(ctx context.Context, in ContentTemplate) (i
 	return tomb.Revision + 1, nil
 }
 
-// SeedProjectTemplatesOnce 工程从未落过种子才写入这批；没抢到标记只读当前各份。
-func (s *Store) SeedProjectTemplatesOnce(ctx context.Context, seeds []ContentTemplate) ([]ContentTemplate, error) {
+// TemplateSeeded 这类模版落没落过种子；落过就不再按代码补。
+func (s *Store) TemplateSeeded(ctx context.Context, kind string) (bool, error) {
+	// 准备接住标记行数。
+	var n int64
+	// 数这类的标记，有一行就是落过。
+	if err := s.db.WithContext(ctx).Model(&templateSeedRow{}).Where("kind = ?", kind).Count(&n).Error; err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
+// SeedTemplatesOnce 这类模版从未落过种子才写入这批；没抢到标记只读当前各份。
+func (s *Store) SeedTemplatesOnce(ctx context.Context, kind string, seeds []ContentTemplate) ([]ContentTemplate, error) {
 	// 逐份先核摘要，坏一份就整批不写。
 	for _, in := range seeds {
 		// 摘要不是完整的三十二字节就停。
@@ -231,7 +221,7 @@ func (s *Store) SeedProjectTemplatesOnce(ctx context.Context, seeds []ContentTem
 		// 记下当前时刻，这一笔里的时间都用它。
 		now := time.Now().UTC()
 		// 抢一次性标记；并发时后来者等前者提交后落空。
-		res := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&templateSeedRow{Kind: KindProject, SeededAt: now})
+		res := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&templateSeedRow{Kind: kind, SeededAt: now})
 		// 写库报错就停，不能当成已经抢到。
 		if res.Error != nil {
 			return res.Error
@@ -242,9 +232,9 @@ func (s *Store) SeedProjectTemplatesOnce(ctx context.Context, seeds []ContentTem
 			batch := make([]contentTemplateRow, 0, len(seeds))
 			// 逐份组成库行，修订都从一开始。
 			for _, in := range seeds {
-				// 这一份收成工程库行放进批次。
+				// 这一份收成库行放进批次。
 				batch = append(batch, contentTemplateRow{
-					ID: valueOrNew(in.ID), Kind: KindProject, Name: in.Name, Revision: 1,
+					ID: valueOrNew(in.ID), Kind: kind, Name: in.Name, Revision: 1,
 					Schema: json.RawMessage(nonempty(in.Schema)), Digest: in.Digest,
 					CreatedAt: now, UpdatedAt: now,
 				})
@@ -255,7 +245,7 @@ func (s *Store) SeedProjectTemplatesOnce(ctx context.Context, seeds []ContentTem
 			}
 		}
 		// 同一事务再读一次，能看到另一事务刚提交的种子。
-		return tx.Where("kind = ?", KindProject).Order("name, created_at").Find(&rows).Error
+		return tx.Where("kind = ?", kind).Order("name, created_at").Find(&rows).Error
 	})
 	// 事务没成就停，不能把半截当成当前各份。
 	if err != nil {
@@ -269,33 +259,6 @@ func (s *Store) SeedProjectTemplatesOnce(ctx context.Context, seeds []ContentTem
 		out = append(out, templateFromRow(row))
 	}
 	return out, nil
-}
-
-// UpdateTemplate 按类型和期望修订改工艺字段表。
-func (s *Store) UpdateTemplate(ctx context.Context, kind string, expected int64, schema, digest []byte) (ContentTemplate, error) {
-	// 摘要不是完整的三十二字节就停。
-	if err := assertAssetDigest(digest); err != nil {
-		return ContentTemplate{}, err
-	}
-	// 记下当前时刻，这一笔里的时间都用它。
-	now := time.Now().UTC()
-	// 按期望修订改字段表，对不上则一行不改。
-	res := s.db.WithContext(ctx).Model(&contentTemplateRow{}).
-		Where("kind = ? AND revision = ?", kind, expected).
-		Updates(map[string]any{
-			"schema": json.RawMessage(nonempty(schema)), "digest": digest,
-			"revision": expected + 1, "updated_at": now,
-		})
-	// 写库报错就停，不能当成已经改成。
-	if res.Error != nil {
-		return ContentTemplate{}, res.Error
-	}
-	// 期望修订已经变了，原件保持不动。
-	if res.RowsAffected == 0 {
-		return ContentTemplate{}, domain.ErrRevisionConflict
-	}
-	// 改完再读当前模版，修订以库为准。
-	return s.TemplateByKind(ctx, kind)
 }
 
 // UpdateTemplateByID 按身份和期望修订改名称与字段表。
@@ -329,14 +292,14 @@ func (s *Store) UpdateTemplateByID(ctx context.Context, id uuid.UUID, expected i
 	return s.TemplateByID(ctx, id)
 }
 
-// DeleteTemplate 删掉一份当前工程模版。
-func (s *Store) DeleteTemplate(ctx context.Context, id uuid.UUID) error {
+// DeleteTemplate 删掉这一类里的一份当前模版，并记下墓碑。
+func (s *Store) DeleteTemplate(ctx context.Context, kind string, id uuid.UUID) error {
 	// 删行和记墓碑在同一事务里，免得补建时拿不到删除前的修订。
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// 准备接住要删的这一行，墓碑要用它的修订。
 		var row contentTemplateRow
-		// 只删工程模版，工艺那一行不走这里；锁住免得并发改修订。
-		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&row, "id = ? AND kind = ?", id, KindProject).Error
+		// 只删这一类的，身份属于别类按不存在；锁住免得并发改修订。
+		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&row, "id = ? AND kind = ?", id, kind).Error
 		// 没有这一行按不存在拒绝。
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return domain.ErrNotFound
@@ -346,7 +309,7 @@ func (s *Store) DeleteTemplate(ctx context.Context, id uuid.UUID) error {
 			return err
 		}
 		// 删掉这一行。
-		res := tx.Where("id = ? AND kind = ?", id, KindProject).Delete(&contentTemplateRow{})
+		res := tx.Where("id = ? AND kind = ?", id, kind).Delete(&contentTemplateRow{})
 		// 写库报错就停，不能当成已经改成。
 		if res.Error != nil {
 			return res.Error

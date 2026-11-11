@@ -59,6 +59,7 @@ type Asset struct {
 	Copyable          bool       `json:"copyable"`       // 可否被上一级复制；新建默认为否
 	WeldKind          string     `json:"weldKind"`       // 作业类型：single / multilayer / tbar
 	Corner            bool       `json:"corner"`         // 包角工艺：正文顶层 kind 为 cornerGeometry；工程恒为否
+	TemplateID        string     `json:"templateId"`     // 工艺所属模版身份，随正文算；工程为空
 	Revision          int64      `json:"revision"`       // 当前修订
 	Content           []byte     `json:"-"`              // 正文；不进列表/元数据
 	Digest            []byte     `json:"digest"`         // SHA-256 32 字节
@@ -86,25 +87,26 @@ type AssetWrite struct {
 
 // 平台级工艺或工程的当前库行，正文和依赖都在这。
 type assetRow struct {
-	ID              uuid.UUID  `gorm:"type:uuid;primaryKey"`      // 稳定身份
-	Kind            string     `gorm:"not null"`                  // process / project
-	Level           string     `gorm:"not null"`                  // 固定 platform
-	Name            string     `gorm:"not null"`                  // 显示名
-	Code            string     `gorm:"not null"`                  // 只读编号
-	Status          string     `gorm:"not null"`                  // draft / available / disabled
-	Copyable        bool       `gorm:"not null"`                  // 可复制
-	WeldKind        string     `gorm:"column:weld_kind;not null"` // 作业类型
-	Corner          bool       `gorm:"column:corner;not null"`    // 包角工艺；随正文算
-	Revision        int64      `gorm:"not null"`                  // 当前修订
-	Content         []byte     `gorm:"type:bytea;not null"`       // 正文
-	Digest          []byte     `gorm:"type:bytea;not null"`       // SHA-256
-	CreatorID       uuid.UUID  `gorm:"type:uuid;not null"`        // WAN 管理员
-	SourceID        *uuid.UUID `gorm:"type:uuid"`                 // 升档源厂级身份
-	SourceRevision  *int64     `gorm:"column:source_revision"`    // 升档源修订
-	SourceFactoryID *uuid.UUID `gorm:"type:uuid"`                 // 升档源厂
-	Deps            []byte     `gorm:"type:jsonb;not null"`       // 依赖 JSON
-	CreatedAt       time.Time  `gorm:"not null"`                  // 创建时间
-	UpdatedAt       time.Time  `gorm:"not null"`                  // 最近升高修订的时间
+	ID              uuid.UUID  `gorm:"type:uuid;primaryKey"`        // 稳定身份
+	Kind            string     `gorm:"not null"`                    // process / project
+	Level           string     `gorm:"not null"`                    // 固定 platform
+	Name            string     `gorm:"not null"`                    // 显示名
+	Code            string     `gorm:"not null"`                    // 只读编号
+	Status          string     `gorm:"not null"`                    // draft / available / disabled
+	Copyable        bool       `gorm:"not null"`                    // 可复制
+	WeldKind        string     `gorm:"column:weld_kind;not null"`   // 作业类型
+	Corner          bool       `gorm:"column:corner;not null"`      // 包角工艺；随正文算
+	TemplateID      string     `gorm:"column:template_id;not null"` // 工艺所属模版身份；随正文算，工程为空
+	Revision        int64      `gorm:"not null"`                    // 当前修订
+	Content         []byte     `gorm:"type:bytea;not null"`         // 正文
+	Digest          []byte     `gorm:"type:bytea;not null"`         // SHA-256
+	CreatorID       uuid.UUID  `gorm:"type:uuid;not null"`          // WAN 管理员
+	SourceID        *uuid.UUID `gorm:"type:uuid"`                   // 升档源厂级身份
+	SourceRevision  *int64     `gorm:"column:source_revision"`      // 升档源修订
+	SourceFactoryID *uuid.UUID `gorm:"type:uuid"`                   // 升档源厂
+	Deps            []byte     `gorm:"type:jsonb;not null"`         // 依赖 JSON
+	CreatedAt       time.Time  `gorm:"not null"`                    // 创建时间
+	UpdatedAt       time.Time  `gorm:"not null"`                    // 最近升高修订的时间
 }
 
 // 平台级资产落这张表，不跟默认复数走。
@@ -162,6 +164,7 @@ func (s *Store) InsertAssetInto(ctx context.Context, in Asset, parentID uuid.UUI
 			Copyable:        in.Copyable,
 			WeldKind:        weldKind,
 			Corner:          cornerOf(in.Kind, in.Content),
+			TemplateID:      templateOf(in.Kind, in.Content),
 			Revision:        1,
 			Content:         nonempty(in.Content),
 			Digest:          in.Digest,
@@ -249,15 +252,16 @@ func (s *Store) UpdateAsset(ctx context.Context, assetID uuid.UUID, expected int
 		}
 		// 先组好要改的列，修订在期望值上加一。
 		updates := map[string]any{
-			"name":       w.Name,
-			"content":    nonempty(w.Content),
-			"corner":     cornerOf(row.Kind, w.Content),
-			"digest":     w.Digest,
-			"copyable":   w.Copyable,
-			"status":     w.Status,
-			"deps":       depsJSON,
-			"revision":   expected + 1,
-			"updated_at": now,
+			"name":        w.Name,
+			"content":     nonempty(w.Content),
+			"corner":      cornerOf(row.Kind, w.Content),
+			"template_id": templateOf(row.Kind, w.Content),
+			"digest":      w.Digest,
+			"copyable":    w.Copyable,
+			"status":      w.Status,
+			"deps":        depsJSON,
+			"revision":    expected + 1,
+			"updated_at":  now,
 		}
 		// 这次带了作业类型才改，空着就保持原样。
 		if w.WeldKind != "" {
@@ -637,6 +641,7 @@ func assetFromRow(row assetRow) Asset {
 		Copyable:        row.Copyable,
 		WeldKind:        row.WeldKind,
 		Corner:          row.Corner,
+		TemplateID:      row.TemplateID,
 		Revision:        row.Revision,
 		Content:         row.Content,
 		Digest:          row.Digest,
@@ -654,6 +659,16 @@ func assetFromRow(row assetRow) Asset {
 func cornerOf(kind string, content []byte) bool {
 	// 工艺看正文顶层 kind，工程一律不是。
 	return kind == KindProcess && contenttpl.IsCornerProcess(content)
+}
+
+// templateOf 按正文算工艺所属模版；工程没有所属模版。
+func templateOf(kind string, content []byte) string {
+	// 工程不归任何工艺模版。
+	if kind != KindProcess {
+		return ""
+	}
+	// 工艺按正文顶层的所属身份或包角标记归类。
+	return contenttpl.ProcessTemplateOf(content)
 }
 
 // TamperAssetContent 只改正文不改摘要，供完整性夹具使用。

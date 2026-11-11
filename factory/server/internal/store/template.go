@@ -147,30 +147,14 @@ func (s *Store) TemplateReplicaByIDRev(ctx context.Context, id uuid.UUID, revisi
 	return templateFromRow(row), nil
 }
 
-// LatestTemplateByKind 读该类型最高修订副本（工艺仍一行）。
-func (s *Store) LatestTemplateByKind(ctx context.Context, kind string) (ContentTemplate, error) {
-	// 准备承接查到的模版副本。
-	var row contentTemplateReplicaRow
-	// 按条件取一行失败就停，避免带着错误继续。
-	if err := s.db.WithContext(ctx).Where("kind = ?", kind).Order("revision DESC").First(&row).Error; err != nil {
-		// 没有这一行就当成不存在。
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return ContentTemplate{}, domain.ErrNotFound
-		}
-		return ContentTemplate{}, err
-	}
-	// 库行收成对外结果再交回。
-	return templateFromRow(row), nil
-}
-
-// LatestProjectTemplates 各工程模版身份取最高修订；WAN 已删除、本厂已撤下的不列。
-func (s *Store) LatestProjectTemplates(ctx context.Context) ([]ContentTemplate, error) {
+// LatestTemplates 这一类里每个身份取最高修订，已撤下的不算；工艺、工程都是多份。
+func (s *Store) LatestTemplates(ctx context.Context, kind string) ([]ContentTemplate, error) {
 	// 准备承接查到的多条模版副本。
 	var rows []contentTemplateReplicaRow
 	// 走手写查询失败就停，避免带着错误继续。
 	if err := s.db.WithContext(ctx).Raw(
 		`SELECT DISTINCT ON (id) * FROM content_template_replicas WHERE kind = ? AND retired_at IS NULL ORDER BY id, revision DESC`,
-		KindProject,
+		kind,
 	).Scan(&rows).Error; err != nil {
 		return nil, err
 	}

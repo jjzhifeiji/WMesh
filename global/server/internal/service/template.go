@@ -43,39 +43,6 @@ func openTemplate(t ContentTemplate) (ContentTemplate, error) {
 	return t, nil
 }
 
-// ensureTemplate 读工艺模版；没有则写入设备默认字段表。
-func (s *kernel) ensureTemplate(ctx context.Context, kind string) (ContentTemplate, error) {
-	// 不是工艺就拒绝，这项只对工艺开放。
-	if kind != KindProcess {
-		return ContentTemplate{}, domain.ErrNotFound
-	}
-	// 按字段模版处理。
-	t, err := s.store.TemplateByKind(ctx, kind)
-	// 没有错误才继续，有错留在后面的分支。
-	if err == nil {
-		// 解开模版正文，失败就不能继续。
-		return openTemplate(t)
-	}
-	// 不是没有这条，就当真正的故障返回。
-	if !errors.Is(err, domain.ErrNotFound) {
-		return ContentTemplate{}, err
-	}
-	// 用设备默认字段表首次落库。
-	schema, err := contenttpl.Marshal(contenttpl.Default(kind))
-	// 编不出就拒绝，不发送半截。
-	if err != nil {
-		return ContentTemplate{}, domain.ErrTemplateInvalid
-	}
-	// 写入这一条，失败就不能继续。
-	row, err := s.store.InsertTemplate(ctx, ContentTemplate{Kind: kind, Schema: schema, Digest: digest.Sum(schema)})
-	// 写入失败就停，避免留下半截。
-	if err != nil {
-		return ContentTemplate{}, err
-	}
-	// 解开模版正文，失败就不能继续。
-	return openTemplate(row)
-}
-
 // ensureProjectItems 工程模版多份独立行；旧登记簿拆开，空库首次落三份种子；之后只把没人改过的旧版种子升成当前种子，改过的不动。
 func (s *kernel) ensureProjectItems(ctx context.Context) ([]ContentTemplate, error) {
 	// 按字段模版处理。
@@ -163,7 +130,7 @@ func (s *kernel) ensureProjectItems(ctx context.Context) ([]ContentTemplate, err
 	// 逐条清掉过期模版，避免厂端拿到旧的。
 	for _, id := range stale {
 		// 不是没有这条，就当真正的故障返回。
-		if err := s.store.DeleteTemplate(ctx, id); err != nil && !errors.Is(err, domain.ErrNotFound) {
+		if err := s.store.DeleteTemplate(ctx, KindProject, id); err != nil && !errors.Is(err, domain.ErrNotFound) {
 			return nil, err
 		}
 	}
@@ -243,7 +210,7 @@ func (s *kernel) seedProjectItemsOnce(ctx context.Context) ([]ContentTemplate, e
 		})
 	}
 	// 抢到标记才写种子，没抢到就读别人刚落的或空表。
-	rows, err := s.store.SeedProjectTemplatesOnce(ctx, seeds)
+	rows, err := s.store.SeedTemplatesOnce(ctx, KindProject, seeds)
 	// 落种子或再读失败就停，不能当成空表。
 	if err != nil {
 		return nil, err
@@ -340,17 +307,20 @@ func (s *kernel) normalizeContent(ctx context.Context, kind, weldKind string, co
 		}
 		return out, nil
 	}
-	// 包角工艺正文是几何参数，不归焊接工艺模版管，原样保留。
-	if kind == KindProcess && contenttpl.IsCornerProcess(content) {
-		return content, nil
-	}
-	// 没有这份模版就补上种子。
-	tpl, err := s.ensureTemplate(ctx, kind)
-	// 补失败则厂端会缺字段。
+	// 工艺按正文所属的那份模版套：自建种类正文里写了身份，包角和焊接参数按预置身份。
+	tid := contenttpl.ProcessTemplateOf(content)
+	// 取这份模版，空库首次会落预置两份。
+	tpl, ok, err := s.processTemplate(ctx, tid)
+	// 读模版失败就停，不能拿没套过的正文当成功。
 	if err != nil {
 		return nil, err
 	}
-	out, err := contenttpl.Apply(tpl.Schema, content) // 按当前模版套正文。
+	// 这份模版已经删了就原样留正文，工艺照常能用。
+	if !ok {
+		return content, nil
+	}
+	// 套完再写回包角标记或所属身份，免得被当成多余的键删掉。
+	out, err := contenttpl.ApplyProcess(tid, tpl.Schema, content)
 	// 套不上就拒绝，避免半新正文。
 	if err != nil {
 		return nil, domain.ErrTemplateInvalid
@@ -396,68 +366,6 @@ func parseProjectSchema(raw []byte) ([]byte, error) {
 	}
 	// 编成字节再送出。
 	return contenttpl.Marshal(sch)
-}
-
-// BuiltinSchema 读代码里的默认工艺字段表，不改已落库模版。
-func (s *Templates) BuiltinSchema(ctx context.Context, token, kind string) ([]byte, error) {
-	// 核对当前管理员会话。
-	admin, err := s.RequireAdmin(ctx, token)
-	// 无效就不能继续，不当已经登录。
-	if err != nil {
-		// 读模版被拒就留审计。
-		_ = s.audit(ctx, nil, nil, nil, "get_template", kind+" default", audit.Deny)
-		return nil, err
-	}
-	// 不是工艺就拒绝，这项只对工艺开放。
-	if kind != KindProcess {
-		// 读模版被拒就留审计。
-		_ = s.audit(ctx, &admin.ID, nil, nil, "get_template", kind+" default", audit.Deny)
-		return nil, domain.ErrNotFound
-	}
-	// 编成字节再送出。
-	raw, err := contenttpl.Marshal(contenttpl.Default(kind))
-	// 编不出就拒绝，不发送半截。
-	if err != nil {
-		// 读模版被拒就留审计。
-		_ = s.audit(ctx, &admin.ID, nil, nil, "get_template", kind+" default", audit.Deny)
-		return nil, domain.ErrTemplateInvalid
-	}
-	// 审计没记下则中止，不当这次已经成功。
-	if err := s.audit(ctx, &admin.ID, nil, nil, "get_template", kind+" default", audit.Allow); err != nil {
-		return nil, err
-	}
-	return raw, nil
-}
-
-// GetTemplate 读工艺当前模版；没有则写入设备默认字段表。
-func (s *Templates) GetTemplate(ctx context.Context, token, kind string) (ContentTemplate, error) {
-	// 只有 WAN 管理员能读模版。失败一律记拒绝。
-	admin, err := s.RequireAdmin(ctx, token)
-	// 无效就不能继续，不当已经登录。
-	if err != nil {
-		// 读模版被拒就留审计。
-		_ = s.audit(ctx, nil, nil, nil, "get_template", kind, audit.Deny)
-		return ContentTemplate{}, err
-	}
-	// 不是工艺就拒绝，这项只对工艺开放。
-	if kind != KindProcess {
-		// 读模版被拒就留审计。
-		_ = s.audit(ctx, &admin.ID, nil, nil, "get_template", kind, audit.Deny)
-		return ContentTemplate{}, domain.ErrNotFound
-	}
-	// 没有这份模版就补上种子。
-	t, err := s.ensureTemplate(ctx, kind)
-	// 补失败则厂端会缺字段。
-	if err != nil {
-		// 读模版被拒就留审计。
-		_ = s.audit(ctx, &admin.ID, nil, nil, "get_template", kind, audit.Deny)
-		return ContentTemplate{}, err
-	}
-	// 读取成功才记允许。
-	if err := s.audit(ctx, &admin.ID, nil, nil, "get_template", templateTarget(t.Kind, t.Revision), audit.Allow); err != nil {
-		return ContentTemplate{}, err
-	}
-	return t, nil
 }
 
 // ListProjectTemplates 列出当前各份独立工程模版。
@@ -707,7 +615,7 @@ func (s *Templates) DeleteProjectTemplate(ctx context.Context, token string, id 
 		return domain.ErrNotFound
 	}
 	// 删除失败就停，避免库里留下残行。
-	if err := s.store.DeleteTemplate(ctx, id); err != nil {
+	if err := s.store.DeleteTemplate(ctx, KindProject, id); err != nil {
 		// 改模版被拒就留审计。
 		_ = s.audit(ctx, &admin.ID, nil, nil, "update_template", projectTemplateTarget(cur.Name, cur.Revision), audit.Deny)
 		return err
@@ -721,90 +629,12 @@ func (s *Templates) DeleteProjectTemplate(ctx context.Context, token string, id 
 	return nil
 }
 
-// UpdateTemplate 保存工艺字段表并下发；不改已有正文。
-func (s *Templates) UpdateTemplate(ctx context.Context, token, kind string, expected int64, schemaJSON []byte) (ContentTemplate, error) {
-	// 只有 WAN 管理员能改字段表。失败一律记拒绝。
-	admin, err := s.RequireAdmin(ctx, token)
-	// 无效就不能继续，不当已经登录。
-	if err != nil {
-		// 改模版被拒就留审计。
-		_ = s.audit(ctx, nil, nil, nil, "update_template", kind, audit.Deny)
-		return ContentTemplate{}, err
-	}
-	// 不是工艺就拒绝，这项只对工艺开放。
-	if kind != KindProcess {
-		// 改模版被拒就留审计。
-		_ = s.audit(ctx, &admin.ID, nil, nil, "update_template", kind, audit.Deny)
-		return ContentTemplate{}, domain.ErrNotFound
-	}
-	sch, err := contenttpl.Parse(schemaJSON) // 收成规范字段表。
-	// 格式不对或根不是对象就拒绝，免得新建工艺被套成数组。
-	if err != nil || sch.Root != contenttpl.RootObject {
-		// 改模版被拒就留审计。
-		_ = s.audit(ctx, &admin.ID, nil, nil, "update_template", kind, audit.Deny)
-		return ContentTemplate{}, domain.ErrTemplateInvalid
-	}
-	// 编成字节再送出。
-	canon, err := contenttpl.Marshal(sch)
-	// 编不出就拒绝，不发送半截。
-	if err != nil {
-		// 改模版被拒就留审计。
-		_ = s.audit(ctx, &admin.ID, nil, nil, "update_template", kind, audit.Deny)
-		return ContentTemplate{}, domain.ErrTemplateInvalid
-	}
-	// 没有这份模版就补上种子。
-	cur, err := s.ensureTemplate(ctx, kind)
-	// 补失败则厂端会缺字段。
-	if err != nil {
-		// 改模版被拒就留审计。
-		_ = s.audit(ctx, &admin.ID, nil, nil, "update_template", kind, audit.Deny)
-		return ContentTemplate{}, err
-	}
-	// 修订对不上则拒绝覆盖。
-	if expected != cur.Revision {
-		// 改模版被拒就留审计。
-		_ = s.audit(ctx, &admin.ID, nil, nil, "update_template", templateTarget(kind, expected), audit.Deny)
-		return ContentTemplate{}, domain.ErrRevisionConflict
-	}
-	// 字段表已经一样就不用再写，避免空改修订。
-	if bytes.Equal(cur.Schema, canon) {
-		// 字段没变则幂等返回。
-		if err := s.audit(ctx, &admin.ID, nil, nil, "update_template", templateTarget(cur.Kind, cur.Revision), audit.Allow); err != nil {
-			return ContentTemplate{}, err
-		}
-		return cur, nil
-	}
-	// 保存新字段表并升高修订，不改已有正文。
-	row, err := s.store.UpdateTemplate(ctx, kind, expected, canon, digest.Sum(canon))
-	// 更新失败就停，避免写成半新半旧。
-	if err != nil {
-		// 改模版被拒就留审计。
-		_ = s.audit(ctx, &admin.ID, nil, nil, "update_template", templateTarget(kind, expected), audit.Deny)
-		return ContentTemplate{}, err
-	}
-	// 解开模版正文，失败就不能继续。
-	row, err = openTemplate(row)
-	// 坏的按损坏拒绝，不能下发。
-	if err != nil {
-		// 改模版被拒就留审计。
-		_ = s.audit(ctx, &admin.ID, nil, nil, "update_template", templateTarget(kind, expected), audit.Deny)
-		return ContentTemplate{}, err
-	}
-	// 保存成功才记允许。
-	if err := s.audit(ctx, &admin.ID, nil, nil, "update_template", templateTarget(row.Kind, row.Revision), audit.Allow); err != nil {
-		return ContentTemplate{}, err
-	}
-	// 通知厂端去拉模版。
-	s.notifyTemplate(ctx, row.ID, row.Kind, row.Revision)
-	return row, nil
-}
-
-// SnapshotsForFactory 组当前工艺一份加全部工程模版快照。
+// SnapshotsForFactory 组当前全部工艺模版加全部工程模版，下发给该厂。
 func (s *Templates) SnapshotsForFactory(ctx context.Context, factoryID uuid.UUID) ([]TemplateSnapshot, error) {
 	// 记下工厂身份，授权和审计都按这家厂。
 	fid := factoryID
-	// 没有这份模版就补上种子。
-	proc, err := s.ensureTemplate(ctx, KindProcess)
+	// 读当前工艺各份，空库首次才落预置两份。
+	procs, err := s.ensureProcessTemplates(ctx)
 	// 补失败则厂端会缺字段。
 	if err != nil {
 		return nil, err
@@ -816,14 +646,9 @@ func (s *Templates) SnapshotsForFactory(ctx context.Context, factoryID uuid.UUID
 		return nil, err
 	}
 	// 按数量先准备容器。
-	out := make([]TemplateSnapshot, 0, 1+len(projects))
-	// 把这一项接进结果。
-	out = append(out, TemplateSnapshot{
-		ID: proc.ID, Kind: proc.Kind, Name: proc.Name, Revision: proc.Revision,
-		Schema: json.RawMessage(proc.Schema), Digest: proc.Digest, TargetFactoryID: &fid,
-	})
-	// 逐个工程套上当前模版，套不上就拒绝。
-	for _, t := range projects {
+	out := make([]TemplateSnapshot, 0, len(procs)+len(projects))
+	// 工艺在前、工程在后，逐份收成下发形状。
+	for _, t := range append(procs, projects...) {
 		// 把这一项接进结果。
 		out = append(out, TemplateSnapshot{
 			ID: t.ID, Kind: t.Kind, Name: t.Name, Revision: t.Revision,

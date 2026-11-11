@@ -271,7 +271,7 @@ func TestHasTemplateDelivery(t *testing.T) {
 	}
 	// 拼一份工艺模版第一修订，工艺模版不带名称。
 	snap := factory.TemplateSnapshot{
-		ID: id.New(), Kind: factory.KindProcess, Revision: 1,
+		ID: weldTplID, Kind: factory.KindProcess, Name: "焊接参数", Revision: 1,
 		Schema: json.RawMessage(schema), Digest: digest.Sum(schema), TargetFactoryID: &fid,
 	}
 	// 还没收过就该判断为没有。
